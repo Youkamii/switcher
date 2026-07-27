@@ -34,7 +34,7 @@ impl Provider {
     }
 
     /// 프로필 폴더 안에 저장되는 토큰 파일 이름 (원본 파일명과 동일하게 유지)
-    fn credential_file_name(self) -> &'static str {
+    pub(crate) fn credential_file_name(self) -> &'static str {
         match self {
             Provider::Claude => "credentials.json",
             Provider::Codex => "auth.json",
@@ -59,11 +59,11 @@ impl Env {
         Ok(Env { home, store })
     }
 
-    fn profiles_dir(&self, provider: Provider) -> PathBuf {
+    pub(crate) fn profiles_dir(&self, provider: Provider) -> PathBuf {
         self.store.join(provider.dir_name()).join("profiles")
     }
 
-    fn live_credential_path(&self, provider: Provider) -> PathBuf {
+    pub(crate) fn live_credential_path(&self, provider: Provider) -> PathBuf {
         match provider {
             Provider::Claude => self.home.join(".claude").join(".credentials.json"),
             Provider::Codex => self.home.join(".codex").join("auth.json"),
@@ -111,7 +111,7 @@ pub struct SwitchResult {
     pub switched_to: String,
 }
 
-fn now() -> u64 {
+pub(crate) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -148,7 +148,7 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
     fs::rename(&tmp, path).map_err(|e| format!("교체 실패 {}: {e}", path.display()))
 }
 
-fn read_json(path: &Path) -> Result<Value, String> {
+pub(crate) fn read_json(path: &Path) -> Result<Value, String> {
     let text =
         fs::read_to_string(path).map_err(|e| format!("읽기 실패 {}: {e}", path.display()))?;
     serde_json::from_str(&text).map_err(|e| format!("JSON 파싱 실패 {}: {e}", path.display()))

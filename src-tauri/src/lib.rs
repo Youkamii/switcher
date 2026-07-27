@@ -1,4 +1,5 @@
 mod accounts;
+mod usage;
 
 use accounts::{Env, Provider, Snapshot, SwitchResult};
 
@@ -22,6 +23,11 @@ fn delete_profile(provider: String, name: String) -> Result<(), String> {
     accounts::delete(&Env::real()?, Provider::parse(&provider)?, &name)
 }
 
+#[tauri::command]
+async fn fetch_usage(provider: String, profile: Option<String>) -> Result<usage::Usage, String> {
+    usage::fetch(&Env::real()?, Provider::parse(&provider)?, profile.as_deref()).await
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -30,7 +36,8 @@ pub fn run() {
             list_profiles,
             save_profile,
             switch_profile,
-            delete_profile
+            delete_profile,
+            fetch_usage
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
