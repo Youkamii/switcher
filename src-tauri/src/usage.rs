@@ -8,10 +8,11 @@ use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
 
-use crate::accounts::{now, read_json, Env, Provider};
+use crate::accounts::{jwt_payload, now, read_json, Env, Provider};
 
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
+const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 
 #[derive(Serialize)]
 pub struct UsageWindow {
@@ -138,6 +139,113 @@ async fn fetch_claude(env: &Env, profile: Option<&str>) -> Result<Usage, String>
     Ok(parse_claude_usage(&body))
 }
 
+fn codex_token(env: &Env, profile: Option<&str>) -> Result<(String, Option<String>), String> {
+    let path = credential_path(env, Provider::Codex, profile);
+    if !path.exists() {
+        return Err("토큰 파일이 없습니다".into());
+    }
+    let root = read_json(&path)?;
+    let tokens = root
+        .get("tokens")
+        .ok_or("토큰 파일 형식이 다릅니다 (tokens 없음)")?;
+    let access = tokens
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or("토큰 파일에 access_token이 없습니다")?;
+    if let Some(exp) = jwt_payload(access).and_then(|p| p.get("exp").and_then(|v| v.as_i64())) {
+        if exp < now() as i64 {
+            return Err(
+                "토큰이 만료됐습니다 — 이 계정으로 전환해 코덱스를 한 번 실행하면 갱신됩니다"
+                    .into(),
+            );
+        }
+    }
+    let account_id = tokens
+        .get("account_id")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    Ok((access.to_string(), account_id))
+}
+
+/// 한도 창 길이를 사람이 읽는 라벨로 (604800초=7일 → "주간")
+fn window_label(seconds: Option<i64>) -> String {
+    match seconds {
+        Some(s) if s >= 6 * 86400 => "주간".to_string(),
+        Some(s) if s >= 86400 => format!("{}일", s / 86400),
+        Some(s) if s >= 3600 => format!("{}시간", s / 3600),
+        _ => "한도".to_string(),
+    }
+}
+
+fn push_codex_window(windows: &mut Vec<UsageWindow>, key: &str, label_prefix: &str, w: &Value) {
+    let Some(percent) = w.get("used_percent").and_then(|v| v.as_f64()) else {
+        return;
+    };
+    let label = format!(
+        "{}{}",
+        label_prefix,
+        window_label(w.get("limit_window_seconds").and_then(|v| v.as_i64()))
+    );
+    windows.push(UsageWindow {
+        key: key.to_string(),
+        label,
+        percent,
+        resets_at: w
+            .get("reset_at")
+            .and_then(|v| v.as_i64())
+            .map(|t| t.to_string()),
+    });
+}
+
+fn parse_codex_usage(body: &Value) -> Usage {
+    let mut windows = Vec::new();
+    if let Some(w) = body.pointer("/rate_limit/primary_window") {
+        push_codex_window(&mut windows, "primary", "", w);
+    }
+    if let Some(w) = body.pointer("/rate_limit/secondary_window") {
+        push_codex_window(&mut windows, "secondary", "", w);
+    }
+    if let Some(extra) = body.get("additional_rate_limits").and_then(|v| v.as_array()) {
+        for item in extra {
+            let name = item
+                .get("limit_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("모델");
+            if let Some(w) = item.pointer("/rate_limit/primary_window") {
+                push_codex_window(
+                    &mut windows,
+                    &format!("model:{name}"),
+                    &format!("{name} · "),
+                    w,
+                );
+            }
+        }
+    }
+    Usage { windows }
+}
+
+async fn fetch_codex(env: &Env, profile: Option<&str>) -> Result<Usage, String> {
+    let (token, account_id) = codex_token(env, profile)?;
+    let client = reqwest::Client::new();
+    let mut req = client.get(CODEX_USAGE_URL).bearer_auth(&token);
+    if let Some(id) = account_id {
+        req = req.header("ChatGPT-Account-Id", id);
+    }
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("사용량 요청 실패: {e}"))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("사용량 조회 실패: HTTP {}", status.as_u16()));
+    }
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("응답 파싱 실패: {e}"))?;
+    Ok(parse_codex_usage(&body))
+}
+
 pub async fn fetch(
     env: &Env,
     provider: Provider,
@@ -145,7 +253,7 @@ pub async fn fetch(
 ) -> Result<Usage, String> {
     match provider {
         Provider::Claude => fetch_claude(env, profile).await,
-        Provider::Codex => Err("코덱스 사용량은 아직 준비 중입니다 (이슈 #5)".into()),
+        Provider::Codex => fetch_codex(env, profile).await,
     }
 }
 
@@ -208,6 +316,82 @@ mod tests {
         .unwrap();
         let err = claude_access_token(&env, None).unwrap_err();
         assert!(err.contains("만료"));
+    }
+
+    #[test]
+    fn parse_codex_real_shape() {
+        let body: Value = serde_json::from_str(
+            r#"{
+              "plan_type": "plus",
+              "rate_limit": {
+                "allowed": true,
+                "primary_window": {"used_percent": 30, "limit_window_seconds": 604800,
+                                   "reset_after_seconds": 512095, "reset_at": 1785660320},
+                "secondary_window": {"used_percent": 7.5, "limit_window_seconds": 18000,
+                                     "reset_after_seconds": 900, "reset_at": 1785661000}
+              },
+              "additional_rate_limits": [
+                {"limit_name": "GPT-Test-Model", "rate_limit": {
+                  "primary_window": {"used_percent": 0, "limit_window_seconds": 604800,
+                                     "reset_at": 1785753026}}}
+              ]
+            }"#,
+        )
+        .unwrap();
+        let usage = parse_codex_usage(&body);
+        assert_eq!(usage.windows.len(), 3);
+        assert_eq!(usage.windows[0].key, "primary");
+        assert_eq!(usage.windows[0].label, "주간");
+        assert_eq!(usage.windows[0].percent, 30.0);
+        assert_eq!(usage.windows[1].label, "5시간");
+        assert_eq!(usage.windows[2].key, "model:GPT-Test-Model");
+        assert_eq!(usage.windows[2].label, "GPT-Test-Model · 주간");
+    }
+
+    #[test]
+    fn codex_expired_token_is_rejected() {
+        use base64::Engine;
+        let enc = |s: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s);
+        let expired_jwt = format!(
+            "{}.{}.{}",
+            enc(r#"{"alg":"none"}"#),
+            enc(r#"{"exp":1000}"#),
+            enc("sig")
+        );
+        let base = std::env::temp_dir().join(format!(
+            "switcher-usage-codex-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join(".codex")).unwrap();
+        let env = Env {
+            home: base.clone(),
+            store: base.join(".switcher"),
+        };
+        fs::write(
+            env.live_credential_path(Provider::Codex),
+            format!(r#"{{"tokens":{{"access_token":"{expired_jwt}","account_id":"acct-x"}}}}"#),
+        )
+        .unwrap();
+        let err = codex_token(&env, None).unwrap_err();
+        assert!(err.contains("만료"));
+    }
+
+    /// 실계정 토큰으로 실제 엔드포인트를 호출하는 스모크 테스트.
+    /// CI에서는 돌지 않는다: `cargo test -- --ignored` 로만 실행.
+    #[test]
+    #[ignore]
+    fn real_codex_usage_smoke() {
+        let env = Env::real().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let usage = rt.block_on(fetch_codex(&env, None)).unwrap();
+        assert!(!usage.windows.is_empty());
+        for w in &usage.windows {
+            assert!((0.0..=100.0).contains(&w.percent));
+        }
     }
 
     /// 실계정 토큰으로 실제 엔드포인트를 호출하는 스모크 테스트.

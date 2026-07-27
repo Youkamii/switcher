@@ -154,15 +154,18 @@ pub(crate) fn read_json(path: &Path) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|e| format!("JSON 파싱 실패 {}: {e}", path.display()))
 }
 
-/// JWT payload에서 특정 문자열 claim을 꺼낸다 (서명 검증 없음 — 표시용 신원 확인 목적).
-fn jwt_claim(token: &str, claim: &str) -> Option<String> {
+/// JWT payload를 디코딩한다 (서명 검증 없음 — 표시용 신원·만료 확인 목적).
+pub(crate) fn jwt_payload(token: &str) -> Option<Value> {
     use base64::Engine;
     let payload = token.split('.').nth(1)?;
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(payload)
         .ok()?;
-    let value: Value = serde_json::from_slice(&bytes).ok()?;
-    value.get(claim)?.as_str().map(String::from)
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn jwt_claim(token: &str, claim: &str) -> Option<String> {
+    jwt_payload(token)?.get(claim)?.as_str().map(String::from)
 }
 
 /// 현재 로그인된 계정의 신원. 파일이 없거나 식별 불가면 Ok(None).
