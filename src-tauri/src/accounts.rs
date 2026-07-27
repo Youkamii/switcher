@@ -648,6 +648,51 @@ mod tests {
             .exists());
     }
 
+    /// 실계정 파일 검증: 현재 계정을 프로필로 저장 → 자기 자신으로 전환(무해한 왕복).
+    /// 계정이 바뀌지 않아야 하고 토큰 파일 내용도 보존되어야 한다.
+    /// CI에서는 돌지 않는다: `cargo test -- --ignored` 로만 실행.
+    fn real_self_switch(provider: Provider) {
+        let env = Env::real().unwrap();
+        let live_path = env.live_credential_path(provider);
+        if !live_path.exists() {
+            panic!("로그인 파일이 없어 실환경 검증 불가");
+        }
+        let before_cred = fs::read(&live_path).unwrap();
+        let before_ident = live_identity(&env, provider).unwrap().unwrap();
+
+        let name = match find_profile_by_id(&env, provider, &before_ident.id).unwrap() {
+            Some(existing) => existing,
+            None => {
+                save_current(&env, provider, "main").unwrap();
+                "main".to_string()
+            }
+        };
+
+        let result = switch(&env, provider, &name).unwrap();
+        assert_eq!(result.switched_to, name);
+        assert_eq!(result.backed_up_to.as_deref(), Some(name.as_str()));
+
+        let after_ident = live_identity(&env, provider).unwrap().unwrap();
+        assert_eq!(before_ident.id, after_ident.id, "계정이 바뀌면 안 된다");
+        let after_cred = fs::read(&live_path).unwrap();
+        assert_eq!(before_cred, after_cred, "토큰 파일이 보존되어야 한다");
+
+        let snap = list(&env, provider).unwrap();
+        assert!(snap.live_saved, "전환 후 활성 계정이 프로필과 매칭되어야 한다");
+    }
+
+    #[test]
+    #[ignore]
+    fn real_self_switch_claude() {
+        real_self_switch(Provider::Claude);
+    }
+
+    #[test]
+    #[ignore]
+    fn real_self_switch_codex() {
+        real_self_switch(Provider::Codex);
+    }
+
     #[test]
     fn delete_removes_only_stored_profile() {
         let env = test_env("delete");
