@@ -21,24 +21,23 @@
 
 html,
 body {
-  background: transparent;
   height: 100vh;
 }
 
 body {
+  background: var(--bg);
   color: var(--text);
   user-select: none;
   overflow: hidden;
 }
 
-/* 테두리 없는 창이므로 shell이 위젯의 몸통이다 */
+/* 테두리 없는 창이므로 shell이 위젯의 몸통이다 (투명 창은 Windows에서 렌더가 불안정해 불투명 고정) */
 .shell {
   display: flex;
   flex-direction: column;
   height: 100vh;
   background: var(--bg);
   border: 1px solid #34344a;
-  border-radius: 12px;
   overflow: hidden;
 }
 

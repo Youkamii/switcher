@@ -314,7 +314,9 @@ function userIsTyping(): boolean {
 }
 
 const appWindow = getCurrentWindow();
-let pinned = localStorage.getItem("switcher.pinned") === "1";
+// 위젯은 기본이 "항상 위" — 처음 실행(저장값 없음)이면 켠 상태로 시작
+const storedPin = localStorage.getItem("switcher.pinned");
+let pinned = storedPin === null ? true : storedPin === "1";
 
 async function applyPin(button: HTMLButtonElement) {
   await appWindow.setAlwaysOnTop(pinned);

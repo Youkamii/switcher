@@ -36,14 +36,52 @@ async fn fetch_usage(provider: String, profile: Option<String>) -> Result<usage:
     usage::fetch(&Env::real()?, Provider::parse(&provider)?, profile.as_deref()).await
 }
 
+/// 위젯을 주 모니터 작업영역(작업표시줄 제외) 우하단에 붙인다
+fn position_bottom_right(window: &tauri::WebviewWindow) {
+    let Ok(Some(monitor)) = window.primary_monitor() else {
+        return;
+    };
+    let size = window
+        .outer_size()
+        .unwrap_or(tauri::PhysicalSize::new(360, 540));
+    let area = monitor.work_area();
+    let margin = 16;
+    let x = area.position.x + area.size.width as i32 - size.width as i32 - margin;
+    let y = area.position.y + area.size.height as i32 - size.height as i32 - margin;
+    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
+/// 최소화 파킹(-32000,-32000) 등으로 화면 밖에 나가 있으면 제자리로 되돌린다.
+/// 사용자가 직접 옮긴 정상 위치는 건드리지 않는다.
+fn ensure_on_screen(window: &tauri::WebviewWindow) {
+    match window.outer_position() {
+        Ok(pos) if pos.x > -10000 && pos.y > -10000 => {}
+        _ => position_bottom_right(window),
+    }
+}
+
+/// 무조건 보이게 한다: 최소화 해제 → 화면 안 복귀 → 표시 → 앞으로
+fn show_main_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        ensure_on_screen(&window);
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 fn toggle_main_window(app: &tauri::AppHandle) {
     use tauri::Manager;
     if let Some(window) = app.get_webview_window("main") {
-        if window.is_visible().unwrap_or(false) {
+        let visible = window.is_visible().unwrap_or(false);
+        let minimized = window.is_minimized().unwrap_or(false);
+        let focused = window.is_focused().unwrap_or(false);
+        // "보이는 상태"라도 다른 창에 묻혀 있으면 숨기지 말고 앞으로 끌어온다
+        if visible && !minimized && focused {
             let _ = window.hide();
         } else {
-            let _ = window.show();
-            let _ = window.set_focus();
+            show_main_window(app);
         }
     }
 }
@@ -55,16 +93,28 @@ pub fn run() {
 
     tauri::Builder::default()
         .setup(|app| {
-            let show = MenuItem::with_id(app, "show", "열기/숨기기", true, None::<&str>)?;
+            use tauri::Manager;
+            // 첫 실행 위치: 작업영역 우하단 (위젯 기본 자리)
+            if let Some(window) = app.get_webview_window("main") {
+                position_bottom_right(&window);
+            }
+            let show = MenuItem::with_id(app, "show", "열기", true, None::<&str>)?;
+            let hide = MenuItem::with_id(app, "hide", "숨기기", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let menu = Menu::with_items(app, &[&show, &hide, &quit])?;
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .tooltip("switcher")
                 .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => toggle_main_window(app),
+                    "show" => show_main_window(app),
+                    "hide" => {
+                        use tauri::Manager;
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.hide();
+                        }
+                    }
                     "quit" => app.exit(0),
                     _ => {}
                 })
