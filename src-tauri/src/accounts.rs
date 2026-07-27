@@ -26,7 +26,7 @@ impl Provider {
         }
     }
 
-    fn dir_name(self) -> &'static str {
+    pub(crate) fn dir_name(self) -> &'static str {
         match self {
             Provider::Claude => "claude",
             Provider::Codex => "codex",
@@ -43,7 +43,6 @@ impl Provider {
 }
 
 /// 홈·보관소 경로 묶음. 테스트에서는 임시 디렉토리를 주입한다.
-#[derive(Clone)]
 pub struct Env {
     pub home: PathBuf,
     pub store: PathBuf,
@@ -75,14 +74,14 @@ impl Env {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize)]
 pub struct Meta {
     pub id: String,
     pub email: Option<String>,
     pub saved_at: u64,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize)]
 pub struct LiveIdentity {
     pub id: String,
     pub email: Option<String>,
@@ -105,7 +104,7 @@ pub struct Snapshot {
     pub live_saved: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct SwitchResult {
     pub backed_up_to: Option<String>,
     pub switched_to: String,
@@ -119,7 +118,7 @@ pub(crate) fn now() -> u64 {
 }
 
 /// 프로필 이름은 경로에 들어가므로 엄격히 제한한다 (경로 탈출 방지).
-fn validate_name(name: &str) -> Result<(), String> {
+pub(crate) fn validate_name(name: &str) -> Result<(), String> {
     let ok = !name.is_empty()
         && name.len() <= 32
         && name
@@ -143,15 +142,45 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
         .ok_or_else(|| format!("경로 오류: {}", path.display()))?
         .to_string_lossy()
         .to_string();
-    let tmp = parent.join(format!("{file_name}.switcher-tmp"));
+    // 동시 쓰기 경합 시 임시 파일이 겹치지 않게 일련번호를 붙인다
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = parent.join(format!("{file_name}.switcher-tmp{seq}"));
     fs::write(&tmp, data).map_err(|e| format!("쓰기 실패 {}: {e}", tmp.display()))?;
-    fs::rename(&tmp, path).map_err(|e| format!("교체 실패 {}: {e}", path.display()))
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+    }
+    fs::rename(&tmp, path).map_err(|e| {
+        // 실패 시 평문 토큰이 담긴 임시 파일을 남기지 않는다
+        let _ = fs::remove_file(&tmp);
+        format!("교체 실패 {}: {e}", path.display())
+    })
 }
 
 pub(crate) fn read_json(path: &Path) -> Result<Value, String> {
     let text =
         fs::read_to_string(path).map_err(|e| format!("읽기 실패 {}: {e}", path.display()))?;
     serde_json::from_str(&text).map_err(|e| format!("JSON 파싱 실패 {}: {e}", path.display()))
+}
+
+/// 다른 프로그램(실행 중인 CLI)이 쓰는 도중의 반쪽짜리 파일을 읽을 수 있으므로
+/// 파싱 실패 시 짧게 기다렸다가 재시도한다.
+fn read_json_retry(path: &Path) -> Result<Value, String> {
+    let mut last_err = String::new();
+    for attempt in 0..3 {
+        match read_json(path) {
+            Ok(value) => return Ok(value),
+            Err(e) => {
+                last_err = e;
+                if attempt < 2 {
+                    std::thread::sleep(std::time::Duration::from_millis(80));
+                }
+            }
+        }
+    }
+    Err(last_err)
 }
 
 /// JWT payload를 디코딩한다 (서명 검증 없음 — 표시용 신원·만료 확인 목적).
@@ -176,7 +205,7 @@ fn live_identity(env: &Env, provider: Provider) -> Result<Option<LiveIdentity>, 
             if !path.exists() {
                 return Ok(None);
             }
-            let root = read_json(&path)?;
+            let root = read_json_retry(&path)?;
             let Some(acc) = root.get("oauthAccount") else {
                 return Ok(None);
             };
@@ -197,7 +226,7 @@ fn live_identity(env: &Env, provider: Provider) -> Result<Option<LiveIdentity>, 
             if !path.exists() {
                 return Ok(None);
             }
-            let root = read_json(&path)?;
+            let root = read_json_retry(&path)?;
             let Some(tokens) = root.get("tokens") else {
                 return Ok(None);
             };
@@ -222,7 +251,7 @@ fn claude_oauth_block(env: &Env) -> Result<Option<Value>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    Ok(read_json(&path)?.get("oauthAccount").cloned())
+    Ok(read_json_retry(&path)?.get("oauthAccount").cloned())
 }
 
 /// 현재 활성 파일들을 지정 이름의 프로필로 저장한다 (덮어쓰기 허용).
@@ -235,7 +264,12 @@ fn write_profile(
     let dir = env.profiles_dir(provider).join(name);
     let live = env.live_credential_path(provider);
     let data = fs::read(&live).map_err(|e| format!("읽기 실패 {}: {e}", live.display()))?;
-    atomic_write(&dir.join(provider.credential_file_name()), &data)?;
+    // 기존 토큰을 덮어쓰기 전에 한 세대 .bak으로 남긴다 — 잘못된 덮어쓰기의 최후 안전망
+    let cred_path = dir.join(provider.credential_file_name());
+    if cred_path.exists() {
+        let _ = fs::copy(&cred_path, cred_path.with_extension("json.bak"));
+    }
+    atomic_write(&cred_path, &data)?;
 
     if provider == Provider::Claude {
         if let Some(block) = claude_oauth_block(env)? {
@@ -251,6 +285,25 @@ fn write_profile(
     };
     let bytes = serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?;
     atomic_write(&dir.join("meta.json"), &bytes)
+}
+
+/// name 프로필이 이미 다른 계정의 것이면 에러 — 다른 계정 토큰을 덮어쓰지 않는다
+fn ensure_name_not_owned_by_other(
+    env: &Env,
+    provider: Provider,
+    name: &str,
+    ident: &LiveIdentity,
+) -> Result<(), String> {
+    let dir = env.profiles_dir(provider).join(name);
+    if let Some(meta) = read_meta(&dir) {
+        if meta.id != ident.id {
+            let owner = meta.email.unwrap_or(meta.id);
+            return Err(format!(
+                "'{name}'은 이미 다른 계정({owner})의 프로필입니다 — 다른 이름을 쓰세요"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn read_meta(dir: &Path) -> Option<Meta> {
@@ -293,19 +346,26 @@ fn find_profile_by_id(
 }
 
 /// 이메일 앞부분(또는 계정 id 앞 8자)으로 자동 프로필 이름을 만든다.
+/// id·이메일은 외부 입력(JWT 클레임 등)이므로 허용 문자만 남긴다 — 결과는 항상 validate_name을 통과한다.
 fn auto_name(env: &Env, provider: Provider, ident: &LiveIdentity) -> String {
-    let base: String = ident
-        .email
-        .as_deref()
-        .and_then(|e| e.split('@').next())
-        .unwrap_or("")
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-        .take(20)
-        .collect::<String>()
-        .to_lowercase();
+    let clean = |s: &str, limit: usize| -> String {
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .take(limit)
+            .collect::<String>()
+            .to_lowercase()
+    };
+    let base = clean(
+        ident.email.as_deref().and_then(|e| e.split('@').next()).unwrap_or(""),
+        20,
+    );
     let mut name = if base.is_empty() {
-        format!("account-{}", ident.id.chars().take(8).collect::<String>())
+        let id_part = clean(&ident.id, 8);
+        if id_part.is_empty() {
+            "account".to_string()
+        } else {
+            format!("account-{id_part}")
+        }
     } else {
         base
     };
@@ -313,7 +373,7 @@ fn auto_name(env: &Env, provider: Provider, ident: &LiveIdentity) -> String {
     let dir = env.profiles_dir(provider).join(&name);
     if let Some(meta) = read_meta(&dir) {
         if meta.id != ident.id {
-            let suffix: String = ident.id.chars().take(4).collect();
+            let suffix = clean(&ident.id, 4);
             name = format!("{name}-{suffix}");
         }
     }
@@ -329,7 +389,7 @@ fn claude_apply_oauth_block(env: &Env, profile_dir: &Path) -> Result<(), String>
         return Ok(());
     }
     let block = read_json(&block_path)?;
-    let mut root = read_json(&cj)?;
+    let mut root = read_json_retry(&cj)?;
     let Some(obj) = root.as_object_mut() else {
         return Ok(());
     };
@@ -358,6 +418,8 @@ pub fn save_current(env: &Env, provider: Provider, name: &str) -> Result<(), Str
             ));
         }
     }
+    // 다른 계정이 쓰는 이름을 덮어써 그 계정 토큰을 파괴하는 것을 막는다
+    ensure_name_not_owned_by_other(env, provider, name, &ident)?;
     write_profile(env, provider, name, &ident)
 }
 
@@ -368,6 +430,13 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
     let target_cred = profile_dir.join(provider.credential_file_name());
     if !target_cred.exists() {
         return Err(format!("프로필 '{name}'에 저장된 토큰이 없습니다"));
+    }
+    // 계정 정보 없이 토큰만 있는 프로필(구조용 백업)로 전환하면 이후 신원 판정이
+    // 어긋나 다음 전환의 백업이 엉뚱한 프로필을 덮어쓸 수 있다 — 전환 대상에서 제외
+    if provider == Provider::Claude && !profile_dir.join("oauth_account.json").exists() {
+        return Err(format!(
+            "프로필 '{name}'에는 계정 정보가 없어 전환할 수 없습니다 (구조용 백업) — 해당 계정으로 CLI 로그인 후 다시 저장하세요"
+        ));
     }
 
     // 1) 백업 — 현재 활성 계정을 자기 프로필(없으면 자동 생성)에 저장
@@ -412,7 +481,9 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
 
 /// 프로필 목록 + 현재 로그인 계정 상태
 pub fn list(env: &Env, provider: Provider) -> Result<Snapshot, String> {
-    let live = live_identity(env, provider)?;
+    // 표시용 목록은 신원 읽기가 일시적으로 실패해도 화면 전체를 깨뜨리지 않는다
+    // (전환·저장 경로는 여전히 엄격하게 실패한다)
+    let live = live_identity(env, provider).unwrap_or(None);
     let live_id = live.as_ref().map(|l| l.id.clone());
     let mut profiles = Vec::new();
     for (name, dir) in profile_dirs(env, provider)? {
@@ -515,6 +586,13 @@ mod tests {
         .unwrap();
         assert!(backed.contains("tok-a3"));
 
+        // 백업이 기존 사본을 덮어쓸 때 한 세대 .bak이 남아야 한다
+        assert!(env
+            .profiles_dir(Provider::Claude)
+            .join("main")
+            .join("credentials.json.bak")
+            .exists());
+
         // 활성 파일은 B의 토큰으로 교체
         assert!(live_token(&env).contains("tok-b1"));
         // ~/.claude.json의 oauthAccount도 B로 반영
@@ -552,6 +630,59 @@ mod tests {
         .unwrap();
         assert!(backed.contains("tok-a1"));
         assert!(live_token(&env).contains("tok-b1"));
+    }
+
+    #[test]
+    fn save_rejects_name_owned_by_other_account() {
+        let env = test_env("foreign-name");
+        login_claude(&env, "uuid-b", "bob@test.dev", "tok-b1");
+        save_current(&env, Provider::Claude, "main").unwrap();
+        // 다른 계정 A로 로그인한 뒤 같은 이름 "main"으로 저장 시도 → 거부돼야 한다
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a1");
+        let err = save_current(&env, Provider::Claude, "main").unwrap_err();
+        assert!(err.contains("다른 계정"));
+        // B의 토큰이 파괴되지 않고 그대로 보존
+        let kept = fs::read_to_string(
+            env.profiles_dir(Provider::Claude)
+                .join("main")
+                .join("credentials.json"),
+        )
+        .unwrap();
+        assert!(kept.contains("tok-b1"));
+    }
+
+    #[test]
+    fn switch_refuses_claude_profile_without_account_info() {
+        let env = test_env("no-oauth-block");
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a1");
+        save_current(&env, Provider::Claude, "main").unwrap();
+        // 구조용 백업처럼 계정 정보(oauth_account.json) 없는 프로필
+        let dir = env.profiles_dir(Provider::Claude).join("rescue1");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"tok-x"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("meta.json"),
+            r#"{"id":"unknown-1","email":null,"saved_at":0}"#,
+        )
+        .unwrap();
+        let err = switch(&env, Provider::Claude, "rescue1").unwrap_err();
+        assert!(err.contains("계정 정보"));
+        assert!(live_token(&env).contains("tok-a1"), "활성 토큰은 불변");
+    }
+
+    #[test]
+    fn auto_name_sanitizes_untrusted_id() {
+        let env = test_env("autoname");
+        let ident = LiveIdentity {
+            id: "auth0|../..evil".to_string(),
+            email: None,
+        };
+        let name = auto_name(&env, Provider::Codex, &ident);
+        assert!(validate_name(&name).is_ok(), "생성된 이름: {name}");
     }
 
     #[test]

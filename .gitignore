@@ -13,12 +13,18 @@ dist-ssr
 *.local
 
 # Secrets — 절대 커밋 금지 (public repo)
+# 앱이 실제로 생성하는 파일명과 정확히 일치시켜 둘 것
 .env
 .env.*
+credentials.json
 *.credentials.json
 auth.json
+oauth_account.json
+meta.json
 profiles/
 *.token
+*.switcher-tmp*
+*.json.bak
 
 # Editor directories and files
 .vscode/*

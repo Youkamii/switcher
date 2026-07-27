@@ -10,16 +10,20 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "withGlobalTauri": true,
+    "withGlobalTauri": false,
     "windows": [
       {
         "title": "switcher",
-        "width": 380,
-        "height": 560
+        "width": 360,
+        "height": 540,
+        "decorations": false,
+        "transparent": true,
+        "resizable": false,
+        "skipTaskbar": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
     }
   },
   "bundle": {

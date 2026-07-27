@@ -2,6 +2,11 @@ mod accounts;
 mod usage;
 
 use accounts::{Env, Provider, Snapshot, SwitchResult};
+use std::sync::Mutex;
+
+/// 저장·전환·삭제는 파일을 옮기는 다단계 작업이라 동시에 두 개가 돌면
+/// 백업과 교체가 교차해 계정이 어긋날 수 있다 — 전 커맨드 직렬화
+static MUTATION_LOCK: Mutex<()> = Mutex::new(());
 
 #[tauri::command]
 fn list_profiles(provider: String) -> Result<Snapshot, String> {
@@ -10,16 +15,19 @@ fn list_profiles(provider: String) -> Result<Snapshot, String> {
 
 #[tauri::command]
 fn save_profile(provider: String, name: String) -> Result<(), String> {
+    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     accounts::save_current(&Env::real()?, Provider::parse(&provider)?, &name)
 }
 
 #[tauri::command]
 fn switch_profile(provider: String, name: String) -> Result<SwitchResult, String> {
+    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     accounts::switch(&Env::real()?, Provider::parse(&provider)?, &name)
 }
 
 #[tauri::command]
 fn delete_profile(provider: String, name: String) -> Result<(), String> {
+    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     accounts::delete(&Env::real()?, Provider::parse(&provider)?, &name)
 }
 
@@ -44,10 +52,8 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 pub fn run() {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-    use tauri::Manager;
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let show = MenuItem::with_id(app, "show", "열기/숨기기", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;

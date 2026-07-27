@@ -19,19 +19,52 @@
   padding: 0;
 }
 
+html,
 body {
-  background: var(--bg);
+  background: transparent;
+  height: 100vh;
+}
+
+body {
   color: var(--text);
   user-select: none;
-  overflow-y: auto;
+  overflow: hidden;
+}
+
+/* 테두리 없는 창이므로 shell이 위젯의 몸통이다 */
+.shell {
+  display: flex;
+  flex-direction: column;
   height: 100vh;
+  background: var(--bg);
+  border: 1px solid #34344a;
+  border-radius: 12px;
+  overflow: hidden;
 }
 
 .titlebar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 14px 6px;
+  padding: 10px 12px 6px 14px;
+  cursor: grab;
+  flex: none;
+}
+
+.tb-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.tb-actions button {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.tb-actions button.pinned {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 700;
 }
 
 .titlebar h1 {
@@ -68,6 +101,40 @@ button.danger-armed {
 
 main {
   padding: 0 14px 14px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+button.link {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 2px 0;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+button.link:hover {
+  color: var(--accent);
+}
+
+.help {
+  background: var(--panel);
+  border: 1px dashed #34344a;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 4px 0 8px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.help code {
+  color: var(--text);
+  background: var(--panel-2);
+  border-radius: 4px;
+  padding: 0 4px;
 }
 
 .section-title {

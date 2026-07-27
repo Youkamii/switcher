@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type ProfileInfo = {
   name: string;
@@ -178,18 +179,44 @@ function profileCard(provider: ProviderId, profile: ProfileInfo): HTMLElement {
       }, 3000);
       return;
     }
+    deleteBtn.disabled = true;
     try {
       await invoke("delete_profile", { provider, name: profile.name });
       toast(`'${profile.name}' 프로필을 삭제했습니다 (로그인 자체는 유지됩니다)`);
       await render();
     } catch (error) {
       toast(String(error), true);
+      deleteBtn.disabled = false;
     }
   });
   actions.appendChild(deleteBtn);
   card.appendChild(actions);
 
   return card;
+}
+
+function addAccountHelp(provider: ProviderId, section: HTMLElement) {
+  const toggle = document.createElement("button");
+  toggle.className = "link";
+  toggle.textContent = "다른 계정은 어떻게 추가하나요?";
+  const help = document.createElement("div");
+  help.className = "help";
+  help.hidden = true;
+  const loginCmd = provider === "claude" ? "claude 실행 후 /login" : "codex login";
+  help.innerHTML = "";
+  const lines = [
+    "① 지금 계정을 아래 입력칸으로 먼저 저장",
+    `② 터미널에서 <code>${loginCmd}</code> 으로 다른 계정 로그인`,
+    "③ 여기 다시 와서 새 이름으로 저장",
+    "이후에는 버튼 한 번으로 전환 — 재로그인이 필요 없습니다",
+  ];
+  for (const line of lines) {
+    const p = document.createElement("div");
+    p.innerHTML = line;
+    help.appendChild(p);
+  }
+  toggle.addEventListener("click", () => (help.hidden = !help.hidden));
+  section.append(toggle, help);
 }
 
 function saveForm(provider: ProviderId, section: HTMLElement) {
@@ -253,6 +280,7 @@ async function renderProvider(provider: ProviderId, title: string) {
     }
 
     saveForm(provider, section);
+    addAccountHelp(provider, section);
   } catch (error) {
     const err = document.createElement("p");
     err.className = "usage-error";
@@ -263,13 +291,48 @@ async function renderProvider(provider: ProviderId, title: string) {
   app.appendChild(section);
 }
 
+let rendering = false;
+
 async function render() {
-  app.textContent = "";
-  for (const { id, title } of PROVIDERS) {
-    await renderProvider(id, title);
+  // 새로고침 연타·자동 주기와의 경합으로 화면이 겹쳐 그려지는 것을 막는다
+  if (rendering) return;
+  rendering = true;
+  try {
+    app.textContent = "";
+    for (const { id, title } of PROVIDERS) {
+      await renderProvider(id, title);
+    }
+  } finally {
+    rendering = false;
   }
 }
 
+/// 자동 새로고침이 입력 중인 프로필 이름을 날리지 않게 한다
+function userIsTyping(): boolean {
+  const el = document.activeElement;
+  return el instanceof HTMLInputElement && el.value.trim().length > 0;
+}
+
+const appWindow = getCurrentWindow();
+let pinned = localStorage.getItem("switcher.pinned") === "1";
+
+async function applyPin(button: HTMLButtonElement) {
+  await appWindow.setAlwaysOnTop(pinned);
+  button.classList.toggle("pinned", pinned);
+  button.textContent = pinned ? "고정됨" : "고정";
+}
+
+const pinBtn = document.getElementById("pin") as HTMLButtonElement;
+pinBtn.addEventListener("click", () => {
+  pinned = !pinned;
+  localStorage.setItem("switcher.pinned", pinned ? "1" : "0");
+  void applyPin(pinBtn);
+});
+void applyPin(pinBtn);
+
+document.getElementById("hide")!.addEventListener("click", () => void appWindow.hide());
 document.getElementById("refresh")!.addEventListener("click", () => void render());
-window.setInterval(() => void render(), 5 * 60 * 1000);
+window.setInterval(() => {
+  if (!userIsTyping()) void render();
+}, 5 * 60 * 1000);
 void render();

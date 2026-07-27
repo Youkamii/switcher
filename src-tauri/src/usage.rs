@@ -14,7 +14,7 @@ const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct UsageWindow {
     pub key: String,
     pub label: String,
@@ -22,24 +22,32 @@ pub struct UsageWindow {
     pub resets_at: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct Usage {
     pub windows: Vec<UsageWindow>,
 }
 
-/// 조회 대상 토큰 파일: 프로필 이름이 있으면 보관함, 없으면 활성 파일
-fn credential_path(env: &Env, provider: Provider, profile: Option<&str>) -> PathBuf {
+/// 조회 대상 토큰 파일: 프로필 이름이 있으면 보관함, 없으면 활성 파일.
+/// 프로필 이름은 경로에 들어가므로 여기서도 반드시 검증한다 (경로 탈출 방지).
+fn credential_path(
+    env: &Env,
+    provider: Provider,
+    profile: Option<&str>,
+) -> Result<PathBuf, String> {
     match profile {
-        Some(name) => env
-            .profiles_dir(provider)
-            .join(name)
-            .join(provider.credential_file_name()),
-        None => env.live_credential_path(provider),
+        Some(name) => {
+            crate::accounts::validate_name(name)?;
+            Ok(env
+                .profiles_dir(provider)
+                .join(name)
+                .join(provider.credential_file_name()))
+        }
+        None => Ok(env.live_credential_path(provider)),
     }
 }
 
 fn claude_access_token(env: &Env, profile: Option<&str>) -> Result<String, String> {
-    let path = credential_path(env, Provider::Claude, profile);
+    let path = credential_path(env, Provider::Claude, profile)?;
     if !path.exists() {
         return Err("토큰 파일이 없습니다".into());
     }
@@ -118,29 +126,37 @@ fn parse_claude_usage(body: &Value) -> Usage {
     Usage { windows }
 }
 
-async fn fetch_claude(env: &Env, profile: Option<&str>) -> Result<Usage, String> {
-    let token = claude_access_token(env, profile)?;
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(CLAUDE_USAGE_URL)
-        .bearer_auth(&token)
-        .header("anthropic-beta", CLAUDE_OAUTH_BETA)
+async fn get_json(request: reqwest::RequestBuilder) -> Result<Value, String> {
+    let resp = request
         .send()
         .await
         .map_err(|e| format!("사용량 요청 실패: {e}"))?;
     let status = resp.status();
+    if status.as_u16() == 429 {
+        return Err("요청이 잦아 잠시 제한되었습니다 — 잠시 후 자동으로 다시 조회됩니다".into());
+    }
     if !status.is_success() {
         return Err(format!("사용량 조회 실패: HTTP {}", status.as_u16()));
     }
-    let body: Value = resp
-        .json()
+    resp.json()
         .await
-        .map_err(|e| format!("응답 파싱 실패: {e}"))?;
+        .map_err(|e| format!("응답 파싱 실패: {e}"))
+}
+
+async fn fetch_claude(env: &Env, profile: Option<&str>) -> Result<Usage, String> {
+    let token = claude_access_token(env, profile)?;
+    let body = get_json(
+        reqwest::Client::new()
+            .get(CLAUDE_USAGE_URL)
+            .bearer_auth(&token)
+            .header("anthropic-beta", CLAUDE_OAUTH_BETA),
+    )
+    .await?;
     Ok(parse_claude_usage(&body))
 }
 
 fn codex_token(env: &Env, profile: Option<&str>) -> Result<(String, Option<String>), String> {
-    let path = credential_path(env, Provider::Codex, profile);
+    let path = credential_path(env, Provider::Codex, profile)?;
     if !path.exists() {
         return Err("토큰 파일이 없습니다".into());
     }
@@ -226,34 +242,58 @@ fn parse_codex_usage(body: &Value) -> Usage {
 
 async fn fetch_codex(env: &Env, profile: Option<&str>) -> Result<Usage, String> {
     let (token, account_id) = codex_token(env, profile)?;
-    let client = reqwest::Client::new();
-    let mut req = client.get(CODEX_USAGE_URL).bearer_auth(&token);
+    let mut req = reqwest::Client::new().get(CODEX_USAGE_URL).bearer_auth(&token);
     if let Some(id) = account_id {
         req = req.header("ChatGPT-Account-Id", id);
     }
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| format!("사용량 요청 실패: {e}"))?;
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(format!("사용량 조회 실패: HTTP {}", status.as_u16()));
-    }
-    let body: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("응답 파싱 실패: {e}"))?;
+    let body = get_json(req).await?;
     Ok(parse_codex_usage(&body))
 }
+
+/// 새로고침 연타·재렌더마다 API를 때리지 않도록 60초 캐시를 둔다.
+/// 조회가 실패해도(예: 요청 제한 429) 직전 값이 있으면 그걸 보여준다.
+fn cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Usage)>>
+{
+    static CACHE: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Usage)>>,
+    > = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 pub async fn fetch(
     env: &Env,
     provider: Provider,
     profile: Option<&str>,
 ) -> Result<Usage, String> {
-    match provider {
+    let key = format!("{}:{}", provider.dir_name(), profile.unwrap_or("<live>"));
+    if let Ok(map) = cache().lock() {
+        if let Some((at, cached)) = map.get(&key) {
+            if at.elapsed() < CACHE_TTL {
+                return Ok(cached.clone());
+            }
+        }
+    }
+    let result = match provider {
         Provider::Claude => fetch_claude(env, profile).await,
         Provider::Codex => fetch_codex(env, profile).await,
+    };
+    match result {
+        Ok(usage) => {
+            if let Ok(mut map) = cache().lock() {
+                map.insert(key, (std::time::Instant::now(), usage.clone()));
+            }
+            Ok(usage)
+        }
+        Err(e) => {
+            if let Ok(map) = cache().lock() {
+                if let Some((_, cached)) = map.get(&key) {
+                    return Ok(cached.clone());
+                }
+            }
+            Err(e)
+        }
     }
 }
 
@@ -295,6 +335,22 @@ mod tests {
         let usage = parse_claude_usage(&body);
         assert_eq!(usage.windows.len(), 2);
         assert_eq!(usage.windows[0].percent, 30.5);
+    }
+
+    #[test]
+    fn profile_arg_path_escape_is_rejected() {
+        let base = std::env::temp_dir().join(format!(
+            "switcher-usage-escape-test-{}",
+            std::process::id()
+        ));
+        let env = Env {
+            home: base.clone(),
+            store: base.join(".switcher"),
+        };
+        let err = claude_access_token(&env, Some("../../evil")).unwrap_err();
+        assert!(err.contains("프로필 이름"));
+        let err = codex_token(&env, Some("..\\evil")).unwrap_err();
+        assert!(err.contains("프로필 이름"));
     }
 
     #[test]
