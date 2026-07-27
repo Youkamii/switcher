@@ -154,12 +154,15 @@ fn read_json(path: &Path) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|e| format!("JSON 파싱 실패 {}: {e}", path.display()))
 }
 
-/// 이슈 #3에서 코덱스 신원 식별을 구현하기 전까지의 가드
-fn ensure_supported(provider: Provider) -> Result<(), String> {
-    match provider {
-        Provider::Claude => Ok(()),
-        Provider::Codex => Err("코덱스 전환은 아직 준비 중입니다 (이슈 #3)".into()),
-    }
+/// JWT payload에서 특정 문자열 claim을 꺼낸다 (서명 검증 없음 — 표시용 신원 확인 목적).
+fn jwt_claim(token: &str, claim: &str) -> Option<String> {
+    use base64::Engine;
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let value: Value = serde_json::from_slice(&bytes).ok()?;
+    value.get(claim)?.as_str().map(String::from)
 }
 
 /// 현재 로그인된 계정의 신원. 파일이 없거나 식별 불가면 Ok(None).
@@ -186,7 +189,27 @@ fn live_identity(env: &Env, provider: Provider) -> Result<Option<LiveIdentity>, 
                 email,
             }))
         }
-        Provider::Codex => Err("코덱스 신원 식별은 이슈 #3에서 구현".into()),
+        Provider::Codex => {
+            let path = env.live_credential_path(Provider::Codex);
+            if !path.exists() {
+                return Ok(None);
+            }
+            let root = read_json(&path)?;
+            let Some(tokens) = root.get("tokens") else {
+                return Ok(None);
+            };
+            let id_token = tokens.get("id_token").and_then(|v| v.as_str());
+            let id = tokens
+                .get("account_id")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .or_else(|| id_token.and_then(|t| jwt_claim(t, "sub")));
+            let Some(id) = id else {
+                return Ok(None);
+            };
+            let email = id_token.and_then(|t| jwt_claim(t, "email"));
+            Ok(Some(LiveIdentity { id, email }))
+        }
     }
 }
 
@@ -314,7 +337,6 @@ fn claude_apply_oauth_block(env: &Env, profile_dir: &Path) -> Result<(), String>
 
 /// 현재 로그인 계정을 이름 붙여 프로필로 저장
 pub fn save_current(env: &Env, provider: Provider, name: &str) -> Result<(), String> {
-    ensure_supported(provider)?;
     validate_name(name)?;
     let live = env.live_credential_path(provider);
     if !live.exists() {
@@ -338,7 +360,6 @@ pub fn save_current(env: &Env, provider: Provider, name: &str) -> Result<(), Str
 
 /// 계정 전환. 순서 불변: 1) 현재 활성 파일 백업 → 2) 대상 프로필 복사
 pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult, String> {
-    ensure_supported(provider)?;
     validate_name(name)?;
     let profile_dir = env.profiles_dir(provider).join(name);
     let target_cred = profile_dir.join(provider.credential_file_name());
@@ -388,7 +409,6 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
 
 /// 프로필 목록 + 현재 로그인 계정 상태
 pub fn list(env: &Env, provider: Provider) -> Result<Snapshot, String> {
-    ensure_supported(provider)?;
     let live = live_identity(env, provider)?;
     let live_id = live.as_ref().map(|l| l.id.clone());
     let mut profiles = Vec::new();
@@ -548,6 +568,81 @@ mod tests {
         assert!(save_current(&env, Provider::Claude, "a b").is_err());
         assert!(save_current(&env, Provider::Claude, "").is_err());
         assert!(switch(&env, Provider::Claude, "..").is_err());
+    }
+
+    /// 가짜 JWT (서명 없음) — email claim만 담는다
+    fn fake_jwt(email: &str) -> String {
+        use base64::Engine;
+        let enc = |s: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s);
+        format!(
+            "{}.{}.{}",
+            enc(r#"{"alg":"none"}"#),
+            enc(&format!(r#"{{"email":"{email}","sub":"sub-x"}}"#)),
+            enc("sig")
+        )
+    }
+
+    fn login_codex(env: &Env, account_id: &str, email: &str, token: &str) {
+        fs::create_dir_all(env.home.join(".codex")).unwrap();
+        fs::write(
+            env.home.join(".codex").join("auth.json"),
+            format!(
+                r#"{{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{{"id_token":"{}","access_token":"{token}","refresh_token":"r-{token}","account_id":"{account_id}"}},"last_refresh":"2026-01-01T00:00:00Z"}}"#,
+                fake_jwt(email)
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn codex_switch_backs_up_then_swaps() {
+        let env = test_env("codex");
+        login_codex(&env, "acct-b", "bob@test.dev", "ctok-b1");
+        save_current(&env, Provider::Codex, "personal").unwrap();
+        login_codex(&env, "acct-a", "alice@test.dev", "ctok-a1");
+        save_current(&env, Provider::Codex, "work").unwrap();
+        login_codex(&env, "acct-a", "alice@test.dev", "ctok-a2"); // 갱신 가정
+
+        let result = switch(&env, Provider::Codex, "personal").unwrap();
+
+        assert_eq!(result.backed_up_to.as_deref(), Some("work"));
+        let backed = fs::read_to_string(
+            env.profiles_dir(Provider::Codex)
+                .join("work")
+                .join("auth.json"),
+        )
+        .unwrap();
+        assert!(backed.contains("ctok-a2"));
+        let live =
+            fs::read_to_string(env.live_credential_path(Provider::Codex)).unwrap();
+        assert!(live.contains("ctok-b1"));
+
+        let snap = list(&env, Provider::Codex).unwrap();
+        let active: Vec<_> = snap.profiles.iter().filter(|p| p.active).collect();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].name, "personal");
+        assert_eq!(active[0].email.as_deref(), Some("bob@test.dev"));
+    }
+
+    #[test]
+    fn codex_and_claude_profiles_are_isolated() {
+        let env = test_env("isolation");
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a1");
+        save_current(&env, Provider::Claude, "main").unwrap();
+        login_codex(&env, "acct-a", "alice@test.dev", "ctok-a1");
+        save_current(&env, Provider::Codex, "main").unwrap();
+
+        // 같은 이름이라도 프로바이더별로 분리 보관
+        assert!(env
+            .profiles_dir(Provider::Claude)
+            .join("main")
+            .join("credentials.json")
+            .exists());
+        assert!(env
+            .profiles_dir(Provider::Codex)
+            .join("main")
+            .join("auth.json")
+            .exists());
     }
 
     #[test]
