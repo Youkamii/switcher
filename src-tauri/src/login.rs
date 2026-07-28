@@ -31,6 +31,8 @@ const FINISH_TIMEOUT: Duration = Duration::from_secs(45);
 /// 코덱스처럼 브라우저에서 코드를 넣고 CLI가 알아서 끝내는 방식의 대기 시간
 const DEVICE_TIMEOUT: Duration = Duration::from_secs(600);
 const POLL: Duration = Duration::from_millis(300);
+/// 자식 프로세스가 종료한 뒤 남은 출력이 버퍼에 도착하기를 기다리는 유예
+const EXIT_FLUSH: Duration = Duration::from_millis(700);
 /// 화면 누적 버퍼 상한 (TUI 스피너가 세션 내내 쌓이므로 캡을 둔다)
 const OUTPUT_CAP: usize = 256 * 1024;
 /// 코드 입력 최대 길이 (콘솔 stdin으로 흘러가므로 과대 입력을 막는다)
@@ -39,7 +41,7 @@ const CODE_MAX_LEN: usize = 256;
 /// (DEVICE_TIMEOUT보다 길게 잡아, 살아 있는 세션의 폴더일 가능성을 배제)
 const SWEEP_MIN_AGE: Duration = Duration::from_secs(15 * 60);
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct LoginPrompt {
     /// 사용자가 원하는 브라우저에 붙여넣을 로그인 주소
     pub url: String,
@@ -260,8 +262,29 @@ pub fn sweep_stale(env: &Env) {
     }
 }
 
+/// CLI가 로그인 화면을 띄우기 전에 종료했을 때의 안내 (미설치·구버전이 대표 원인)
+fn early_exit_error(provider: Provider) -> String {
+    let (program, install) = match provider {
+        Provider::Claude => ("claude", "npm install -g @anthropic-ai/claude-code"),
+        Provider::Codex => ("codex", "npm install -g @openai/codex"),
+    };
+    format!(
+        "{program} CLI가 로그인 화면을 띄우지 못하고 종료됐습니다 — 설치돼 있는지 확인하세요 (설치·업데이트: {install})"
+    )
+}
+
 /// 로그인을 시작하고 화면에 뜬 주소를 돌려준다
 pub fn start(env: &Env, provider: Provider) -> Result<LoginPrompt, String> {
+    start_impl(env, provider, cli_args(provider))
+}
+
+/// start의 본체 — 실행 명령을 주입받는다.
+/// 테스트가 존재하지 않는 명령을 넣어 조기 종료 경로(미설치 CLI)를 검증한다.
+fn start_impl(
+    env: &Env,
+    provider: Provider,
+    (program, args, env_key): (&str, &[&str], &str),
+) -> Result<LoginPrompt, String> {
     // 세션 검사부터 등록까지 잠금을 쥔 채 진행한다 —
     // 연타로 두 로그인이 동시에 시작해 폴더·세션이 꼬이는 것을 막는다 (red-review 2라운드)
     {
@@ -275,7 +298,6 @@ pub fn start(env: &Env, provider: Provider) -> Result<LoginPrompt, String> {
         fs::create_dir_all(&config_dir)
             .map_err(|e| format!("임시 폴더 생성 실패 {}: {e}", config_dir.display()))?;
 
-        let (program, args, env_key) = cli_args(provider);
         let pair = native_pty_system()
             .openpty(PtySize {
                 rows: 40,
@@ -365,12 +387,20 @@ pub fn start(env: &Env, provider: Provider) -> Result<LoginPrompt, String> {
 
     // 주소가 화면에 뜰 때까지 기다린다 (잠금 밖 — 취소 가능해야 하므로)
     let deadline = Instant::now() + PROMPT_TIMEOUT;
+    // CLI가 주소를 띄우기 전에 죽으면(미설치·구버전) 60초를 채울 이유가 없다 —
+    // 종료를 감지하면 남은 출력이 버퍼에 닿을 짧은 유예만 주고 바로 실패를 알린다
+    let mut exited_at: Option<Instant> = None;
     loop {
-        // 그 사이 취소됐으면 중단
+        // 그 사이 취소됐으면 중단 + 자식 프로세스 생존 확인
         {
-            let guard = SESSION.lock().map_err(|_| "내부 잠금 오류")?;
-            if guard.is_none() {
+            let mut guard = SESSION.lock().map_err(|_| "내부 잠금 오류")?;
+            let Some(session) = guard.as_mut() else {
                 return Err("로그인을 취소했습니다".into());
+            };
+            if exited_at.is_none() {
+                if let Ok(Some(_)) = session.child.try_wait() {
+                    exited_at = Some(Instant::now());
+                }
             }
         }
         let raw = {
@@ -400,6 +430,11 @@ pub fn start(env: &Env, provider: Provider) -> Result<LoginPrompt, String> {
                     }
                 }
             }
+        }
+        // 자식이 종료했고 플러시 유예도 지났는데 주소가 없다 — 재시도로 해결될 문제가 아니다
+        if exited_at.is_some_and(|t| t.elapsed() > EXIT_FLUSH) {
+            cancel();
+            return Err(early_exit_error(provider));
         }
         if Instant::now() > deadline {
             cancel();
@@ -753,6 +788,31 @@ mod tests {
             Err(e) => assert!(e.contains("장치 코드 인증"), "안내가 없다: {e}"),
             Ok(_) => panic!("토큰이 없는데 성공으로 판정됐다"),
         }
+    }
+
+    #[test]
+    fn missing_cli_fails_fast_with_install_hint() {
+        cancel(); // 다른 테스트가 남긴 세션이 있으면 정리
+        let env = test_env("missing-cli");
+        let t0 = Instant::now();
+        let err = start_impl(
+            &env,
+            Provider::Claude,
+            ("switcher-no-such-cli-xyz", [].as_slice(), "CLAUDE_CONFIG_DIR"),
+        )
+        .unwrap_err();
+        // 예전에는 PROMPT_TIMEOUT(60초)을 꽉 채운 뒤에야 실패했다
+        assert!(
+            t0.elapsed() < Duration::from_secs(20),
+            "조기 종료를 감지하지 못하고 {}초를 기다렸다",
+            t0.elapsed().as_secs()
+        );
+        assert!(err.contains("설치"), "설치 안내가 없다: {err}");
+        // 토큰이 담길 수 있는 임시 로그인 폴더는 정리돼야 한다
+        let leftover = fs::read_dir(env.store.join("_login"))
+            .map(|entries| entries.count())
+            .unwrap_or(0);
+        assert_eq!(leftover, 0, "임시 로그인 폴더가 정리돼야 한다");
     }
 
     #[test]
