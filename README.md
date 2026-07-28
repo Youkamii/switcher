@@ -4,6 +4,8 @@ Claude Code와 Codex CLI 계정을 버튼 하나로 갈아타는 Windows 위젯.
 
 A desktop widget that switches between multiple Claude Code / Codex CLI accounts in one click, with per-account usage bars.
 
+<p align="center"><img src="docs/screenshot.png" width="360" alt="switcher" /></p>
+
 ## 왜 만들었나
 
 Claude Code든 Codex든 한 PC에는 한 계정만 로그인된다. 계정을 여러 개 쓰는 사람은 한도가 찰 때마다 `/login`을 다시 하고, 브라우저 인증을 다시 거치고, 지금 어느 계정을 쓰고 있는지도 헷갈린다.
@@ -15,9 +17,9 @@ switcher는 이 과정을 없앤다. 계정마다 처음 한 번만 로그인해
 - 계정 전환: 재로그인 없이 버튼 한 번. 새로 여는 터미널부터 적용된다.
 - 사용량 표시: 계정마다 5 Hours / Weekly / 모델별 한도와 리셋까지 남은 시간이 보인다.
 - 계정 추가: 위젯이 로그인 링크를 보여준다. 원하는 브라우저에 붙여넣어 로그인하면 자동으로 저장된다. 지금 쓰는 계정은 건드리지 않는다.
-- 구독 레벨: 계정 옆에 Max / Pro / Plus가 붙는다.
-- 고정 모드: 버튼을 전부 숨기고 사용량만 보이는 미니 위젯이 된다.
-- 바탕 투명도와 세로 길이를 취향대로 조절할 수 있다.
+- 구독 레벨: 계정 옆에 Max(5x는 노랑, 20x는 빨강) / Pro / Plus가 붙는다.
+- 보기 모드 3단계(Type1/2/3): 전체 → 위젯 → 컴팩트. 위젯·컴팩트에서는 조작 버튼이 사라지고, 카드 위 단일 클릭·드래그는 뒤 창으로 통과하며, 더블클릭으로 전환한다. 이동은 좌측 상단 ☰ 핸들로만.
+- 창 높이는 내용에 맞게 자동 조절되고, 투명도 슬라이더는 배경부터 골조 순으로 지운다.
 
 ## 동작 원리
 
