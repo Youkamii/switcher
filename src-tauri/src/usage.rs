@@ -109,10 +109,13 @@ fn merge_refreshed_claude(root: &mut Value, resp: &Value) -> Result<(), String> 
         .get("refresh_token")
         .and_then(|v| v.as_str())
         .map(String::from);
-    let expires_at_ms = resp
+    // expires_in이 없으면 옛 expiresAt(과거)이 남아 조회마다 재발급을 반복하는
+    // 침묵 루프가 된다 — 필수로 요구해 한 번의 요란한 실패로 끝낸다
+    let expires_in = resp
         .get("expires_in")
         .and_then(|v| v.as_i64())
-        .map(|s| (now() as i64 + s) * 1000);
+        .ok_or_else(|| "갱신 응답에 expires_in이 없습니다".to_string())?;
+    let expires_at_ms = (now() as i64 + expires_in) * 1000;
     let oauth = root
         .get_mut("claudeAiOauth")
         .and_then(|v| v.as_object_mut())
@@ -121,9 +124,7 @@ fn merge_refreshed_claude(root: &mut Value, resp: &Value) -> Result<(), String> 
     if let Some(rt) = new_refresh {
         oauth.insert("refreshToken".to_string(), Value::String(rt));
     }
-    if let Some(ms) = expires_at_ms {
-        oauth.insert("expiresAt".to_string(), Value::from(ms));
-    }
+    oauth.insert("expiresAt".to_string(), Value::from(expires_at_ms));
     Ok(())
 }
 
@@ -149,13 +150,33 @@ async fn ensure_fresh_claude_profile(env: &Env, name: &str) -> Result<(), FetchE
     if !claude_token_expiring(&root) {
         return Ok(());
     }
+    // 활성 계정 보호는 여기(백엔드)가 강제한다 — 프론트 인자나 list()의 active
+    // 스냅숏에 의존하지 않는다. 활성 계정의 보관함 사본을 회전시키면 실행 중
+    // CLI의 토큰 패밀리와 충돌해 재로그인으로 밀릴 수 있다. 신원을 판정할 수
+    // 없으면(파일 경합 등) 갱신을 보류한다 — 다음 기회에 다시 시도하면 된다.
+    let Some(meta) = read_meta(&env.profiles_dir(Provider::Claude).join(name)) else {
+        return Ok(());
+    };
+    match live_identity(env, Provider::Claude) {
+        Ok(Some(live)) if live.id == meta.id => return Ok(()), // 활성 계정 — CLI 소관
+        Ok(_) => {}
+        Err(_) => return Ok(()), // 신원 불명 — 보류 (fail-closed)
+    }
     let refresh_token = root
         .pointer("/claudeAiOauth/refreshToken")
         .and_then(|v| v.as_str())
         .ok_or_else(|| FetchErr::Msg("토큰 파일에 refreshToken이 없습니다".into()))?
         .to_string();
 
-    let resp = reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        // 토큰 엔드포인트는 리다이렉트를 따라가지 않는다 — 307/308이 리프레시 토큰이
+        // 담긴 본문을 다른 호스트로 재전송하는 것을 차단
+        .redirect(reqwest::redirect::Policy::none())
+        // REFRESH_LOCK을 쥔 채 도는 요청 — 무응답 서버가 전체 갱신을 멈추지 않게
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .map_err(|_| FetchErr::Transient)?;
+    let resp = client
         .post(CLAUDE_TOKEN_URL)
         .json(&serde_json::json!({
             "grant_type": "refresh_token",
@@ -170,7 +191,9 @@ async fn ensure_fresh_claude_profile(env: &Env, name: &str) -> Result<(), FetchE
         return Err(FetchErr::Transient);
     }
     if !status.is_success() {
-        // 리프레시 토큰이 거부됨 — 재로그인 외에는 방법이 없다
+        // 리프레시 토큰이 거부됨 — 재시도해도 소용없다. 백오프를 걸어 5분 렌더
+        // 주기마다 무의미한 POST가 영구 반복되는 것을 막고, 재로그인을 안내한다.
+        backoff_bump(&cache_key(env, Provider::Claude, Some(name)));
         return Err(FetchErr::Msg(
             "로그인이 만료됐습니다 — '계정 추가'에서 이 계정으로 다시 로그인하세요".into(),
         ));
@@ -306,11 +329,18 @@ async fn get_json(request: reqwest::RequestBuilder) -> Result<Value, FetchErr> {
 }
 
 async fn fetch_claude(env: &Env, profile: Option<&str>) -> Result<Usage, FetchErr> {
-    // 보관함 토큰이 만료(임박)면 조회 전에 재발급한다 — 활성 파일은 CLI 소관
-    if let Some(name) = profile {
-        ensure_fresh_claude_profile(env, name).await?;
-    }
-    let token = claude_access_token(env, profile)?;
+    // 보관함 토큰이 만료(임박)면 조회 전에 재발급한다 — 활성 파일은 CLI 소관.
+    // 재발급이 실패해도 바로 포기하지 않는다: 마진(5분) 창에서는 기존 토큰이 아직
+    // 유효해 조회가 성공한다. 토큰마저 못 읽으면 그때는 재발급 실패 사유
+    // (재로그인 안내·백오프)가 더 정확하므로 그쪽을 우선해 알린다.
+    let refresh_err = match profile {
+        Some(name) => ensure_fresh_claude_profile(env, name).await.err(),
+        None => None,
+    };
+    let token = match claude_access_token(env, profile) {
+        Ok(token) => token,
+        Err(message) => return Err(refresh_err.unwrap_or(FetchErr::Msg(message))),
+    };
     let body = get_json(
         reqwest::Client::new()
             .get(CLAUDE_USAGE_URL)
@@ -843,6 +873,47 @@ mod tests {
             serde_json::from_str(r#"{"access_token":"new2","expires_in":100}"#).unwrap();
         merge_refreshed_claude(&mut root, &resp2).unwrap();
         assert_eq!(root.pointer("/claudeAiOauth/refreshToken").unwrap(), "new-r");
+
+        // expires_in이 없으면 실패해야 한다 (침묵 갱신 루프 방지)
+        let bad: Value = serde_json::from_str(r#"{"access_token":"x"}"#).unwrap();
+        let err = merge_refreshed_claude(&mut root, &bad).unwrap_err();
+        assert!(err.contains("expires_in"), "에러: {err}");
+    }
+
+    /// 활성 계정의 보관함 사본은 만료 상태여도 절대 재발급하지 않는다 —
+    /// 실행 중 CLI의 토큰 패밀리와 회전이 충돌하면 재로그인으로 밀려난다.
+    /// (보호가 빠지면 이 테스트는 네트워크로 나가 실패한다)
+    #[test]
+    fn active_profile_is_never_refreshed() {
+        let env = test_env("active-skip");
+        fs::write(
+            env.home.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-act"}}"#,
+        )
+        .unwrap();
+        let dir = env.profiles_dir(Provider::Claude).join("me");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":1000}}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("meta.json"),
+            r#"{"id":"uuid-act","email":null,"saved_at":0}"#,
+        )
+        .unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(ensure_fresh_claude_profile(&env, "me")).unwrap();
+        let root = read_json(&dir.join("credentials.json")).unwrap();
+        assert_eq!(
+            root.pointer("/claudeAiOauth/accessToken").unwrap(),
+            "a",
+            "활성 프로필 토큰은 불변이어야 한다"
+        );
     }
 
     #[test]
