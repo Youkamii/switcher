@@ -449,7 +449,13 @@ fn read_login_result(
         Provider::Codex => config_dir.join("auth.json"),
     };
     if !cred_path.exists() {
-        return Err("로그인이 완료되지 않았습니다 — 처음부터 다시 시도하세요".into());
+        // 코덱스는 장치 코드 인증이 계정에서 꺼져 있으면 승인 단계에서 거부된다 (기본값이 꺼짐)
+        return Err(match provider {
+            Provider::Codex => "로그인이 완료되지 않았습니다 — ChatGPT 설정 → 보안에서 \
+                'Codex 장치 코드 인증'을 켠 뒤 다시 시도하세요"
+                .into(),
+            Provider::Claude => "로그인이 완료되지 않았습니다 — 처음부터 다시 시도하세요".to_string(),
+        });
     }
     let cred = fs::read(&cred_path).map_err(|e| format!("읽기 실패: {e}"))?;
     match provider {
@@ -732,6 +738,19 @@ mod tests {
         fs::write(cfg.join(".claude.json"), r#"{"numStartups":1}"#).unwrap();
         match import(&env, Provider::Claude, &cfg) {
             Err(e) => assert!(e.contains("완료되지 않"), "예상과 다른 에러: {e}"),
+            Ok(_) => panic!("토큰이 없는데 성공으로 판정됐다"),
+        }
+    }
+
+    #[test]
+    fn codex_incomplete_login_hints_device_code_setting() {
+        // 장치 코드 인증이 계정에서 꺼져 있으면 승인이 거부돼 auth.json이 안 생긴다 —
+        // 그 경우 무엇을 켜야 하는지 알려줘야 한다
+        let env = test_env("codex-hint");
+        let cfg = env.store.join("_login").join("t1");
+        fs::create_dir_all(&cfg).unwrap();
+        match import(&env, Provider::Codex, &cfg) {
+            Err(e) => assert!(e.contains("장치 코드 인증"), "안내가 없다: {e}"),
             Ok(_) => panic!("토큰이 없는데 성공으로 판정됐다"),
         }
     }

@@ -337,6 +337,12 @@ function loginPanel(prompt: LoginPrompt, onExit: () => void): HTMLElement {
     waiting.className = "usage-note";
     waiting.textContent = "브라우저에서 코드 입력을 기다리는 중…";
     panel.appendChild(waiting);
+    // 코덱스 장치 코드 인증은 계정에서 기본으로 꺼져 있다 — 거부당하면 여기부터 확인
+    const prereq = document.createElement("div");
+    prereq.className = "help";
+    prereq.textContent =
+      "\"장치 코드 인증을 활성화하세요\"가 뜨면: ChatGPT 설정 → 보안에서 'Codex 장치 코드 인증'을 켜고 다시 시도하세요.";
+    panel.appendChild(prereq);
     void (async () => {
       try {
         const result = await invoke<LoginOutcome>("await_device_login");
