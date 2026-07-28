@@ -49,22 +49,13 @@ body {
   opacity: var(--fg-alpha);
 }
 
-/* 스크롤바도 위젯에 맞게 얇고 투명하게 */
+/* 스크롤바는 아예 보이지 않는다 (휠 스크롤은 그대로 동작) */
+main {
+  scrollbar-width: none;
+}
+
 main::-webkit-scrollbar {
-  width: 6px;
-}
-
-main::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-main::-webkit-scrollbar-thumb {
-  background: rgba(139, 139, 158, 0.35);
-  border-radius: 99px;
-}
-
-main::-webkit-scrollbar-thumb:hover {
-  background: rgba(139, 139, 158, 0.6);
+  display: none;
 }
 
 input[type="range"] {
@@ -323,6 +314,26 @@ button.link:hover {
   display: none;
 }
 
+/* 이동 핸들(☰) — 고정 모드에서만 보이고, 이걸 잡아야만 창이 움직인다 */
+#drag-handle {
+  display: none;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 5px;
+  cursor: grab;
+  opacity: 0.35;
+  transition: opacity 0.15s;
+}
+
+#drag-handle:hover {
+  opacity: 1;
+}
+
+body.locked #drag-handle {
+  display: block;
+}
+
 /* 고정 모드의 타이틀바 — 앱 이름·새로고침·슬라이더를 숨기고,
    고정·닫기 버튼은 거의 안 보이다가 마우스를 올리면 나타난다 */
 body.locked .titlebar h1,
@@ -332,8 +343,22 @@ body.locked #alpha {
 }
 
 body.locked .titlebar {
-  padding: 4px 6px 0;
-  justify-content: flex-end;
+  padding: 2px 4px 0 2px;
+  justify-content: space-between;
+  cursor: default;
+}
+
+/* 고정 모드는 위쪽 여백을 바짝 줄인다 */
+body.locked main {
+  padding: 0 10px 8px;
+}
+
+#app.locked .section-title {
+  margin: 6px 0 4px;
+}
+
+#app.locked > section:first-child .section-title {
+  margin-top: 0;
 }
 
 body.locked .tb-actions button {

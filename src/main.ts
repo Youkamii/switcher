@@ -34,6 +34,7 @@ const PROVIDERS = [
 type ProviderId = (typeof PROVIDERS)[number]["id"];
 
 const app = document.getElementById("app")!;
+const titlebarEl = document.querySelector(".titlebar") as HTMLElement;
 const toastEl = document.getElementById("toast")!;
 let toastTimer: number | undefined;
 let rendering = false;
@@ -511,6 +512,12 @@ function applyLock() {
   document.body.classList.toggle("locked", locked);
   lockBtn.classList.toggle("pinned", locked);
   lockBtn.textContent = locked ? "고정됨" : "고정";
+  // 고정 모드에서는 ☰ 핸들을 잡아야만 창이 움직인다 — 타이틀바 전체 드래그를 끈다
+  if (locked) {
+    titlebarEl.removeAttribute("data-tauri-drag-region");
+  } else {
+    titlebarEl.setAttribute("data-tauri-drag-region", "");
+  }
 }
 
 lockBtn.addEventListener("click", () => {
@@ -544,18 +551,18 @@ alphaSlider.addEventListener("input", () => {
 
 // 세로 크기 — 창 높이를 콘텐츠에 맞춰 자동 조절한다.
 // 계정이 없으면 그만큼 짧아지고, 늘어나면 화면 높이 90%까지 따라 늘어난다.
-const titlebarEl = document.querySelector(".titlebar") as HTMLElement;
 let fitTimer: number | undefined;
 
 function fitHeight() {
   window.clearTimeout(fitTimer);
   fitTimer = window.setTimeout(() => {
     const last = app.lastElementChild as HTMLElement | null;
+    const bottomPad = parseFloat(getComputedStyle(app).paddingBottom) || 14;
     const content = last
       ? last.getBoundingClientRect().bottom -
         app.getBoundingClientRect().top +
         app.scrollTop +
-        14 // main 하단 패딩
+        bottomPad
       : 40;
     const total = titlebarEl.offsetHeight + content + 2; // 테두리
     const max = Math.floor(window.screen.availHeight * 0.9);
