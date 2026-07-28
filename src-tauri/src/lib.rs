@@ -2,7 +2,7 @@ mod accounts;
 mod login;
 mod usage;
 
-use accounts::{Env, Provider, Snapshot, SwitchResult, MUTATION_LOCK};
+use accounts::{Env, Provider, Snapshot, SwitchResult};
 
 #[tauri::command]
 fn list_profiles(provider: String) -> Result<Snapshot, String> {
@@ -11,19 +11,16 @@ fn list_profiles(provider: String) -> Result<Snapshot, String> {
 
 #[tauri::command]
 fn save_profile(provider: String, name: String) -> Result<(), String> {
-    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     accounts::save_current(&Env::real()?, Provider::parse(&provider)?, &name)
 }
 
 #[tauri::command]
 fn switch_profile(provider: String, name: String) -> Result<SwitchResult, String> {
-    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     accounts::switch(&Env::real()?, Provider::parse(&provider)?, &name)
 }
 
 #[tauri::command]
 fn delete_profile(provider: String, name: String) -> Result<(), String> {
-    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     accounts::delete(&Env::real()?, Provider::parse(&provider)?, &name)
 }
 
@@ -78,12 +75,34 @@ fn position_bottom_right(window: &tauri::WebviewWindow) {
     let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
 }
 
-/// 최소화 파킹(-32000,-32000) 등으로 화면 밖에 나가 있으면 제자리로 되돌린다.
+/// 최소화 파킹(-32000,-32000)이나 해상도 축소·모니터 분리로 화면 밖에 나가 있으면
+/// 제자리로 되돌린다. 어떤 모니터와도 겹치지 않을 때만 옮기므로
 /// 사용자가 직접 옮긴 정상 위치는 건드리지 않는다.
 fn ensure_on_screen(window: &tauri::WebviewWindow) {
-    match window.outer_position() {
-        Ok(pos) if pos.x > -10000 && pos.y > -10000 => {}
-        _ => position_bottom_right(window),
+    let Ok(pos) = window.outer_position() else {
+        position_bottom_right(window);
+        return;
+    };
+    let size = window
+        .outer_size()
+        .unwrap_or(tauri::PhysicalSize::new(360, 540));
+    let on_some_monitor = window
+        .available_monitors()
+        .map(|monitors| {
+            monitors.iter().any(|monitor| {
+                let area = monitor.work_area();
+                let (ax, ay) = (area.position.x, area.position.y);
+                let (aw, ah) = (area.size.width as i32, area.size.height as i32);
+                // 창 사각형이 이 모니터 작업영역과 겹치는가
+                pos.x < ax + aw
+                    && pos.x + size.width as i32 > ax
+                    && pos.y < ay + ah
+                    && pos.y + size.height as i32 > ay
+            })
+        })
+        .unwrap_or(false);
+    if !on_some_monitor {
+        position_bottom_right(window);
     }
 }
 
@@ -125,6 +144,13 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 position_bottom_right(&window);
             }
+            // 지난 실행이 중단·크래시로 남긴 임시 로그인 폴더(토큰 포함 가능)를 청소한다.
+            // 다른 인스턴스의 진행 중 로그인은 나이 필터가 보호한다.
+            std::thread::spawn(|| {
+                if let Ok(env) = Env::real() {
+                    login::sweep_stale(&env);
+                }
+            });
             let show = MenuItem::with_id(app, "show", "열기", true, None::<&str>)?;
             let hide = MenuItem::with_id(app, "hide", "숨기기", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
@@ -142,7 +168,11 @@ pub fn run() {
                             let _ = window.hide();
                         }
                     }
-                    "quit" => app.exit(0),
+                    "quit" => {
+                        // 진행 중인 로그인 프로세스·토큰 임시 폴더를 정리하고 종료
+                        login::cancel();
+                        app.exit(0);
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {

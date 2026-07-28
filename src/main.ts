@@ -244,11 +244,9 @@ function copyBox(title: string, value: string, mono: boolean): HTMLElement {
   return box;
 }
 
-function loginPanel(
-  prompt: LoginPrompt,
-  onDone: () => void,
-  onCancel: () => void,
-): HTMLElement {
+/// 로그인 패널. 성공·실패·취소 어느 경로든 onExit 하나로 끝난다 —
+/// onExit은 loginOpen을 내리고 전체를 다시 그린다 (수동 복원 분기 제거).
+function loginPanel(prompt: LoginPrompt, onExit: () => void): HTMLElement {
   const panel = document.createElement("div");
   panel.className = "login-panel";
 
@@ -264,12 +262,12 @@ function loginPanel(
     panel.appendChild(copyBox("일회용 코드 (15분 유효)", prompt.device_code, true));
   }
 
-  const actions = document.createElement("div");
-  actions.className = "add-row";
-
   if (prompt.needs_code) {
+    const actions = document.createElement("div");
+    actions.className = "add-row";
     const input = document.createElement("input");
     input.placeholder = "로그인 후 받은 코드 붙여넣기";
+    input.maxLength = 64;
     const okBtn = document.createElement("button");
     okBtn.className = "primary";
     okBtn.textContent = "확인";
@@ -285,13 +283,12 @@ function loginPanel(
       try {
         const result = await invoke<LoginOutcome>("submit_login_code", { code });
         reportLogin(result);
-        onDone();
       } catch (error) {
-        toast(String(error), true);
-        okBtn.disabled = false;
-        input.disabled = false;
-        okBtn.textContent = "확인";
+        // 코드 제출 후의 실패는 세션이 이미 끝난 상태라 재시도가 불가능하다 —
+        // 패널을 닫고 처음부터 다시 시작하게 안내한다
+        toast(`${String(error)} — '계정 추가'로 처음부터 다시 시도하세요`, true);
       }
+      onExit();
     };
     okBtn.addEventListener("click", submit);
     input.addEventListener("keydown", (event) => {
@@ -309,11 +306,10 @@ function loginPanel(
       try {
         const result = await invoke<LoginOutcome>("await_device_login");
         reportLogin(result);
-        onDone();
       } catch (error) {
         toast(String(error), true);
-        onCancel();
       }
+      onExit();
     })();
   }
 
@@ -322,7 +318,7 @@ function loginPanel(
   cancelBtn.textContent = "취소";
   cancelBtn.addEventListener("click", () => {
     void invoke("cancel_login");
-    onCancel();
+    onExit();
   });
   panel.appendChild(cancelBtn);
 
@@ -352,6 +348,10 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
   section.appendChild(slot);
 
   addBtn.addEventListener("click", async () => {
+    if (loginOpen) {
+      toast("이미 로그인이 진행 중입니다 — 진행 중인 패널을 먼저 끝내세요", true);
+      return;
+    }
     addBtn.disabled = true;
     addBtn.textContent = "로그인 주소 받는 중…";
     try {
@@ -359,20 +359,10 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
       addBtn.hidden = true;
       loginOpen = true;
       slot.appendChild(
-        loginPanel(
-          prompt,
-          () => {
-            loginOpen = false;
-            void render();
-          },
-          () => {
-            loginOpen = false;
-            slot.textContent = "";
-            addBtn.hidden = false;
-            addBtn.disabled = false;
-            addBtn.textContent = "＋ 계정 추가";
-          },
-        ),
+        loginPanel(prompt, () => {
+          loginOpen = false;
+          void render();
+        }),
       );
     } catch (error) {
       toast(String(error), true);
@@ -463,6 +453,13 @@ async function render() {
   if (rendering) return;
   rendering = true;
   try {
+    // 로그인 패널이 열린 채 다른 조작(전환·삭제·저장)으로 재렌더가 일어나면
+    // 패널 DOM이 사라져 위젯이 영구 마비되던 문제 — 재렌더는 곧 로그인 흐름 포기로
+    // 간주하고 백엔드 세션까지 정리한다 (red-review 2라운드)
+    if (loginOpen) {
+      loginOpen = false;
+      void invoke("cancel_login");
+    }
     app.textContent = "";
     for (const { id, title } of PROVIDERS) {
       await renderProvider(id, title);

@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
 
-use crate::accounts::{jwt_payload, now, read_json, Env, Provider};
+use crate::accounts::{jwt_payload, live_identity, now, read_json, read_meta, Env, Provider};
 
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
@@ -251,7 +251,7 @@ async fn fetch_codex(env: &Env, profile: Option<&str>) -> Result<Usage, String> 
 }
 
 /// 새로고침 연타·재렌더마다 API를 때리지 않도록 60초 캐시를 둔다.
-/// 조회가 실패해도(예: 요청 제한 429) 직전 값이 있으면 그걸 보여준다.
+/// 조회가 실패해도(예: 요청 제한 429) 너무 오래되지 않은 직전 값이 있으면 그걸 보여준다.
 fn cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, Usage)>>
 {
     static CACHE: std::sync::OnceLock<
@@ -261,13 +261,33 @@ fn cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, (std::
 }
 
 const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+/// 실패 시 대신 보여줄 수 있는 직전 값의 최대 나이 — 이보다 오래되면 에러를 그대로 보여준다
+/// (만료 안내 같은 진짜 문제를 몇 시간 전 숫자로 가리지 않기 위함)
+const STALE_MAX: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// 캐시 키는 "누구의 사용량인가"(계정 id) 기준이다.
+/// 전환 직후 활성 파일의 계정이 바뀌면 키도 바뀌어 이전 계정 수치가 새 계정 카드에
+/// 붙는 일이 없다 (red-review 2라운드 지적).
+fn cache_key(env: &Env, provider: Provider, profile: Option<&str>) -> String {
+    let account = match profile {
+        None => live_identity(env, provider)
+            .ok()
+            .flatten()
+            .map(|l| l.id)
+            .unwrap_or_else(|| "<live-unknown>".to_string()),
+        Some(name) => read_meta(&env.profiles_dir(provider).join(name))
+            .map(|m| m.id)
+            .unwrap_or_else(|| format!("<name:{name}>")),
+    };
+    format!("{}:{account}", provider.dir_name())
+}
 
 pub async fn fetch(
     env: &Env,
     provider: Provider,
     profile: Option<&str>,
 ) -> Result<Usage, String> {
-    let key = format!("{}:{}", provider.dir_name(), profile.unwrap_or("<live>"));
+    let key = cache_key(env, provider, profile);
     if let Ok(map) = cache().lock() {
         if let Some((at, cached)) = map.get(&key) {
             if at.elapsed() < CACHE_TTL {
@@ -288,8 +308,10 @@ pub async fn fetch(
         }
         Err(e) => {
             if let Ok(map) = cache().lock() {
-                if let Some((_, cached)) = map.get(&key) {
-                    return Ok(cached.clone());
+                if let Some((at, cached)) = map.get(&key) {
+                    if at.elapsed() < STALE_MAX {
+                        return Ok(cached.clone());
+                    }
                 }
             }
             Err(e)
@@ -300,6 +322,7 @@ pub async fn fetch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::accounts::test_support::{fake_jwt, test_env};
     use std::fs;
 
     #[test]
@@ -339,14 +362,7 @@ mod tests {
 
     #[test]
     fn profile_arg_path_escape_is_rejected() {
-        let base = std::env::temp_dir().join(format!(
-            "switcher-usage-escape-test-{}",
-            std::process::id()
-        ));
-        let env = Env {
-            home: base.clone(),
-            store: base.join(".switcher"),
-        };
+        let env = test_env("usage-escape");
         let err = claude_access_token(&env, Some("../../evil")).unwrap_err();
         assert!(err.contains("프로필 이름"));
         let err = codex_token(&env, Some("..\\evil")).unwrap_err();
@@ -355,16 +371,7 @@ mod tests {
 
     #[test]
     fn expired_token_is_rejected_with_guidance() {
-        let base = std::env::temp_dir().join(format!(
-            "switcher-usage-test-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&base);
-        fs::create_dir_all(base.join(".claude")).unwrap();
-        let env = Env {
-            home: base.clone(),
-            store: base.join(".switcher"),
-        };
+        let env = test_env("usage-expired");
         fs::write(
             env.live_credential_path(Provider::Claude),
             r#"{"claudeAiOauth":{"accessToken":"fake","expiresAt":1000}}"#,
@@ -406,24 +413,9 @@ mod tests {
 
     #[test]
     fn codex_expired_token_is_rejected() {
-        use base64::Engine;
-        let enc = |s: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s);
-        let expired_jwt = format!(
-            "{}.{}.{}",
-            enc(r#"{"alg":"none"}"#),
-            enc(r#"{"exp":1000}"#),
-            enc("sig")
-        );
-        let base = std::env::temp_dir().join(format!(
-            "switcher-usage-codex-test-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&base);
-        fs::create_dir_all(base.join(".codex")).unwrap();
-        let env = Env {
-            home: base.clone(),
-            store: base.join(".switcher"),
-        };
+        let expired_jwt = fake_jwt(r#"{"exp":1000}"#);
+        let env = test_env("usage-codex-expired");
+        fs::create_dir_all(env.home.join(".codex")).unwrap();
         fs::write(
             env.live_credential_path(Provider::Codex),
             format!(r#"{{"tokens":{{"access_token":"{expired_jwt}","account_id":"acct-x"}}}}"#),

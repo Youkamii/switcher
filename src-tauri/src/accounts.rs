@@ -201,52 +201,45 @@ fn jwt_claim(token: &str, claim: &str) -> Option<String> {
     jwt_payload(token)?.get(claim)?.as_str().map(String::from)
 }
 
-/// 현재 로그인된 계정의 신원. 파일이 없거나 식별 불가면 Ok(None).
-fn live_identity(env: &Env, provider: Provider) -> Result<Option<LiveIdentity>, String> {
+/// 파싱된 JSON에서 계정 신원을 뽑는다.
+/// 클로드는 ~/.claude.json 루트를, 코덱스는 auth.json 루트를 받는다.
+/// 활성 파일 판독과 격리 로그인 결과 임포트가 같은 파서를 쓴다 (한쪽만 고치는 사고 방지).
+pub(crate) fn identity_from_value(provider: Provider, root: &Value) -> Option<LiveIdentity> {
     match provider {
         Provider::Claude => {
-            let path = env.claude_json_path();
-            if !path.exists() {
-                return Ok(None);
-            }
-            let root = read_json_retry(&path)?;
-            let Some(acc) = root.get("oauthAccount") else {
-                return Ok(None);
-            };
-            let Some(id) = acc.get("accountUuid").and_then(|v| v.as_str()) else {
-                return Ok(None);
-            };
+            let acc = root.get("oauthAccount")?;
+            let id = acc.get("accountUuid").and_then(|v| v.as_str())?.to_string();
             let email = acc
                 .get("emailAddress")
                 .and_then(|v| v.as_str())
                 .map(String::from);
-            Ok(Some(LiveIdentity {
-                id: id.to_string(),
-                email,
-            }))
+            Some(LiveIdentity { id, email })
         }
         Provider::Codex => {
-            let path = env.live_credential_path(Provider::Codex);
-            if !path.exists() {
-                return Ok(None);
-            }
-            let root = read_json_retry(&path)?;
-            let Some(tokens) = root.get("tokens") else {
-                return Ok(None);
-            };
+            let tokens = root.get("tokens")?;
             let id_token = tokens.get("id_token").and_then(|v| v.as_str());
             let id = tokens
                 .get("account_id")
                 .and_then(|v| v.as_str())
                 .map(String::from)
-                .or_else(|| id_token.and_then(|t| jwt_claim(t, "sub")));
-            let Some(id) = id else {
-                return Ok(None);
-            };
+                .or_else(|| id_token.and_then(|t| jwt_claim(t, "sub")))?;
             let email = id_token.and_then(|t| jwt_claim(t, "email"));
-            Ok(Some(LiveIdentity { id, email }))
+            Some(LiveIdentity { id, email })
         }
     }
+}
+
+/// 현재 로그인된 계정의 신원. 파일이 없거나 식별 불가면 Ok(None).
+pub(crate) fn live_identity(env: &Env, provider: Provider) -> Result<Option<LiveIdentity>, String> {
+    let path = match provider {
+        Provider::Claude => env.claude_json_path(),
+        Provider::Codex => env.live_credential_path(Provider::Codex),
+    };
+    if !path.exists() {
+        return Ok(None);
+    }
+    let root = read_json_retry(&path)?;
+    Ok(identity_from_value(provider, &root))
 }
 
 /// ~/.claude.json의 oauthAccount 블록 (프로필에 함께 보관해 전환 시 복원)
@@ -308,7 +301,7 @@ fn write_profile(
 }
 
 /// name 프로필이 이미 다른 계정의 것이면 에러 — 다른 계정 토큰을 덮어쓰지 않는다
-fn ensure_name_not_owned_by_other(
+pub(crate) fn ensure_name_not_owned_by_other(
     env: &Env,
     provider: Provider,
     name: &str,
@@ -326,7 +319,7 @@ fn ensure_name_not_owned_by_other(
     Ok(())
 }
 
-fn read_meta(dir: &Path) -> Option<Meta> {
+pub(crate) fn read_meta(dir: &Path) -> Option<Meta> {
     let path = dir.join("meta.json");
     let text = fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
@@ -367,6 +360,8 @@ pub(crate) fn find_profile_by_id(
 
 /// 이메일 앞부분(또는 계정 id 앞 8자)으로 자동 프로필 이름을 만든다.
 /// id·이메일은 외부 입력(JWT 클레임 등)이므로 허용 문자만 남긴다 — 결과는 항상 validate_name을 통과한다.
+/// 다른 계정이 쓰는 이름과 절대 겹치지 않을 때까지 숫자를 올린다 (한 단계 접미사로는
+/// 제3 계정이 기존 프로필을 덮어쓰는 사고가 났었다 — red-review 2라운드).
 pub(crate) fn auto_name(env: &Env, provider: Provider, ident: &LiveIdentity) -> String {
     let clean = |s: &str, limit: usize| -> String {
         s.chars()
@@ -375,29 +370,37 @@ pub(crate) fn auto_name(env: &Env, provider: Provider, ident: &LiveIdentity) -> 
             .collect::<String>()
             .to_lowercase()
     };
-    let base = clean(
-        ident.email.as_deref().and_then(|e| e.split('@').next()).unwrap_or(""),
-        20,
-    );
-    let mut name = if base.is_empty() {
-        let id_part = clean(&ident.id, 8);
-        if id_part.is_empty() {
-            "account".to_string()
+    let base = {
+        let from_email = clean(
+            ident.email.as_deref().and_then(|e| e.split('@').next()).unwrap_or(""),
+            20,
+        );
+        if from_email.is_empty() {
+            let id_part = clean(&ident.id, 8);
+            if id_part.is_empty() {
+                "account".to_string()
+            } else {
+                format!("account-{id_part}")
+            }
         } else {
-            format!("account-{id_part}")
+            from_email
         }
-    } else {
-        base
     };
-    // 같은 이름의 프로필이 다른 계정 것이면 id 앞 4자를 붙여 구분
-    let dir = env.profiles_dir(provider).join(&name);
-    if let Some(meta) = read_meta(&dir) {
-        if meta.id != ident.id {
-            let suffix = clean(&ident.id, 4);
-            name = format!("{name}-{suffix}");
+    let mut candidate = base.clone();
+    let mut n = 1;
+    loop {
+        match read_meta(&env.profiles_dir(provider).join(&candidate)) {
+            None => return candidate,                          // 빈 이름
+            Some(meta) if meta.id == ident.id => return candidate, // 이미 이 계정의 프로필
+            Some(_) => {
+                n += 1;
+                if n > 99 {
+                    return format!("account-{}", now());
+                }
+                candidate = format!("{base}-{n}");
+            }
         }
     }
-    name
 }
 
 /// 대상 프로필의 oauth_account.json을 ~/.claude.json에 반영한다.
@@ -420,6 +423,8 @@ fn claude_apply_oauth_block(env: &Env, profile_dir: &Path) -> Result<(), String>
 
 /// 현재 로그인 계정을 이름 붙여 프로필로 저장
 pub fn save_current(env: &Env, provider: Provider, name: &str) -> Result<(), String> {
+    // 변이 함수가 스스로 잠근다 — 호출자가 잠금을 잊을 수 없게 (관례 단일화)
+    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     validate_name(name)?;
     let live = env.live_credential_path(provider);
     if !live.exists() {
@@ -445,6 +450,7 @@ pub fn save_current(env: &Env, provider: Provider, name: &str) -> Result<(), Str
 
 /// 계정 전환. 순서 불변: 1) 현재 활성 파일 백업 → 2) 대상 프로필 복사
 pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult, String> {
+    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     validate_name(name)?;
     let profile_dir = env.profiles_dir(provider).join(name);
     let target_cred = profile_dir.join(provider.credential_file_name());
@@ -527,6 +533,7 @@ pub fn list(env: &Env, provider: Provider) -> Result<Snapshot, String> {
 
 /// 프로필 삭제 (보관함에서만 지운다 — 활성 로그인은 건드리지 않음)
 pub fn delete(env: &Env, provider: Provider, name: &str) -> Result<(), String> {
+    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     validate_name(name)?;
     let dir = env.profiles_dir(provider).join(name);
     if !dir.exists() {
@@ -535,12 +542,13 @@ pub fn delete(env: &Env, provider: Provider, name: &str) -> Result<(), String> {
     fs::remove_dir_all(&dir).map_err(|e| format!("삭제 실패 {}: {e}", dir.display()))
 }
 
+/// 형제 모듈(usage·login) 테스트와 공유하는 픽스처 헬퍼.
+/// 실토큰이 아닌 픽스처로만 검증한다 (CLAUDE.md 금기).
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use super::*;
 
-    /// 실토큰이 아닌 픽스처로만 검증한다 (CLAUDE.md 금기)
-    fn test_env(tag: &str) -> Env {
+    pub(crate) fn test_env(tag: &str) -> Env {
         let base = std::env::temp_dir().join(format!("switcher-test-{}-{tag}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(base.join(".claude")).unwrap();
@@ -549,6 +557,24 @@ mod tests {
             store: base.join(".switcher"),
         }
     }
+
+    /// 가짜 JWT (서명 없음) — claims JSON을 그대로 payload로 쓴다
+    pub(crate) fn fake_jwt(claims_json: &str) -> String {
+        use base64::Engine;
+        let enc = |s: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s);
+        format!(
+            "{}.{}.{}",
+            enc(r#"{"alg":"none"}"#),
+            enc(claims_json),
+            enc("sig")
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::{fake_jwt, test_env};
+    use super::*;
 
     fn login_claude(env: &Env, uuid: &str, email: &str, token: &str) {
         fs::write(
@@ -724,25 +750,13 @@ mod tests {
         assert!(switch(&env, Provider::Claude, "..").is_err());
     }
 
-    /// 가짜 JWT (서명 없음) — email claim만 담는다
-    fn fake_jwt(email: &str) -> String {
-        use base64::Engine;
-        let enc = |s: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s);
-        format!(
-            "{}.{}.{}",
-            enc(r#"{"alg":"none"}"#),
-            enc(&format!(r#"{{"email":"{email}","sub":"sub-x"}}"#)),
-            enc("sig")
-        )
-    }
-
     fn login_codex(env: &Env, account_id: &str, email: &str, token: &str) {
         fs::create_dir_all(env.home.join(".codex")).unwrap();
         fs::write(
             env.home.join(".codex").join("auth.json"),
             format!(
                 r#"{{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{{"id_token":"{}","access_token":"{token}","refresh_token":"r-{token}","account_id":"{account_id}"}},"last_refresh":"2026-01-01T00:00:00Z"}}"#,
-                fake_jwt(email)
+                fake_jwt(&format!(r#"{{"email":"{email}","sub":"sub-x"}}"#))
             ),
         )
         .unwrap();
@@ -814,8 +828,11 @@ mod tests {
         let name = match find_profile_by_id(&env, provider, &before_ident.id).unwrap() {
             Some(existing) => existing,
             None => {
-                save_current(&env, provider, "main").unwrap();
-                "main".to_string()
+                // 제품과 같은 규칙으로 이름을 정한다 (하드코딩 이름은 다른 계정 소유일 수 있어
+                // ensure_name_not_owned_by_other에 막힌다 — 실제로 막힌 사례 있음)
+                let name = auto_name(&env, provider, &before_ident);
+                save_current(&env, provider, &name).unwrap();
+                name
             }
         };
 
