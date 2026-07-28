@@ -323,6 +323,30 @@ button.link:hover {
   display: none;
 }
 
+/* 고정 모드의 타이틀바 — 앱 이름·새로고침·슬라이더를 숨기고,
+   고정·닫기 버튼은 거의 안 보이다가 마우스를 올리면 나타난다 */
+body.locked .titlebar h1,
+body.locked #refresh,
+body.locked #alpha {
+  display: none;
+}
+
+body.locked .titlebar {
+  padding: 4px 6px 0;
+  justify-content: flex-end;
+}
+
+body.locked .tb-actions button {
+  opacity: 0.18;
+  padding: 1px 6px;
+  font-size: 10px;
+  transition: opacity 0.15s;
+}
+
+body.locked .titlebar:hover .tb-actions button {
+  opacity: 1;
+}
+
 .usage-label {
   color: var(--muted);
   overflow: hidden;

@@ -492,6 +492,8 @@ let locked = localStorage.getItem("switcher.locked") === "1";
 
 function applyLock() {
   app.classList.toggle("locked", locked);
+  // 타이틀바도 위젯 모드로 (이름·새로고침·슬라이더 숨김, 남은 버튼은 호버 시에만 또렷)
+  document.body.classList.toggle("locked", locked);
   lockBtn.classList.toggle("pinned", locked);
   lockBtn.textContent = locked ? "고정됨" : "고정";
 }
