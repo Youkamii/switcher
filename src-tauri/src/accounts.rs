@@ -138,7 +138,7 @@ pub(crate) fn validate_name(name: &str) -> Result<(), String> {
 }
 
 /// 임시 파일에 쓴 뒤 rename — 읽는 쪽이 절대 반쪽짜리 파일을 보지 않게 한다.
-fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
+pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("경로 오류: {}", path.display()))?;

@@ -8,13 +8,16 @@ use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
 
-use crate::accounts::{jwt_payload, live_identity, now, read_json, read_meta, Env, Provider};
+use crate::accounts::{
+    atomic_write, jwt_payload, live_identity, now, read_json, read_meta, Env, Provider,
+};
+use serde::Deserialize;
 
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct UsageWindow {
     pub key: String,
     pub label: String,
@@ -22,7 +25,7 @@ pub struct UsageWindow {
     pub resets_at: Option<String>,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Usage {
     pub windows: Vec<UsageWindow>,
 }
@@ -278,6 +281,47 @@ fn cache_key(env: &Env, provider: Provider, profile: Option<&str>) -> String {
     format!("{}:{account}", provider.dir_name())
 }
 
+/// 디스크 캐시 — 위젯을 재시작하면 메모리 캐시가 사라져, 재시작 직후 조회가
+/// 막히면(요청 제한 429 등) 보여줄 직전 값조차 없다. 마지막 성공 수치를
+/// 파일로 남겨 재시작 후에도 STALE_MAX 안이면 그걸 먼저 보여준다.
+/// (사용량 퍼센트만 저장한다 — 토큰은 절대 넣지 않는다)
+fn disk_cache_path(env: &Env) -> std::path::PathBuf {
+    env.store.join("usage-cache.json")
+}
+
+#[derive(Serialize, Deserialize)]
+struct DiskEntry {
+    saved_at: u64,
+    usage: Usage,
+}
+
+fn disk_cache_load(env: &Env, key: &str) -> Option<Usage> {
+    let root = read_json(&disk_cache_path(env)).ok()?;
+    let entry: DiskEntry = serde_json::from_value(root.get(key)?.clone()).ok()?;
+    if now().saturating_sub(entry.saved_at) < STALE_MAX.as_secs() {
+        Some(entry.usage)
+    } else {
+        None
+    }
+}
+
+fn disk_cache_store(env: &Env, key: &str, usage: &Usage) {
+    let path = disk_cache_path(env);
+    let mut root = read_json(&path).unwrap_or_else(|_| Value::Object(Default::default()));
+    if let Some(obj) = root.as_object_mut() {
+        let entry = DiskEntry {
+            saved_at: now(),
+            usage: usage.clone(),
+        };
+        if let Ok(value) = serde_json::to_value(&entry) {
+            obj.insert(key.to_string(), value);
+        }
+        if let Ok(bytes) = serde_json::to_vec_pretty(&root) {
+            let _ = atomic_write(&path, &bytes);
+        }
+    }
+}
+
 pub async fn fetch(
     env: &Env,
     provider: Provider,
@@ -298,8 +342,9 @@ pub async fn fetch(
     match result {
         Ok(usage) => {
             if let Ok(mut map) = cache().lock() {
-                map.insert(key, (std::time::Instant::now(), usage.clone()));
+                map.insert(key.clone(), (std::time::Instant::now(), usage.clone()));
             }
+            disk_cache_store(env, &key, &usage);
             Ok(usage)
         }
         Err(e) => {
@@ -309,6 +354,10 @@ pub async fn fetch(
                         return Ok(cached.clone());
                     }
                 }
+            }
+            // 재시작 직후 등 메모리 캐시가 빈 경우 — 디스크의 마지막 성공 수치로 폴백
+            if let Some(cached) = disk_cache_load(env, &key) {
+                return Ok(cached);
             }
             Err(e)
         }
@@ -436,6 +485,31 @@ mod tests {
         .unwrap();
         let err = codex_token(&env, None).unwrap_err();
         assert!(err.contains("만료"));
+    }
+
+    #[test]
+    fn disk_cache_roundtrip_and_expiry() {
+        let env = test_env("disk-cache");
+        fs::create_dir_all(&env.store).unwrap();
+        let usage = Usage {
+            windows: vec![UsageWindow {
+                key: "session".into(),
+                label: "5 Hours".into(),
+                percent: 42.0,
+                resets_at: None,
+            }],
+        };
+        disk_cache_store(&env, "claude:acct-1", &usage);
+        let loaded = disk_cache_load(&env, "claude:acct-1").expect("방금 저장한 값이 읽혀야 한다");
+        assert_eq!(loaded.windows[0].percent, 42.0);
+        // 다른 키는 없음
+        assert!(disk_cache_load(&env, "claude:acct-2").is_none());
+        // 오래된 항목은 버려진다
+        let path = disk_cache_path(&env);
+        let mut root = read_json(&path).unwrap();
+        root["claude:acct-1"]["saved_at"] = serde_json::json!(1000);
+        fs::write(&path, serde_json::to_vec(&root).unwrap()).unwrap();
+        assert!(disk_cache_load(&env, "claude:acct-1").is_none());
     }
 
     /// 실계정 토큰으로 실제 엔드포인트를 호출하는 스모크 테스트.

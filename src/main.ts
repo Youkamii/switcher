@@ -507,13 +507,13 @@ applyLock();
 
 document.getElementById("hide")!.addEventListener("click", () => void appWindow.hide());
 
-// 투명도 — 배경 채움(--bg-alpha)은 슬라이더 그대로, 골조(--fg-alpha)는
-// 완전 투명 구간에서도 최소 30%를 유지하도록 보간한다 (0% → 골조 30%, 100% → 100%)
+// 투명도 — 배경 채움(--bg-alpha)은 슬라이더 그대로, 골조(막대·글자·테두리)는
+// 완전 투명이어도 85% 농도를 유지한다 (0% → 골조 85%, 100% → 100%)
 const alphaSlider = document.getElementById("alpha") as HTMLInputElement;
 function applyAlpha(percent: number) {
   const clamped = Math.min(100, Math.max(0, percent));
   const bg = clamped / 100;
-  const fg = 0.3 + 0.7 * bg;
+  const fg = 0.85 + 0.15 * bg;
   document.documentElement.style.setProperty("--bg-alpha", String(bg));
   document.documentElement.style.setProperty("--fg-alpha", fg.toFixed(3));
   alphaSlider.value = String(clamped);
