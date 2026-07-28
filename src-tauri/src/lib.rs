@@ -32,18 +32,34 @@ async fn fetch_usage(provider: String, profile: Option<String>) -> Result<usage:
     usage::fetch(&Env::real()?, Provider::parse(&provider)?, profile.as_deref()).await
 }
 
-/// 브라우저 로그인으로 새 계정을 추가한다. 사용자가 로그인을 마칠 때까지 기다리므로
-/// 별도 스레드에서 돌려 UI를 막지 않는다. 활성 계정은 건드리지 않는다.
+/// 로그인을 시작하고 사용자가 원하는 브라우저에 붙여넣을 주소를 돌려준다.
+/// 활성 계정은 어느 단계에서도 건드리지 않는다.
 #[tauri::command]
-async fn add_account(provider: String) -> Result<login::LoginOutcome, String> {
+async fn start_login(provider: String) -> Result<login::LoginPrompt, String> {
     let provider = Provider::parse(&provider)?;
-    tauri::async_runtime::spawn_blocking(move || login::add_account(&Env::real()?, provider))
-    .await
-    .map_err(|e| format!("로그인 작업 실패: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || login::start(&Env::real()?, provider))
+        .await
+        .map_err(|e| format!("로그인 시작 실패: {e}"))?
+}
+
+/// 브라우저에서 받은 코드를 넘겨 로그인을 끝낸다 (클로드)
+#[tauri::command]
+async fn submit_login_code(code: String) -> Result<login::LoginOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || login::submit_code(&Env::real()?, &code))
+        .await
+        .map_err(|e| format!("로그인 완료 실패: {e}"))?
+}
+
+/// 브라우저 쪽에서 로그인이 끝나기를 기다린다 (코덱스)
+#[tauri::command]
+async fn await_device_login() -> Result<login::LoginOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || login::wait_device(&Env::real()?))
+        .await
+        .map_err(|e| format!("로그인 대기 실패: {e}"))?
 }
 
 #[tauri::command]
-fn cancel_add_account() {
+fn cancel_login() {
     login::cancel();
 }
 
@@ -155,8 +171,10 @@ pub fn run() {
             switch_profile,
             delete_profile,
             fetch_usage,
-            add_account,
-            cancel_add_account
+            start_login,
+            submit_login_code,
+            await_device_login,
+            cancel_login
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

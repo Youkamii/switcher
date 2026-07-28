@@ -135,6 +135,64 @@ button.link:hover {
   margin: 6px 0 4px;
 }
 
+.add-row input {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid #34344a;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.login-panel {
+  background: var(--panel);
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 10px;
+  margin: 4px 0 8px;
+}
+
+.copy-box {
+  margin: 6px 0;
+}
+
+.copy-title {
+  font-size: 10px;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+
+.copy-body {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.copy-value {
+  flex: 1;
+  min-width: 0;
+  background: var(--panel-2);
+  border: 1px solid #34344a;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: text;
+}
+
+.copy-value.mono {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 14px;
+  letter-spacing: 1px;
+  text-align: center;
+  color: var(--accent);
+  font-weight: 700;
+}
+
 .add-row button.primary {
   flex: 1;
 }

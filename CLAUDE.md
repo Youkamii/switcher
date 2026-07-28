@@ -24,10 +24,12 @@
 
 ## 로그인 (실측 확인됨)
 
-- 로그인은 브라우저 + 로컬 콜백 방식이다. 코드 붙여넣기 입력칸은 필요 없다 (원격 환경에서만 코드 방식으로 폴백).
+- **출력을 파이프로 받으면 CLI가 화면을 그리지 않는다.** `claude auth login`은 "Opening browser to sign in…" 한 줄만 내보낸다. 진짜 콘솔(PTY)을 붙여야 로그인 주소와 `Paste code here if prompted >` 프롬프트가 나온다. 파이프로 확인하고 "기능이 없다"고 단정하지 말 것 — 실제로 그 실수를 했다.
+- PTY를 붙여도 **`ESC[6n`(커서 위치 질의)에 `ESC[1;1R`로 답하지 않으면** 화면이 그려지지 않는다.
+- TUI는 줄바꿈 대신 커서 이동으로 그리므로, ANSI 제거 시 색상(SGR, 최종 바이트 `m`)만 버리고 **나머지 CSI는 줄바꿈으로 치환**해야 글자가 붙지 않는다.
+- 코덱스는 `codex login --device-auth`가 주소와 일회용 코드를 글자로 준다 (브라우저를 열지 않음).
 - 격리 로그인: `CLAUDE_CONFIG_DIR`(클로드) / `CODEX_HOME`(코덱스)를 임시 폴더로 주면 `.credentials.json`·`.claude.json`·`auth.json`이 전부 그 폴더에만 생성된다 — 활성 계정 무변경.
-- **`claude auth login`은 stdin을 리다이렉트하면 즉시 종료된다.** stdin은 상속 그대로 둘 것 (stdout/stderr 리다이렉트는 무해).
-- Windows에서는 npm 셔임 때문에 `cmd /c` 경유로 실행하고 `CREATE_NO_WINDOW`로 콘솔 창을 막는다. 취소는 `taskkill /T`로 트리째 — 부모만 죽이면 CLI가 콜백 서버를 문 채 살아남는다.
+- Windows에서는 npm 셔임 때문에 `cmd /c` 경유로 실행한다. 취소는 `taskkill /T`로 트리째 — 부모만 죽이면 CLI가 살아남는다. 임시 폴더 삭제는 종료 직후 실패할 수 있으니 재시도할 것.
 
 ## 전환 대상 파일 (실측 확인됨)
 

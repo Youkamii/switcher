@@ -34,6 +34,9 @@ type ProviderId = (typeof PROVIDERS)[number]["id"];
 const app = document.getElementById("app")!;
 const toastEl = document.getElementById("toast")!;
 let toastTimer: number | undefined;
+let rendering = false;
+/// 로그인 패널이 열려 있으면 자동 새로고침이 화면을 갈아엎지 않게 한다
+let loginOpen = false;
 
 function toast(message: string, isError = false) {
   toastEl.textContent = message;
@@ -201,6 +204,140 @@ type LoginOutcome = {
   updated_existing: boolean;
 };
 
+type LoginPrompt = {
+  url: string;
+  device_code: string | null;
+  needs_code: boolean;
+};
+
+async function copyText(value: string, button: HTMLButtonElement, label: string) {
+  try {
+    await navigator.clipboard.writeText(value);
+    button.textContent = "복사됨";
+    window.setTimeout(() => (button.textContent = label), 1500);
+  } catch {
+    toast("복사에 실패했습니다 — 직접 선택해 복사하세요", true);
+  }
+}
+
+/// 복사할 값 하나를 보여주는 상자 (로그인 주소, 일회용 코드)
+function copyBox(title: string, value: string, mono: boolean): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "copy-box";
+
+  const head = document.createElement("div");
+  head.className = "copy-title";
+  head.textContent = title;
+
+  const body = document.createElement("div");
+  body.className = "copy-body";
+  const text = document.createElement("div");
+  text.className = mono ? "copy-value mono" : "copy-value";
+  text.textContent = value;
+  text.title = value;
+  const btn = document.createElement("button");
+  btn.textContent = "복사";
+  btn.addEventListener("click", () => void copyText(value, btn, "복사"));
+  body.append(text, btn);
+
+  box.append(head, body);
+  return box;
+}
+
+function loginPanel(
+  prompt: LoginPrompt,
+  onDone: () => void,
+  onCancel: () => void,
+): HTMLElement {
+  const panel = document.createElement("div");
+  panel.className = "login-panel";
+
+  const steps = document.createElement("div");
+  steps.className = "help";
+  steps.textContent = prompt.needs_code
+    ? "① 아래 주소를 원하는 브라우저에 붙여넣어 로그인 ② 화면에 뜨는 코드를 복사해 아래에 붙여넣기"
+    : "① 아래 주소를 원하는 브라우저에 붙여넣기 ② 그 화면에 아래 코드를 입력하면 자동으로 완료됩니다";
+  panel.appendChild(steps);
+
+  panel.appendChild(copyBox("로그인 주소", prompt.url, false));
+  if (prompt.device_code) {
+    panel.appendChild(copyBox("일회용 코드 (15분 유효)", prompt.device_code, true));
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "add-row";
+
+  if (prompt.needs_code) {
+    const input = document.createElement("input");
+    input.placeholder = "로그인 후 받은 코드 붙여넣기";
+    const okBtn = document.createElement("button");
+    okBtn.className = "primary";
+    okBtn.textContent = "확인";
+    const submit = async () => {
+      const code = input.value.trim();
+      if (!code) {
+        toast("코드를 붙여넣으세요", true);
+        return;
+      }
+      okBtn.disabled = true;
+      input.disabled = true;
+      okBtn.textContent = "확인 중…";
+      try {
+        const result = await invoke<LoginOutcome>("submit_login_code", { code });
+        reportLogin(result);
+        onDone();
+      } catch (error) {
+        toast(String(error), true);
+        okBtn.disabled = false;
+        input.disabled = false;
+        okBtn.textContent = "확인";
+      }
+    };
+    okBtn.addEventListener("click", submit);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") void submit();
+    });
+    actions.append(input, okBtn);
+    panel.appendChild(actions);
+    window.setTimeout(() => input.focus(), 50);
+  } else {
+    const waiting = document.createElement("div");
+    waiting.className = "usage-note";
+    waiting.textContent = "브라우저에서 코드 입력을 기다리는 중…";
+    panel.appendChild(waiting);
+    void (async () => {
+      try {
+        const result = await invoke<LoginOutcome>("await_device_login");
+        reportLogin(result);
+        onDone();
+      } catch (error) {
+        toast(String(error), true);
+        onCancel();
+      }
+    })();
+  }
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "link";
+  cancelBtn.textContent = "취소";
+  cancelBtn.addEventListener("click", () => {
+    void invoke("cancel_login");
+    onCancel();
+  });
+  panel.appendChild(cancelBtn);
+
+  return panel;
+}
+
+function reportLogin(result: LoginOutcome) {
+  const who = result.email ?? result.profile;
+  toast(
+    result.updated_existing
+      ? `'${result.profile}' 계정(${who}) 로그인을 갱신했습니다`
+      : `계정 추가 완료 — '${result.profile}' (${who})`,
+  );
+}
+
 function addAccountButton(provider: ProviderId, section: HTMLElement) {
   const row = document.createElement("div");
   row.className = "add-row";
@@ -208,46 +345,41 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
   const addBtn = document.createElement("button");
   addBtn.className = "primary";
   addBtn.textContent = "＋ 계정 추가";
+  row.appendChild(addBtn);
+  section.appendChild(row);
 
-  const cancelBtn = document.createElement("button");
-  cancelBtn.textContent = "취소";
-  cancelBtn.hidden = true;
-
-  const status = document.createElement("div");
-  status.className = "help";
-  status.hidden = true;
-  status.textContent =
-    "브라우저에서 추가할 계정으로 로그인하세요. 끝나면 자동으로 저장됩니다. (지금 쓰는 계정은 그대로 유지됩니다)";
+  const slot = document.createElement("div");
+  section.appendChild(slot);
 
   addBtn.addEventListener("click", async () => {
     addBtn.disabled = true;
-    addBtn.textContent = "로그인 대기 중…";
-    cancelBtn.hidden = false;
-    status.hidden = false;
+    addBtn.textContent = "로그인 주소 받는 중…";
     try {
-      const result = await invoke<LoginOutcome>("add_account", { provider });
-      const who = result.email ?? result.profile;
-      toast(
-        result.updated_existing
-          ? `'${result.profile}' 계정(${who}) 로그인을 갱신했습니다`
-          : `계정 추가 완료 — '${result.profile}' (${who})`,
+      const prompt = await invoke<LoginPrompt>("start_login", { provider });
+      addBtn.hidden = true;
+      loginOpen = true;
+      slot.appendChild(
+        loginPanel(
+          prompt,
+          () => {
+            loginOpen = false;
+            void render();
+          },
+          () => {
+            loginOpen = false;
+            slot.textContent = "";
+            addBtn.hidden = false;
+            addBtn.disabled = false;
+            addBtn.textContent = "＋ 계정 추가";
+          },
+        ),
       );
-      await render();
     } catch (error) {
       toast(String(error), true);
       addBtn.disabled = false;
       addBtn.textContent = "＋ 계정 추가";
-      cancelBtn.hidden = true;
-      status.hidden = true;
     }
   });
-
-  cancelBtn.addEventListener("click", () => {
-    void invoke("cancel_add_account");
-  });
-
-  row.append(addBtn, cancelBtn);
-  section.append(row, status);
 }
 
 function saveForm(provider: ProviderId, section: HTMLElement) {
@@ -326,8 +458,6 @@ async function renderProvider(provider: ProviderId, title: string) {
   app.appendChild(section);
 }
 
-let rendering = false;
-
 async function render() {
   // 새로고침 연타·자동 주기와의 경합으로 화면이 겹쳐 그려지는 것을 막는다
   if (rendering) return;
@@ -343,9 +473,10 @@ async function render() {
 }
 
 /// 자동 새로고침이 입력 중인 프로필 이름을 날리지 않게 한다
-function userIsTyping(): boolean {
+function userIsBusy(): boolean {
   const el = document.activeElement;
-  return el instanceof HTMLInputElement && el.value.trim().length > 0;
+  const typing = el instanceof HTMLInputElement && el.value.trim().length > 0;
+  return typing || loginOpen;
 }
 
 const appWindow = getCurrentWindow();
@@ -368,8 +499,14 @@ pinBtn.addEventListener("click", () => {
 void applyPin(pinBtn);
 
 document.getElementById("hide")!.addEventListener("click", () => void appWindow.hide());
-document.getElementById("refresh")!.addEventListener("click", () => void render());
+document.getElementById("refresh")!.addEventListener("click", () => {
+  if (loginOpen) {
+    toast("로그인을 진행 중입니다 — 끝내거나 취소한 뒤 새로고침하세요", true);
+    return;
+  }
+  void render();
+});
 window.setInterval(() => {
-  if (!userIsTyping()) void render();
+  if (!userIsBusy()) void render();
 }, 5 * 60 * 1000);
 void render();
