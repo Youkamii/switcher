@@ -92,6 +92,12 @@ fn initial_view_mode() -> Option<String> {
     std::env::var("SWITCHER_VIEW").ok()
 }
 
+/// 데모(GIF)용: SWITCHER_DEMO=1 이면 전환 완료 안내를 끄고 반투명하게 시작한다
+#[tauri::command]
+fn demo_mode() -> bool {
+    std::env::var("SWITCHER_DEMO").is_ok()
+}
+
 /// 프론트가 렌더 후 카드·버튼의 화면 좌표를 보고한다
 #[tauri::command]
 fn set_hit_regions(regions: Vec<HitRegion>) {
@@ -371,7 +377,8 @@ pub fn run() {
             cancel_login,
             set_hit_regions,
             set_click_through,
-            initial_view_mode
+            initial_view_mode,
+            demo_mode
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

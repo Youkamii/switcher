@@ -715,20 +715,29 @@ void listen<number>("card-hover", (event) => {
   if (idx >= 0) hitElements[idx]?.classList.add("hit-hover");
 });
 
+// 데모(GIF)용 플래그 — 켜지면 전환 완료 안내를 띄우지 않고 반투명하게 시작한다
+let demoMode = false;
+void invoke<boolean>("demo_mode").then((on) => {
+  demoMode = on;
+  if (on) applyAlpha(55);
+});
+
 // Rust가 실행한 더블클릭 전환의 결과
 void listen<{ ok: boolean; provider?: string; name?: string; error?: string }>(
   "account-switched",
   (event) => {
     if (event.payload.ok) {
-      const el = hitElements.find(
-        (candidate) =>
-          candidate.dataset.provider === event.payload.provider &&
-          candidate.dataset.name === event.payload.name,
-      );
-      const who = el?.querySelector(".card-name")?.textContent ?? event.payload.name;
-      toast(`전환 완료 — 새로 여는 터미널부터 ${who} 계정이 적용됩니다`);
+      if (!demoMode) {
+        const el = hitElements.find(
+          (candidate) =>
+            candidate.dataset.provider === event.payload.provider &&
+            candidate.dataset.name === event.payload.name,
+        );
+        const who = el?.querySelector(".card-name")?.textContent ?? event.payload.name;
+        toast(`전환 완료 — 새로 여는 터미널부터 ${who} 계정이 적용됩니다`);
+      }
       void render();
-    } else {
+    } else if (!demoMode) {
       toast(event.payload.error ?? "전환 실패", true);
     }
   },
