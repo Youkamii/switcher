@@ -3,6 +3,15 @@ mod login;
 mod usage;
 
 use accounts::{Env, Provider, Snapshot, SwitchResult};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
+/// 고정(위젯) 모드의 클릭 투과 — 카드·버튼 같은 히트 영역 위에서만 마우스를 받고
+/// 나머지는 뒤 창으로 통과시킨다. 웹뷰는 투과 중 이벤트를 못 받으므로
+/// 커서 추적은 Rust 폴링 스레드가 담당한다.
+static CLICK_THROUGH_MODE: AtomicBool = AtomicBool::new(false);
+/// 히트 영역 목록 — 창 기준 논리 좌표 [x, y, w, h]
+static HIT_REGIONS: Mutex<Vec<[f64; 4]>> = Mutex::new(Vec::new());
 
 #[tauri::command]
 fn list_profiles(provider: String) -> Result<Snapshot, String> {
@@ -58,6 +67,26 @@ async fn await_device_login() -> Result<login::LoginOutcome, String> {
 #[tauri::command]
 fn cancel_login() {
     login::cancel();
+}
+
+/// 프론트가 렌더 후 카드·버튼의 화면 좌표를 보고한다
+#[tauri::command]
+fn set_hit_regions(regions: Vec<[f64; 4]>) {
+    if let Ok(mut guard) = HIT_REGIONS.lock() {
+        *guard = regions;
+    }
+}
+
+/// 고정 모드 진입/해제 — 해제 시 투과를 즉시 끈다
+#[tauri::command]
+fn set_click_through(app: tauri::AppHandle, enabled: bool) {
+    use tauri::Manager;
+    CLICK_THROUGH_MODE.store(enabled, Ordering::Relaxed);
+    if !enabled {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.set_ignore_cursor_events(false);
+        }
+    }
 }
 
 /// 위젯을 주 모니터 작업영역(작업표시줄 제외) 우하단에 붙인다
@@ -151,6 +180,52 @@ pub fn run() {
                     login::sweep_stale(&env);
                 }
             });
+
+            // 클릭 투과 폴링: 고정 모드에서 커서가 히트 영역 위면 마우스를 받고,
+            // 벗어나면 뒤 창으로 통과시킨다 (60ms 주기, 상태 변화 시에만 스위칭)
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let mut ignoring = false;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(60));
+                    let Some(window) = handle.get_webview_window("main") else {
+                        continue;
+                    };
+                    if !CLICK_THROUGH_MODE.load(Ordering::Relaxed) {
+                        if ignoring {
+                            let _ = window.set_ignore_cursor_events(false);
+                            ignoring = false;
+                        }
+                        continue;
+                    }
+                    if !window.is_visible().unwrap_or(false) {
+                        continue;
+                    }
+                    let (Ok(cursor), Ok(pos)) = (handle.cursor_position(), window.outer_position())
+                    else {
+                        continue;
+                    };
+                    let scale = window.scale_factor().unwrap_or(1.0);
+                    let rel_x = (cursor.x - pos.x as f64) / scale;
+                    let rel_y = (cursor.y - pos.y as f64) / scale;
+                    let inside = HIT_REGIONS
+                        .lock()
+                        .map(|regions| {
+                            regions.iter().any(|r| {
+                                rel_x >= r[0]
+                                    && rel_x <= r[0] + r[2]
+                                    && rel_y >= r[1]
+                                    && rel_y <= r[1] + r[3]
+                            })
+                        })
+                        .unwrap_or(false);
+                    let want_ignore = !inside;
+                    if want_ignore != ignoring {
+                        let _ = window.set_ignore_cursor_events(want_ignore);
+                        ignoring = want_ignore;
+                    }
+                }
+            });
             let show = MenuItem::with_id(app, "show", "열기", true, None::<&str>)?;
             let hide = MenuItem::with_id(app, "hide", "숨기기", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
@@ -204,7 +279,9 @@ pub fn run() {
             start_login,
             submit_login_code,
             await_device_login,
-            cancel_login
+            cancel_login,
+            set_hit_regions,
+            set_click_through
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -7,6 +7,7 @@ type ProfileInfo = {
   id: string;
   email: string | null;
   plan: string | null;
+  plan_tier: number | null;
   saved_at: number;
   active: boolean;
 };
@@ -142,6 +143,13 @@ function profileCard(provider: ProviderId, profile: ProfileInfo): HTMLElement {
     const plan = document.createElement("span");
     plan.className = "badge plan";
     plan.textContent = profile.plan;
+    if (profile.plan_tier) {
+      // Max 배수: 5는 노랑, 20은 빨강
+      const tier = document.createElement("span");
+      tier.className = `tier tier-${profile.plan_tier}`;
+      tier.textContent = String(profile.plan_tier);
+      plan.appendChild(tier);
+    }
     head.appendChild(plan);
   }
   if (profile.active) {
@@ -518,6 +526,24 @@ function applyLock() {
   } else {
     titlebarEl.setAttribute("data-tauri-drag-region", "");
   }
+  // 고정 모드에서는 카드·버튼 위가 아니면 마우스가 뒤 창으로 통과한다
+  void invoke("set_click_through", { enabled: locked });
+  reportHitRegions();
+}
+
+/// 마우스를 받아야 하는 요소들(카드·타이틀바 버튼·이동 핸들)의 좌표를 Rust에 보고한다.
+/// 고정 모드의 클릭 투과 판정에 쓰인다.
+function reportHitRegions() {
+  const regions: number[][] = [];
+  if (locked) {
+    document
+      .querySelectorAll<HTMLElement>(".card, .tb-actions, #drag-handle")
+      .forEach((el) => {
+        const rect = el.getBoundingClientRect();
+        regions.push([rect.left, rect.top, rect.width, rect.height]);
+      });
+  }
+  void invoke("set_hit_regions", { regions });
 }
 
 lockBtn.addEventListener("click", () => {
@@ -576,6 +602,8 @@ function fitHeight() {
     const max = Math.floor(window.screen.availHeight * 0.9);
     const target = Math.round(Math.max(120, Math.min(total, max)));
     void appWindow.setSize(new LogicalSize(360, target));
+    // 레이아웃이 확정된 시점에 히트 영역도 갱신한다
+    reportHitRegions();
   }, 120);
 }
 

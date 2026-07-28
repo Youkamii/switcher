@@ -285,6 +285,20 @@ button.link:hover {
   border-color: var(--accent);
 }
 
+.badge .tier {
+  font-size: 9px;
+  margin-left: 3px;
+  font-weight: 700;
+}
+
+.badge .tier-5 {
+  color: var(--warn);
+}
+
+.badge .tier-20 {
+  color: var(--danger);
+}
+
 .usage-row {
   display: grid;
   grid-template-columns: 74px 1fr 32px 52px;

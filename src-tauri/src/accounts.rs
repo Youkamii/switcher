@@ -94,6 +94,8 @@ pub struct ProfileInfo {
     pub email: Option<String>,
     /// 구독 레벨 (Max·Pro·Plus 등) — 토큰 파일에서 추출한 표시용 정보
     pub plan: Option<String>,
+    /// 클로드 Max의 배수 (rateLimitTier "..._max_20x" → 20). 코덱스는 None.
+    pub plan_tier: Option<u32>,
     pub saved_at: u64,
     pub active: bool,
 }
@@ -254,6 +256,15 @@ fn plan_from_credential(provider: Provider, root: &Value) -> Option<String> {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => return None,
     })
+}
+
+/// 클로드 Max의 배수를 뽑는다 ("default_claude_max_20x" → 20)
+fn tier_from_credential(provider: Provider, root: &Value) -> Option<u32> {
+    if provider != Provider::Claude {
+        return None;
+    }
+    let tier = root.pointer("/claudeAiOauth/rateLimitTier")?.as_str()?;
+    tier.strip_suffix('x')?.rsplit('_').next()?.parse().ok()
 }
 
 /// 현재 로그인된 계정의 신원. 파일이 없거나 식별 불가면 Ok(None).
@@ -541,15 +552,20 @@ pub fn list(env: &Env, provider: Provider) -> Result<Snapshot, String> {
     let mut profiles = Vec::new();
     for (name, dir) in profile_dirs(env, provider)? {
         if let Some(meta) = read_meta(&dir) {
-            let plan = read_json(&dir.join(provider.credential_file_name()))
-                .ok()
-                .and_then(|root| plan_from_credential(provider, &root));
+            let cred = read_json(&dir.join(provider.credential_file_name())).ok();
+            let plan = cred
+                .as_ref()
+                .and_then(|root| plan_from_credential(provider, root));
+            let plan_tier = cred
+                .as_ref()
+                .and_then(|root| tier_from_credential(provider, root));
             profiles.push(ProfileInfo {
                 active: live_id.as_deref() == Some(meta.id.as_str()),
                 name,
                 id: meta.id,
                 email: meta.email,
                 plan,
+                plan_tier,
                 saved_at: meta.saved_at,
             });
         }
@@ -753,13 +769,20 @@ mod tests {
 
     #[test]
     fn plan_is_extracted_from_credentials() {
-        let claude: Value =
-            serde_json::from_str(r#"{"claudeAiOauth":{"accessToken":"t","subscriptionType":"max"}}"#)
-                .unwrap();
+        let claude: Value = serde_json::from_str(
+            r#"{"claudeAiOauth":{"accessToken":"t","subscriptionType":"max","rateLimitTier":"default_claude_max_20x"}}"#,
+        )
+        .unwrap();
         assert_eq!(
             plan_from_credential(Provider::Claude, &claude).as_deref(),
             Some("Max")
         );
+        assert_eq!(tier_from_credential(Provider::Claude, &claude), Some(20));
+        let five: Value = serde_json::from_str(
+            r#"{"claudeAiOauth":{"rateLimitTier":"default_claude_max_5x"}}"#,
+        )
+        .unwrap();
+        assert_eq!(tier_from_credential(Provider::Claude, &five), Some(5));
         let jwt = fake_jwt(
             r#"{"email":"x@test.dev","https://api.openai.com/auth":{"chatgpt_plan_type":"pro"}}"#,
         );
