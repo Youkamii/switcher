@@ -86,6 +86,12 @@ fn cancel_login() {
     login::cancel();
 }
 
+/// 데모·스크린샷용: SWITCHER_VIEW=normal|locked|compact 로 초기 보기 모드를 강제한다
+#[tauri::command]
+fn initial_view_mode() -> Option<String> {
+    std::env::var("SWITCHER_VIEW").ok()
+}
+
 /// 프론트가 렌더 후 카드·버튼의 화면 좌표를 보고한다
 #[tauri::command]
 fn set_hit_regions(regions: Vec<HitRegion>) {
@@ -364,7 +370,8 @@ pub fn run() {
             await_device_login,
             cancel_login,
             set_hit_regions,
-            set_click_through
+            set_click_through,
+            initial_view_mode
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

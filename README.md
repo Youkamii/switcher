@@ -1,10 +1,26 @@
+<img src="docs/logo.svg" width="40" align="left" alt="" />
+
 # switcher
 
 Claude Code와 Codex CLI 계정을 버튼 하나로 갈아타는 Windows 위젯.
 
 A desktop widget that switches between multiple Claude Code / Codex CLI accounts in one click, with per-account usage bars.
 
-<p align="center"><img src="docs/screenshot.png" width="360" alt="switcher" /></p>
+## 설치
+
+Node.js와 Rust 툴체인이 필요하다.
+
+```sh
+git clone https://github.com/Youkamii/switcher.git
+cd switcher
+npm install
+npm run tauri build
+# 실행 파일: src-tauri\target\release\switcher.exe
+```
+
+설치 프로그램 없이 exe 하나로 동작한다. 트레이로 상주하고, 창을 닫으면 트레이로 숨는다. 종료는 트레이 우클릭 → 종료. 개발 실행은 `npm run tauri dev`.
+
+<p align="center"><img src="docs/screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
 
 ## 왜 만들었나
 
@@ -16,10 +32,10 @@ switcher는 이 과정을 없앤다. 계정마다 처음 한 번만 로그인해
 
 - 계정 전환: 재로그인 없이 버튼 한 번. 새로 여는 터미널부터 적용된다.
 - 사용량 표시: 계정마다 5 Hours / Weekly / 모델별 한도와 리셋까지 남은 시간이 보인다.
-- 계정 추가: 위젯이 로그인 링크를 보여준다. 원하는 브라우저에 붙여넣어 로그인하면 자동으로 저장된다. 지금 쓰는 계정은 건드리지 않는다.
+- 계정 추가: 위젯이 로그인 링크를 보여주고, 브라우저는 마음대로 고른다. 지금 쓰는 계정은 건드리지 않는다.
 - 구독 레벨: 계정 옆에 Max(5x는 노랑, 20x는 빨강) / Pro / Plus가 붙는다.
-- 보기 모드 3단계(Type1/2/3): 전체 → 위젯 → 컴팩트. 위젯·컴팩트에서는 조작 버튼이 사라지고, 카드 위 단일 클릭·드래그는 뒤 창으로 통과하며, 더블클릭으로 전환한다. 이동은 좌측 상단 ☰ 핸들로만.
-- 창 높이는 내용에 맞게 자동 조절되고, 투명도 슬라이더는 배경부터 골조 순으로 지운다.
+- 보기 모드(Type1/2/3): 전체 → 위젯 → 컴팩트 순환. 위젯·컴팩트에서는 버튼이 숨고 클릭·드래그가 뒤 창으로 통과하며, 계정 카드를 더블클릭하면 전환된다. 창 이동은 ☰ 핸들.
+- 창 높이는 내용에 맞춰 자동 조절된다. 투명도 슬라이더를 내리면 배경이 먼저, 골조가 나중에 옅어진다.
 
 ## 동작 원리
 
@@ -48,21 +64,6 @@ Claude: 주소를 브라우저에 붙여넣고 로그인하면 화면에 코드�
 Codex: 주소와 함께 일회용 코드(15분 유효)가 위젯에 표시된다. 브라우저에서 그 코드를 입력하면 나머지는 자동이다.
 
 참고: Claude CLI는 로그인을 시작할 때 기본 브라우저를 한 번 열려고 한다. 그 창은 닫아도 된다. 위젯의 주소를 붙여넣은 브라우저에서 진행하면 된다.
-
-## 설치와 빌드
-
-Node.js와 Rust 툴체인이 필요하다.
-
-```sh
-git clone https://github.com/Youkamii/switcher.git
-cd switcher
-npm install
-npm run tauri dev        # 개발 실행
-npm run tauri build      # 포터블 exe 빌드
-# → src-tauri/target/release/switcher.exe
-```
-
-설치 프로그램 없이 exe 하나로 동작한다. 트레이 아이콘으로 상주하고 창을 닫으면 트레이로 숨는다. 완전히 끝내려면 트레이 우클릭 → 종료.
 
 ## 알려진 한계
 

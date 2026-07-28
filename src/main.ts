@@ -483,12 +483,13 @@ async function renderProvider(provider: ProviderId, title: string) {
   app.appendChild(section);
 }
 
-/// 컴팩트용 라벨 축약: "5 Hours"→5h, "Weekly"→wk, "Daily"→1d, 모델명→앞 2글자 (Fable→fb)
+/// 컴팩트용 라벨 축약: "5 Hours"→5h, "Weekly"→wk, "Daily"→1d, Fable→fb, 그 외 모델→앞 2글자
 function compactLabel(win: UsageWindow): string {
   const label = win.label;
   if (label === "5 Hours") return "5h";
   if (label === "Weekly") return "wk";
   if (label === "Daily") return "1d";
+  if (label === "Fable") return "fb";
   const hours = label.match(/^(\d+) Hours?$/);
   if (hours) return `${hours[1]}h`;
   const days = label.match(/^(\d+) Days?$/);
@@ -598,26 +599,38 @@ async function renderProviderCompact(provider: ProviderId, title: string) {
   }
 }
 
+let renderQueued = false;
+
 async function render() {
-  // 새로고침 연타·자동 주기와의 경합으로 화면이 겹쳐 그려지는 것을 막는다
-  if (rendering) return;
+  // 새로고침 연타·자동 주기와의 경합으로 화면이 겹쳐 그려지는 것을 막고,
+  // 그리는 도중 재요청이 오면 끝난 뒤 한 번 더 그린다
+  if (rendering) {
+    renderQueued = true;
+    return;
+  }
   rendering = true;
   try {
-    // 로그인 패널이 열린 채 다른 조작(전환·삭제·저장)으로 재렌더가 일어나면
-    // 패널 DOM이 사라져 위젯이 영구 마비되던 문제 — 재렌더는 곧 로그인 흐름 포기로
-    // 간주하고 백엔드 세션까지 정리한다 (red-review 2라운드)
-    if (loginOpen) {
-      loginOpen = false;
-      void invoke("cancel_login");
-    }
-    app.textContent = "";
-    for (const { id, title } of PROVIDERS) {
-      if (viewMode === "compact") {
-        await renderProviderCompact(id, title);
-      } else {
-        await renderProvider(id, title);
+    do {
+      renderQueued = false;
+      // 로그인 패널이 열린 채 다른 조작(전환·삭제·저장)으로 재렌더가 일어나면
+      // 패널 DOM이 사라져 위젯이 영구 마비되던 문제 — 재렌더는 곧 로그인 흐름 포기로
+      // 간주하고 백엔드 세션까지 정리한다 (red-review 2라운드)
+      if (loginOpen) {
+        loginOpen = false;
+        void invoke("cancel_login");
       }
-    }
+      // 그리는 도중 모드가 바뀌어도 한 화면은 단일 모드로 —
+      // 프로바이더마다 다른 모드로 그려지는 혼종 화면 방지
+      const mode = viewMode;
+      app.textContent = "";
+      for (const { id, title } of PROVIDERS) {
+        if (mode === "compact") {
+          await renderProviderCompact(id, title);
+        } else {
+          await renderProvider(id, title);
+        }
+      }
+    } while (renderQueued);
   } finally {
     rendering = false;
     fitHeight();
@@ -730,8 +743,6 @@ lockBtn.addEventListener("click", () => {
 });
 applyViewMode();
 
-document.getElementById("hide")!.addEventListener("click", () => void appWindow.hide());
-
 // 투명도 — 2단계 커브.
 // 100%→50%: 배경 채움(--bg-alpha)만 1→0으로 빠지고 골조는 그대로.
 // 50%→0%: 배경은 이미 없고, 골조(--fg-alpha)가 1→0.6으로 옅어진다.
@@ -794,6 +805,16 @@ void appWindow.onResized(() => {
 
 // 내용 높이가 바뀌는 지점(렌더 완료·사용량 로딩·고정 토글)에서 fitHeight()를 직접 부른다
 // — app 요소 자체는 창 크기에 묶여 있어 관찰자로는 콘텐츠 변화를 못 잡는다
+// 데모·스크린샷용 초기 모드 강제 (SWITCHER_VIEW 환경변수) —
+// 진행 중인 첫 렌더가 있으면 render()가 큐잉해 단일 모드로 다시 그린다
+void invoke<string | null>("initial_view_mode").then((mode) => {
+  if (mode === "normal" || mode === "locked" || mode === "compact") {
+    viewMode = mode;
+    applyViewMode();
+    void render();
+  }
+});
+
 document.getElementById("refresh")!.addEventListener("click", () => {
   if (loginOpen) {
     toast("로그인을 진행 중입니다 — 끝내거나 취소한 뒤 새로고침하세요", true);

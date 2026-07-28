@@ -65,9 +65,6 @@ input[type="range"] {
   accent-color: var(--accent);
 }
 
-.titlebar h1 {
-  flex: none;
-}
 
 .titlebar {
   display: flex;
@@ -94,9 +91,11 @@ input[type="range"] {
   font-weight: 700;
 }
 
-.titlebar h1 {
-  font-size: 15px;
-  letter-spacing: 0.5px;
+#logo {
+  display: flex;
+  align-items: center;
+  flex: none;
+  padding: 0 2px;
 }
 
 button {
@@ -392,6 +391,11 @@ button.link:hover {
   position: relative;
 }
 
+.usage-box.stale {
+  /* 대기 라벨이 첫 사용량 줄과 겹치지 않게 자리를 내준다 */
+  padding-top: 12px;
+}
+
 .usage-box.stale .usage-row {
   opacity: 0.55;
 }
@@ -444,9 +448,9 @@ body.locked #drag-handle {
   display: block;
 }
 
-/* 고정 모드의 타이틀바 — 앱 이름·새로고침·슬라이더를 숨기고,
-   고정·닫기 버튼은 거의 안 보이다가 마우스를 올리면 나타난다 */
-body.locked .titlebar h1,
+/* 고정 모드의 타이틀바 — 로고·새로고침·슬라이더를 숨기고,
+   Type 버튼은 거의 안 보이다가 마우스를 올리면 나타난다 */
+body.locked #logo,
 body.locked #refresh,
 body.locked #alpha {
   display: none;

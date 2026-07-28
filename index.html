@@ -10,12 +10,21 @@
     <div class="shell">
       <header class="titlebar" data-tauri-drag-region>
         <span id="drag-handle" data-tauri-drag-region title="잡고 이동">☰</span>
-        <h1 data-tauri-drag-region>switcher</h1>
+        <span id="logo" data-tauri-drag-region aria-label="switcher">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" data-tauri-drag-region>
+            <path
+              d="M3 5 L7.5 19 L12 8 L16.5 19 L21 5"
+              stroke="#a78bfa"
+              stroke-width="2.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </span>
         <div class="tb-actions">
           <input id="alpha" type="range" min="0" max="100" step="5" title="투명도 (0 = 골조만)" />
           <button id="pin" title="보기 모드 전환 (1 전체 / 2 위젯 / 3 컴팩트)">Type1</button>
           <button id="refresh" title="사용량 새로고침">새로고침</button>
-          <button id="hide" title="트레이로 숨기기">✕</button>
         </div>
       </header>
       <main id="app"></main>
