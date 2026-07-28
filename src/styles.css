@@ -308,6 +308,24 @@ button.link:hover {
   font-size: 11px;
 }
 
+/* 갱신 대기 상태 — 수치는 살짝 흐리게 유지하고, 우상단 작은 라벨로만 알린다 */
+.usage-box {
+  position: relative;
+}
+
+.usage-box.stale .usage-row {
+  opacity: 0.55;
+}
+
+.stale-overlay {
+  position: absolute;
+  top: -1px;
+  right: 0;
+  font-size: 9px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
 .usage-reset {
   color: var(--muted);
   font-size: 10px;

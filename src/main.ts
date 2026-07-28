@@ -116,18 +116,23 @@ async function loadUsage(provider: ProviderId, card: HTMLElement, profile: strin
       box.appendChild(empty);
       return;
     }
-    // stale(마지막 성공 수치 표시 중)이어도 별도 문구 없이 조용히 수치만 보여준다
     for (const win of usage.windows) box.appendChild(usageRow(win));
+    if (usage.stale) {
+      // 갱신이 잠시 막힌 상태 — 기존 수치를 살짝 흐리게 두고 위에 작게 알린다
+      box.classList.add("stale");
+      const overlay = document.createElement("div");
+      overlay.className = "stale-overlay";
+      overlay.textContent = "사용량 조회 대기중";
+      box.appendChild(overlay);
+    }
   } catch (error) {
     box.textContent = "";
     const message = String(error);
-    // 일시적인 요청 제한은 화면에 알리지 않는다 — 다음 자동 갱신에서 조용히 채워진다
-    if (!message.includes("요청이 잦아")) {
-      const err = document.createElement("div");
-      err.className = "usage-error";
-      err.textContent = message;
-      box.appendChild(err);
-    }
+    const note = document.createElement("div");
+    // 보여줄 이전 수치조차 없는 초기 상태의 일시 장애는 작은 안내로만
+    note.className = message.includes("조회 대기중") ? "usage-note" : "usage-error";
+    note.textContent = message;
+    box.appendChild(note);
   }
   fitHeight();
 }

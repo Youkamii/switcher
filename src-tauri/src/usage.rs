@@ -134,24 +134,41 @@ fn parse_claude_usage(body: &Value) -> Usage {
     }
 }
 
-async fn get_json(request: reqwest::RequestBuilder) -> Result<Value, String> {
+/// 조회 실패의 두 갈래 — 일시적(요청 제한·서버 오류·네트워크)은 백오프 대상이고
+/// 화면에 문구를 띄우지 않는다. 그 외(토큰 만료 등)는 사용자에게 보여준다.
+#[derive(Debug)]
+enum FetchErr {
+    Transient,
+    Msg(String),
+}
+
+impl From<String> for FetchErr {
+    fn from(message: String) -> Self {
+        FetchErr::Msg(message)
+    }
+}
+
+async fn get_json(request: reqwest::RequestBuilder) -> Result<Value, FetchErr> {
     let resp = request
         .send()
         .await
-        .map_err(|e| format!("사용량 요청 실패: {e}"))?;
+        .map_err(|_| FetchErr::Transient)?; // 네트워크 단절도 일시 장애로 취급
     let status = resp.status();
-    if status.as_u16() == 429 {
-        return Err("요청이 잦아 잠시 제한되었습니다 — 잠시 후 자동으로 다시 조회됩니다".into());
+    if status.as_u16() == 429 || status.is_server_error() {
+        return Err(FetchErr::Transient);
     }
     if !status.is_success() {
-        return Err(format!("사용량 조회 실패: HTTP {}", status.as_u16()));
+        return Err(FetchErr::Msg(format!(
+            "사용량 조회 실패: HTTP {}",
+            status.as_u16()
+        )));
     }
     resp.json()
         .await
-        .map_err(|e| format!("응답 파싱 실패: {e}"))
+        .map_err(|e| FetchErr::Msg(format!("응답 파싱 실패: {e}")))
 }
 
-async fn fetch_claude(env: &Env, profile: Option<&str>) -> Result<Usage, String> {
+async fn fetch_claude(env: &Env, profile: Option<&str>) -> Result<Usage, FetchErr> {
     let token = claude_access_token(env, profile)?;
     let body = get_json(
         reqwest::Client::new()
@@ -248,7 +265,7 @@ fn parse_codex_usage(body: &Value) -> Usage {
     }
 }
 
-async fn fetch_codex(env: &Env, profile: Option<&str>) -> Result<Usage, String> {
+async fn fetch_codex(env: &Env, profile: Option<&str>) -> Result<Usage, FetchErr> {
     let (token, account_id) = codex_token(env, profile)?;
     let mut req = reqwest::Client::new().get(CODEX_USAGE_URL).bearer_auth(&token);
     if let Some(id) = account_id {
@@ -304,10 +321,10 @@ struct DiskEntry {
     usage: Usage,
 }
 
-fn disk_cache_load(env: &Env, key: &str) -> Option<Usage> {
+fn disk_cache_load(env: &Env, key: &str, max_age: std::time::Duration) -> Option<Usage> {
     let root = read_json(&disk_cache_path(env)).ok()?;
     let entry: DiskEntry = serde_json::from_value(root.get(key)?.clone()).ok()?;
-    if now().saturating_sub(entry.saved_at) < STALE_MAX.as_secs() {
+    if now().saturating_sub(entry.saved_at) < max_age.as_secs() {
         Some(entry.usage)
     } else {
         None
@@ -331,12 +348,52 @@ fn disk_cache_store(env: &Env, key: &str, usage: &Usage) {
     }
 }
 
+/// 일시 장애(429 등) 후의 재시도 자제 시간표 — 거절당한 키는 이 시간 동안
+/// API를 아예 부르지 않는다. 거절이 반복되면 2분→4분→8분→최대 15분으로 늘린다.
+fn backoff() -> &'static std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>>
+{
+    static BACKOFF: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>>,
+    > = std::sync::OnceLock::new();
+    BACKOFF.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn backoff_active(key: &str) -> bool {
+    backoff()
+        .lock()
+        .ok()
+        .and_then(|map| map.get(key).map(|(until, _)| *until > std::time::Instant::now()))
+        .unwrap_or(false)
+}
+
+fn backoff_bump(key: &str) {
+    if let Ok(mut map) = backoff().lock() {
+        let count = map.get(key).map(|(_, c)| *c).unwrap_or(0) + 1;
+        let secs = (120u64 << (count - 1).min(3)).min(900); // 120·240·480·900
+        map.insert(
+            key.to_string(),
+            (
+                std::time::Instant::now() + std::time::Duration::from_secs(secs),
+                count,
+            ),
+        );
+    }
+}
+
+fn backoff_clear(key: &str) {
+    if let Ok(mut map) = backoff().lock() {
+        map.remove(key);
+    }
+}
+
 pub async fn fetch(
     env: &Env,
     provider: Provider,
     profile: Option<&str>,
 ) -> Result<Usage, String> {
     let key = cache_key(env, provider, profile);
+
+    // 1) 메모리 캐시가 신선하면 그대로
     if let Ok(map) = cache().lock() {
         if let Some((at, cached)) = map.get(&key) {
             if at.elapsed() < CACHE_TTL {
@@ -344,36 +401,66 @@ pub async fn fetch(
             }
         }
     }
+
+    // 2) 재시작 직후: 디스크의 마지막 수치가 아직 신선하면 API를 부르지 않는다
+    //    (재시작 때마다 일제 호출로 요청 제한에 걸리던 원인 제거)
+    if let Some(fresh) = disk_cache_load(env, &key, CACHE_TTL) {
+        if let Ok(mut map) = cache().lock() {
+            map.insert(key.clone(), (std::time::Instant::now(), fresh.clone()));
+        }
+        return Ok(fresh);
+    }
+
+    // 실패 시 대신 내보낼 마지막 수치 (메모리 → 디스크 순, 1시간 상한)
+    let stale_value = || -> Option<Usage> {
+        if let Ok(map) = cache().lock() {
+            if let Some((at, cached)) = map.get(&key) {
+                if at.elapsed() < STALE_MAX {
+                    return Some(cached.clone());
+                }
+            }
+        }
+        disk_cache_load(env, &key, STALE_MAX)
+    };
+    let mark_stale = |mut usage: Usage| {
+        usage.stale = true;
+        usage
+    };
+
+    // 3) 백오프 중이면 API를 부르지 않고 마지막 수치로 버틴다
+    if backoff_active(&key) {
+        return match stale_value() {
+            Some(usage) => Ok(mark_stale(usage)),
+            None => Err("사용량 조회 대기중".into()),
+        };
+    }
+
+    // 4) 실제 조회
     let result = match provider {
         Provider::Claude => fetch_claude(env, profile).await,
         Provider::Codex => fetch_codex(env, profile).await,
     };
     match result {
         Ok(usage) => {
+            backoff_clear(&key);
             if let Ok(mut map) = cache().lock() {
                 map.insert(key.clone(), (std::time::Instant::now(), usage.clone()));
             }
             disk_cache_store(env, &key, &usage);
             Ok(usage)
         }
-        Err(e) => {
-            let mark_stale = |mut usage: Usage| {
-                usage.stale = true;
-                usage
-            };
-            if let Ok(map) = cache().lock() {
-                if let Some((at, cached)) = map.get(&key) {
-                    if at.elapsed() < STALE_MAX {
-                        return Ok(mark_stale(cached.clone()));
-                    }
-                }
+        Err(FetchErr::Transient) => {
+            // 요청 제한·서버 오류 — 재시도를 자제하고 마지막 수치로 조용히 버틴다
+            backoff_bump(&key);
+            match stale_value() {
+                Some(usage) => Ok(mark_stale(usage)),
+                None => Err("사용량 조회 대기중".into()),
             }
-            // 재시작 직후 등 메모리 캐시가 빈 경우 — 디스크의 마지막 성공 수치로 폴백
-            if let Some(cached) = disk_cache_load(env, &key) {
-                return Ok(mark_stale(cached));
-            }
-            Err(e)
         }
+        Err(FetchErr::Msg(message)) => match stale_value() {
+            Some(usage) => Ok(mark_stale(usage)),
+            None => Err(message),
+        },
     }
 }
 
@@ -514,16 +601,27 @@ mod tests {
             stale: false,
         };
         disk_cache_store(&env, "claude:acct-1", &usage);
-        let loaded = disk_cache_load(&env, "claude:acct-1").expect("방금 저장한 값이 읽혀야 한다");
+        let loaded = disk_cache_load(&env, "claude:acct-1", STALE_MAX)
+            .expect("방금 저장한 값이 읽혀야 한다");
         assert_eq!(loaded.windows[0].percent, 42.0);
         // 다른 키는 없음
-        assert!(disk_cache_load(&env, "claude:acct-2").is_none());
+        assert!(disk_cache_load(&env, "claude:acct-2", STALE_MAX).is_none());
         // 오래된 항목은 버려진다
         let path = disk_cache_path(&env);
         let mut root = read_json(&path).unwrap();
         root["claude:acct-1"]["saved_at"] = serde_json::json!(1000);
         fs::write(&path, serde_json::to_vec(&root).unwrap()).unwrap();
-        assert!(disk_cache_load(&env, "claude:acct-1").is_none());
+        assert!(disk_cache_load(&env, "claude:acct-1", STALE_MAX).is_none());
+    }
+
+    #[test]
+    fn backoff_escalates_and_clears() {
+        let key = "test:backoff-key";
+        assert!(!backoff_active(key));
+        backoff_bump(key);
+        assert!(backoff_active(key), "첫 거절 후에는 재시도를 자제해야 한다");
+        backoff_clear(key);
+        assert!(!backoff_active(key), "성공하면 즉시 정상 주기로 돌아온다");
     }
 
     /// 실계정 토큰으로 실제 엔드포인트를 호출하는 스모크 테스트.
