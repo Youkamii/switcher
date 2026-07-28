@@ -28,6 +28,9 @@ pub struct UsageWindow {
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Usage {
     pub windows: Vec<UsageWindow>,
+    /// true면 지금 조회가 막혀(429 등) 마지막 성공 수치를 대신 보여주는 것
+    #[serde(default)]
+    pub stale: bool,
 }
 
 /// 조회 대상 토큰 파일: 프로필 이름이 있으면 보관함, 없으면 활성 파일.
@@ -125,7 +128,10 @@ fn parse_claude_usage(body: &Value) -> Usage {
             }
         }
     }
-    Usage { windows }
+    Usage {
+        windows,
+        stale: false,
+    }
 }
 
 async fn get_json(request: reqwest::RequestBuilder) -> Result<Value, String> {
@@ -236,7 +242,10 @@ fn parse_codex_usage(body: &Value) -> Usage {
             }
         }
     }
-    Usage { windows }
+    Usage {
+        windows,
+        stale: false,
+    }
 }
 
 async fn fetch_codex(env: &Env, profile: Option<&str>) -> Result<Usage, String> {
@@ -260,9 +269,9 @@ fn cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, (std::
 }
 
 const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
-/// 실패 시 대신 보여줄 수 있는 직전 값의 최대 나이 — 이보다 오래되면 에러를 그대로 보여준다
-/// (만료 안내 같은 진짜 문제를 몇 시간 전 숫자로 가리지 않기 위함)
-const STALE_MAX: std::time::Duration = std::time::Duration::from_secs(600);
+/// 실패 시 대신 보여줄 수 있는 직전 값의 최대 나이. 이 폴백은 stale 표시와 함께
+/// 나가므로("이전 값") 진짜 문제를 가리지 않는다 — 이보다 오래되면 에러를 그대로 보여준다.
+const STALE_MAX: std::time::Duration = std::time::Duration::from_secs(3600);
 
 /// 캐시 키는 "누구의 사용량인가"(계정 id) 기준이다.
 /// 전환 직후 활성 파일의 계정이 바뀌면 키도 바뀌어 이전 계정 수치가 새 계정 카드에
@@ -348,16 +357,20 @@ pub async fn fetch(
             Ok(usage)
         }
         Err(e) => {
+            let mark_stale = |mut usage: Usage| {
+                usage.stale = true;
+                usage
+            };
             if let Ok(map) = cache().lock() {
                 if let Some((at, cached)) = map.get(&key) {
                     if at.elapsed() < STALE_MAX {
-                        return Ok(cached.clone());
+                        return Ok(mark_stale(cached.clone()));
                     }
                 }
             }
             // 재시작 직후 등 메모리 캐시가 빈 경우 — 디스크의 마지막 성공 수치로 폴백
             if let Some(cached) = disk_cache_load(env, &key) {
-                return Ok(cached);
+                return Ok(mark_stale(cached));
             }
             Err(e)
         }
@@ -498,6 +511,7 @@ mod tests {
                 percent: 42.0,
                 resets_at: None,
             }],
+            stale: false,
         };
         disk_cache_store(&env, "claude:acct-1", &usage);
         let loaded = disk_cache_load(&env, "claude:acct-1").expect("방금 저장한 값이 읽혀야 한다");

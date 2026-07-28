@@ -25,7 +25,7 @@ type UsageWindow = {
   resets_at: string | null;
 };
 
-type Usage = { windows: UsageWindow[] };
+type Usage = { windows: UsageWindow[]; stale?: boolean };
 
 const PROVIDERS = [
   { id: "claude", title: "CLAUDE" },
@@ -116,13 +116,18 @@ async function loadUsage(provider: ProviderId, card: HTMLElement, profile: strin
       box.appendChild(empty);
       return;
     }
+    // stale(마지막 성공 수치 표시 중)이어도 별도 문구 없이 조용히 수치만 보여준다
     for (const win of usage.windows) box.appendChild(usageRow(win));
   } catch (error) {
     box.textContent = "";
-    const err = document.createElement("div");
-    err.className = "usage-error";
-    err.textContent = String(error);
-    box.appendChild(err);
+    const message = String(error);
+    // 일시적인 요청 제한은 화면에 알리지 않는다 — 다음 자동 갱신에서 조용히 채워진다
+    if (!message.includes("요청이 잦아")) {
+      const err = document.createElement("div");
+      err.className = "usage-error";
+      err.textContent = message;
+      box.appendChild(err);
+    }
   }
   fitHeight();
 }
