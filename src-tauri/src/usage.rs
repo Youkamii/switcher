@@ -82,12 +82,11 @@ fn parse_claude_usage(body: &Value) -> Usage {
                 .pointer("/scope/model/display_name")
                 .and_then(|v| v.as_str());
             let (key, label) = match (kind, scope_model) {
-                ("session", _) => ("session".to_string(), "5시간".to_string()),
-                ("weekly_all", _) => ("weekly".to_string(), "주간".to_string()),
-                ("weekly_scoped", Some(model)) => {
-                    (format!("weekly:{model}"), format!("주간 · {model}"))
-                }
-                ("weekly_scoped", None) => ("weekly_scoped".to_string(), "주간(모델)".to_string()),
+                ("session", _) => ("session".to_string(), "5 Hours".to_string()),
+                ("weekly_all", _) => ("weekly".to_string(), "Weekly".to_string()),
+                // 모델별 주간 한도는 모델 이름만 (예: Fable)
+                ("weekly_scoped", Some(model)) => (format!("weekly:{model}"), model.to_string()),
+                ("weekly_scoped", None) => ("weekly_scoped".to_string(), "Weekly (model)".to_string()),
                 (other, _) => (other.to_string(), other.to_string()),
             };
             windows.push(UsageWindow {
@@ -104,8 +103,8 @@ fn parse_claude_usage(body: &Value) -> Usage {
     // 구형 응답 폴백: limits 배열이 없으면 five_hour/seven_day 필드 사용
     if windows.is_empty() {
         for (field, key, label) in [
-            ("five_hour", "session", "5시간"),
-            ("seven_day", "weekly", "주간"),
+            ("five_hour", "session", "5 Hours"),
+            ("seven_day", "weekly", "Weekly"),
         ] {
             if let Some(percent) = body
                 .pointer(&format!("/{field}/utilization"))
@@ -183,25 +182,26 @@ fn codex_token(env: &Env, profile: Option<&str>) -> Result<(String, Option<Strin
     Ok((access.to_string(), account_id))
 }
 
-/// 한도 창 길이를 사람이 읽는 라벨로 (604800초=7일 → "주간")
+/// 한도 창 길이를 사람이 읽는 라벨로. 코덱스 응답이 언젠가 일간(86400초) 창을
+/// 추가해도 이 함수가 "Daily"로 자동 대응한다 — 파서는 창 길이만 보므로 코드 수정 불필요.
 fn window_label(seconds: Option<i64>) -> String {
     match seconds {
-        Some(s) if s >= 6 * 86400 => "주간".to_string(),
-        Some(s) if s >= 86400 => format!("{}일", s / 86400),
-        Some(s) if s >= 3600 => format!("{}시간", s / 3600),
-        _ => "한도".to_string(),
+        Some(s) if s >= 6 * 86400 => "Weekly".to_string(),
+        Some(s) if s >= 2 * 86400 => format!("{} Days", s / 86400),
+        Some(s) if s >= 86400 => "Daily".to_string(),
+        Some(s) if s >= 2 * 3600 => format!("{} Hours", s / 3600),
+        Some(s) if s >= 3600 => "1 Hour".to_string(),
+        _ => "Limit".to_string(),
     }
 }
 
-fn push_codex_window(windows: &mut Vec<UsageWindow>, key: &str, label_prefix: &str, w: &Value) {
+fn push_codex_window(windows: &mut Vec<UsageWindow>, key: &str, label: Option<&str>, w: &Value) {
     let Some(percent) = w.get("used_percent").and_then(|v| v.as_f64()) else {
         return;
     };
-    let label = format!(
-        "{}{}",
-        label_prefix,
+    let label = label.map(String::from).unwrap_or_else(|| {
         window_label(w.get("limit_window_seconds").and_then(|v| v.as_i64()))
-    );
+    });
     windows.push(UsageWindow {
         key: key.to_string(),
         label,
@@ -216,24 +216,20 @@ fn push_codex_window(windows: &mut Vec<UsageWindow>, key: &str, label_prefix: &s
 fn parse_codex_usage(body: &Value) -> Usage {
     let mut windows = Vec::new();
     if let Some(w) = body.pointer("/rate_limit/primary_window") {
-        push_codex_window(&mut windows, "primary", "", w);
+        push_codex_window(&mut windows, "primary", None, w);
     }
     if let Some(w) = body.pointer("/rate_limit/secondary_window") {
-        push_codex_window(&mut windows, "secondary", "", w);
+        push_codex_window(&mut windows, "secondary", None, w);
     }
     if let Some(extra) = body.get("additional_rate_limits").and_then(|v| v.as_array()) {
         for item in extra {
             let name = item
                 .get("limit_name")
                 .and_then(|v| v.as_str())
-                .unwrap_or("모델");
+                .unwrap_or("Model");
             if let Some(w) = item.pointer("/rate_limit/primary_window") {
-                push_codex_window(
-                    &mut windows,
-                    &format!("model:{name}"),
-                    &format!("{name} · "),
-                    w,
-                );
+                // 모델별 한도는 모델 이름만 표시
+                push_codex_window(&mut windows, &format!("model:{name}"), Some(name), w);
             }
         }
     }
@@ -343,9 +339,11 @@ mod tests {
         let usage = parse_claude_usage(&body);
         assert_eq!(usage.windows.len(), 3);
         assert_eq!(usage.windows[0].key, "session");
+        assert_eq!(usage.windows[0].label, "5 Hours");
         assert_eq!(usage.windows[0].percent, 62.0);
+        assert_eq!(usage.windows[1].label, "Weekly");
         assert_eq!(usage.windows[2].key, "weekly:Fable");
-        assert_eq!(usage.windows[2].label, "주간 · Fable");
+        assert_eq!(usage.windows[2].label, "Fable");
     }
 
     #[test]
@@ -404,11 +402,26 @@ mod tests {
         let usage = parse_codex_usage(&body);
         assert_eq!(usage.windows.len(), 3);
         assert_eq!(usage.windows[0].key, "primary");
-        assert_eq!(usage.windows[0].label, "주간");
+        assert_eq!(usage.windows[0].label, "Weekly");
         assert_eq!(usage.windows[0].percent, 30.0);
-        assert_eq!(usage.windows[1].label, "5시간");
+        assert_eq!(usage.windows[1].label, "5 Hours");
         assert_eq!(usage.windows[2].key, "model:GPT-Test-Model");
-        assert_eq!(usage.windows[2].label, "GPT-Test-Model · 주간");
+        assert_eq!(usage.windows[2].label, "GPT-Test-Model");
+    }
+
+    #[test]
+    fn codex_daily_window_is_labeled_automatically() {
+        // 코덱스가 일간 한도를 도입해도 창 길이(86400초)만 보고 자동으로 Daily로 표시된다
+        let body: Value = serde_json::from_str(
+            r#"{"rate_limit": {
+                "primary_window": {"used_percent": 12, "limit_window_seconds": 86400, "reset_at": 1785661000},
+                "secondary_window": {"used_percent": 30, "limit_window_seconds": 604800, "reset_at": 1785663000}
+            }}"#,
+        )
+        .unwrap();
+        let usage = parse_codex_usage(&body);
+        assert_eq!(usage.windows[0].label, "Daily");
+        assert_eq!(usage.windows[1].label, "Weekly");
     }
 
     #[test]

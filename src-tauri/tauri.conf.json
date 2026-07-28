@@ -16,8 +16,12 @@
         "title": "switcher",
         "width": 360,
         "height": 540,
+        "minWidth": 360,
+        "maxWidth": 360,
+        "minHeight": 420,
         "decorations": false,
-        "resizable": false,
+        "transparent": true,
+        "resizable": true,
         "skipTaskbar": true,
         "alwaysOnTop": true
       }

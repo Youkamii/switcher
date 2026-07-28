@@ -22,23 +22,29 @@
 html,
 body {
   height: 100vh;
+  background: transparent;
 }
 
 body {
-  background: var(--bg);
   color: var(--text);
   user-select: none;
   overflow: hidden;
 }
 
-/* 테두리 없는 창이므로 shell이 위젯의 몸통이다 (투명 창은 Windows에서 렌더가 불안정해 불투명 고정) */
+/* 테두리 없는 투명 창 — shell이 위젯의 몸통이고, 바탕 투명도는 --bg-alpha로 조절한다 */
 .shell {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background: var(--bg);
-  border: 1px solid #34344a;
+  background: rgba(22, 22, 30, var(--bg-alpha, 1));
+  border: 1px solid rgba(52, 52, 74, 0.9);
+  border-radius: 12px;
   overflow: hidden;
+}
+
+input[type="range"] {
+  width: 64px;
+  accent-color: var(--accent);
 }
 
 .titlebar {
@@ -233,7 +239,11 @@ button.link:hover {
 
 .card-name {
   font-weight: 700;
-  font-size: 14px;
+  font-size: 13px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .card-email {
@@ -252,15 +262,40 @@ button.link:hover {
   border: 1px solid var(--ok);
   border-radius: 99px;
   padding: 1px 7px;
+  flex: none;
+}
+
+.badge.plan {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .usage-row {
   display: grid;
-  grid-template-columns: 86px 1fr 34px;
+  grid-template-columns: 74px 1fr 32px 52px;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin: 3px 0;
   font-size: 11px;
+}
+
+.usage-reset {
+  color: var(--muted);
+  font-size: 10px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 고정 모드: 조작 요소를 전부 숨겨 사용량 전용 위젯이 된다 */
+#app.locked .card-actions,
+#app.locked .add-row,
+#app.locked .save-row,
+#app.locked .login-panel,
+#app.locked .hint,
+#app.locked .help,
+#app.locked button.link {
+  display: none;
 }
 
 .usage-label {
@@ -313,6 +348,7 @@ button.link:hover {
   display: flex;
   gap: 6px;
   margin-top: 8px;
+  justify-content: flex-end;
 }
 
 .save-row {

@@ -1,10 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type ProfileInfo = {
   name: string;
   id: string;
   email: string | null;
+  plan: string | null;
   saved_at: number;
   active: boolean;
 };
@@ -25,8 +27,8 @@ type UsageWindow = {
 type Usage = { windows: UsageWindow[] };
 
 const PROVIDERS = [
-  { id: "claude", title: "클로드" },
-  { id: "codex", title: "코덱스" },
+  { id: "claude", title: "CLAUDE" },
+  { id: "codex", title: "CODEX" },
 ] as const;
 
 type ProviderId = (typeof PROVIDERS)[number]["id"];
@@ -46,18 +48,19 @@ function toast(message: string, isError = false) {
   toastTimer = window.setTimeout(() => (toastEl.hidden = true), 3500);
 }
 
+/// 리셋까지 남은 시간을 짧게 (예: "3h 42m", "5d 23h")
 function formatReset(resetsAt: string | null): string {
   if (!resetsAt) return "";
   const ts = /^\d+$/.test(resetsAt) ? Number(resetsAt) * 1000 : Date.parse(resetsAt);
   if (Number.isNaN(ts)) return "";
   const diff = ts - Date.now();
-  if (diff <= 0) return "리셋됨";
+  if (diff <= 0) return "reset";
   const minutes = Math.floor(diff / 60000);
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);
-  if (days >= 1) return `리셋까지 ${days}일 ${hours % 24}시간`;
-  if (hours >= 1) return `리셋까지 ${hours}시간 ${minutes % 60}분`;
-  return `리셋까지 ${minutes}분`;
+  if (days >= 1) return `${days}d ${hours % 24}h`;
+  if (hours >= 1) return `${hours}h ${minutes % 60}m`;
+  return `${minutes}m`;
 }
 
 function usageRow(win: UsageWindow): HTMLElement {
@@ -67,7 +70,7 @@ function usageRow(win: UsageWindow): HTMLElement {
   const label = document.createElement("span");
   label.className = "usage-label";
   label.textContent = win.label;
-  label.title = `${win.label} ${formatReset(win.resets_at)}`.trim();
+  label.title = win.label;
 
   const bar = document.createElement("div");
   bar.className = "bar";
@@ -82,7 +85,13 @@ function usageRow(win: UsageWindow): HTMLElement {
   pct.className = "usage-pct";
   pct.textContent = `${Math.round(win.percent)}%`;
 
-  row.append(label, bar, pct);
+  // 리셋까지 남은 시간은 모든 창에 각각 표시한다
+  const reset = document.createElement("span");
+  reset.className = "usage-reset";
+  reset.textContent = formatReset(win.resets_at);
+  reset.title = "리셋까지 남은 시간";
+
+  row.append(label, bar, pct, reset);
   return row;
 }
 
@@ -106,14 +115,6 @@ async function loadUsage(provider: ProviderId, card: HTMLElement, profile: strin
       return;
     }
     for (const win of usage.windows) box.appendChild(usageRow(win));
-    const primary = usage.windows[0];
-    const note = formatReset(primary.resets_at);
-    if (note) {
-      const noteEl = document.createElement("div");
-      noteEl.className = "usage-note";
-      noteEl.textContent = note;
-      box.appendChild(noteEl);
-    }
   } catch (error) {
     box.textContent = "";
     const err = document.createElement("div");
@@ -129,13 +130,18 @@ function profileCard(provider: ProviderId, profile: ProfileInfo): HTMLElement {
 
   const head = document.createElement("div");
   head.className = "card-head";
-  const name = document.createElement("span");
-  name.className = "card-name";
-  name.textContent = profile.name;
+  // 사용자는 이메일로 계정을 구분한다 — 프로필 이름은 안 보여주고 이메일만
   const email = document.createElement("span");
-  email.className = "card-email";
-  email.textContent = profile.email ?? "";
-  head.append(name, email);
+  email.className = "card-name";
+  email.textContent = profile.email ?? profile.name;
+  email.title = `프로필 이름: ${profile.name}`;
+  head.append(email);
+  if (profile.plan) {
+    const plan = document.createElement("span");
+    plan.className = "badge plan";
+    plan.textContent = profile.plan;
+    head.appendChild(plan);
+  }
   if (profile.active) {
     const badge = document.createElement("span");
     badge.className = "badge";
@@ -477,25 +483,61 @@ function userIsBusy(): boolean {
 }
 
 const appWindow = getCurrentWindow();
-// 위젯은 기본이 "항상 위" — 처음 실행(저장값 없음)이면 켠 상태로 시작
-const storedPin = localStorage.getItem("switcher.pinned");
-let pinned = storedPin === null ? true : storedPin === "1";
 
-async function applyPin(button: HTMLButtonElement) {
-  await appWindow.setAlwaysOnTop(pinned);
-  button.classList.toggle("pinned", pinned);
-  button.textContent = pinned ? "고정됨" : "고정";
+// 고정 모드 — 조작 요소(전환·삭제·계정 추가·저장)를 전부 숨기고
+// 사용량만 보이는 위젯이 된다. 실수 클릭 방지 겸 전시용.
+// (항상-위는 창 기본 설정으로 항상 켜져 있다)
+const lockBtn = document.getElementById("pin") as HTMLButtonElement;
+let locked = localStorage.getItem("switcher.locked") === "1";
+
+function applyLock() {
+  app.classList.toggle("locked", locked);
+  lockBtn.classList.toggle("pinned", locked);
+  lockBtn.textContent = locked ? "고정됨" : "고정";
 }
 
-const pinBtn = document.getElementById("pin") as HTMLButtonElement;
-pinBtn.addEventListener("click", () => {
-  pinned = !pinned;
-  localStorage.setItem("switcher.pinned", pinned ? "1" : "0");
-  void applyPin(pinBtn);
+lockBtn.addEventListener("click", () => {
+  locked = !locked;
+  localStorage.setItem("switcher.locked", locked ? "1" : "0");
+  applyLock();
+  // 고정하는 순간 열려 있던 로그인 패널 등을 정리한다
+  if (locked) void render();
 });
-void applyPin(pinBtn);
+applyLock();
 
 document.getElementById("hide")!.addEventListener("click", () => void appWindow.hide());
+
+// 바탕 투명도 — 슬라이더 값(35~100%)을 CSS 변수로 반영하고 기억한다
+const alphaSlider = document.getElementById("alpha") as HTMLInputElement;
+function applyAlpha(percent: number) {
+  const clamped = Math.min(100, Math.max(35, percent));
+  document.documentElement.style.setProperty("--bg-alpha", String(clamped / 100));
+  alphaSlider.value = String(clamped);
+}
+applyAlpha(Number(localStorage.getItem("switcher.alpha") ?? "100"));
+alphaSlider.addEventListener("input", () => {
+  applyAlpha(Number(alphaSlider.value));
+  localStorage.setItem("switcher.alpha", alphaSlider.value);
+});
+
+// 세로 크기 — 사용자가 가장자리로 조절한 높이를 기억했다가 다음 실행에 복원한다
+const savedHeight = Number(localStorage.getItem("switcher.height"));
+if (Number.isFinite(savedHeight) && savedHeight >= 420) {
+  void appWindow.setSize(new LogicalSize(360, savedHeight));
+}
+let resizeTimer: number | undefined;
+void appWindow.onResized((event) => {
+  window.clearTimeout(resizeTimer);
+  resizeTimer = window.setTimeout(() => {
+    void (async () => {
+      const scale = await appWindow.scaleFactor();
+      const logical = event.payload.toLogical(scale);
+      if (logical.height >= 420) {
+        localStorage.setItem("switcher.height", String(Math.round(logical.height)));
+      }
+    })();
+  }, 400);
+});
 document.getElementById("refresh")!.addEventListener("click", () => {
   if (loginOpen) {
     toast("로그인을 진행 중입니다 — 끝내거나 취소한 뒤 새로고침하세요", true);

@@ -92,6 +92,8 @@ pub struct ProfileInfo {
     pub name: String,
     pub id: String,
     pub email: Option<String>,
+    /// 구독 레벨 (Max·Pro·Plus 등) — 토큰 파일에서 추출한 표시용 정보
+    pub plan: Option<String>,
     pub saved_at: u64,
     pub active: bool,
 }
@@ -227,6 +229,31 @@ pub(crate) fn identity_from_value(provider: Provider, root: &Value) -> Option<Li
             Some(LiveIdentity { id, email })
         }
     }
+}
+
+/// 토큰 파일에서 구독 레벨을 뽑는다 (표시용).
+/// 클로드: claudeAiOauth.subscriptionType ("max"), 코덱스: JWT auth claim의 chatgpt_plan_type ("pro").
+fn plan_from_credential(provider: Provider, root: &Value) -> Option<String> {
+    let raw = match provider {
+        Provider::Claude => root
+            .pointer("/claudeAiOauth/subscriptionType")?
+            .as_str()?
+            .to_string(),
+        Provider::Codex => {
+            let token = root.pointer("/tokens/id_token")?.as_str()?;
+            jwt_payload(token)?
+                .get("https://api.openai.com/auth")?
+                .get("chatgpt_plan_type")?
+                .as_str()?
+                .to_string()
+        }
+    };
+    // 첫 글자만 대문자로 (max → Max)
+    let mut chars = raw.chars();
+    Some(match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => return None,
+    })
 }
 
 /// 현재 로그인된 계정의 신원. 파일이 없거나 식별 불가면 Ok(None).
@@ -514,11 +541,15 @@ pub fn list(env: &Env, provider: Provider) -> Result<Snapshot, String> {
     let mut profiles = Vec::new();
     for (name, dir) in profile_dirs(env, provider)? {
         if let Some(meta) = read_meta(&dir) {
+            let plan = read_json(&dir.join(provider.credential_file_name()))
+                .ok()
+                .and_then(|root| plan_from_credential(provider, &root));
             profiles.push(ProfileInfo {
                 active: live_id.as_deref() == Some(meta.id.as_str()),
                 name,
                 id: meta.id,
                 email: meta.email,
+                plan,
                 saved_at: meta.saved_at,
             });
         }
@@ -718,6 +749,28 @@ mod tests {
         let err = switch(&env, Provider::Claude, "rescue1").unwrap_err();
         assert!(err.contains("계정 정보"));
         assert!(live_token(&env).contains("tok-a1"), "활성 토큰은 불변");
+    }
+
+    #[test]
+    fn plan_is_extracted_from_credentials() {
+        let claude: Value =
+            serde_json::from_str(r#"{"claudeAiOauth":{"accessToken":"t","subscriptionType":"max"}}"#)
+                .unwrap();
+        assert_eq!(
+            plan_from_credential(Provider::Claude, &claude).as_deref(),
+            Some("Max")
+        );
+        let jwt = fake_jwt(
+            r#"{"email":"x@test.dev","https://api.openai.com/auth":{"chatgpt_plan_type":"pro"}}"#,
+        );
+        let codex: Value = serde_json::from_str(&format!(
+            r#"{{"tokens":{{"id_token":"{jwt}","account_id":"a"}}}}"#
+        ))
+        .unwrap();
+        assert_eq!(
+            plan_from_credential(Provider::Codex, &codex).as_deref(),
+            Some("Pro")
+        );
     }
 
     #[test]
