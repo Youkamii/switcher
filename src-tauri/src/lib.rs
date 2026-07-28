@@ -196,6 +196,12 @@ pub fn run() {
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
     tauri::Builder::default()
+        // 단일 인스턴스 — 이미 떠 있는데 exe를 또 실행하면 새 프로세스는 뜨지 않고
+        // 기존 창이 앞으로 온다. 두 인스턴스의 토큰 재발급·전환이 경합하는 사고도
+        // 함께 차단된다 (첫 플러그인으로 등록해야 다른 초기화보다 먼저 판정한다)
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
         .setup(|app| {
             use tauri::Manager;
             // 첫 실행 위치: 작업영역 우하단 (위젯 기본 자리)
