@@ -626,7 +626,7 @@ function applyViewMode() {
   document.body.classList.toggle("locked", locked);
   lockBtn.classList.toggle("pinned", locked);
   lockBtn.textContent =
-    viewMode === "normal" ? "고정" : viewMode === "locked" ? "고정됨" : "컴팩트";
+    viewMode === "normal" ? "Type 1" : viewMode === "locked" ? "Type 2" : "Type 3";
   // 위젯 모드에서는 ☰ 핸들을 잡아야만 창이 움직인다 — 타이틀바 전체 드래그를 끈다
   if (locked) {
     titlebarEl.removeAttribute("data-tauri-drag-region");
