@@ -4,23 +4,13 @@ Claude Code와 Codex CLI 계정을 버튼 하나로 갈아타는 Windows 위젯.
 
 A desktop widget that switches between multiple Claude Code / Codex CLI accounts in one click, with per-account usage bars.
 
-## 설치
+## 다운로드
 
-Node.js와 Rust 툴체인이 필요하다.
-
-```sh
-git clone https://github.com/Youkamii/switcher.git
-cd switcher
-npm install
-npm run tauri build
-# 실행 파일: src-tauri\target\release\switcher.exe
-```
-
-설치 프로그램 없이 exe 하나로 동작한다. 개발 실행은 `npm run tauri dev`.
+[**최신 버전 받기**](https://github.com/Youkamii/switcher/releases/latest) → `switcher-win-x64.zip`을 받아 압축을 풀고 `switcher.exe`를 실행하면 된다. 설치 프로그램도, 별도 런타임도 필요 없다. (Windows 10/11 64비트)
 
 ## 실행
 
-- 빌드된 `switcher.exe`를 더블클릭하면 켜진다.
+- 압축을 푼 `switcher.exe`를 더블클릭하면 켜진다.
 - 바탕화면 바로가기: `switcher.exe` 우클릭 → 보내기 → 바탕 화면에 바로 가기 만들기. 다음부터는 바탕화면에서 더블클릭으로 켠다.
 - 켜져 있는 동안은 트레이(작업표시줄 오른쪽)에 W 아이콘으로 상주한다. 창을 닫아도(Alt+F4) 꺼지지 않고 트레이로 숨는다.
 - 창을 다시 열려면 트레이의 W 아이콘을 좌클릭한다.
@@ -79,6 +69,19 @@ Codex: 주소와 함께 일회용 코드(15분 유효)가 위젯에 표시된다
 Tauri 2 + Rust, 프론트는 바닐라 TypeScript. 계정 전환·사용량 조회·격리 로그인은 전부 Rust에서 처리한다.
 웹뷰에는 토큰이 올라가지 않는다.
 CLI 로그인 화면은 가상 콘솔(PTY)로 읽는다.
+
+## 직접 빌드
+
+받아서 쓰는 대신 소스에서 빌드하려면 Node.js와 Rust 툴체인이 필요하다.
+
+```sh
+git clone https://github.com/Youkamii/switcher.git
+cd switcher
+npm install
+npm run tauri build   # 결과물: src-tauri\target\release\switcher.exe
+```
+
+개발 실행은 `npm run tauri dev`.
 
 ---
 
