@@ -155,7 +155,11 @@ async function loadUsage(provider: ProviderId, card: HTMLElement, profile: strin
   fitHeight();
 }
 
-function profileCard(provider: ProviderId, profile: ProfileInfo): HTMLElement {
+function profileCard(
+  provider: ProviderId,
+  profile: ProfileInfo,
+  pending: Promise<unknown>[],
+): HTMLElement {
   const card = document.createElement("div");
   card.className = "card" + (profile.active ? " active" : "");
 
@@ -183,8 +187,9 @@ function profileCard(provider: ProviderId, profile: ProfileInfo): HTMLElement {
   // 활성 표시는 배지 대신 글자색으로 — 활성만 연둣빛 흰색, 나머지는 회색 (.card.active CSS)
   card.appendChild(head);
 
-  // 활성 프로필은 활성 파일(항상 최신 토큰), 비활성은 보관함 토큰으로 조회
-  void loadUsage(provider, card, profile.active ? null : profile.name);
+  // 활성 프로필은 활성 파일(항상 최신 토큰), 비활성은 보관함 토큰으로 조회.
+  // 프라미스는 렌더러가 모은다 — 새로고침 때 다 받아진 뒤 한 번에 교체하기 위해
+  pending.push(loadUsage(provider, card, profile.active ? null : profile.name));
 
   const who = profile.email ?? profile.name;
   let switching = false;
@@ -195,7 +200,7 @@ function profileCard(provider: ProviderId, profile: ProfileInfo): HTMLElement {
     try {
       await invoke("switch_profile", { provider, name: profile.name });
       toast(`전환 완료 — 새로 여는 터미널부터 ${who} 계정이 적용됩니다`);
-      await render();
+      await render({ immediate: true });
     } catch (error) {
       toast(String(error), true);
       if (disable) disable.disabled = false;
@@ -238,7 +243,7 @@ function profileCard(provider: ProviderId, profile: ProfileInfo): HTMLElement {
     try {
       await invoke("delete_profile", { provider, name: profile.name });
       toast(`'${profile.name}' 프로필을 삭제했습니다 (로그인 자체는 유지됩니다)`);
-      await render();
+      await render({ immediate: true });
     } catch (error) {
       toast(String(error), true);
       deleteBtn.disabled = false;
@@ -419,7 +424,7 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
       slot.appendChild(
         loginPanel(prompt, () => {
           loginOpen = false;
-          void render();
+          void render({ immediate: true });
         }),
       );
     } catch (error) {
@@ -447,7 +452,7 @@ function saveForm(provider: ProviderId, section: HTMLElement) {
     try {
       await invoke("save_profile", { provider, name });
       toast(`현재 계정을 '${name}' 프로필로 저장했습니다`);
-      await render();
+      await render({ immediate: true });
     } catch (error) {
       toast(String(error), true);
     }
@@ -460,7 +465,12 @@ function saveForm(provider: ProviderId, section: HTMLElement) {
   section.appendChild(row);
 }
 
-async function renderProvider(provider: ProviderId, title: string) {
+async function renderProvider(
+  provider: ProviderId,
+  title: string,
+  target: DocumentFragment,
+  pending: Promise<unknown>[],
+) {
   const section = document.createElement("section");
   const heading = document.createElement("h2");
   heading.className = "section-title";
@@ -476,7 +486,7 @@ async function renderProvider(provider: ProviderId, title: string) {
       hint.textContent = "저장된 계정이 없습니다 — 아래 버튼으로 추가하세요";
       section.appendChild(hint);
       addAccountButton(provider, section);
-      app.appendChild(section);
+      target.appendChild(section);
       return;
     }
 
@@ -488,7 +498,7 @@ async function renderProvider(provider: ProviderId, title: string) {
     }
 
     for (const profile of snap.profiles) {
-      section.appendChild(profileCard(provider, profile));
+      section.appendChild(profileCard(provider, profile, pending));
     }
 
     addAccountButton(provider, section);
@@ -503,7 +513,7 @@ async function renderProvider(provider: ProviderId, title: string) {
     section.appendChild(err);
   }
 
-  app.appendChild(section);
+  target.appendChild(section);
 }
 
 /// 컴팩트용 라벨 축약: "5 Hours"→5h, "Weekly"→wk, "Daily"→1d, Fable→fb, 그 외 모델→앞 2글자
@@ -609,7 +619,11 @@ async function compactCard(provider: ProviderId, profile: ProfileInfo): Promise<
 }
 
 /// 컴팩트 모드: Type 2의 축소판 — 모든 계정이 나오고 더블클릭 전환도 된다
-async function renderProviderCompact(provider: ProviderId, title: string) {
+async function renderProviderCompact(
+  provider: ProviderId,
+  title: string,
+  target: DocumentFragment,
+) {
   try {
     const snap = await invoke<Snapshot>("list_profiles", { provider });
     if (snap.profiles.length === 0) return; // 저장된 계정이 없으면 섹션 생략
@@ -621,29 +635,44 @@ async function renderProviderCompact(provider: ProviderId, title: string) {
     name.textContent = title;
     head.appendChild(name);
     section.appendChild(head);
-    app.appendChild(section);
 
-    for (const profile of snap.profiles) {
-      section.appendChild(await compactCard(provider, profile));
-    }
+    // 카드를 병렬로 준비해 순서대로 붙인다 — 하나씩 기다리며 주루룩 생기지 않게
+    const cards = await Promise.all(
+      snap.profiles.map((profile) => compactCard(provider, profile)),
+    );
+    for (const card of cards) section.appendChild(card);
+    target.appendChild(section);
   } catch {
     // 목록 실패도 조용히 — 컴팩트는 표시 전용
   }
 }
 
 let renderQueued = false;
+/// 큐된 재요청 중 하나라도 즉시 렌더(상태 변경)였으면 다음 바퀴도 즉시로 돈다
+let queuedImmediate = false;
+/// 스무스 렌더의 사용량 대기를 즉시 끝내는 스위치 (상태 변경이 끼어들 때)
+let renderAbort: (() => void) | null = null;
 
-async function render() {
+/// immediate: 전환·삭제·모드 변경처럼 "지금 상태가 바뀐" 렌더 — 새 목록을 바로
+/// 보여주고 사용량은 교체된 카드에 이어서 채운다. 생략(스무스)은 주기·수동
+/// 새로고침 — 기존 화면을 그대로 둔 채 다 받아진 뒤 한 번에 교체한다.
+async function render(opts?: { immediate?: boolean }) {
   // 새로고침 연타·자동 주기와의 경합으로 화면이 겹쳐 그려지는 것을 막고,
   // 그리는 도중 재요청이 오면 끝난 뒤 한 번 더 그린다
   if (rendering) {
     renderQueued = true;
+    if (opts?.immediate) queuedImmediate = true;
+    // 진행 중인 스무스 대기는 낡은 버퍼를 기다리는 중 — 즉시 끝내고 다시 그리게
+    renderAbort?.();
     return;
   }
   rendering = true;
+  let thisImmediate = opts?.immediate ?? false;
   try {
     do {
       renderQueued = false;
+      thisImmediate = thisImmediate || queuedImmediate;
+      queuedImmediate = false;
       // 로그인 패널이 열린 채 다른 조작(전환·삭제·저장)으로 재렌더가 일어나면
       // 패널 DOM이 사라져 위젯이 영구 마비되던 문제 — 재렌더는 곧 로그인 흐름 포기로
       // 간주하고 백엔드 세션까지 정리한다 (red-review 2라운드)
@@ -654,14 +683,39 @@ async function render() {
       // 그리는 도중 모드가 바뀌어도 한 화면은 단일 모드로 —
       // 프로바이더마다 다른 모드로 그려지는 혼종 화면 방지
       const mode = viewMode;
-      app.textContent = "";
+      // 화면을 지우고 처음부터 다시 그리면 새로고침마다 카드가 전부 사라졌다
+      // 주루룩 돌아온다 — 보이지 않는 버퍼에 완성해 두고 한 번에 교체한다
+      const buffer = document.createDocumentFragment();
+      const pending: Promise<unknown>[] = [];
       for (const { id, title } of PROVIDERS) {
         if (mode === "compact") {
-          await renderProviderCompact(id, title);
+          await renderProviderCompact(id, title, buffer);
         } else {
-          await renderProvider(id, title);
+          await renderProvider(id, title, buffer, pending);
         }
       }
+      if (!thisImmediate && app.childElementCount > 0 && !renderQueued) {
+        // 스무스 새로고침: 기존 화면을 그대로 둔 채 사용량까지 받아진 뒤 교체한다.
+        // 일반 모드의 사용량 채움에는 10초 상한 — 조회 하나가 매달려도 여기서 안
+        // 굳고, 상한에 걸쳐 교체돼도 남은 조회는 같은 카드(동일 노드)를 이어서
+        // 채운다. (컴팩트는 카드를 빌드 단계에서 만들므로 이 상한 밖 — 조회는
+        // 캐시로 대부분 즉시다)
+        await Promise.race([
+          Promise.allSettled(pending),
+          new Promise<void>((resolve) => window.setTimeout(resolve, 10_000)),
+          new Promise<void>((resolve) => {
+            renderAbort = resolve;
+          }),
+        ]);
+        renderAbort = null;
+      }
+      // 그리는·기다리는 사이 상태가 바뀌었으면 이 버퍼는 낡았고(전환·삭제),
+      // 화면에는 그새 생긴 로그인 패널·입력 중인 글자가 있을 수 있다 — 교체를
+      // 접는다. 큐가 있으면 새 상태로 다시 그리고, 없으면 다음 주기에 맡긴다.
+      if (renderQueued || userIsBusy()) continue;
+      // 첫 화면은 뼈대를 먼저 보여주고 사용량은 채워지는 대로 붙는다
+      app.replaceChildren(buffer);
+      thisImmediate = false;
     } while (renderQueued);
   } finally {
     rendering = false;
@@ -770,7 +824,7 @@ void listen<{ ok: boolean; provider?: string; name?: string; error?: string }>(
         const who = el?.querySelector(".card-name")?.textContent ?? event.payload.name;
         toast(`전환 완료 — 새로 여는 터미널부터 ${who} 계정이 적용됩니다`);
       }
-      window.setTimeout(() => void render(), 380);
+      window.setTimeout(() => void render({ immediate: true }), 380);
     } else if (!demoMode) {
       toast(event.payload.error ?? "전환 실패", true);
     }
@@ -782,7 +836,7 @@ lockBtn.addEventListener("click", () => {
   localStorage.setItem("switcher.viewmode", viewMode);
   applyViewMode();
   // 모드가 바뀌면 화면 구성이 달라진다 — 다시 그린다 (열려 있던 로그인 패널도 정리됨)
-  void render();
+  void render({ immediate: true });
 });
 applyViewMode();
 
@@ -883,7 +937,7 @@ void invoke<string | null>("initial_view_mode").then((mode) => {
   if (mode === "normal" || mode === "locked" || mode === "compact") {
     viewMode = mode;
     applyViewMode();
-    void render();
+    void render({ immediate: true });
   }
 });
 
