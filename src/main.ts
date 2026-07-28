@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
+import { LogicalSize, PhysicalPosition } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -782,6 +782,8 @@ alphaSlider.addEventListener("input", () => {
 // 세로 크기 — 창 높이를 콘텐츠에 맞춰 자동 조절한다.
 // 계정이 없으면 그만큼 짧아지고, 늘어나면 화면 높이 90%까지 따라 늘어난다.
 let fitTimer: number | undefined;
+// 마지막으로 적용한 목표 폭 — 폭 전환 감지는 실측이 아니라 이 값으로 한다
+let lastAppliedWidth = 0;
 
 function fitHeight() {
   window.clearTimeout(fitTimer);
@@ -800,21 +802,33 @@ function fitHeight() {
     // 컴팩트 모드는 창 자체도 좁게
     const width = viewMode === "compact" ? 240 : 360;
     void (async () => {
-      // 크기 조절 기준은 "오른쪽 상단" — 폭이 바뀔 때 우측 가장자리를 고정해
-      // Type 전환 시 창과 버튼이 오른쪽으로 밀려나지 않게 한다
-      try {
-        const scale = await appWindow.scaleFactor();
-        const pos = await appWindow.outerPosition();
-        const size = await appWindow.outerSize();
-        const currentWidth = size.width / scale;
-        if (Math.abs(currentWidth - width) > 1) {
-          const rightEdge = (pos.x + size.width) / scale;
-          await appWindow.setPosition(new LogicalPosition(rightEdge - width, pos.y / scale));
+      // 크기 조절 기준은 "오른쪽 상단" — 목표 폭이 실제로 바뀌는 전환에서만
+      // 우측 가장자리를 고정한다. (바깥 크기에는 그림자가 포함되므로 실측 폭과
+      // 목표 폭을 비교하면 매번 어긋나 창이 조금씩 밀리는 버그가 있었다)
+      const widthChanging = lastAppliedWidth !== 0 && lastAppliedWidth !== width;
+      let rightEdge = 0;
+      let topY = 0;
+      if (widthChanging) {
+        try {
+          const pos = await appWindow.outerPosition();
+          const size = await appWindow.outerSize();
+          rightEdge = pos.x + size.width;
+          topY = pos.y;
+        } catch {
+          rightEdge = 0;
         }
-      } catch {
-        // 위치 보정 실패는 치명적이지 않다 — 크기 조절은 계속한다
       }
       await appWindow.setSize(new LogicalSize(width, target));
+      if (widthChanging && rightEdge !== 0) {
+        try {
+          // 새 폭의 실제 바깥 크기(그림자 포함)로 우측 가장자리를 되살린다
+          const newSize = await appWindow.outerSize();
+          await appWindow.setPosition(new PhysicalPosition(rightEdge - newSize.width, topY));
+        } catch {
+          // 위치 보정 실패는 치명적이지 않다
+        }
+      }
+      lastAppliedWidth = width;
       // 히트 영역은 반드시 창 크기 변경이 "끝난 뒤" 보고해야 한다 —
       // 즉시 보고하면 옛 폭 기준 좌표가 남아 버튼 위 클릭이 투과돼 버린다
       window.setTimeout(reportHitRegions, 80);
