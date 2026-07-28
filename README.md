@@ -20,6 +20,8 @@ npm run tauri build
 
 <p align="center"><img src="docs/screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
 
+<p align="center"><img src="docs/demo.gif" width="420" alt="위젯 모드에서 계정 카드를 더블클릭해 전환, 빈 영역은 뒤 창으로 클릭 통과" /></p>
+
 ## 개요
 
 Claude Code든 Codex든 한 터미널에서 사용할 때, 한 계정만 로그인된다. 다계정 유저는 한도가 찰 때마다 `/login`을 다시 하고, 브라우저 인증을 다시 거치고, 지금 어느 계정을 쓰고 있는지도 헷갈린다.
