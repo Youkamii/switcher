@@ -6,9 +6,8 @@ A desktop widget that switches between multiple Claude Code / Codex CLI accounts
 
 ## 다운로드
 
-[**최신 버전 받기**](https://github.com/Youkamii/switcher/releases/latest) → `switcher-win-x64.zip`을 받아 압축을 풀고 `switcher.exe`를 실행하면 된다. 설치 프로그램도, 별도 런타임도 필요 없다. (Windows 10/11 64비트)
+[**최신 버전 받기**](https://github.com/Youkamii/switcher/releases/latest) → `switcher-win-x64.zip`을 받아 압축을 풀고 `switcher.exe`를 실행하면 된다.
 
-코드 서명이 없어서 처음 실행할 때 Windows SmartScreen이 "알 수 없는 게시자" 경고를 띄울 수 있다. 그때는 **추가 정보 → 실행**을 누르면 된다.
 
 ## 실행
 
