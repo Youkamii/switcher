@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { LogicalSize } from "@tauri-apps/api/dpi";
+import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -727,16 +727,18 @@ void listen<{ ok: boolean; provider?: string; name?: string; error?: string }>(
   "account-switched",
   (event) => {
     if (event.payload.ok) {
+      const el = hitElements.find(
+        (candidate) =>
+          candidate.dataset.provider === event.payload.provider &&
+          candidate.dataset.name === event.payload.name,
+      );
+      // 전환된 카드가 살짝 빛나고 나서 다시 그린다
+      el?.classList.add("switch-flash");
       if (!demoMode) {
-        const el = hitElements.find(
-          (candidate) =>
-            candidate.dataset.provider === event.payload.provider &&
-            candidate.dataset.name === event.payload.name,
-        );
         const who = el?.querySelector(".card-name")?.textContent ?? event.payload.name;
         toast(`전환 완료 — 새로 여는 터미널부터 ${who} 계정이 적용됩니다`);
       }
-      void render();
+      window.setTimeout(() => void render(), 380);
     } else if (!demoMode) {
       toast(event.payload.error ?? "전환 실패", true);
     }
@@ -797,11 +799,26 @@ function fitHeight() {
     const target = Math.round(Math.max(80, Math.min(total, max)));
     // 컴팩트 모드는 창 자체도 좁게
     const width = viewMode === "compact" ? 240 : 360;
-    // 히트 영역은 반드시 창 크기 변경이 "끝난 뒤" 보고해야 한다 —
-    // 즉시 보고하면 옛 폭 기준 좌표가 남아 버튼 위 클릭이 투과돼 버린다
-    void appWindow.setSize(new LogicalSize(width, target)).then(() => {
+    void (async () => {
+      // 크기 조절 기준은 "오른쪽 상단" — 폭이 바뀔 때 우측 가장자리를 고정해
+      // Type 전환 시 창과 버튼이 오른쪽으로 밀려나지 않게 한다
+      try {
+        const scale = await appWindow.scaleFactor();
+        const pos = await appWindow.outerPosition();
+        const size = await appWindow.outerSize();
+        const currentWidth = size.width / scale;
+        if (Math.abs(currentWidth - width) > 1) {
+          const rightEdge = (pos.x + size.width) / scale;
+          await appWindow.setPosition(new LogicalPosition(rightEdge - width, pos.y / scale));
+        }
+      } catch {
+        // 위치 보정 실패는 치명적이지 않다 — 크기 조절은 계속한다
+      }
+      await appWindow.setSize(new LogicalSize(width, target));
+      // 히트 영역은 반드시 창 크기 변경이 "끝난 뒤" 보고해야 한다 —
+      // 즉시 보고하면 옛 폭 기준 좌표가 남아 버튼 위 클릭이 투과돼 버린다
       window.setTimeout(reportHitRegions, 80);
-    });
+    })();
   }, 120);
 }
 
