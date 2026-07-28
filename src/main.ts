@@ -510,12 +510,76 @@ function compactReset(resetsAt: string | null): string {
   return `${hours}:${String(minutes % 60).padStart(2, "0")}`;
 }
 
-/// 컴팩트 모드: 활성 계정만 — 프로바이더 구분·구독 레벨·사용량 요약 세 가지가 전부
+/// 컴팩트 카드 하나 — 이메일·구독 배지·사용량 요약. Type 2와 같은 카드 규칙
+/// (.card/.active/.switchable)을 쓰므로 활성 색·채도·더블클릭 전환이 그대로 동작한다.
+async function compactCard(provider: ProviderId, profile: ProfileInfo): Promise<HTMLElement> {
+  const card = document.createElement("div");
+  card.className = "card compact-card" + (profile.active ? " active" : "");
+  if (!profile.active) {
+    card.classList.add("switchable");
+    card.dataset.provider = provider;
+    card.dataset.name = profile.name;
+  }
+
+  const head = document.createElement("div");
+  head.className = "card-head";
+  const email = document.createElement("span");
+  email.className = "card-name";
+  email.textContent = profile.email ?? profile.name;
+  email.title = `프로필 이름: ${profile.name}`;
+  head.appendChild(email);
+  if (profile.plan) {
+    const plan = document.createElement("span");
+    plan.className = "badge plan";
+    plan.textContent = profile.plan;
+    if (profile.plan_tier) {
+      const tier = document.createElement("span");
+      tier.className = `tier tier-${profile.plan_tier}`;
+      tier.textContent = String(profile.plan_tier);
+      plan.appendChild(tier);
+    }
+    head.appendChild(plan);
+  }
+  card.appendChild(head);
+
+  try {
+    const usage = await invoke<Usage>("fetch_usage", {
+      provider,
+      profile: profile.active ? null : profile.name,
+    });
+    for (const win of usage.windows) {
+      const row = document.createElement("div");
+      row.className = "compact-row";
+      const label = document.createElement("span");
+      label.className = "c-label";
+      label.textContent = compactLabel(win);
+      label.title = win.label;
+      const bar = document.createElement("div");
+      bar.className = "bar";
+      const fill = document.createElement("div");
+      fill.className = "bar-fill";
+      if (win.percent >= 85) fill.classList.add("danger");
+      else if (win.percent >= 60) fill.classList.add("warn");
+      fill.style.width = `${Math.min(100, Math.max(0, win.percent))}%`;
+      bar.appendChild(fill);
+      const reset = document.createElement("span");
+      reset.className = "c-reset";
+      reset.textContent = compactReset(win.resets_at);
+      reset.title = "리셋까지 남은 시간";
+      row.append(label, bar, reset);
+      card.appendChild(row);
+    }
+  } catch {
+    // 컴팩트 모드에서는 조회 실패를 조용히 넘긴다 — 다음 주기에 다시 시도
+  }
+  return card;
+}
+
+/// 컴팩트 모드: Type 2의 축소판 — 모든 계정이 나오고 더블클릭 전환도 된다
 async function renderProviderCompact(provider: ProviderId, title: string) {
   try {
     const snap = await invoke<Snapshot>("list_profiles", { provider });
-    const active = snap.profiles.find((profile) => profile.active);
-    if (!active) return; // 로그인된 계정이 없으면 섹션 자체를 생략
+    if (snap.profiles.length === 0) return; // 저장된 계정이 없으면 섹션 생략
 
     const section = document.createElement("section");
     const head = document.createElement("div");
@@ -523,47 +587,11 @@ async function renderProviderCompact(provider: ProviderId, title: string) {
     const name = document.createElement("span");
     name.textContent = title;
     head.appendChild(name);
-    if (active.plan) {
-      const plan = document.createElement("span");
-      plan.className = "badge plan";
-      plan.textContent = active.plan;
-      if (active.plan_tier) {
-        const tier = document.createElement("span");
-        tier.className = `tier tier-${active.plan_tier}`;
-        tier.textContent = String(active.plan_tier);
-        plan.appendChild(tier);
-      }
-      head.appendChild(plan);
-    }
     section.appendChild(head);
     app.appendChild(section);
 
-    try {
-      const usage = await invoke<Usage>("fetch_usage", { provider, profile: null });
-      for (const win of usage.windows) {
-        const row = document.createElement("div");
-        row.className = "compact-row";
-        const label = document.createElement("span");
-        label.className = "c-label";
-        label.textContent = compactLabel(win);
-        label.title = win.label;
-        const bar = document.createElement("div");
-        bar.className = "bar";
-        const fill = document.createElement("div");
-        fill.className = "bar-fill";
-        if (win.percent >= 85) fill.classList.add("danger");
-        else if (win.percent >= 60) fill.classList.add("warn");
-        fill.style.width = `${Math.min(100, Math.max(0, win.percent))}%`;
-        bar.appendChild(fill);
-        const reset = document.createElement("span");
-        reset.className = "c-reset";
-        reset.textContent = compactReset(win.resets_at);
-        reset.title = "리셋까지 남은 시간";
-        row.append(label, bar, reset);
-        section.appendChild(row);
-      }
-    } catch {
-      // 컴팩트 모드에서는 조회 실패를 조용히 넘긴다 — 다음 주기에 다시 시도
+    for (const profile of snap.profiles) {
+      section.appendChild(await compactCard(provider, profile));
     }
   } catch {
     // 목록 실패도 조용히 — 컴팩트는 표시 전용

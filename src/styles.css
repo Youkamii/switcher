@@ -348,6 +348,20 @@ button.link:hover {
   margin-top: 0;
 }
 
+.compact-card {
+  padding: 5px 8px;
+  margin-bottom: 5px;
+}
+
+.compact-card .card-head {
+  margin-bottom: 2px;
+  gap: 6px;
+}
+
+.compact-card .card-name {
+  font-size: 11px;
+}
+
 .compact-row {
   display: grid;
   grid-template-columns: 22px 1fr 44px;
