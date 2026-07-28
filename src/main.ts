@@ -122,6 +122,7 @@ async function loadUsage(provider: ProviderId, card: HTMLElement, profile: strin
     err.textContent = String(error);
     box.appendChild(err);
   }
+  fitHeight();
 }
 
 function profileCard(provider: ProviderId, profile: ProfileInfo): HTMLElement {
@@ -153,23 +154,36 @@ function profileCard(provider: ProviderId, profile: ProfileInfo): HTMLElement {
   // 활성 프로필은 활성 파일(항상 최신 토큰), 비활성은 보관함 토큰으로 조회
   void loadUsage(provider, card, profile.active ? null : profile.name);
 
+  const who = profile.email ?? profile.name;
+  let switching = false;
+  const doSwitch = async (disable?: HTMLButtonElement) => {
+    if (switching) return;
+    switching = true;
+    if (disable) disable.disabled = true;
+    try {
+      await invoke("switch_profile", { provider, name: profile.name });
+      toast(`전환 완료 — 새로 여는 터미널부터 ${who} 계정이 적용됩니다`);
+      await render();
+    } catch (error) {
+      toast(String(error), true);
+      if (disable) disable.disabled = false;
+      switching = false;
+    }
+  };
+
   const actions = document.createElement("div");
   actions.className = "card-actions";
   if (!profile.active) {
+    // 고정(위젯) 모드에서는 카드를 빠르게 두 번 클릭해 전환한다
+    card.classList.add("switchable");
+    card.addEventListener("dblclick", () => {
+      if (locked) void doSwitch();
+    });
+
     const switchBtn = document.createElement("button");
     switchBtn.className = "primary";
     switchBtn.textContent = "이 계정으로 전환";
-    switchBtn.addEventListener("click", async () => {
-      switchBtn.disabled = true;
-      try {
-        await invoke("switch_profile", { provider, name: profile.name });
-        toast(`전환 완료 — 새로 여는 터미널부터 '${profile.name}' 계정이 적용됩니다`);
-        await render();
-      } catch (error) {
-        toast(String(error), true);
-        switchBtn.disabled = false;
-      }
-    });
+    switchBtn.addEventListener("click", () => void doSwitch(switchBtn));
     actions.appendChild(switchBtn);
   }
 
@@ -472,6 +486,7 @@ async function render() {
     }
   } finally {
     rendering = false;
+    fitHeight();
   }
 }
 
@@ -502,6 +517,7 @@ lockBtn.addEventListener("click", () => {
   locked = !locked;
   localStorage.setItem("switcher.locked", locked ? "1" : "0");
   applyLock();
+  fitHeight();
   // 고정하는 순간 열려 있던 로그인 패널 등을 정리한다
   if (locked) void render();
 });
@@ -526,24 +542,30 @@ alphaSlider.addEventListener("input", () => {
   localStorage.setItem("switcher.alpha", alphaSlider.value);
 });
 
-// 세로 크기 — 사용자가 가장자리로 조절한 높이를 기억했다가 다음 실행에 복원한다
-const savedHeight = Number(localStorage.getItem("switcher.height"));
-if (Number.isFinite(savedHeight) && savedHeight >= 420) {
-  void appWindow.setSize(new LogicalSize(360, savedHeight));
+// 세로 크기 — 창 높이를 콘텐츠에 맞춰 자동 조절한다.
+// 계정이 없으면 그만큼 짧아지고, 늘어나면 화면 높이 90%까지 따라 늘어난다.
+const titlebarEl = document.querySelector(".titlebar") as HTMLElement;
+let fitTimer: number | undefined;
+
+function fitHeight() {
+  window.clearTimeout(fitTimer);
+  fitTimer = window.setTimeout(() => {
+    const last = app.lastElementChild as HTMLElement | null;
+    const content = last
+      ? last.getBoundingClientRect().bottom -
+        app.getBoundingClientRect().top +
+        app.scrollTop +
+        14 // main 하단 패딩
+      : 40;
+    const total = titlebarEl.offsetHeight + content + 2; // 테두리
+    const max = Math.floor(window.screen.availHeight * 0.9);
+    const target = Math.round(Math.max(120, Math.min(total, max)));
+    void appWindow.setSize(new LogicalSize(360, target));
+  }, 120);
 }
-let resizeTimer: number | undefined;
-void appWindow.onResized((event) => {
-  window.clearTimeout(resizeTimer);
-  resizeTimer = window.setTimeout(() => {
-    void (async () => {
-      const scale = await appWindow.scaleFactor();
-      const logical = event.payload.toLogical(scale);
-      if (logical.height >= 420) {
-        localStorage.setItem("switcher.height", String(Math.round(logical.height)));
-      }
-    })();
-  }, 400);
-});
+
+// 내용 높이가 바뀌는 지점(렌더 완료·사용량 로딩·고정 토글)에서 fitHeight()를 직접 부른다
+// — app 요소 자체는 창 크기에 묶여 있어 관찰자로는 콘텐츠 변화를 못 잡는다
 document.getElementById("refresh")!.addEventListener("click", () => {
   if (loginOpen) {
     toast("로그인을 진행 중입니다 — 끝내거나 취소한 뒤 새로고침하세요", true);

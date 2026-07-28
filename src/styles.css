@@ -347,6 +347,16 @@ body.locked .titlebar:hover .tb-actions button {
   opacity: 1;
 }
 
+/* 고정 모드: 비활성 카드는 더블클릭으로 전환 — 올리면 테두리가 살짝 밝아진다 */
+#app.locked .card.switchable {
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+#app.locked .card.switchable:hover {
+  border-color: rgba(167, 139, 250, 0.75);
+}
+
 .usage-label {
   color: var(--muted);
   overflow: hidden;
