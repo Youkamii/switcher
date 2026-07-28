@@ -16,7 +16,15 @@ npm run tauri build
 # 실행 파일: src-tauri\target\release\switcher.exe
 ```
 
-설치 프로그램 없이 exe 하나로 동작한다. 트레이로 상주하고, 창을 닫으면 트레이로 숨는다. 종료는 트레이 우클릭 → 종료. 개발 실행은 `npm run tauri dev`.
+설치 프로그램 없이 exe 하나로 동작한다. 개발 실행은 `npm run tauri dev`.
+
+## 실행
+
+- 빌드된 `switcher.exe`를 더블클릭하면 켜진다. 자주 쓰면 바탕화면에 바로가기를 만들어 두는 게 편하다.
+- 켜져 있는 동안은 트레이(작업표시줄 오른쪽)에 W 아이콘으로 상주한다. 창을 닫아도(Alt+F4) 꺼지지 않고 트레이로 숨는다.
+- 창을 다시 열려면 트레이의 W 아이콘을 좌클릭한다.
+- 완전히 종료하려면 트레이 아이콘 우클릭 → 종료. 종료한 뒤에는 exe를 다시 실행하면 된다.
+- 부팅할 때 자동으로 켜지게 하려면 `Win+R` → `shell:startup` 폴더에 exe 바로가기를 넣는다.
 
 <p align="center"><img src="docs/screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
 

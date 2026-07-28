@@ -497,7 +497,8 @@ function compactLabel(win: UsageWindow): string {
   return label.slice(0, 2).toLowerCase();
 }
 
-/// 컴팩트용 리셋 시간: 24시간 이상이면 일/시(5/17), 그 밑이면 시:분(2:21)
+/// 컴팩트용 리셋 시간 — 콜론 개수가 단위 급을 나타낸다:
+/// 24시간 이상이면 일::시(5::17), 그 밑이면 시:분(2:21)
 function compactReset(resetsAt: string | null): string {
   if (!resetsAt) return "";
   const ts = /^\d+$/.test(resetsAt) ? Number(resetsAt) * 1000 : Date.parse(resetsAt);
@@ -507,7 +508,7 @@ function compactReset(resetsAt: string | null): string {
   const minutes = Math.floor(diff / 60000);
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);
-  if (hours >= 24) return `${days}/${String(hours % 24).padStart(2, "0")}`;
+  if (hours >= 24) return `${days}::${String(hours % 24).padStart(2, "0")}`;
   return `${hours}:${String(minutes % 60).padStart(2, "0")}`;
 }
 
