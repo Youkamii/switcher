@@ -22,6 +22,13 @@
 - 로그·에러 메시지에 토큰 값 출력 금지.
 - 새 터미널 창 스폰 금지.
 
+## 로그인 (실측 확인됨)
+
+- 로그인은 브라우저 + 로컬 콜백 방식이다. 코드 붙여넣기 입력칸은 필요 없다 (원격 환경에서만 코드 방식으로 폴백).
+- 격리 로그인: `CLAUDE_CONFIG_DIR`(클로드) / `CODEX_HOME`(코덱스)를 임시 폴더로 주면 `.credentials.json`·`.claude.json`·`auth.json`이 전부 그 폴더에만 생성된다 — 활성 계정 무변경.
+- **`claude auth login`은 stdin을 리다이렉트하면 즉시 종료된다.** stdin은 상속 그대로 둘 것 (stdout/stderr 리다이렉트는 무해).
+- Windows에서는 npm 셔임 때문에 `cmd /c` 경유로 실행하고 `CREATE_NO_WINDOW`로 콘솔 창을 막는다. 취소는 `taskkill /T`로 트리째 — 부모만 죽이면 CLI가 콜백 서버를 문 채 살아남는다.
+
 ## 전환 대상 파일 (실측 확인됨)
 
 - 클로드 토큰: `~/.claude/.credentials.json` (키: `claudeAiOauth`)

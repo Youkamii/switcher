@@ -81,7 +81,7 @@ pub struct Meta {
     pub saved_at: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct LiveIdentity {
     pub id: String,
     pub email: Option<String>,
@@ -109,6 +109,10 @@ pub struct SwitchResult {
     pub backed_up_to: Option<String>,
     pub switched_to: String,
 }
+
+/// 저장·전환·삭제·임포트는 파일을 옮기는 다단계 작업이라 동시에 두 개가 돌면
+/// 백업과 교체가 교차해 계정이 어긋날 수 있다 — 이 잠금으로 직렬화한다.
+pub(crate) static MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(crate) fn now() -> u64 {
     SystemTime::now()
@@ -254,28 +258,27 @@ fn claude_oauth_block(env: &Env) -> Result<Option<Value>, String> {
     Ok(read_json_retry(&path)?.get("oauthAccount").cloned())
 }
 
-/// 현재 활성 파일들을 지정 이름의 프로필로 저장한다 (덮어쓰기 허용).
-fn write_profile(
+/// 토큰 내용과 계정 정보를 직접 받아 프로필로 저장한다.
+/// 활성 파일에서 저장할 때도, 격리 로그인 결과를 임포트할 때도 이 경로를 쓴다.
+pub(crate) fn write_profile_parts(
     env: &Env,
     provider: Provider,
     name: &str,
     ident: &LiveIdentity,
+    cred: &[u8],
+    oauth_block: Option<&Value>,
 ) -> Result<(), String> {
     let dir = env.profiles_dir(provider).join(name);
-    let live = env.live_credential_path(provider);
-    let data = fs::read(&live).map_err(|e| format!("읽기 실패 {}: {e}", live.display()))?;
     // 기존 토큰을 덮어쓰기 전에 한 세대 .bak으로 남긴다 — 잘못된 덮어쓰기의 최후 안전망
     let cred_path = dir.join(provider.credential_file_name());
     if cred_path.exists() {
         let _ = fs::copy(&cred_path, cred_path.with_extension("json.bak"));
     }
-    atomic_write(&cred_path, &data)?;
+    atomic_write(&cred_path, cred)?;
 
-    if provider == Provider::Claude {
-        if let Some(block) = claude_oauth_block(env)? {
-            let bytes = serde_json::to_vec_pretty(&block).map_err(|e| e.to_string())?;
-            atomic_write(&dir.join("oauth_account.json"), &bytes)?;
-        }
+    if let Some(block) = oauth_block {
+        let bytes = serde_json::to_vec_pretty(block).map_err(|e| e.to_string())?;
+        atomic_write(&dir.join("oauth_account.json"), &bytes)?;
     }
 
     let meta = Meta {
@@ -285,6 +288,23 @@ fn write_profile(
     };
     let bytes = serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?;
     atomic_write(&dir.join("meta.json"), &bytes)
+}
+
+/// 현재 활성 파일들을 지정 이름의 프로필로 저장한다 (덮어쓰기 허용).
+fn write_profile(
+    env: &Env,
+    provider: Provider,
+    name: &str,
+    ident: &LiveIdentity,
+) -> Result<(), String> {
+    let live = env.live_credential_path(provider);
+    let data = fs::read(&live).map_err(|e| format!("읽기 실패 {}: {e}", live.display()))?;
+    let block = if provider == Provider::Claude {
+        claude_oauth_block(env)?
+    } else {
+        None
+    };
+    write_profile_parts(env, provider, name, ident, &data, block.as_ref())
 }
 
 /// name 프로필이 이미 다른 계정의 것이면 에러 — 다른 계정 토큰을 덮어쓰지 않는다
@@ -330,7 +350,7 @@ fn profile_dirs(env: &Env, provider: Provider) -> Result<Vec<(String, PathBuf)>,
     Ok(out)
 }
 
-fn find_profile_by_id(
+pub(crate) fn find_profile_by_id(
     env: &Env,
     provider: Provider,
     id: &str,
@@ -347,7 +367,7 @@ fn find_profile_by_id(
 
 /// 이메일 앞부분(또는 계정 id 앞 8자)으로 자동 프로필 이름을 만든다.
 /// id·이메일은 외부 입력(JWT 클레임 등)이므로 허용 문자만 남긴다 — 결과는 항상 validate_name을 통과한다.
-fn auto_name(env: &Env, provider: Provider, ident: &LiveIdentity) -> String {
+pub(crate) fn auto_name(env: &Env, provider: Provider, ident: &LiveIdentity) -> String {
     let clean = |s: &str, limit: usize| -> String {
         s.chars()
             .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')

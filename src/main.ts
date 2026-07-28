@@ -195,28 +195,59 @@ function profileCard(provider: ProviderId, profile: ProfileInfo): HTMLElement {
   return card;
 }
 
-function addAccountHelp(provider: ProviderId, section: HTMLElement) {
-  const toggle = document.createElement("button");
-  toggle.className = "link";
-  toggle.textContent = "다른 계정은 어떻게 추가하나요?";
-  const help = document.createElement("div");
-  help.className = "help";
-  help.hidden = true;
-  const loginCmd = provider === "claude" ? "claude 실행 후 /login" : "codex login";
-  help.innerHTML = "";
-  const lines = [
-    "① 지금 계정을 아래 입력칸으로 먼저 저장",
-    `② 터미널에서 <code>${loginCmd}</code> 으로 다른 계정 로그인`,
-    "③ 여기 다시 와서 새 이름으로 저장",
-    "이후에는 버튼 한 번으로 전환 — 재로그인이 필요 없습니다",
-  ];
-  for (const line of lines) {
-    const p = document.createElement("div");
-    p.innerHTML = line;
-    help.appendChild(p);
-  }
-  toggle.addEventListener("click", () => (help.hidden = !help.hidden));
-  section.append(toggle, help);
+type LoginOutcome = {
+  profile: string;
+  email: string | null;
+  updated_existing: boolean;
+};
+
+function addAccountButton(provider: ProviderId, section: HTMLElement) {
+  const row = document.createElement("div");
+  row.className = "add-row";
+
+  const addBtn = document.createElement("button");
+  addBtn.className = "primary";
+  addBtn.textContent = "＋ 계정 추가";
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.textContent = "취소";
+  cancelBtn.hidden = true;
+
+  const status = document.createElement("div");
+  status.className = "help";
+  status.hidden = true;
+  status.textContent =
+    "브라우저에서 추가할 계정으로 로그인하세요. 끝나면 자동으로 저장됩니다. (지금 쓰는 계정은 그대로 유지됩니다)";
+
+  addBtn.addEventListener("click", async () => {
+    addBtn.disabled = true;
+    addBtn.textContent = "로그인 대기 중…";
+    cancelBtn.hidden = false;
+    status.hidden = false;
+    try {
+      const result = await invoke<LoginOutcome>("add_account", { provider });
+      const who = result.email ?? result.profile;
+      toast(
+        result.updated_existing
+          ? `'${result.profile}' 계정(${who}) 로그인을 갱신했습니다`
+          : `계정 추가 완료 — '${result.profile}' (${who})`,
+      );
+      await render();
+    } catch (error) {
+      toast(String(error), true);
+      addBtn.disabled = false;
+      addBtn.textContent = "＋ 계정 추가";
+      cancelBtn.hidden = true;
+      status.hidden = true;
+    }
+  });
+
+  cancelBtn.addEventListener("click", () => {
+    void invoke("cancel_add_account");
+  });
+
+  row.append(addBtn, cancelBtn);
+  section.append(row, status);
 }
 
 function saveForm(provider: ProviderId, section: HTMLElement) {
@@ -262,8 +293,9 @@ async function renderProvider(provider: ProviderId, title: string) {
     if (!snap.live && snap.profiles.length === 0) {
       const hint = document.createElement("p");
       hint.className = "hint";
-      hint.textContent = "로그인 정보가 없습니다 — 먼저 CLI에서 로그인하세요";
+      hint.textContent = "저장된 계정이 없습니다 — 아래 버튼으로 추가하세요";
       section.appendChild(hint);
+      addAccountButton(provider, section);
       app.appendChild(section);
       return;
     }
@@ -271,7 +303,7 @@ async function renderProvider(provider: ProviderId, title: string) {
     if (snap.live && !snap.live_saved) {
       const hint = document.createElement("p");
       hint.className = "hint warn";
-      hint.textContent = `현재 로그인 계정(${snap.live.email ?? snap.live.id})이 아직 프로필로 저장되지 않았습니다`;
+      hint.textContent = `현재 로그인 계정(${snap.live.email ?? snap.live.id})이 아직 프로필로 저장되지 않았습니다 — 아래 입력칸으로 저장하세요`;
       section.appendChild(hint);
     }
 
@@ -279,8 +311,11 @@ async function renderProvider(provider: ProviderId, title: string) {
       section.appendChild(profileCard(provider, profile));
     }
 
-    saveForm(provider, section);
-    addAccountHelp(provider, section);
+    addAccountButton(provider, section);
+    if (snap.live && !snap.live_saved) {
+      // 지금 로그인된 계정이 아직 프로필로 없을 때만 수동 저장 입력칸을 보여준다
+      saveForm(provider, section);
+    }
   } catch (error) {
     const err = document.createElement("p");
     err.className = "usage-error";

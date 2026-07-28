@@ -1,12 +1,8 @@
 mod accounts;
+mod login;
 mod usage;
 
-use accounts::{Env, Provider, Snapshot, SwitchResult};
-use std::sync::Mutex;
-
-/// 저장·전환·삭제는 파일을 옮기는 다단계 작업이라 동시에 두 개가 돌면
-/// 백업과 교체가 교차해 계정이 어긋날 수 있다 — 전 커맨드 직렬화
-static MUTATION_LOCK: Mutex<()> = Mutex::new(());
+use accounts::{Env, Provider, Snapshot, SwitchResult, MUTATION_LOCK};
 
 #[tauri::command]
 fn list_profiles(provider: String) -> Result<Snapshot, String> {
@@ -34,6 +30,21 @@ fn delete_profile(provider: String, name: String) -> Result<(), String> {
 #[tauri::command]
 async fn fetch_usage(provider: String, profile: Option<String>) -> Result<usage::Usage, String> {
     usage::fetch(&Env::real()?, Provider::parse(&provider)?, profile.as_deref()).await
+}
+
+/// 브라우저 로그인으로 새 계정을 추가한다. 사용자가 로그인을 마칠 때까지 기다리므로
+/// 별도 스레드에서 돌려 UI를 막지 않는다. 활성 계정은 건드리지 않는다.
+#[tauri::command]
+async fn add_account(provider: String) -> Result<login::LoginOutcome, String> {
+    let provider = Provider::parse(&provider)?;
+    tauri::async_runtime::spawn_blocking(move || login::add_account(&Env::real()?, provider))
+    .await
+    .map_err(|e| format!("로그인 작업 실패: {e}"))?
+}
+
+#[tauri::command]
+fn cancel_add_account() {
+    login::cancel();
 }
 
 /// 위젯을 주 모니터 작업영역(작업표시줄 제외) 우하단에 붙인다
@@ -143,7 +154,9 @@ pub fn run() {
             save_profile,
             switch_profile,
             delete_profile,
-            fetch_usage
+            fetch_usage,
+            add_account,
+            cancel_add_account
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

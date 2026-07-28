@@ -129,6 +129,16 @@ button.link:hover {
   line-height: 1.7;
 }
 
+.add-row {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0 4px;
+}
+
+.add-row button.primary {
+  flex: 1;
+}
+
 .help code {
   color: var(--text);
   background: var(--panel-2);
