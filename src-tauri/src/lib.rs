@@ -210,6 +210,14 @@ pub fn run() {
                 }
             });
 
+            // 시작 시 토큰 일괄 갱신 (무조건 1회) — 밤새 꺼져 있던 컴퓨터에서도
+            // 위젯이 뜨자마자 비활성 프로필의 사용량이 되살아난다
+            tauri::async_runtime::spawn(async {
+                if let Ok(env) = Env::real() {
+                    usage::refresh_all_claude_profiles(&env).await;
+                }
+            });
+
             // 클릭 투과 폴링 (고정 모드, 25ms 주기):
             // - UI 영역(버튼·핸들) 위 → 마우스를 받는다
             // - 그 외 전부(카드 포함) → 뒤 창으로 통과. 단일 클릭·드래그를 절대 먹지 않는다.
