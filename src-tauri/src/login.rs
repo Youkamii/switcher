@@ -262,14 +262,21 @@ pub fn sweep_stale(env: &Env) {
     }
 }
 
-/// CLI가 로그인 화면을 띄우기 전에 종료했을 때의 안내 (미설치·구버전이 대표 원인)
+/// CLI 설치·업데이트 명령 (안내문 공용 — 프로그램명 매핑은 cli_args가 단일 출처)
+fn install_cmd(provider: Provider) -> &'static str {
+    match provider {
+        Provider::Claude => "npm install -g @anthropic-ai/claude-code",
+        Provider::Codex => "npm install -g @openai/codex",
+    }
+}
+
+/// CLI가 로그인 화면을 띄우기 전에 종료했을 때의 안내.
+/// 미설치·구버전이 대표 원인이지만, 코덱스는 시작에 서버 왕복이 필요해 네트워크 문제일 수도 있다.
 fn early_exit_error(provider: Provider) -> String {
-    let (program, install) = match provider {
-        Provider::Claude => ("claude", "npm install -g @anthropic-ai/claude-code"),
-        Provider::Codex => ("codex", "npm install -g @openai/codex"),
-    };
+    let (program, _, _) = cli_args(provider);
     format!(
-        "{program} CLI가 로그인 화면을 띄우지 못하고 종료됐습니다 — 설치돼 있는지 확인하세요 (설치·업데이트: {install})"
+        "{program} CLI가 로그인 화면을 띄우지 못하고 종료됐습니다 — 설치돼 있고 최신인지, 네트워크가 연결돼 있는지 확인하세요 (설치·업데이트: {})",
+        install_cmd(provider)
     )
 }
 
@@ -325,7 +332,10 @@ fn start_impl(
 
         let child = pair.slave.spawn_command(cmd).map_err(|e| {
             let _ = fs::remove_dir_all(&config_dir);
-            format!("{program} 실행에 실패했습니다: {e} — CLI가 설치되어 있는지 확인하세요")
+            format!(
+                "{program} 실행에 실패했습니다: {e} — 설치·업데이트: {}",
+                install_cmd(provider)
+            )
         })?;
         drop(pair.slave);
 

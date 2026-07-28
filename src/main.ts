@@ -66,12 +66,20 @@ function formatReset(resetsAt: string | null): string {
   return `${minutes}m`;
 }
 
-/// 지금 조회가 막혀 이전 수치를 보여줄 때의 라벨 — 몇 시간 전 값인지 감추지 않는다
+/// 지금 조회가 막혀 이전 수치를 보여줄 때의 라벨 — 몇 시간 전 값인지 감추지 않는다.
+/// formatReset과 같은 내림(floor) 방식 (반올림이면 3599초가 "60분 전 값"이 된다)
 function staleLabel(usage: Usage): string {
   const secs = usage.stale_age_secs;
   if (secs == null) return "사용량 조회 대기중";
-  if (secs < 3600) return `${Math.max(1, Math.round(secs / 60))}분 전 값`;
-  return `${Math.round(secs / 3600)}시간 전 값`;
+  if (secs < 3600) return `${Math.max(1, Math.floor(secs / 60))}분 전 값`;
+  return `${Math.floor(secs / 3600)}시간 전 값`;
+}
+
+/// 컴팩트용 나이 축약 ("3h 전", "45m 전") — 컴팩트의 축약 표기 관례를 따른다
+function compactStaleAge(secs: number | null | undefined): string {
+  if (secs == null) return "";
+  if (secs < 3600) return `${Math.max(1, Math.floor(secs / 60))}m 전`;
+  return `${Math.floor(secs / 3600)}h 전`;
 }
 
 function usageRow(win: UsageWindow): HTMLElement {
@@ -564,6 +572,14 @@ async function compactCard(provider: ProviderId, profile: ProfileInfo): Promise<
       provider,
       profile: profile.active ? null : profile.name,
     });
+    if (usage.stale) {
+      // 컴팩트에서도 이전 수치임을 숨기지 않는다 — 줄을 흐리고 머리에 나이를 붙인다
+      card.classList.add("stale");
+      const age = document.createElement("span");
+      age.className = "c-stale";
+      age.textContent = compactStaleAge(usage.stale_age_secs);
+      head.appendChild(age);
+    }
     for (const win of usage.windows) {
       const row = document.createElement("div");
       row.className = "compact-row";

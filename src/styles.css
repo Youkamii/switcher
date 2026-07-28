@@ -379,6 +379,17 @@ button.link:hover {
   font-weight: 700;
 }
 
+/* 컴팩트 카드가 이전 수치를 보여줄 때 — 줄을 흐리고 머리에 나이가 붙는다 */
+.compact-card.stale .compact-row {
+  opacity: 0.55;
+}
+
+.c-stale {
+  color: var(--muted);
+  font-size: 9px;
+  flex: none;
+}
+
 .c-reset {
   text-align: right;
   color: var(--text);
