@@ -749,11 +749,20 @@ function fitHeight() {
     const target = Math.round(Math.max(80, Math.min(total, max)));
     // 컴팩트 모드는 창 자체도 좁게
     const width = viewMode === "compact" ? 240 : 360;
-    void appWindow.setSize(new LogicalSize(width, target));
-    // 레이아웃이 확정된 시점에 히트 영역도 갱신한다
-    reportHitRegions();
+    // 히트 영역은 반드시 창 크기 변경이 "끝난 뒤" 보고해야 한다 —
+    // 즉시 보고하면 옛 폭 기준 좌표가 남아 버튼 위 클릭이 투과돼 버린다
+    void appWindow.setSize(new LogicalSize(width, target)).then(() => {
+      window.setTimeout(reportHitRegions, 80);
+    });
   }, 120);
 }
+
+// 크기 변경(모드 전환 등) 완료 시점의 백업 갱신 — 어떤 경로로 리사이즈되든 좌표를 다시 잡는다
+let resizeReportTimer: number | undefined;
+void appWindow.onResized(() => {
+  window.clearTimeout(resizeReportTimer);
+  resizeReportTimer = window.setTimeout(reportHitRegions, 100);
+});
 
 // 내용 높이가 바뀌는 지점(렌더 완료·사용량 로딩·고정 토글)에서 fitHeight()를 직접 부른다
 // — app 요소 자체는 창 크기에 묶여 있어 관찰자로는 콘텐츠 변화를 못 잡는다
