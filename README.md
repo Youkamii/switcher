@@ -72,14 +72,17 @@ CLI 로그인 화면은 가상 콘솔(PTY)로 읽는다.
 
 ## 직접 빌드
 
-받아서 쓰는 대신 소스에서 빌드하려면 Node.js와 Rust 툴체인이 필요하다.
+받아서 쓰는 대신 소스에서 빌드하려면 [Node.js](https://nodejs.org)와 [Rust](https://rustup.rs) 툴체인이 필요하다.
 
 ```sh
 git clone https://github.com/Youkamii/switcher.git
 cd switcher
-npm install
-npm run tauri build   # 결과물: src-tauri\target\release\switcher.exe
+npm run setup
 ```
+
+`npm run setup`이 의존성 설치와 앱 빌드를 한 번에 처리한다. 장황한 로그를 쏟아내는 대신 로딩 표시와 경과 시간만 보여준다.
+
+처음에는 Rust를 통째로 컴파일하기 때문에 **5~10분 걸릴 수 있다.** 로딩이 멈춘 게 아니니 기다리면 된다. 결과물은 `src-tauri\target\release\switcher.exe`.
 
 개발 실행은 `npm run tauri dev`.
 
