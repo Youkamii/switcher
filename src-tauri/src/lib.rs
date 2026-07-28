@@ -6,12 +6,29 @@ use accounts::{Env, Provider, Snapshot, SwitchResult};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-/// 고정(위젯) 모드의 클릭 투과 — 카드·버튼 같은 히트 영역 위에서만 마우스를 받고
-/// 나머지는 뒤 창으로 통과시킨다. 웹뷰는 투과 중 이벤트를 못 받으므로
-/// 커서 추적은 Rust 폴링 스레드가 담당한다.
+/// 고정(위젯) 모드의 클릭 투과.
+/// 카드 위에서도 위젯은 마우스를 받지 않는다 — 단일 클릭·드래그가 전부 뒤 창으로 간다.
+/// 대신 Rust가 커서 위치와 마우스 버튼을 직접 감시해, 전환 카드 위의 더블클릭 패턴을
+/// 감지하면 전환을 실행하고 웹뷰에는 호버·완료 신호만 보낸다.
+/// 타이틀바 버튼·이동 핸들(action 없는 영역)만 예외로 마우스를 받는다.
 static CLICK_THROUGH_MODE: AtomicBool = AtomicBool::new(false);
-/// 히트 영역 목록 — 창 기준 논리 좌표 [x, y, w, h]
-static HIT_REGIONS: Mutex<Vec<[f64; 4]>> = Mutex::new(Vec::new());
+static HIT_REGIONS: Mutex<Vec<HitRegion>> = Mutex::new(Vec::new());
+
+#[derive(serde::Deserialize, Clone)]
+struct HitRegion {
+    /// 창 기준 논리 좌표 [x, y, w, h]
+    rect: [f64; 4],
+    /// Some((provider, name))이면 더블클릭으로 이 프로필로 전환하는 카드.
+    /// None이면 마우스를 실제로 받아야 하는 UI(버튼·핸들).
+    action: Option<(String, String)>,
+}
+
+#[cfg(windows)]
+#[link(name = "user32")]
+extern "system" {
+    fn GetAsyncKeyState(v_key: i32) -> i16;
+    fn GetDoubleClickTime() -> u32;
+}
 
 #[tauri::command]
 fn list_profiles(provider: String) -> Result<Snapshot, String> {
@@ -71,7 +88,7 @@ fn cancel_login() {
 
 /// 프론트가 렌더 후 카드·버튼의 화면 좌표를 보고한다
 #[tauri::command]
-fn set_hit_regions(regions: Vec<[f64; 4]>) {
+fn set_hit_regions(regions: Vec<HitRegion>) {
     if let Ok(mut guard) = HIT_REGIONS.lock() {
         *guard = regions;
     }
@@ -181,51 +198,117 @@ pub fn run() {
                 }
             });
 
-            // 클릭 투과 폴링: 고정 모드에서 커서가 히트 영역 위면 마우스를 받고,
-            // 벗어나면 뒤 창으로 통과시킨다 (60ms 주기, 상태 변화 시에만 스위칭)
-            let handle = app.handle().clone();
-            std::thread::spawn(move || {
-                let mut ignoring = false;
-                loop {
-                    std::thread::sleep(std::time::Duration::from_millis(60));
-                    let Some(window) = handle.get_webview_window("main") else {
-                        continue;
-                    };
-                    if !CLICK_THROUGH_MODE.load(Ordering::Relaxed) {
-                        if ignoring {
-                            let _ = window.set_ignore_cursor_events(false);
-                            ignoring = false;
+            // 클릭 투과 폴링 (고정 모드, 25ms 주기):
+            // - UI 영역(버튼·핸들) 위 → 마우스를 받는다
+            // - 그 외 전부(카드 포함) → 뒤 창으로 통과. 단일 클릭·드래그를 절대 먹지 않는다.
+            // - 전환 카드 위 더블클릭은 GetAsyncKeyState로 직접 감지해 전환을 실행한다
+            //   (부작용: 그 더블클릭은 뒤 창에도 전달된다 — 단일 클릭을 먹는 것보다 낫다)
+            #[cfg(windows)]
+            {
+                use tauri::Emitter;
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let mut ignoring = false;
+                    let mut prev_down = false;
+                    let mut hover_idx: i64 = -1;
+                    let mut last_click: Option<(std::time::Instant, usize)> = None;
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                        let Some(window) = handle.get_webview_window("main") else {
+                            continue;
+                        };
+                        if !CLICK_THROUGH_MODE.load(Ordering::Relaxed) {
+                            if ignoring {
+                                let _ = window.set_ignore_cursor_events(false);
+                                ignoring = false;
+                            }
+                            continue;
                         }
-                        continue;
+                        if !window.is_visible().unwrap_or(false) {
+                            continue;
+                        }
+                        let (Ok(cursor), Ok(pos)) =
+                            (handle.cursor_position(), window.outer_position())
+                        else {
+                            continue;
+                        };
+                        let scale = window.scale_factor().unwrap_or(1.0);
+                        let rel_x = (cursor.x - pos.x as f64) / scale;
+                        let rel_y = (cursor.y - pos.y as f64) / scale;
+                        let regions: Vec<HitRegion> = HIT_REGIONS
+                            .lock()
+                            .map(|guard| guard.clone())
+                            .unwrap_or_default();
+                        let over = regions.iter().position(|region| {
+                            let r = region.rect;
+                            rel_x >= r[0]
+                                && rel_x <= r[0] + r[2]
+                                && rel_y >= r[1]
+                                && rel_y <= r[1] + r[3]
+                        });
+
+                        // 마우스를 실제로 받는 곳은 action 없는 UI 영역뿐
+                        let over_ui = over
+                            .map(|i| regions[i].action.is_none())
+                            .unwrap_or(false);
+                        let want_ignore = !over_ui;
+                        if want_ignore != ignoring {
+                            let _ = window.set_ignore_cursor_events(want_ignore);
+                            ignoring = want_ignore;
+                        }
+
+                        // 전환 카드 호버 표시 (웹뷰는 투과 중이라 자체 hover가 없다)
+                        let over_card = over
+                            .filter(|i| regions[*i].action.is_some())
+                            .map(|i| i as i64)
+                            .unwrap_or(-1);
+                        if over_card != hover_idx {
+                            hover_idx = over_card;
+                            let _ = handle.emit("card-hover", hover_idx);
+                        }
+
+                        // 더블클릭 감지 — 같은 카드 위에서 시스템 더블클릭 시간 내 두 번 눌림
+                        let down =
+                            (unsafe { GetAsyncKeyState(0x01) } as u16 & 0x8000) != 0;
+                        let down_edge = down && !prev_down;
+                        prev_down = down;
+                        if !down_edge {
+                            continue;
+                        }
+                        let Some(idx) =
+                            over.filter(|i| regions[*i].action.is_some())
+                        else {
+                            last_click = None;
+                            continue;
+                        };
+                        let now = std::time::Instant::now();
+                        let dclk = std::time::Duration::from_millis(
+                            unsafe { GetDoubleClickTime() } as u64,
+                        );
+                        let is_double = matches!(
+                            last_click,
+                            Some((t, prev)) if prev == idx && now.duration_since(t) <= dclk
+                        );
+                        if !is_double {
+                            last_click = Some((now, idx));
+                            continue;
+                        }
+                        last_click = None;
+                        let Some((provider, name)) = regions[idx].action.clone() else {
+                            continue;
+                        };
+                        let result = (|| {
+                            let env = Env::real()?;
+                            accounts::switch(&env, Provider::parse(&provider)?, &name)
+                        })();
+                        let payload = match result {
+                            Ok(_) => serde_json::json!({ "ok": true, "provider": provider, "name": name }),
+                            Err(e) => serde_json::json!({ "ok": false, "error": e }),
+                        };
+                        let _ = handle.emit("account-switched", payload);
                     }
-                    if !window.is_visible().unwrap_or(false) {
-                        continue;
-                    }
-                    let (Ok(cursor), Ok(pos)) = (handle.cursor_position(), window.outer_position())
-                    else {
-                        continue;
-                    };
-                    let scale = window.scale_factor().unwrap_or(1.0);
-                    let rel_x = (cursor.x - pos.x as f64) / scale;
-                    let rel_y = (cursor.y - pos.y as f64) / scale;
-                    let inside = HIT_REGIONS
-                        .lock()
-                        .map(|regions| {
-                            regions.iter().any(|r| {
-                                rel_x >= r[0]
-                                    && rel_x <= r[0] + r[2]
-                                    && rel_y >= r[1]
-                                    && rel_y <= r[1] + r[3]
-                            })
-                        })
-                        .unwrap_or(false);
-                    let want_ignore = !inside;
-                    if want_ignore != ignoring {
-                        let _ = window.set_ignore_cursor_events(want_ignore);
-                        ignoring = want_ignore;
-                    }
-                }
-            });
+                });
+            }
             let show = MenuItem::with_id(app, "show", "열기", true, None::<&str>)?;
             let hide = MenuItem::with_id(app, "hide", "숨기기", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;

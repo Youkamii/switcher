@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { LogicalSize } from "@tauri-apps/api/dpi";
+import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type ProfileInfo = {
@@ -162,12 +163,7 @@ function profileCard(provider: ProviderId, profile: ProfileInfo): HTMLElement {
     }
     head.appendChild(plan);
   }
-  if (profile.active) {
-    const badge = document.createElement("span");
-    badge.className = "badge";
-    badge.textContent = "활성";
-    head.appendChild(badge);
-  }
+  // 활성 표시는 배지 대신 글자색으로 — 활성만 연둣빛 흰색, 나머지는 회색 (.card.active CSS)
   card.appendChild(head);
 
   // 활성 프로필은 활성 파일(항상 최신 토큰), 비활성은 보관함 토큰으로 조회
@@ -193,11 +189,11 @@ function profileCard(provider: ProviderId, profile: ProfileInfo): HTMLElement {
   const actions = document.createElement("div");
   actions.className = "card-actions";
   if (!profile.active) {
-    // 고정(위젯) 모드에서는 카드를 빠르게 두 번 클릭해 전환한다
+    // 고정(위젯) 모드의 더블클릭 전환은 Rust가 시스템 차원에서 감지한다 —
+    // 카드에 어느 계정인지만 새겨 둔다 (reportHitRegions가 좌표와 함께 보고)
     card.classList.add("switchable");
-    card.addEventListener("dblclick", () => {
-      if (locked) void doSwitch();
-    });
+    card.dataset.provider = provider;
+    card.dataset.name = profile.name;
 
     const switchBtn = document.createElement("button");
     switchBtn.className = "primary";
@@ -541,20 +537,60 @@ function applyLock() {
   reportHitRegions();
 }
 
-/// 마우스를 받아야 하는 요소들(카드·타이틀바 버튼·이동 핸들)의 좌표를 Rust에 보고한다.
-/// 고정 모드의 클릭 투과 판정에 쓰인다.
+/// 고정 모드의 히트 영역 보고.
+/// action이 있는 항목 = 더블클릭으로 전환하는 카드 (마우스는 투과),
+/// action이 없는 항목 = 실제로 눌러야 하는 UI (버튼·이동 핸들).
+/// Rust의 호버 신호(card-hover)가 이 배열의 인덱스로 오므로 요소 순서를 함께 보관한다.
+let hitElements: HTMLElement[] = [];
+
 function reportHitRegions() {
-  const regions: number[][] = [];
+  hitElements = [];
+  const regions: { rect: number[]; action: [string, string] | null }[] = [];
   if (locked) {
-    document
-      .querySelectorAll<HTMLElement>(".card, .tb-actions, #drag-handle")
-      .forEach((el) => {
-        const rect = el.getBoundingClientRect();
-        regions.push([rect.left, rect.top, rect.width, rect.height]);
+    document.querySelectorAll<HTMLElement>(".card.switchable").forEach((el) => {
+      const r = el.getBoundingClientRect();
+      regions.push({
+        rect: [r.left, r.top, r.width, r.height],
+        action: [el.dataset.provider ?? "", el.dataset.name ?? ""],
       });
+      hitElements.push(el);
+    });
+    document.querySelectorAll<HTMLElement>(".tb-actions, #drag-handle").forEach((el) => {
+      const r = el.getBoundingClientRect();
+      regions.push({ rect: [r.left, r.top, r.width, r.height], action: null });
+      hitElements.push(el);
+    });
   }
   void invoke("set_hit_regions", { regions });
 }
+
+// Rust 폴링이 보내는 호버 신호 — 투과 중엔 웹뷰가 자체 hover를 못 받는다
+void listen<number>("card-hover", (event) => {
+  document
+    .querySelectorAll(".card.hit-hover")
+    .forEach((el) => el.classList.remove("hit-hover"));
+  const idx = event.payload;
+  if (idx >= 0) hitElements[idx]?.classList.add("hit-hover");
+});
+
+// Rust가 실행한 더블클릭 전환의 결과
+void listen<{ ok: boolean; provider?: string; name?: string; error?: string }>(
+  "account-switched",
+  (event) => {
+    if (event.payload.ok) {
+      const el = hitElements.find(
+        (candidate) =>
+          candidate.dataset.provider === event.payload.provider &&
+          candidate.dataset.name === event.payload.name,
+      );
+      const who = el?.querySelector(".card-name")?.textContent ?? event.payload.name;
+      toast(`전환 완료 — 새로 여는 터미널부터 ${who} 계정이 적용됩니다`);
+      void render();
+    } else {
+      toast(event.payload.error ?? "전환 실패", true);
+    }
+  },
+);
 
 lockBtn.addEventListener("click", () => {
   locked = !locked;

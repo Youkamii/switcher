@@ -259,6 +259,22 @@ button.link:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* 기본(비활성)은 회색 — 활성 계정만 연둣빛 흰색으로 밝아진다 */
+  color: var(--muted);
+}
+
+.card.active .card-name {
+  color: #e4ffe8;
+}
+
+/* 사용 중이 아닌 계정은 카드 전체 채도를 낮춰 한눈에 구분되게 */
+.card:not(.active) {
+  filter: saturate(0.4) brightness(0.88);
+}
+
+/* 고정 모드에서 전환 후보에 커서를 올리면 채도가 살아난다 */
+#app.locked .card.switchable.hit-hover {
+  filter: none;
 }
 
 .card-email {
@@ -403,13 +419,13 @@ body.locked .titlebar:hover .tb-actions button {
   opacity: 1;
 }
 
-/* 고정 모드: 비활성 카드는 더블클릭으로 전환 — 올리면 테두리가 살짝 밝아진다 */
+/* 고정 모드: 비활성 카드는 더블클릭으로 전환.
+   마우스가 투과되므로 :hover 대신 Rust 커서 추적이 붙이는 .hit-hover를 쓴다 */
 #app.locked .card.switchable {
-  cursor: pointer;
   transition: border-color 0.15s;
 }
 
-#app.locked .card.switchable:hover {
+#app.locked .card.switchable.hit-hover {
   border-color: rgba(167, 139, 250, 0.75);
 }
 
