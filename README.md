@@ -1,6 +1,4 @@
-<img src="docs/logo.svg" width="40" align="left" alt="" />
-
-# switcher
+<h1><img src="docs/logo.svg" width="26" alt="" /> switcher</h1>
 
 Claude Code와 Codex CLI 계정을 버튼 하나로 갈아타는 Windows 위젯.
 
@@ -76,6 +74,8 @@ Codex: 주소와 함께 일회용 코드(15분 유효)가 위젯에 표시된다
 
 Tauri 2 + Rust, 프론트는 바닐라 TypeScript. 계정 전환·사용량 조회·격리 로그인은 전부 Rust에서 처리한다. 웹뷰에는 토큰이 올라가지 않는다. CLI 로그인 화면은 가상 콘솔(PTY)로 읽는다.
 
-## 라이선스
+---
 
-[MIT](LICENSE)
+<div align="center">
+<sub>Licensed under the <a href="LICENSE">MIT License</a> — free for any use, including commercial. Keep the copyright and license notice.</sub>
+</div>
