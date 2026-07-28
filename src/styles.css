@@ -1,8 +1,7 @@
 :root {
   color-scheme: dark;
-  /* 투명 슬라이더가 배경 채움(--bg-alpha)과 골조 농도(--fg-alpha)를 함께 조절한다.
-     배경류 색은 전부 --bg-alpha 연동이라 카드·패널·버튼이 바탕과 같이 투명해진다.
-     테두리·프로그레스 바·글자는 골조로 남고, 완전 투명이어도 85% 농도를 유지한다. */
+  /* 투명 슬라이더는 2단계 커브: 100→50%는 배경 채움(--bg-alpha)만 빠지고,
+     50→0%는 골조(--fg-alpha, 테두리·막대·글자)가 1→0.6으로 옅어진다. */
   --bg-alpha: 1;
   --fg-alpha: 1;
   --bg: rgba(22, 22, 30, var(--bg-alpha));
@@ -59,7 +58,7 @@ main::-webkit-scrollbar {
 }
 
 input[type="range"] {
-  width: 64px;
+  width: 128px;
   accent-color: var(--accent);
 }
 
