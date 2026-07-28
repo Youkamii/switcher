@@ -57,9 +57,16 @@ main::-webkit-scrollbar {
   display: none;
 }
 
+/* 공간이 모자라면 슬라이더가 먼저 줄어든다 — 버튼 글자가 줄바꿈되지 않게 */
 input[type="range"] {
-  width: 128px;
+  flex: 1 1 128px;
+  min-width: 64px;
+  max-width: 128px;
   accent-color: var(--accent);
+}
+
+.titlebar h1 {
+  flex: none;
 }
 
 .titlebar {
@@ -100,6 +107,7 @@ button {
   padding: 4px 10px;
   font-size: 12px;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 button:hover {
