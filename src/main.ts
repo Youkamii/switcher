@@ -26,7 +26,7 @@ type UsageWindow = {
   resets_at: string | null;
 };
 
-type Usage = { windows: UsageWindow[]; stale?: boolean };
+type Usage = { windows: UsageWindow[]; stale?: boolean; stale_age_secs?: number | null };
 
 const PROVIDERS = [
   { id: "claude", title: "CLAUDE" },
@@ -64,6 +64,14 @@ function formatReset(resetsAt: string | null): string {
   if (days >= 1) return `${days}d ${hours % 24}h`;
   if (hours >= 1) return `${hours}h ${minutes % 60}m`;
   return `${minutes}m`;
+}
+
+/// 지금 조회가 막혀 이전 수치를 보여줄 때의 라벨 — 몇 시간 전 값인지 감추지 않는다
+function staleLabel(usage: Usage): string {
+  const secs = usage.stale_age_secs;
+  if (secs == null) return "사용량 조회 대기중";
+  if (secs < 3600) return `${Math.max(1, Math.round(secs / 60))}분 전 값`;
+  return `${Math.round(secs / 3600)}시간 전 값`;
 }
 
 function usageRow(win: UsageWindow): HTMLElement {
@@ -119,11 +127,12 @@ async function loadUsage(provider: ProviderId, card: HTMLElement, profile: strin
     }
     for (const win of usage.windows) box.appendChild(usageRow(win));
     if (usage.stale) {
-      // 갱신이 잠시 막힌 상태 — 기존 수치를 살짝 흐리게 두고 위에 작게 알린다
+      // 갱신이 막힌 상태(요청 제한·토큰 만료) — 기존 수치를 살짝 흐리게 두고
+      // 그 수치가 몇 분/시간 전 것인지 작게 알린다
       box.classList.add("stale");
       const overlay = document.createElement("div");
       overlay.className = "stale-overlay";
-      overlay.textContent = "사용량 조회 대기중";
+      overlay.textContent = staleLabel(usage);
       box.appendChild(overlay);
     }
   } catch (error) {

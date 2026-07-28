@@ -17,7 +17,7 @@ const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UsageWindow {
     pub key: String,
     pub label: String,
@@ -25,12 +25,15 @@ pub struct UsageWindow {
     pub resets_at: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Usage {
     pub windows: Vec<UsageWindow>,
-    /// true면 지금 조회가 막혀(429 등) 마지막 성공 수치를 대신 보여주는 것
+    /// true면 지금 조회가 막혀(429·토큰 만료 등) 마지막 성공 수치를 대신 보여주는 것
     #[serde(default)]
     pub stale: bool,
+    /// stale일 때 그 수치가 몇 초 전 것인지 — 프론트가 "n시간 전 값" 라벨로 보여준다
+    #[serde(default)]
+    pub stale_age_secs: Option<u64>,
 }
 
 /// 조회 대상 토큰 파일: 프로필 이름이 있으면 보관함, 없으면 활성 파일.
@@ -131,6 +134,7 @@ fn parse_claude_usage(body: &Value) -> Usage {
     Usage {
         windows,
         stale: false,
+        stale_age_secs: None,
     }
 }
 
@@ -262,6 +266,7 @@ fn parse_codex_usage(body: &Value) -> Usage {
     Usage {
         windows,
         stale: false,
+        stale_age_secs: None,
     }
 }
 
@@ -286,9 +291,11 @@ fn cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, (std::
 }
 
 const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
-/// 실패 시 대신 보여줄 수 있는 직전 값의 최대 나이. 이 폴백은 stale 표시와 함께
-/// 나가므로("이전 값") 진짜 문제를 가리지 않는다 — 이보다 오래되면 에러를 그대로 보여준다.
-const STALE_MAX: std::time::Duration = std::time::Duration::from_secs(3600);
+/// 실패 시 대신 보여줄 수 있는 직전 값의 최대 나이. 클로드 액세스 토큰 수명이
+/// 몇 시간뿐이라(실측 3~5시간) 비활성 프로필은 금방 만료 상태가 된다 — 하루 안의
+/// 마지막 성공 수치를 나이 라벨("n시간 전 값")과 함께 계속 보여줘 "어느 계정에
+/// 여유가 있나"를 판단할 근거를 남긴다. 이보다 오래되면 에러(만료 안내)를 그대로 보여준다.
+const STALE_MAX: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
 /// 캐시 키는 "누구의 사용량인가"(계정 id) 기준이다.
 /// 전환 직후 활성 파일의 계정이 바뀌면 키도 바뀌어 이전 계정 수치가 새 계정 카드에
@@ -321,11 +328,13 @@ struct DiskEntry {
     usage: Usage,
 }
 
-fn disk_cache_load(env: &Env, key: &str, max_age: std::time::Duration) -> Option<Usage> {
+/// 디스크의 마지막 성공 수치를 (값, 나이(초))로 읽는다. max_age보다 오래되면 None.
+fn disk_cache_load(env: &Env, key: &str, max_age: std::time::Duration) -> Option<(Usage, u64)> {
     let root = read_json(&disk_cache_path(env)).ok()?;
     let entry: DiskEntry = serde_json::from_value(root.get(key)?.clone()).ok()?;
-    if now().saturating_sub(entry.saved_at) < max_age.as_secs() {
-        Some(entry.usage)
+    let age = now().saturating_sub(entry.saved_at);
+    if age < max_age.as_secs() {
+        Some((entry.usage, age))
     } else {
         None
     }
@@ -404,35 +413,35 @@ pub async fn fetch(
 
     // 2) 재시작 직후: 디스크의 마지막 수치가 아직 신선하면 API를 부르지 않는다
     //    (재시작 때마다 일제 호출로 요청 제한에 걸리던 원인 제거)
-    if let Some(fresh) = disk_cache_load(env, &key, CACHE_TTL) {
+    if let Some((fresh, _)) = disk_cache_load(env, &key, CACHE_TTL) {
         if let Ok(mut map) = cache().lock() {
             map.insert(key.clone(), (std::time::Instant::now(), fresh.clone()));
         }
         return Ok(fresh);
     }
 
-    // 실패 시 대신 내보낼 마지막 수치 (메모리 → 디스크 순, 1시간 상한)
-    let stale_value = || -> Option<Usage> {
+    // 실패 시 대신 내보낼 마지막 수치와 그 나이 (메모리 → 디스크 순, STALE_MAX 상한)
+    let stale_value = || -> Option<(Usage, u64)> {
         if let Ok(map) = cache().lock() {
             if let Some((at, cached)) = map.get(&key) {
                 if at.elapsed() < STALE_MAX {
-                    return Some(cached.clone());
+                    return Some((cached.clone(), at.elapsed().as_secs()));
                 }
             }
         }
         disk_cache_load(env, &key, STALE_MAX)
     };
-    let mark_stale = |mut usage: Usage| {
+    let mark_stale = |(mut usage, age): (Usage, u64)| {
         usage.stale = true;
+        usage.stale_age_secs = Some(age);
         usage
     };
 
     // 3) 백오프 중이면 API를 부르지 않고 마지막 수치로 버틴다
     if backoff_active(&key) {
-        return match stale_value() {
-            Some(usage) => Ok(mark_stale(usage)),
-            None => Err("사용량 조회 대기중".into()),
-        };
+        return stale_value()
+            .map(mark_stale)
+            .ok_or_else(|| "사용량 조회 대기중".into());
     }
 
     // 4) 실제 조회
@@ -452,15 +461,13 @@ pub async fn fetch(
         Err(FetchErr::Transient) => {
             // 요청 제한·서버 오류 — 재시도를 자제하고 마지막 수치로 조용히 버틴다
             backoff_bump(&key);
-            match stale_value() {
-                Some(usage) => Ok(mark_stale(usage)),
-                None => Err("사용량 조회 대기중".into()),
-            }
+            stale_value()
+                .map(mark_stale)
+                .ok_or_else(|| "사용량 조회 대기중".into())
         }
-        Err(FetchErr::Msg(message)) => match stale_value() {
-            Some(usage) => Ok(mark_stale(usage)),
-            None => Err(message),
-        },
+        // 만료 토큰 등 — 하루 안의 마지막 수치가 있으면 나이 라벨과 함께 보여주고,
+        // 그마저 없을 때만 원래 에러(전환해 갱신하라는 안내)를 노출한다
+        Err(FetchErr::Msg(message)) => stale_value().map(mark_stale).ok_or(message),
     }
 }
 
@@ -599,11 +606,13 @@ mod tests {
                 resets_at: None,
             }],
             stale: false,
+            stale_age_secs: None,
         };
         disk_cache_store(&env, "claude:acct-1", &usage);
-        let loaded = disk_cache_load(&env, "claude:acct-1", STALE_MAX)
+        let (loaded, age) = disk_cache_load(&env, "claude:acct-1", STALE_MAX)
             .expect("방금 저장한 값이 읽혀야 한다");
         assert_eq!(loaded.windows[0].percent, 42.0);
+        assert!(age <= 1, "방금 저장한 값의 나이는 0이어야 한다: {age}");
         // 다른 키는 없음
         assert!(disk_cache_load(&env, "claude:acct-2", STALE_MAX).is_none());
         // 오래된 항목은 버려진다
@@ -612,6 +621,59 @@ mod tests {
         root["claude:acct-1"]["saved_at"] = serde_json::json!(1000);
         fs::write(&path, serde_json::to_vec(&root).unwrap()).unwrap();
         assert!(disk_cache_load(&env, "claude:acct-1", STALE_MAX).is_none());
+    }
+
+    /// 핵심 시나리오: 비활성 프로필의 토큰이 만료돼도(수명 실측 3~5시간)
+    /// 하루 안의 마지막 성공 수치를 나이와 함께 보여줘야 한다.
+    #[test]
+    fn expired_token_falls_back_to_last_value_with_age() {
+        let env = test_env("stale-age");
+        // 만료된 활성 토큰 + 계정 신원 (cache_key가 ~/.claude.json의 계정 id를 쓴다)
+        fs::write(
+            env.live_credential_path(Provider::Claude),
+            r#"{"claudeAiOauth":{"accessToken":"fake","expiresAt":1000}}"#,
+        )
+        .unwrap();
+        fs::write(
+            env.home.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-stale","emailAddress":"s@test.dev"}}"#,
+        )
+        .unwrap();
+        // 3시간 전의 마지막 성공 수치를 디스크에 심는다
+        fs::create_dir_all(&env.store).unwrap();
+        let usage = Usage {
+            windows: vec![UsageWindow {
+                key: "session".into(),
+                label: "5 Hours".into(),
+                percent: 61.0,
+                resets_at: None,
+            }],
+            stale: false,
+            stale_age_secs: None,
+        };
+        disk_cache_store(&env, "claude:uuid-stale", &usage);
+        let path = disk_cache_path(&env);
+        let mut root = read_json(&path).unwrap();
+        root["claude:uuid-stale"]["saved_at"] = serde_json::json!(now() - 3 * 3600);
+        fs::write(&path, serde_json::to_vec(&root).unwrap()).unwrap();
+
+        // 만료 토큰은 API 호출 전에 걸러지므로 네트워크 없이도 폴백 경로가 검증된다
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let got = rt.block_on(fetch(&env, Provider::Claude, None)).unwrap();
+        assert!(got.stale, "폴백 값은 stale로 표시돼야 한다");
+        let age = got.stale_age_secs.expect("나이가 실려야 한다");
+        assert!((age as i64 - 3 * 3600).abs() < 10, "age={age}");
+        assert_eq!(got.windows[0].percent, 61.0);
+
+        // 하루를 넘긴 값은 버려지고 원래 에러(만료 안내)가 그대로 나간다
+        let mut root = read_json(&path).unwrap();
+        root["claude:uuid-stale"]["saved_at"] = serde_json::json!(now() - 25 * 3600);
+        fs::write(&path, serde_json::to_vec(&root).unwrap()).unwrap();
+        let err = rt.block_on(fetch(&env, Provider::Claude, None)).unwrap_err();
+        assert!(err.contains("만료"), "만료 안내가 아니다: {err}");
     }
 
     #[test]
