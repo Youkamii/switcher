@@ -483,6 +483,93 @@ async function renderProvider(provider: ProviderId, title: string) {
   app.appendChild(section);
 }
 
+/// 컴팩트용 라벨 축약: "5 Hours"→5h, "Weekly"→wk, "Daily"→1d, 모델명→앞 2글자 (Fable→fb)
+function compactLabel(win: UsageWindow): string {
+  const label = win.label;
+  if (label === "5 Hours") return "5h";
+  if (label === "Weekly") return "wk";
+  if (label === "Daily") return "1d";
+  const hours = label.match(/^(\d+) Hours?$/);
+  if (hours) return `${hours[1]}h`;
+  const days = label.match(/^(\d+) Days?$/);
+  if (days) return `${days[1]}d`;
+  return label.slice(0, 2).toLowerCase();
+}
+
+/// 컴팩트용 리셋 시간: 24시간 이상이면 일/시(5/17), 그 밑이면 시:분(2:21)
+function compactReset(resetsAt: string | null): string {
+  if (!resetsAt) return "";
+  const ts = /^\d+$/.test(resetsAt) ? Number(resetsAt) * 1000 : Date.parse(resetsAt);
+  if (Number.isNaN(ts)) return "";
+  const diff = ts - Date.now();
+  if (diff <= 0) return "0:00";
+  const minutes = Math.floor(diff / 60000);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (hours >= 24) return `${days}/${String(hours % 24).padStart(2, "0")}`;
+  return `${hours}:${String(minutes % 60).padStart(2, "0")}`;
+}
+
+/// 컴팩트 모드: 활성 계정만 — 프로바이더 구분·구독 레벨·사용량 요약 세 가지가 전부
+async function renderProviderCompact(provider: ProviderId, title: string) {
+  try {
+    const snap = await invoke<Snapshot>("list_profiles", { provider });
+    const active = snap.profiles.find((profile) => profile.active);
+    if (!active) return; // 로그인된 계정이 없으면 섹션 자체를 생략
+
+    const section = document.createElement("section");
+    const head = document.createElement("div");
+    head.className = "compact-head";
+    const name = document.createElement("span");
+    name.textContent = title;
+    head.appendChild(name);
+    if (active.plan) {
+      const plan = document.createElement("span");
+      plan.className = "badge plan";
+      plan.textContent = active.plan;
+      if (active.plan_tier) {
+        const tier = document.createElement("span");
+        tier.className = `tier tier-${active.plan_tier}`;
+        tier.textContent = String(active.plan_tier);
+        plan.appendChild(tier);
+      }
+      head.appendChild(plan);
+    }
+    section.appendChild(head);
+    app.appendChild(section);
+
+    try {
+      const usage = await invoke<Usage>("fetch_usage", { provider, profile: null });
+      for (const win of usage.windows) {
+        const row = document.createElement("div");
+        row.className = "compact-row";
+        const label = document.createElement("span");
+        label.className = "c-label";
+        label.textContent = compactLabel(win);
+        label.title = win.label;
+        const bar = document.createElement("div");
+        bar.className = "bar";
+        const fill = document.createElement("div");
+        fill.className = "bar-fill";
+        if (win.percent >= 85) fill.classList.add("danger");
+        else if (win.percent >= 60) fill.classList.add("warn");
+        fill.style.width = `${Math.min(100, Math.max(0, win.percent))}%`;
+        bar.appendChild(fill);
+        const reset = document.createElement("span");
+        reset.className = "c-reset";
+        reset.textContent = compactReset(win.resets_at);
+        reset.title = "리셋까지 남은 시간";
+        row.append(label, bar, reset);
+        section.appendChild(row);
+      }
+    } catch {
+      // 컴팩트 모드에서는 조회 실패를 조용히 넘긴다 — 다음 주기에 다시 시도
+    }
+  } catch {
+    // 목록 실패도 조용히 — 컴팩트는 표시 전용
+  }
+}
+
 async function render() {
   // 새로고침 연타·자동 주기와의 경합으로 화면이 겹쳐 그려지는 것을 막는다
   if (rendering) return;
@@ -497,7 +584,11 @@ async function render() {
     }
     app.textContent = "";
     for (const { id, title } of PROVIDERS) {
-      await renderProvider(id, title);
+      if (viewMode === "compact") {
+        await renderProviderCompact(id, title);
+      } else {
+        await renderProvider(id, title);
+      }
     }
   } finally {
     rendering = false;
@@ -514,25 +605,35 @@ function userIsBusy(): boolean {
 
 const appWindow = getCurrentWindow();
 
-// 고정 모드 — 조작 요소(전환·삭제·계정 추가·저장)를 전부 숨기고
-// 사용량만 보이는 위젯이 된다. 실수 클릭 방지 겸 전시용.
-// (항상-위는 창 기본 설정으로 항상 켜져 있다)
+// 보기 모드 3단계 사이클: 일반 → 고정(사용량 위젯) → 컴팩트(활성 계정 요약만) → 일반
+// 고정·컴팩트 공통: 조작 숨김, 클릭 투과, ☰ 핸들로만 이동. (항상-위는 창 기본 설정)
+type ViewMode = "normal" | "locked" | "compact";
 const lockBtn = document.getElementById("pin") as HTMLButtonElement;
-let locked = localStorage.getItem("switcher.locked") === "1";
+let viewMode: ViewMode = (() => {
+  const stored = localStorage.getItem("switcher.viewmode");
+  if (stored === "locked" || stored === "compact") return stored;
+  // 예전 저장값 이관
+  return localStorage.getItem("switcher.locked") === "1" ? "locked" : "normal";
+})();
+// 파생: 위젯형(조작 숨김·투과) 여부
+let locked = viewMode !== "normal";
 
-function applyLock() {
+function applyViewMode() {
+  locked = viewMode !== "normal";
   app.classList.toggle("locked", locked);
+  app.classList.toggle("compact", viewMode === "compact");
   // 타이틀바도 위젯 모드로 (이름·새로고침·슬라이더 숨김, 남은 버튼은 호버 시에만 또렷)
   document.body.classList.toggle("locked", locked);
   lockBtn.classList.toggle("pinned", locked);
-  lockBtn.textContent = locked ? "고정됨" : "고정";
-  // 고정 모드에서는 ☰ 핸들을 잡아야만 창이 움직인다 — 타이틀바 전체 드래그를 끈다
+  lockBtn.textContent =
+    viewMode === "normal" ? "고정" : viewMode === "locked" ? "고정됨" : "컴팩트";
+  // 위젯 모드에서는 ☰ 핸들을 잡아야만 창이 움직인다 — 타이틀바 전체 드래그를 끈다
   if (locked) {
     titlebarEl.removeAttribute("data-tauri-drag-region");
   } else {
     titlebarEl.setAttribute("data-tauri-drag-region", "");
   }
-  // 고정 모드에서는 카드·버튼 위가 아니면 마우스가 뒤 창으로 통과한다
+  // 위젯 모드에서는 카드·버튼 위가 아니면 마우스가 뒤 창으로 통과한다
   void invoke("set_click_through", { enabled: locked });
   reportHitRegions();
 }
@@ -593,14 +694,13 @@ void listen<{ ok: boolean; provider?: string; name?: string; error?: string }>(
 );
 
 lockBtn.addEventListener("click", () => {
-  locked = !locked;
-  localStorage.setItem("switcher.locked", locked ? "1" : "0");
-  applyLock();
-  fitHeight();
-  // 고정하는 순간 열려 있던 로그인 패널 등을 정리한다
-  if (locked) void render();
+  viewMode = viewMode === "normal" ? "locked" : viewMode === "locked" ? "compact" : "normal";
+  localStorage.setItem("switcher.viewmode", viewMode);
+  applyViewMode();
+  // 모드가 바뀌면 화면 구성이 달라진다 — 다시 그린다 (열려 있던 로그인 패널도 정리됨)
+  void render();
 });
-applyLock();
+applyViewMode();
 
 document.getElementById("hide")!.addEventListener("click", () => void appWindow.hide());
 
@@ -646,8 +746,10 @@ function fitHeight() {
       : 40;
     const total = titlebarEl.offsetHeight + content + 2; // 테두리
     const max = Math.floor(window.screen.availHeight * 0.9);
-    const target = Math.round(Math.max(120, Math.min(total, max)));
-    void appWindow.setSize(new LogicalSize(360, target));
+    const target = Math.round(Math.max(80, Math.min(total, max)));
+    // 컴팩트 모드는 창 자체도 좁게
+    const width = viewMode === "compact" ? 240 : 360;
+    void appWindow.setSize(new LogicalSize(width, target));
     // 레이아웃이 확정된 시점에 히트 영역도 갱신한다
     reportHitRegions();
   }, 120);
