@@ -221,6 +221,73 @@ fn cli_args(provider: Provider) -> (&'static str, &'static [&'static str], &'sta
     }
 }
 
+/// GUI 앱(Finder·Dock 실행)은 셸 PATH를 모른다 — 로그인 셸에 묻고, 실패하면
+/// CLI가 흔히 설치되는 경로를 직접 짚는다. 끝내 못 찾으면 이름 그대로 돌려줘
+/// spawn이 명확한 미설치 에러를 내게 둔다.
+#[cfg(not(windows))]
+fn resolve_program(program: &str) -> String {
+    let shell = std::process::Command::new("/bin/zsh")
+        .args(["-lc", &format!("command -v {program}")])
+        .output();
+    if let Ok(out) = shell {
+        if out.status.success() {
+            if let Some(line) = String::from_utf8_lossy(&out.stdout).lines().next() {
+                let line = line.trim();
+                if line.starts_with('/') && Path::new(line).exists() {
+                    return line.to_string();
+                }
+            }
+        }
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        let candidates = [
+            home.join(".local/bin").join(program),
+            PathBuf::from("/opt/homebrew/bin").join(program),
+            PathBuf::from("/usr/local/bin").join(program),
+        ];
+        for candidate in candidates {
+            if candidate.exists() {
+                return candidate.to_string_lossy().into_owned();
+            }
+        }
+    }
+    program.to_string()
+}
+
+/// 격리 로그인(CLAUDE_CONFIG_DIR)이 키체인에 만드는 항목 이름.
+/// 실측(2026-07-29, claude 2.1.220): 맥 CLI는 격리 로그인 토큰을 폴더의 파일이 아니라
+/// "Claude Code-credentials-<sha256(경로)[:8]>" 키체인 항목에 쓴다.
+/// 경로 문자열을 그대로 해시하므로, 심볼릭 링크로 표기가 갈릴 때를 대비해
+/// 원본·정규화(canonicalize) 두 이름을 모두 후보로 삼는다.
+#[cfg(target_os = "macos")]
+fn isolated_keychain_services(config_dir: &Path) -> Vec<String> {
+    use sha2::{Digest, Sha256};
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |path: &str| {
+        let digest = Sha256::digest(path.as_bytes());
+        let hex: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+        let service = format!("{}-{hex}", crate::accounts::keychain::CLAUDE_LIVE_SERVICE);
+        if !out.contains(&service) {
+            out.push(service);
+        }
+    };
+    push(&config_dir.to_string_lossy());
+    if let Ok(real) = config_dir.canonicalize() {
+        push(&real.to_string_lossy());
+    }
+    out
+}
+
+/// 임시 로그인 폴더와 그 로그인이 남긴 키체인 항목(맥)을 지운다.
+/// 키체인을 폴더보다 먼저 지운다 — 폴더가 사라지면 항목 이름(경로 해시)을 되구할 수 없다.
+fn cleanup_isolated(config_dir: &Path) {
+    #[cfg(target_os = "macos")]
+    for service in isolated_keychain_services(config_dir) {
+        crate::accounts::keychain::delete_item(&service);
+    }
+    remove_dir_retry(config_dir);
+}
+
 fn temp_config_dir(env: &Env) -> PathBuf {
     // 같은 초에 두 로그인이 시작해도 겹치지 않게 pid+일련번호를 붙인다
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -257,7 +324,7 @@ pub fn sweep_stale(env: &Env) {
             .map(|age| age > SWEEP_MIN_AGE)
             .unwrap_or(false);
         if old_enough {
-            remove_dir_retry(&entry.path());
+            cleanup_isolated(&entry.path());
         }
     }
 }
@@ -323,15 +390,16 @@ fn start_impl(
             c.arg(program);
             c
         };
+        // 유닉스는 GUI 앱이 셸 PATH를 모르므로 절대경로로 해석해 실행한다
         #[cfg(not(windows))]
-        let mut cmd = CommandBuilder::new(program);
+        let mut cmd = CommandBuilder::new(resolve_program(program));
         for a in args {
             cmd.arg(a);
         }
         cmd.env(env_key, &config_dir);
 
         let child = pair.slave.spawn_command(cmd).map_err(|e| {
-            let _ = fs::remove_dir_all(&config_dir);
+            cleanup_isolated(&config_dir);
             format!(
                 "{program} 실행에 실패했습니다: {e} — 설치·업데이트: {}",
                 install_cmd(provider)
@@ -493,7 +561,22 @@ fn read_login_result(
         Provider::Claude => config_dir.join(".credentials.json"),
         Provider::Codex => config_dir.join("auth.json"),
     };
-    if !cred_path.exists() {
+    let mut cred: Option<Vec<u8>> = if cred_path.exists() {
+        Some(fs::read(&cred_path).map_err(|e| format!("읽기 실패: {e}"))?)
+    } else {
+        None
+    };
+    // 맥 클로드는 격리 로그인 토큰이 파일이 아니라 키체인 항목으로 생긴다 (실측)
+    #[cfg(target_os = "macos")]
+    if cred.is_none() && provider == Provider::Claude {
+        for service in isolated_keychain_services(config_dir) {
+            if let Some(data) = crate::accounts::keychain::read_item(&service)? {
+                cred = Some(data);
+                break;
+            }
+        }
+    }
+    let Some(cred) = cred else {
         // 코덱스는 장치 코드 인증이 계정에서 꺼져 있으면 승인 단계에서 거부된다 (기본값이 꺼짐)
         return Err(match provider {
             Provider::Codex => "로그인이 완료되지 않았습니다 — ChatGPT 설정 → 보안에서 \
@@ -501,8 +584,7 @@ fn read_login_result(
                 .into(),
             Provider::Claude => "로그인이 완료되지 않았습니다 — 처음부터 다시 시도하세요".to_string(),
         });
-    }
-    let cred = fs::read(&cred_path).map_err(|e| format!("읽기 실패: {e}"))?;
+    };
     match provider {
         Provider::Claude => {
             let root = read_json(&config_dir.join(".claude.json"))?;
@@ -528,10 +610,11 @@ fn finish_session() -> Option<(Provider, PathBuf)> {
     Some((session.provider, session.config_dir))
 }
 
-/// 임시 폴더의 로그인 결과를 프로필로 들여온다. 어떤 경로로 끝나든 폴더는 지운다.
+/// 임시 폴더의 로그인 결과를 프로필로 들여온다.
+/// 어떤 경로로 끝나든 폴더와 키체인 잔재(맥)는 지운다.
 fn import(env: &Env, provider: Provider, config_dir: &Path) -> Result<LoginOutcome, String> {
     let result = import_inner(env, provider, config_dir);
-    remove_dir_retry(config_dir);
+    cleanup_isolated(config_dir);
     result
 }
 
@@ -614,9 +697,16 @@ pub fn cancel() {
                 .stderr(std::process::Stdio::null())
                 .status();
         }
+        // PTY 자식은 세션 리더(setsid)다 — 그룹째 보내야 CLI 자손이 살아남지 않는다
+        #[cfg(unix)]
+        if let Some(pid) = session.child.process_id() {
+            unsafe {
+                libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+            }
+        }
         let _ = session.child.kill();
         let _ = session.child.wait();
-        remove_dir_retry(&session.config_dir);
+        cleanup_isolated(&session.config_dir);
     }
 }
 
@@ -825,6 +915,20 @@ mod tests {
         assert_eq!(leftover, 0, "임시 로그인 폴더가 정리돼야 한다");
     }
 
+    /// 격리 로그인 키체인 항목의 이름 규칙(sha256(경로)[:8] 접미사) 회귀 테스트.
+    /// 규칙 자체는 실제 CLI가 만든 항목과 대조해 실측 확인했다 (2026-07-29, claude 2.1.220).
+    /// 아래 기대값은 이 경로 문자열의 sha256을 독립 계산한 상수다.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn isolated_service_name_follows_measured_rule() {
+        let dir = Path::new("/Users/user/.switcher/_login/1700000000-1234-0");
+        let services = isolated_keychain_services(dir);
+        assert!(
+            services.contains(&"Claude Code-credentials-a8d80090".to_string()),
+            "규칙과 다른 이름: {services:?}"
+        );
+    }
+
     #[test]
     fn sweep_keeps_fresh_folders() {
         let env = test_env("sweep");
@@ -832,6 +936,23 @@ mod tests {
         fs::create_dir_all(&fresh).unwrap();
         sweep_stale(&env);
         assert!(fresh.exists(), "방금 만든 폴더(다른 인스턴스의 진행 중 로그인일 수 있음)는 남겨야 한다");
+    }
+
+    /// 실환경: 격리 로그인이 남긴 임시 폴더(맥은 키체인 항목 포함)를 실제 import
+    /// 경로로 프로필에 들여온다. 성공하면 잔재(폴더·키체인 항목)는 제품 규칙대로 지워진다.
+    /// 실행: SWITCHER_TEST_IMPORT_DIR=<격리 폴더> cargo test -- --ignored real_import --nocapture
+    #[test]
+    #[ignore]
+    fn real_import_isolated_login_result() {
+        let dir = std::env::var("SWITCHER_TEST_IMPORT_DIR")
+            .expect("SWITCHER_TEST_IMPORT_DIR에 격리 로그인 임시 폴더 경로를 지정하세요");
+        let env = Env::real().unwrap();
+        let outcome = import(&env, Provider::Claude, Path::new(&dir)).unwrap();
+        println!(
+            "임포트 완료: 프로필 '{}' ({:?}), 기존 갱신 = {}",
+            outcome.profile, outcome.email, outcome.updated_existing
+        );
+        assert!(!outcome.profile.is_empty());
     }
 
     /// 실환경: 실제로 로그인 주소가 나오는지, 그리고 활성 계정이 안 바뀌는지 확인한다.

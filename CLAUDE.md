@@ -1,6 +1,6 @@
 # switcher
 
-클로드 코드·코덱스 CLI 다중 계정 관리 위젯 (Windows). Public repo — 비밀 유출에 특히 민감.
+클로드 코드·코덱스 CLI 다중 계정 관리 위젯 (Windows·macOS). Public repo — 비밀 유출에 특히 민감.
 
 ## 스택 (고정 — 다른 도구 임의 제안 금지)
 
@@ -12,8 +12,10 @@
 ## 실검증 명령
 
 - 개발 실행: `npm run tauri dev`
-- 포터블 빌드: `npm run tauri build -- --no-bundle` → `src-tauri/target/release/switcher.exe`
+- 포터블 빌드 (윈도우): `npm run tauri build -- --no-bundle` → `src-tauri/target/release/switcher.exe`
+- 앱 빌드 (맥): `npm run tauri build -- --bundles app` → `src-tauri/target/release/bundle/macos/switcher.app`
 - Rust 빠른 검증: `cd src-tauri && cargo check`
+- 실계정 e2e (로컬 전용): `cargo test -- --ignored real_ --test-threads=1`
 
 ## 금기
 
@@ -33,7 +35,16 @@
 
 ## 전환 대상 파일 (실측 확인됨)
 
-- 클로드 토큰: `~/.claude/.credentials.json` (키: `claudeAiOauth`)
-- 클로드 계정 표시 정보: `~/.claude.json`의 `oauthAccount` 블록 (accountUuid·emailAddress·organizationUuid)
-- 코덱스 토큰: `~/.codex/auth.json` (키: `auth_mode`, `OPENAI_API_KEY`, `tokens`, `last_refresh`)
+- 클로드 토큰 (윈도우): `~/.claude/.credentials.json` (키: `claudeAiOauth`)
+- 클로드 토큰 (맥): **키체인** 항목 `Claude Code-credentials` (계정=사용자명, JSON 내용은 윈도우와 동일). `~/.claude/.credentials.json`은 구버전 잔재 — 위젯은 키체인을 정본으로 쓰고, 파일이 남아 있으면 함께 갱신한다.
+- 클로드 계정 표시 정보: `~/.claude.json`의 `oauthAccount` 블록 (accountUuid·emailAddress·organizationUuid) — 맥에서도 동일
+- 코덱스 토큰: `~/.codex/auth.json` (키: `auth_mode`, `OPENAI_API_KEY`, `tokens`, `last_refresh`) — 맥에서도 파일 그대로
 - 프로필 보관소: `~/.switcher/profiles/<name>/`
+
+## macOS 전용 (실측 확인됨, 2026-07-29 / claude 2.1.220 / macOS 26.5)
+
+- 키체인 접근은 claude CLI와 같은 통로인 `/usr/bin/security`를 쓴다 — 같은 통로여야 항목 ACL이 일치해 허용 팝업이 없다. 쓰기는 `security -i`(stdin) + `-X`(hex)로 — 토큰이 프로세스 인자에 노출되지 않는다.
+- 격리 로그인(`CLAUDE_CONFIG_DIR`)은 맥에서 파일 대신 키체인 항목 `Claude Code-credentials-<sha256(경로 문자열)[:8]>`을 만든다. 청소는 **키체인 먼저, 폴더 나중** — 폴더가 사라지면 항목 이름(경로 해시)을 복원할 수 없다.
+- 일반 NSWindow는 `CanJoinAllSpaces`·`FullScreenAuxiliary`를 줘도 다른 Space(특히 전체화면)에 올라가지 못한다 — **비활성 NSPanel로 클래스를 갈아끼워야** 한다 (lib.rs `SwitcherPanel`). 이때 tao가 덮어쓰던 `canBecomeKeyWindow`가 사라지므로 서브클래스에서 복원해야 입력칸이 포커스를 받는다.
+- GUI 앱(Finder 실행)은 셸 PATH를 모른다 — CLI 경로는 로그인 셸(`zsh -lc command -v`)과 관례 경로(`~/.local/bin` 등)로 해석한다 (login.rs `resolve_program`).
+- 마우스 전역 상태는 `CGEventSourceButtonState`(권한 불필요), 더블클릭 간격은 `NSEvent.doubleClickInterval`.

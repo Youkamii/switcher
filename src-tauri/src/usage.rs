@@ -9,8 +9,8 @@ use serde_json::Value;
 use std::path::PathBuf;
 
 use crate::accounts::{
-    atomic_write, jwt_payload, live_identity, now, read_json, read_meta, Env, Provider,
-    MUTATION_LOCK,
+    atomic_write, jwt_payload, live_identity, now, read_json, read_live_cred, read_meta, Env,
+    Provider, MUTATION_LOCK,
 };
 use serde::Deserialize;
 
@@ -66,11 +66,18 @@ fn credential_path(
 }
 
 fn claude_access_token(env: &Env, profile: Option<&str>) -> Result<String, String> {
-    let path = credential_path(env, Provider::Claude, profile)?;
-    if !path.exists() {
-        return Err("토큰 파일이 없습니다".into());
-    }
-    let root = read_json(&path)?;
+    let root = match profile {
+        Some(_) => {
+            let path = credential_path(env, Provider::Claude, profile)?;
+            if !path.exists() {
+                return Err("토큰 파일이 없습니다".into());
+            }
+            read_json(&path)?
+        }
+        // 활성 계정은 저장소(파일 또는 macOS 키체인)를 통해 읽는다
+        None => serde_json::from_slice(&read_live_cred(env, Provider::Claude)?)
+            .map_err(|e| format!("활성 토큰 파싱 실패: {e}"))?,
+    };
     let oauth = root
         .get("claudeAiOauth")
         .ok_or("토큰 파일 형식이 다릅니다 (claudeAiOauth 없음)")?;

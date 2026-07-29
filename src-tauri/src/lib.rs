@@ -30,6 +30,56 @@ extern "system" {
     fn GetDoubleClickTime() -> u32;
 }
 
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    /// 전역 마우스 버튼 상태 (state_id 0 = combined session, button 0 = 왼쪽).
+    /// 이벤트 탭이 아닌 상태 조회라 입력 모니터링 권한 없이 동작한다 (실기기 확인).
+    fn CGEventSourceButtonState(state_id: i32, button: u32) -> bool;
+}
+
+/// 시스템 더블클릭 간격(ms) — 맥은 setup에서 NSEvent 값으로 채운다 (500ms는 폴백)
+#[cfg(target_os = "macos")]
+static DOUBLE_CLICK_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(500);
+
+// 위젯 창에 갈아 끼울 NSPanel 서브클래스.
+// macOS(26 실측): 일반 NSWindow는 CanJoinAllSpaces·FullScreenAuxiliary를 줘도
+// 다른 Space(특히 전체화면)에 올라가지 못한다 — 비활성 패널(NSPanel)만 허용된다.
+// 클래스를 바꾸면 tao 서브클래스가 덮어쓰던 canBecomeKeyWindow(테두리 없는 창은
+// 기본 NO)가 사라지므로 여기서 복원한다 — 없으면 입력칸이 포커스를 못 받는다.
+#[cfg(target_os = "macos")]
+objc2::define_class!(
+    #[unsafe(super(objc2_app_kit::NSPanel))]
+    #[thread_kind = objc2::MainThreadOnly]
+    #[name = "SwitcherPanel"]
+    struct SwitcherPanel;
+
+    impl SwitcherPanel {
+        #[unsafe(method(canBecomeKeyWindow))]
+        fn can_become_key_window(&self) -> bool {
+            true
+        }
+    }
+);
+
+/// 왼쪽 버튼이 눌려 있는가 — 투과 중엔 웹뷰가 클릭을 못 받으므로 시스템에 직접 묻는다
+#[cfg(any(windows, target_os = "macos"))]
+fn primary_button_down() -> bool {
+    #[cfg(windows)]
+    return (unsafe { GetAsyncKeyState(0x01) } as u16 & 0x8000) != 0;
+    #[cfg(target_os = "macos")]
+    return unsafe { CGEventSourceButtonState(0, 0) };
+}
+
+/// 시스템 더블클릭 판정 간격
+#[cfg(any(windows, target_os = "macos"))]
+fn double_click_window() -> std::time::Duration {
+    #[cfg(windows)]
+    return std::time::Duration::from_millis(unsafe { GetDoubleClickTime() } as u64);
+    #[cfg(target_os = "macos")]
+    return std::time::Duration::from_millis(DOUBLE_CLICK_MS.load(Ordering::Relaxed));
+}
+
 #[tauri::command]
 fn list_profiles(provider: String) -> Result<Snapshot, String> {
     accounts::list(&Env::real()?, Provider::parse(&provider)?)
@@ -204,9 +254,87 @@ pub fn run() {
         }))
         .setup(|app| {
             use tauri::Manager;
-            // 첫 실행 위치: 작업영역 우하단 (위젯 기본 자리)
+            #[cfg(target_os = "macos")]
+            {
+                // 위젯은 Dock·Cmd+Tab에 나오지 않는다 — 트레이(메뉴바)로만 상주
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                // 시스템 더블클릭 간격 (setup은 메인 스레드 — AppKit 호출이 안전한 곳)
+                let interval = objc2_app_kit::NSEvent::doubleClickInterval();
+                if interval > 0.0 && interval < 5.0 {
+                    DOUBLE_CLICK_MS.store((interval * 1000.0) as u64, Ordering::Relaxed);
+                }
+            }
+            // 창은 숨김으로 만들어(visible: false) 자리·Space 속성을 정한 뒤 보여준다.
+            // 이미 표시된 창은 Space 참여 플래그를 바꿔도 다시 order하기 전까지
+            // 반영되지 않는다 (macOS 실측) — 첫 표시 전에 정하면 처음부터 맞는 곳에 뜬다.
             if let Some(window) = app.get_webview_window("main") {
                 position_bottom_right(&window);
+                // 맥의 Space 개념 대응: 위젯은 어느 Space로 옮겨가도, 전체화면 앱
+                // 위에서도 보여야 한다 (윈도우판 alwaysOnTop의 의미를 그대로 옮김)
+                #[cfg(target_os = "macos")]
+                {
+                    // 공식 API로 모든 Space 참여를 켠 뒤 (tao가 상태를 추적한다)
+                    let _ = window.set_visible_on_all_workspaces(true);
+                    if let Ok(ptr) = window.ns_window() {
+                        use objc2::ClassType;
+                        use objc2_app_kit::{
+                            NSPanel, NSWindowCollectionBehavior, NSWindowStyleMask,
+                        };
+                        extern "C" {
+                            fn object_setClass(
+                                obj: *mut objc2::runtime::AnyObject,
+                                cls: *const objc2::runtime::AnyClass,
+                            ) -> *const objc2::runtime::AnyClass;
+                        }
+                        // 창을 비활성 패널로 전환 — Space 합류의 필요조건 (실측)
+                        unsafe {
+                            object_setClass(
+                                ptr as *mut objc2::runtime::AnyObject,
+                                SwitcherPanel::class(),
+                            );
+                        }
+                        let panel = unsafe { &*(ptr as *const NSPanel) };
+                        panel.setStyleMask(
+                            panel.styleMask() | NSWindowStyleMask::NonactivatingPanel,
+                        );
+                        // 입력칸을 누를 때만 키보드를 받는다 — 위젯이 작업 포커스를 뺏지 않는다
+                        panel.setBecomesKeyOnlyIfNeeded(true);
+                        // 패널 기본값(비활성화 시 숨김)이 끼어들지 않게 명시적으로 끈다
+                        panel.setHidesOnDeactivate(false);
+                        panel.setCollectionBehavior(
+                            panel.collectionBehavior()
+                                | NSWindowCollectionBehavior::CanJoinAllSpaces
+                                | NSWindowCollectionBehavior::FullScreenAuxiliary,
+                        );
+                    }
+                }
+                let _ = window.show();
+            }
+            // macOS(26 실측) 한계 보완: CanJoinAllSpaces를 켜도 Space를 옮기면 창이
+            // 따라오지 않고, 다시 order해야 새 Space에 붙는다. 활성 Space에서 벗어난 게
+            // 감지되면 스스로 앞에 다시 서는 워치독 (숨김 상태는 건드리지 않는다).
+            #[cfg(target_os = "macos")]
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_millis(1000));
+                    let on_main = handle.clone();
+                    let _ = handle.run_on_main_thread(move || {
+                        use tauri::Manager;
+                        let Some(window) = on_main.get_webview_window("main") else {
+                            return;
+                        };
+                        if !window.is_visible().unwrap_or(false) {
+                            return;
+                        }
+                        if let Ok(ptr) = window.ns_window() {
+                            let ns_window = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+                            if !ns_window.isOnActiveSpace() {
+                                ns_window.orderFrontRegardless();
+                            }
+                        }
+                    });
+                });
             }
             // 지난 실행이 중단·크래시로 남긴 임시 로그인 폴더(토큰 포함 가능)를 청소한다.
             // 다른 인스턴스의 진행 중 로그인은 나이 필터가 보호한다.
@@ -227,9 +355,9 @@ pub fn run() {
             // 클릭 투과 폴링 (고정 모드, 25ms 주기):
             // - UI 영역(버튼·핸들) 위 → 마우스를 받는다
             // - 그 외 전부(카드 포함) → 뒤 창으로 통과. 단일 클릭·드래그를 절대 먹지 않는다.
-            // - 전환 카드 위 더블클릭은 GetAsyncKeyState로 직접 감지해 전환을 실행한다
-            //   (부작용: 그 더블클릭은 뒤 창에도 전달된다 — 단일 클릭을 먹는 것보다 낫다)
-            #[cfg(windows)]
+            // - 전환 카드 위 더블클릭은 시스템 버튼 상태 폴링으로 직접 감지해 전환을
+            //   실행한다 (부작용: 그 더블클릭은 뒤 창에도 전달된다 — 단일 클릭을 먹는 것보다 낫다)
+            #[cfg(any(windows, target_os = "macos"))]
             {
                 use tauri::Emitter;
                 let handle = app.handle().clone();
@@ -294,8 +422,7 @@ pub fn run() {
                         }
 
                         // 더블클릭 감지 — 같은 카드 위에서 시스템 더블클릭 시간 내 두 번 눌림
-                        let down =
-                            (unsafe { GetAsyncKeyState(0x01) } as u16 & 0x8000) != 0;
+                        let down = primary_button_down();
                         let down_edge = down && !prev_down;
                         prev_down = down;
                         if !down_edge {
@@ -308,9 +435,7 @@ pub fn run() {
                             continue;
                         };
                         let now = std::time::Instant::now();
-                        let dclk = std::time::Duration::from_millis(
-                            unsafe { GetDoubleClickTime() } as u64,
-                        );
+                        let dclk = double_click_window();
                         let is_double = matches!(
                             last_click,
                             Some((t, prev)) if prev == idx && now.duration_since(t) <= dclk

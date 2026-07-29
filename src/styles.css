@@ -213,7 +213,7 @@ button.link:hover {
 }
 
 .copy-value.mono {
-  font-family: Consolas, "Courier New", monospace;
+  font-family: Consolas, Menlo, "Courier New", monospace;
   font-size: 14px;
   letter-spacing: 1px;
   text-align: center;

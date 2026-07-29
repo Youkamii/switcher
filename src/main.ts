@@ -191,7 +191,6 @@ function profileCard(
   // 프라미스는 렌더러가 모은다 — 새로고침 때 다 받아진 뒤 한 번에 교체하기 위해
   pending.push(loadUsage(provider, card, profile.active ? null : profile.name));
 
-  const who = profile.email ?? profile.name;
   let switching = false;
   const doSwitch = async (disable?: HTMLButtonElement) => {
     if (switching) return;
@@ -199,7 +198,7 @@ function profileCard(
     if (disable) disable.disabled = true;
     try {
       await invoke("switch_profile", { provider, name: profile.name });
-      toast(`전환 완료 — 새로 여는 터미널부터 ${who} 계정이 적용됩니다`);
+      // 성공 안내는 따로 없다 — 활성 표시가 옮겨가는 것으로 충분하다
       await render({ immediate: true });
     } catch (error) {
       toast(String(error), true);
@@ -818,12 +817,8 @@ void listen<{ ok: boolean; provider?: string; name?: string; error?: string }>(
           candidate.dataset.provider === event.payload.provider &&
           candidate.dataset.name === event.payload.name,
       );
-      // 전환된 카드가 살짝 빛나고 나서 다시 그린다
+      // 전환된 카드가 살짝 빛나고 나서 다시 그린다 — 성공 토스트는 띄우지 않는다
       el?.classList.add("switch-flash");
-      if (!demoMode) {
-        const who = el?.querySelector(".card-name")?.textContent ?? event.payload.name;
-        toast(`전환 완료 — 새로 여는 터미널부터 ${who} 계정이 적용됩니다`);
-      }
       window.setTimeout(() => void render({ immediate: true }), 380);
     } else if (!demoMode) {
       toast(event.payload.error ?? "전환 실패", true);
