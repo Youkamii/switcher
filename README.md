@@ -12,7 +12,9 @@ A desktop widget that switches between multiple Claude Code / Codex CLI accounts
 
 웹뷰는 Windows에 기본 포함된 WebView2를 쓴다. Windows 11과 최신 Windows 10에는 이미 있고, 실행이 안 되는 오래된 환경이라면 [WebView2 런타임](https://developer.microsoft.com/microsoft-edge/webview2/)을 설치하면 된다.
 
-**macOS**: 아직 빌드 배포가 없어 소스에서 직접 빌드한다 (아래 [직접 빌드](#직접-빌드)). Apple Silicon에서 실측 확인됨. 릴리스 zip을 받아 쓰는 경우라면 서명이 없어 Gatekeeper가 막을 수 있는데, 앱을 **우클릭 → 열기**로 한 번 열어주면 된다.
+**macOS**: 같은 곳에서 `switcher-mac-arm64.zip`을 받아 압축을 풀고 `switcher.app`을 실행하면 된다. Apple Silicon 전용 — 인텔 맥은 아래 [직접 빌드](#직접-빌드)로 설치한다. 응용 프로그램 폴더로 옮겨도 된다.
+
+역시 코드 서명이 없어서 처음 열 때 macOS가 "확인되지 않은 개발자"라며 막을 수 있다. 앱을 **우클릭 → 열기**로 열고, 그래도 막히면 시스템 설정 → 개인정보 보호 및 보안 맨 아래에 나타나는 **그래도 열기**를 누르면 된다. 웹뷰는 macOS 내장 WebKit이라 따로 설치할 것이 없다.
 
 ## 실행
 
