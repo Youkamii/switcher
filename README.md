@@ -27,8 +27,26 @@ A desktop widget that switches between multiple Claude Code / Codex CLI accounts
 - 맥 전용: Dock과 Cmd+Tab에는 나타나지 않고 메뉴바에만 상주한다. 위젯은 모든 데스크탑(Space)과 전체화면 앱 위에서도 보인다. 부팅 시 자동 실행은 시스템 설정 → 일반 → 로그인 항목에 `switcher.app`을 추가.
 
 <p align="center"><img src="docs/screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
+<p align="center"><sub>세 가지 보기 모드 — Type 1 (전체) · Type 2 (위젯) · Type 3 (컴팩트)</sub></p>
 
-<p align="center"><img src="docs/demo.gif" width="420" alt="위젯 모드에서 계정 카드를 더블클릭해 전환, 빈 영역은 뒤 창으로 클릭 통과" /></p>
+<table align="center">
+<tr>
+<td align="center" width="450">
+<img src="docs/demo.gif" width="420" alt="위젯 모드 데모 — 계정 카드 더블클릭 전환, 빈 영역은 뒤 창으로 클릭 통과" />
+</td>
+<td width="430">
+
+**위젯 모드는 이렇게 동작한다** (Windows·macOS 동일)
+
+- 계정 카드를 **더블클릭** → 그 계정으로 즉시 전환
+- 카드 밖 클릭·드래그는 **뒤 창으로 그대로 통과** — 항상 떠 있어도 작업을 방해하지 않는다
+- 전환된 카드는 잠깐 빛나고, 활성 색이 옮겨간다
+- 창 이동은 ☰ 핸들, 모드 순환은 오른쪽 위 Type 버튼
+- 맥에서는 모든 데스크탑(Space)과 전체화면 앱 위에서도 그대로 보인다
+
+</td>
+</tr>
+</table>
 
 ## 개요
 
