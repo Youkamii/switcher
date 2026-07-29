@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# npm 설치본이 내려받는 빌드 (scripts/dist.mjs)
+bin-dist/
+
 # Secrets — 절대 커밋 금지 (public repo)
 # 앱이 실제로 생성하는 파일명과 정확히 일치시켜 둘 것
 .env

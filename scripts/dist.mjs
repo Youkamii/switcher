@@ -1,0 +1,89 @@
+// npm 설치본이 쓰는 빌드 내려받기 공용 모듈.
+// GitHub 릴리스에서 OS에 맞는 zip을 받아 패키지 안(bin-dist/)에 풀어둔다.
+// 브라우저를 거치지 않으므로 격리(quarantine)·SmartScreen 딱지가 붙지 않는다.
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const DIST = path.join(ROOT, "bin-dist");
+
+const ASSETS = {
+  "darwin-arm64": { zip: "switcher-mac-arm64.zip", entry: "switcher.app" },
+  "win32-x64": { zip: "switcher-win-x64.zip", entry: "switcher.exe" },
+  // 윈도우 ARM은 x64 에뮬레이션으로 돈다
+  "win32-arm64": { zip: "switcher-win-x64.zip", entry: "switcher.exe" },
+};
+
+export function platformAsset() {
+  return ASSETS[`${process.platform}-${process.arch}`] ?? null;
+}
+
+/// 설치된 실행 대상 경로 (없으면 null)
+export function installedEntry() {
+  const asset = platformAsset();
+  if (!asset) return null;
+  const entry = path.join(DIST, asset.entry);
+  return fs.existsSync(entry) ? entry : null;
+}
+
+async function download(url, dest) {
+  const res = await fetch(url, { redirect: "follow" });
+  if (!res.ok) return false;
+  fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
+  return true;
+}
+
+function extract(zip, dir) {
+  // 맥은 ditto가 서명·심볼릭 링크를 온전히 보존한다. 윈도우는 내장 tar(bsdtar)가 zip을 푼다.
+  const cmd =
+    process.platform === "darwin"
+      ? ["ditto", ["-xk", zip, dir]]
+      : ["tar", ["-xf", zip, "-C", dir]];
+  const run = spawnSync(cmd[0], cmd[1], { stdio: "ignore" });
+  return run.status === 0;
+}
+
+/// 빌드가 없으면 릴리스에서 받아온다. 성공하면 실행 대상 경로를 돌려준다.
+export async function ensureDist() {
+  const asset = platformAsset();
+  if (!asset) {
+    throw new Error(
+      `이 플랫폼(${process.platform}-${process.arch})용 빌드가 없습니다 — 소스 빌드(npm run setup)를 사용하세요`,
+    );
+  }
+  const existing = installedEntry();
+  if (existing) return existing;
+
+  if (typeof fetch !== "function") {
+    throw new Error("Node 18 이상이 필요합니다 — node를 업데이트하세요");
+  }
+  const version = JSON.parse(
+    fs.readFileSync(path.join(ROOT, "package.json"), "utf8"),
+  ).version;
+  // 패키지 버전과 같은 릴리스를 먼저, 없으면(방금 버전만 올린 사이) 최신 릴리스를 받는다
+  const urls = [
+    `https://github.com/Youkamii/switcher/releases/download/v${version}/${asset.zip}`,
+    `https://github.com/Youkamii/switcher/releases/latest/download/${asset.zip}`,
+  ];
+  fs.mkdirSync(DIST, { recursive: true });
+  const tmp = path.join(os.tmpdir(), `switcher-${process.pid}-${asset.zip}`);
+  try {
+    let got = false;
+    for (const url of urls) {
+      if (await download(url, tmp)) {
+        got = true;
+        break;
+      }
+    }
+    if (!got) throw new Error("릴리스 다운로드에 실패했습니다 — 네트워크를 확인하세요");
+    if (!extract(tmp, DIST)) throw new Error("압축 해제에 실패했습니다");
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+  const entry = installedEntry();
+  if (!entry) throw new Error("압축 해제 결과에 실행 파일이 없습니다");
+  return entry;
+}

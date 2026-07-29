@@ -3,7 +3,11 @@
   "private": true,
   "version": "0.3.0",
   "type": "module",
+  "bin": {
+    "switcher": "scripts/launch.mjs"
+  },
   "scripts": {
+    "postinstall": "node scripts/install.mjs",
     "setup": "node scripts/setup.mjs",
     "dev": "vite",
     "build": "tsc && vite build",

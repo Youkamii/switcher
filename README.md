@@ -6,6 +6,19 @@ A desktop widget that switches between multiple Claude Code / Codex CLI accounts
 
 ## 다운로드
 
+### npm으로 설치 (권장 — 보안 경고 없음)
+
+Node.js 18 이상이 있다면 이 방법이 가장 쉽다:
+
+```sh
+npm install -g Youkamii/switcher
+switcher
+```
+
+설치할 때 OS에 맞는 최신 릴리스 빌드를 받아두고, `switcher` 명령이 그걸 실행한다. 브라우저 다운로드가 아니라서 macOS "손상됨/확인되지 않은 개발자" 경고와 Windows SmartScreen 경고가 아예 뜨지 않는다. 업데이트도 같은 명령을 다시 실행하면 된다.
+
+### 직접 다운로드
+
 [**최신 버전 받기**](https://github.com/Youkamii/switcher/releases/latest)에서 자기 OS의 zip을 받는다.
 
 ### Windows — `switcher-win-x64.zip`
