@@ -7,7 +7,6 @@
     "switcher": "scripts/launch.mjs"
   },
   "scripts": {
-    "postinstall": "node scripts/install.mjs",
     "setup": "node scripts/setup.mjs",
     "dev": "vite",
     "build": "tsc && vite build",

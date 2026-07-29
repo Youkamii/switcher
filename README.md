@@ -15,11 +15,11 @@ npm install -g Youkamii/switcher
 switcher
 ```
 
-설치할 때 OS에 맞는 최신 릴리스를 빌드한 후에는 `switcher` 명령으로 실행 
+`switcher` 명령이 처음 실행될 때 OS에 맞는 최신 릴리스 빌드를 자동으로 받아온다(이후에는 바로 뜬다). 브라우저 다운로드가 아니라서 macOS·Windows 보안 경고가 뜨지 않는다. 업데이트는 위젯을 끄고 같은 설치 명령을 다시 실행.
 
 ### 직접 다운로드
 
-[**커널 다운로드**](https://github.com/Youkamii/switcher/releases/latest) 호환되는 OS 설치
+[**릴리스 다운로드**](https://github.com/Youkamii/switcher/releases/latest)에서 자기 OS의 zip을 받는다.
 
 ### Windows — `switcher-win-x64.zip`
 
