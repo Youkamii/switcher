@@ -11,7 +11,7 @@ A desktop widget that switches between multiple Claude Code / Codex CLI accounts
 Node.js 18 이상
 
 ```sh
-npm install -g Youkamii/switcher
+npm install -g https://github.com/Youkamii/switcher/releases/latest/download/switcher-npm.tgz
 switcher
 ```
 
