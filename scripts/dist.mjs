@@ -37,13 +37,20 @@ async function download(url, dest) {
 }
 
 function extract(zip, dir) {
-  // 맥은 ditto가 서명·심볼릭 링크를 온전히 보존한다. 윈도우는 내장 tar(bsdtar)가 zip을 푼다.
-  const cmd =
-    process.platform === "darwin"
-      ? ["ditto", ["-xk", zip, dir]]
-      : ["tar", ["-xf", zip, "-C", dir]];
-  const run = spawnSync(cmd[0], cmd[1], { stdio: "ignore" });
-  return run.status === 0;
+  // 맥은 ditto가 서명·심볼릭 링크를 온전히 보존한다.
+  if (process.platform === "darwin") {
+    return spawnSync("ditto", ["-xk", zip, dir], { stdio: "ignore" }).status === 0;
+  }
+  // 윈도우는 내장 tar(bsdtar)가 zip을 푼다. 단 PATH의 "tar"는 Git Bash에서
+  // GNU tar(zip 해제 불가)로 잡혀 첫 실행이 죽는다 — System32의 bsdtar를
+  // 절대 경로로 지정해 어느 셸에서 실행해도 같은 도구를 쓴다.
+  const sysTar = path.join(
+    process.env.SystemRoot ?? "C:\\Windows",
+    "System32",
+    "tar.exe",
+  );
+  const tar = fs.existsSync(sysTar) ? sysTar : "tar";
+  return spawnSync(tar, ["-xf", zip, "-C", dir], { stdio: "ignore" }).status === 0;
 }
 
 /// 빌드가 없으면 릴리스에서 받아온다. 성공하면 실행 대상 경로를 돌려준다.

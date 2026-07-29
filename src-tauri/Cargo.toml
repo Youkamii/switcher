@@ -1,6 +1,6 @@
 [package]
 name = "switcher"
-version = "0.3.0"
+version = "1.0.0"
 description = "Multi-account switcher widget for Claude Code and Codex CLI"
 authors = ["Youkamii"]
 edition = "2021"
