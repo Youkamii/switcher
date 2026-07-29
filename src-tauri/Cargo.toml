@@ -18,7 +18,8 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+# macos-private-api: 맥에서 투명 창을 그리는 데 필요 (tauri.conf.json의 macOSPrivateApi와 짝)
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 # 중복 실행 방지 — 두 인스턴스가 같은 프로필 토큰을 동시에 회전시키는 사고 차단
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
@@ -29,6 +30,17 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio = { version = "1", features = ["sync"] }
 # CLI 로그인 화면(TUI)을 읽으려면 진짜 콘솔이 필요하다 — 파이프로는 화면이 그려지지 않는다
 portable-pty = "0.9"
+
+[target.'cfg(unix)'.dependencies]
+# 로그인 취소 시 PTY 프로세스 그룹을 통째로 종료하는 데 사용
+libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# 격리 로그인이 만드는 키체인 항목 이름(설정 폴더 경로의 sha256 앞 8자) 계산
+sha2 = "0.10"
+# 위젯 창을 비활성 NSPanel로 바꿔 모든 Space·전체화면 위에 띄운다 (lib.rs 참고)
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSEvent", "NSWindow", "NSResponder", "NSPanel"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }

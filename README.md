@@ -1,29 +1,52 @@
 <h1><img src="docs/logo.svg" width="26" alt="" /> switcher</h1>
 
-Claude Code와 Codex CLI 계정을 버튼 하나로 갈아타는 Windows 위젯.
+Claude Code와 Codex CLI 계정을 버튼 하나로 갈아타는 데스크톱 위젯 (Windows·macOS).
 
 A desktop widget that switches between multiple Claude Code / Codex CLI accounts in one click, with per-account usage bars.
 
 ## 다운로드
 
-[**최신 버전 받기**](https://github.com/Youkamii/switcher/releases/latest) → `switcher-win-x64.zip`을 받아 압축을 풀고 `switcher.exe`를 실행하면 된다. 설치 프로그램 없이 바로 실행된다. (Windows 10/11 64비트)
+**Windows**: [**최신 버전 받기**](https://github.com/Youkamii/switcher/releases/latest) → `switcher-win-x64.zip`을 받아 압축을 풀고 `switcher.exe`를 실행하면 된다. 설치 프로그램 없이 바로 실행된다. (Windows 10/11 64비트)
 
 코드 서명이 없어서 처음 실행할 때 Windows SmartScreen이 "알 수 없는 게시자" 경고를 띄울 수 있다. 그때는 **추가 정보 → 실행**을 누르면 된다.
 
 웹뷰는 Windows에 기본 포함된 WebView2를 쓴다. Windows 11과 최신 Windows 10에는 이미 있고, 실행이 안 되는 오래된 환경이라면 [WebView2 런타임](https://developer.microsoft.com/microsoft-edge/webview2/)을 설치하면 된다.
 
+**macOS**: 같은 곳에서 `switcher-mac-arm64.zip`을 받아 압축을 풀고 `switcher.app`을 실행하면 된다. Apple Silicon 전용 — 인텔 맥은 아래 [직접 빌드](#직접-빌드)로 설치한다. 응용 프로그램 폴더로 옮겨도 된다.
+
+역시 코드 서명이 없어서 처음 열 때 macOS가 "확인되지 않은 개발자"라며 막을 수 있다. 앱을 **우클릭 → 열기**로 열고, 그래도 막히면 시스템 설정 → 개인정보 보호 및 보안 맨 아래에 나타나는 **그래도 열기**를 누르면 된다. 웹뷰는 macOS 내장 WebKit이라 따로 설치할 것이 없다.
+
 ## 실행
 
-- 압축을 푼 `switcher.exe`를 더블클릭하면 켜진다.
+- 압축을 푼 `switcher.exe`를 더블클릭하면 켜진다. (맥은 `switcher.app`)
 - 바탕화면 바로가기: `switcher.exe` 우클릭 → 보내기 → 바탕 화면에 바로 가기 만들기. 다음부터는 바탕화면에서 더블클릭으로 켠다.
-- 켜져 있는 동안은 트레이(작업표시줄 오른쪽)에 W 아이콘으로 상주한다. 창을 닫아도(Alt+F4) 꺼지지 않고 트레이로 숨는다.
+- 켜져 있는 동안은 트레이(작업표시줄 오른쪽, 맥은 메뉴바 오른쪽)에 W 아이콘으로 상주한다. 창을 닫아도(Alt+F4) 꺼지지 않고 트레이로 숨는다.
 - 창을 다시 열려면 트레이의 W 아이콘을 좌클릭한다.
 - 완전히 종료하려면 트레이 아이콘 우클릭 → 종료. 종료한 뒤에는 exe를 다시 실행하면 된다.
 - 부팅할 때 자동으로 켜지게 하려면 `Win+R` → `shell:startup` 폴더에 exe 바로가기를 넣는다.
+- 맥 전용: Dock과 Cmd+Tab에는 나타나지 않고 메뉴바에만 상주한다. 위젯은 모든 데스크탑(Space)과 전체화면 앱 위에서도 보인다. 부팅 시 자동 실행은 시스템 설정 → 일반 → 로그인 항목에 `switcher.app`을 추가.
 
 <p align="center"><img src="docs/screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
+<p align="center"><sub>세 가지 보기 모드 — Type 1 (전체) · Type 2 (위젯) · Type 3 (컴팩트)</sub></p>
 
-<p align="center"><img src="docs/demo.gif" width="420" alt="위젯 모드에서 계정 카드를 더블클릭해 전환, 빈 영역은 뒤 창으로 클릭 통과" /></p>
+<table align="center">
+<tr>
+<td align="center" width="450">
+<img src="docs/demo.gif" width="420" alt="위젯 모드 데모 — 계정 카드 더블클릭 전환, 빈 영역은 뒤 창으로 클릭 통과" />
+</td>
+<td width="430">
+
+**위젯 모드는 이렇게 동작한다** (Windows·macOS 동일)
+
+- 계정 카드를 **더블클릭** → 그 계정으로 즉시 전환
+- 카드 밖 클릭·드래그는 **뒤 창으로 그대로 통과** — 항상 떠 있어도 작업을 방해하지 않는다
+- 전환된 카드는 잠깐 빛나고, 활성 색이 옮겨간다
+- 창 이동은 ☰ 핸들, 모드 순환은 오른쪽 위 Type 버튼
+- 맥에서는 모든 데스크탑(Space)과 전체화면 앱 위에서도 그대로 보인다
+
+</td>
+</tr>
+</table>
 
 ## 개요
 
@@ -42,10 +65,12 @@ switcher는 이 과정을 없앤다. 계정마다 처음 한 번만 로그인해
 
 ## 동작
 
-두 CLI 모두 로그인 토큰을 로컬 파일에 저장한다.
+두 CLI 모두 로그인 토큰을 로컬에 저장한다.
 
-- Claude Code: `~/.claude/.credentials.json`
-- Codex CLI: `~/.codex/auth.json`
+- Claude Code: `~/.claude/.credentials.json` (Windows) / macOS는 **키체인**의 "Claude Code-credentials" 항목
+- Codex CLI: `~/.codex/auth.json` (두 OS 동일)
+
+맥에서 switcher는 클로드 CLI와 같은 방식(macOS 내장 `security` 도구)으로 키체인을 읽고 쓴다 — 별도 권한 팝업 없이 동작한다.
 
 switcher는 계정별 토큰을 `~/.switcher/` 아래 프로필로 보관하고 전환할 때 두 단계로 파일을 교체한다.
 
@@ -94,7 +119,7 @@ npm run setup
 
 `npm run setup`이 의존성 설치와 앱 빌드를 한 번에 처리한다. 장황한 로그를 쏟아내는 대신 로딩 표시와 경과 시간만 보여준다.
 
-처음에는 Rust를 통째로 컴파일하기 때문에 **5~10분 걸릴 수 있다.** 로딩이 멈춘 게 아니니 기다리면 된다. 결과물은 `src-tauri\target\release\switcher.exe`.
+처음에는 Rust를 통째로 컴파일하기 때문에 **5~10분 걸릴 수 있다.** 로딩이 멈춘 게 아니니 기다리면 된다. 결과물은 Windows `src-tauri\target\release\switcher.exe`, macOS `src-tauri/target/release/bundle/macos/switcher.app` — 앱을 응용 프로그램 폴더로 옮겨도 된다.
 
 개발 실행은 `npm run tauri dev`.
 

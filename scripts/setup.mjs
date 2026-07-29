@@ -49,11 +49,21 @@ const t0 = Date.now();
 console.log("switcher 빌드를 시작합니다.");
 console.log("처음에는 Rust를 통째로 컴파일하기 때문에 5~10분 걸릴 수 있습니다 — 로딩이 멈춘 게 아니니 기다려 주세요.\n");
 
+const isMac = process.platform === "darwin";
+// 맥은 더블클릭으로 열 수 있는 .app 번들까지 만든다 (윈도우는 포터블 exe 하나면 충분)
+const buildArgs = isMac
+  ? ["run", "tauri", "build", "--", "--bundles", "app"]
+  : ["run", "tauri", "build"];
+
 try {
   await step("의존성 설치 중", "npm", ["install", "--no-fund", "--no-audit", "--loglevel", "error"]);
-  await step("앱 빌드 중", "npm", ["run", "tauri", "build"]);
+  await step("앱 빌드 중", "npm", buildArgs);
   console.log(`\n완료 (${elapsed(t0)}).`);
-  console.log("실행 파일: src-tauri\\target\\release\\switcher.exe");
+  console.log(
+    isMac
+      ? "실행 파일: src-tauri/target/release/bundle/macos/switcher.app"
+      : "실행 파일: src-tauri\\target\\release\\switcher.exe",
+  );
 } catch {
   console.error("\n빌드에 실패했습니다. 위 메시지를 확인하세요.");
   process.exitCode = 1;

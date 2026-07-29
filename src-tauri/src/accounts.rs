@@ -42,10 +42,27 @@ impl Provider {
     }
 }
 
+/// 활성 클로드 자격증명이 사는 곳.
+/// 윈도우·테스트는 파일이고, macOS 실환경은 키체인이다 — 맥의 claude CLI는 토큰을
+/// 키체인 항목 "Claude Code-credentials"에 보관하며 파일은 구버전 잔재다 (실측 2026-07-29).
+pub enum ClaudeLiveStore {
+    /// 윈도우·리눅스 실환경과 모든 플랫폼의 테스트가 쓴다 (맥 실환경은 Keychain)
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    File(PathBuf),
+    #[cfg(target_os = "macos")]
+    Keychain {
+        service: String,
+        account: String,
+        /// 키체인 도입 전 구버전이 남긴 파일 — 존재하면 함께 갱신해 두 저장소의 어긋남을 막는다
+        legacy_file: PathBuf,
+    },
+}
+
 /// 홈·보관소 경로 묶음. 테스트에서는 임시 디렉토리를 주입한다.
 pub struct Env {
     pub home: PathBuf,
     pub store: PathBuf,
+    pub claude_live: ClaudeLiveStore,
 }
 
 impl Env {
@@ -55,7 +72,20 @@ impl Env {
             .map(PathBuf::from)
             .ok_or("홈 디렉토리를 찾을 수 없습니다")?;
         let store = home.join(".switcher");
-        Ok(Env { home, store })
+        let claude_file = home.join(".claude").join(".credentials.json");
+        #[cfg(target_os = "macos")]
+        let claude_live = ClaudeLiveStore::Keychain {
+            service: keychain::CLAUDE_LIVE_SERVICE.to_string(),
+            account: keychain::username(),
+            legacy_file: claude_file,
+        };
+        #[cfg(not(target_os = "macos"))]
+        let claude_live = ClaudeLiveStore::File(claude_file);
+        Ok(Env {
+            home,
+            store,
+            claude_live,
+        })
     }
 
     pub(crate) fn profiles_dir(&self, provider: Provider) -> PathBuf {
@@ -71,6 +101,126 @@ impl Env {
 
     fn claude_json_path(&self) -> PathBuf {
         self.home.join(".claude.json")
+    }
+}
+
+/// macOS 키체인 읽기·쓰기 — claude CLI와 같은 통로(/usr/bin/security)를 쓴다.
+/// 같은 통로라야 항목 접근 ACL이 일치해 허용 팝업 없이 동작한다 (실측 2026-07-29).
+/// 토큰이 프로세스 인자에 노출되지 않도록 쓰기는 `security -i`(stdin) + hex(-X)로 전달한다.
+#[cfg(target_os = "macos")]
+pub(crate) mod keychain {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    /// 맥 claude CLI의 활성 토큰 항목 (실측). 격리 로그인은 여기에 접미사가 붙는다.
+    pub(crate) const CLAUDE_LIVE_SERVICE: &str = "Claude Code-credentials";
+
+    pub(crate) fn username() -> String {
+        std::env::var("USER")
+            .ok()
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| {
+                Command::new("/usr/bin/id")
+                    .arg("-un")
+                    .output()
+                    .ok()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                    .unwrap_or_default()
+            })
+    }
+
+    fn run_security(args: &[&str]) -> Result<std::process::Output, String> {
+        Command::new("/usr/bin/security")
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|e| format!("security 실행 실패: {e}"))
+    }
+
+    /// 항목이 없으면 Ok(None) — 미로그인은 정상 경로다
+    pub(crate) fn read_item(service: &str) -> Result<Option<Vec<u8>>, String> {
+        let out = run_security(&["find-generic-password", "-s", service, "-w"])?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            if err.contains("could not be found") {
+                return Ok(None);
+            }
+            return Err(format!("키체인 읽기 실패 ({service}): {}", err.trim()));
+        }
+        let mut data = out.stdout;
+        // -w는 출력 끝에 개행 하나를 붙인다
+        if data.last() == Some(&b'\n') {
+            data.pop();
+        }
+        Ok(Some(data))
+    }
+
+    pub(crate) fn item_exists(service: &str) -> bool {
+        // -w 없이 조회하면 비밀에 접근하지 않고 존재만 확인한다
+        run_security(&["find-generic-password", "-s", service])
+            .map(|out| out.status.success())
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn write_item(service: &str, account: &str, data: &[u8]) -> Result<(), String> {
+        use std::fmt::Write as _;
+        let mut hex = String::with_capacity(data.len() * 2);
+        for b in data {
+            let _ = write!(hex, "{b:02x}");
+        }
+        let mut child = Command::new("/usr/bin/security")
+            .arg("-i")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("security 실행 실패: {e}"))?;
+        let cmd = format!("add-generic-password -U -a \"{account}\" -s \"{service}\" -X \"{hex}\"\n");
+        child
+            .stdin
+            .take()
+            .ok_or("security stdin 없음")?
+            .write_all(cmd.as_bytes())
+            .map_err(|e| format!("키체인 쓰기 실패 ({service}): {e}"))?;
+        let out = child
+            .wait_with_output()
+            .map_err(|e| format!("키체인 쓰기 실패 ({service}): {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "키체인 쓰기 실패 ({service}): {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        Ok(())
+    }
+
+    /// 로그인 잔재 청소용 — 없어도 조용히 넘어간다
+    pub(crate) fn delete_item(service: &str) {
+        let _ = run_security(&["delete-generic-password", "-s", service]);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// 실제 로그인 키체인에 시험 항목을 왕복시킨다 — security 경유는 팝업 없이
+        /// 동작해야 한다 (실측 확인된 전제가 깨지면 이 테스트가 알려준다)
+        #[test]
+        fn roundtrip_via_security_cli() {
+            let svc = format!("switcher-selftest-{}", std::process::id());
+            let payload = br#"{"probe":"not-a-secret"}"#;
+            write_item(&svc, &username(), payload).unwrap();
+            assert!(item_exists(&svc));
+            let read = read_item(&svc).unwrap().expect("방금 쓴 항목이 있어야 한다");
+            assert_eq!(read, payload);
+            // 같은 항목 갱신(-U)도 되어야 한다 (전환마다 일어나는 일)
+            let payload2 = br#"{"probe":"updated"}"#;
+            write_item(&svc, &username(), payload2).unwrap();
+            assert_eq!(read_item(&svc).unwrap().unwrap(), payload2);
+            delete_item(&svc);
+            assert!(!item_exists(&svc));
+            assert!(read_item(&svc).unwrap().is_none(), "삭제 후에는 None");
+        }
     }
 }
 
@@ -189,6 +339,72 @@ fn read_json_retry(path: &Path) -> Result<Value, String> {
         }
     }
     Err(last_err)
+}
+
+/// 활성 자격증명 읽기 — 코덱스는 항상 파일, 클로드는 저장소(파일/키체인)에 따른다.
+/// 키체인 모드에서 항목이 없으면 구버전 파일로 폴백한다 (키체인 미사용 환경 대응).
+pub(crate) fn read_live_cred(env: &Env, provider: Provider) -> Result<Vec<u8>, String> {
+    let read_file = |path: &Path| -> Result<Vec<u8>, String> {
+        fs::read(path).map_err(|e| format!("읽기 실패 {}: {e}", path.display()))
+    };
+    match provider {
+        Provider::Codex => read_file(&env.live_credential_path(Provider::Codex)),
+        Provider::Claude => match &env.claude_live {
+            ClaudeLiveStore::File(path) => read_file(path),
+            #[cfg(target_os = "macos")]
+            ClaudeLiveStore::Keychain {
+                service,
+                legacy_file,
+                ..
+            } => match keychain::read_item(service)? {
+                Some(data) => Ok(data),
+                None if legacy_file.exists() => read_file(legacy_file),
+                None => Err(
+                    "클로드 로그인 정보가 없습니다 (키체인에 항목 없음) — 먼저 claude에서 로그인하세요"
+                        .into(),
+                ),
+            },
+        },
+    }
+}
+
+/// 활성 자격증명이 존재하는가 (전환·저장 가능 여부 판단)
+pub(crate) fn live_cred_exists(env: &Env, provider: Provider) -> bool {
+    match provider {
+        Provider::Codex => env.live_credential_path(Provider::Codex).exists(),
+        Provider::Claude => match &env.claude_live {
+            ClaudeLiveStore::File(path) => path.exists(),
+            #[cfg(target_os = "macos")]
+            ClaudeLiveStore::Keychain {
+                service,
+                legacy_file,
+                ..
+            } => keychain::item_exists(service) || legacy_file.exists(),
+        },
+    }
+}
+
+/// 활성 자격증명 쓰기 (전환 2단계). 키체인 모드에서는 구버전 파일이 남아 있으면
+/// 함께 갱신한다 — 낡은 파일이 진실처럼 보이는 혼선을 막는다.
+pub(crate) fn write_live_cred(env: &Env, provider: Provider, data: &[u8]) -> Result<(), String> {
+    match provider {
+        Provider::Codex => atomic_write(&env.live_credential_path(Provider::Codex), data),
+        Provider::Claude => match &env.claude_live {
+            ClaudeLiveStore::File(path) => atomic_write(path, data),
+            #[cfg(target_os = "macos")]
+            ClaudeLiveStore::Keychain {
+                service,
+                account,
+                legacy_file,
+            } => {
+                keychain::write_item(service, account, data)?;
+                if legacy_file.exists() {
+                    atomic_write(legacy_file, data)?;
+                }
+                Ok(())
+            }
+        },
+    }
 }
 
 /// JWT payload를 디코딩한다 (서명 검증 없음 — 표시용 신원·만료 확인 목적).
@@ -328,8 +544,7 @@ fn write_profile(
     name: &str,
     ident: &LiveIdentity,
 ) -> Result<(), String> {
-    let live = env.live_credential_path(provider);
-    let data = fs::read(&live).map_err(|e| format!("읽기 실패 {}: {e}", live.display()))?;
+    let data = read_live_cred(env, provider)?;
     let block = if provider == Provider::Claude {
         claude_oauth_block(env)?
     } else {
@@ -464,12 +679,8 @@ pub fn save_current(env: &Env, provider: Provider, name: &str) -> Result<(), Str
     // 변이 함수가 스스로 잠근다 — 호출자가 잠금을 잊을 수 없게 (관례 단일화)
     let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     validate_name(name)?;
-    let live = env.live_credential_path(provider);
-    if !live.exists() {
-        return Err(format!(
-            "로그인 파일이 없습니다: {} — 먼저 해당 CLI에서 로그인하세요",
-            live.display()
-        ));
+    if !live_cred_exists(env, provider) {
+        return Err("로그인 정보가 없습니다 — 먼저 해당 CLI에서 로그인하세요".into());
     }
     let ident = live_identity(env, provider)?
         .ok_or("현재 로그인 계정을 식별할 수 없습니다 (로그인 직후 다시 시도)")?;
@@ -505,8 +716,7 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
 
     // 1) 백업 — 현재 활성 계정을 자기 프로필(없으면 자동 생성)에 저장
     let mut backed_up_to = None;
-    let live_path = env.live_credential_path(provider);
-    if live_path.exists() {
+    if live_cred_exists(env, provider) {
         match live_identity(env, provider)? {
             Some(live) => {
                 let back_name = match find_profile_by_id(env, provider, &live.id)? {
@@ -532,7 +742,7 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
     // 2) 대상 프로필을 활성 위치로 복사
     let data = fs::read(&target_cred)
         .map_err(|e| format!("읽기 실패 {}: {e}", target_cred.display()))?;
-    atomic_write(&live_path, &data)?;
+    write_live_cred(env, provider, &data)?;
     if provider == Provider::Claude {
         claude_apply_oauth_block(env, &profile_dir)?;
     }
@@ -602,6 +812,8 @@ pub(crate) mod test_support {
         Env {
             home: base.clone(),
             store: base.join(".switcher"),
+            // 테스트는 어느 플랫폼에서든 파일 저장소로 검증한다 (실키체인은 건드리지 않는다)
+            claude_live: ClaudeLiveStore::File(base.join(".claude").join(".credentials.json")),
         }
     }
 
@@ -894,11 +1106,10 @@ mod tests {
     /// CI에서는 돌지 않는다: `cargo test -- --ignored` 로만 실행.
     fn real_self_switch(provider: Provider) {
         let env = Env::real().unwrap();
-        let live_path = env.live_credential_path(provider);
-        if !live_path.exists() {
-            panic!("로그인 파일이 없어 실환경 검증 불가");
+        if !live_cred_exists(&env, provider) {
+            panic!("로그인 정보가 없어 실환경 검증 불가");
         }
-        let before_cred = fs::read(&live_path).unwrap();
+        let before_cred = read_live_cred(&env, provider).unwrap();
         let before_ident = live_identity(&env, provider).unwrap().unwrap();
 
         let name = match find_profile_by_id(&env, provider, &before_ident.id).unwrap() {
@@ -918,8 +1129,8 @@ mod tests {
 
         let after_ident = live_identity(&env, provider).unwrap().unwrap();
         assert_eq!(before_ident.id, after_ident.id, "계정이 바뀌면 안 된다");
-        let after_cred = fs::read(&live_path).unwrap();
-        assert_eq!(before_cred, after_cred, "토큰 파일이 보존되어야 한다");
+        let after_cred = read_live_cred(&env, provider).unwrap();
+        assert_eq!(before_cred, after_cred, "토큰이 보존되어야 한다");
 
         let snap = list(&env, provider).unwrap();
         assert!(snap.live_saved, "전환 후 활성 계정이 프로필과 매칭되어야 한다");
