@@ -1,58 +1,63 @@
 <h1><img src="docs/logo.svg" width="26" alt="" /> switcher</h1>
 
+**한국어** | [English](README.en.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [हिन्दी](README.hi.md)
+
 Claude Code와 Codex CLI 계정을 버튼 하나로 갈아타는 데스크톱 위젯 (Windows·macOS).
 
-A desktop widget that switches between multiple Claude Code / Codex CLI accounts in one click, with per-account usage bars.
+<p align="center"><img src="docs/screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
+<p align="center"><sub>세 가지 보기 모드 — Type 1 (전체) · Type 2 (위젯) · Type 3 (컴팩트)</sub></p>
 
-## 다운로드
+## Windows
 
-### npm으로 설치 (권장 — 보안 경고 없음)
+### 설치
 
-Node.js 18 이상
+**npm으로 설치 (권장 — 보안 경고 없음)** — Node.js 18 이상
 
 ```sh
 npm install -g https://github.com/Youkamii/switcher/releases/latest/download/switcher-npm.tgz
 switcher
 ```
 
-`switcher` 명령이 처음 실행될 때 OS에 맞는 최신 릴리스 빌드를 자동으로 받아온다(이후에는 바로 뜬다). 브라우저 다운로드가 아니라서 macOS·Windows 보안 경고가 뜨지 않는다. 업데이트는 위젯을 끄고 같은 설치 명령을 다시 실행.
+`switcher` 명령이 처음 실행될 때 최신 릴리스 빌드를 자동으로 받아온다(이후에는 바로 뜬다). 브라우저 다운로드가 아니라서 SmartScreen 경고가 뜨지 않는다. 업데이트는 위젯을 끄고 같은 설치 명령을 다시 실행.
 
-### 직접 다운로드
+**직접 다운로드** — [릴리스](https://github.com/Youkamii/switcher/releases/latest)에서 `switcher-win-x64.zip`을 받아 압축을 풀고 `switcher.exe`를 실행. (Windows 10/11 64비트)
 
-[**릴리스 다운로드**](https://github.com/Youkamii/switcher/releases/latest)에서 자기 OS의 zip을 받는다.
+- 코드 서명이 없어서 처음 실행할 때 Windows SmartScreen이 "알 수 없는 게시자" 경고를 띄울 수 있다. `추가 정보` → `실행`.
+- 웹뷰는 Windows에 기본 포함된 WebView2를 사용한다.
 
-### Windows — `switcher-win-x64.zip`
+### 실행
 
-압축을 풀고 `switcher.exe`를 실행. (Windows 10/11 64비트)
+- 켜져 있는 동안은 트레이(작업표시줄 오른쪽)에 W 아이콘으로 상주한다. 창을 닫아도(Alt+F4) 꺼지지 않음.
+- 창을 다시 활성화하려면 트레이의 W 아이콘을 좌클릭. 완전히 종료하려면 트레이 아이콘 우클릭 → 종료.
+- UI 언어는 트레이 아이콘 우클릭 → 설정 → 언어에서 바꾼다 (한국어·English·日本語·简体中文·繁體中文·हिन्दी).
+- 부팅할 때 자동으로 켜지게 하려면 `Win+R` → `shell:startup` 폴더에 exe 바로가기 이동.
 
-코드 서명이 없어서 처음 실행할 때 Windows SmartScreen이 "알 수 없는 게시자" 경고를 띄울 수 있습니다. `추가 정보` → `실행` 
+## macOS
 
-웹뷰는 Windows에 기본 포함된 WebView2를 사용
+### 설치
 
-### macOS — `switcher-mac-arm64.zip`
+**npm으로 설치 (권장 — 보안 경고 없음)** — Node.js 18 이상
 
-압축을 풀고 `switcher.app`을 실행. Apple Silicon 전용 — 인텔 맥은 아래 [직접 빌드](#직접-빌드)로 설치
+```sh
+npm install -g https://github.com/Youkamii/switcher/releases/latest/download/switcher-npm.tgz
+switcher
+```
 
-역시 코드 서명이 없어서 처음 열 때 "확인되지 않은 개발자"라며 막힐 수 있으며 시스템 설정 → 개인정보 보호 및 보안 맨 아래에 나타나는 **그래도 열기**로 실행
+`switcher` 명령이 처음 실행될 때 최신 릴리스 빌드를 자동으로 받아온다(이후에는 바로 뜬다). 브라우저 다운로드가 아니라서 "확인되지 않은 개발자" 경고가 뜨지 않는다. 업데이트는 위젯을 끄고 같은 설치 명령을 다시 실행.
 
-## 실행
+**직접 다운로드** — [릴리스](https://github.com/Youkamii/switcher/releases/latest)에서 `switcher-mac-arm64.zip`을 받아 압축을 풀고 `switcher.app`을 실행. Apple Silicon 전용 — 인텔 맥은 아래 [직접 빌드](#직접-빌드)로 설치.
 
-### Windows
+- 코드 서명이 없어서 처음 열 때 "확인되지 않은 개발자"라며 막힐 수 있다. 시스템 설정 → 개인정보 보호 및 보안 맨 아래에 나타나는 **그래도 열기**로 실행.
 
-- 압축을 푼 후 `switcher.exe`를 실행
-- 켜져 있는 동안은 트레이(작업표시줄 오른쪽)에 W 아이콘으로 상주한다. 창을 닫아도(Alt+F4) 꺼지 않음
-- 창을 다시 활성화 하기 위해서 트레이의 W 아이콘을 좌클릭. 완전히 종료하려면 트레이 아이콘 우클릭 → 종료
-- 부팅할 때 자동으로 켜지게 하려면 `Win+R` → `shell:startup` 폴더에 exe 바로가기 이동
+### 실행
 
-### macOS
+- `switcher.app` 실행. Dock과 Cmd+Tab에는 나타나지 않고 메뉴바 오른쪽에 W 아이콘으로 상주.
+- 위젯은 모든 데스크탑(Space)과 전체화면 앱 위에서 오버뷰로 표시된다.
+- 창을 열고 숨기는 건 메뉴바 W 아이콘 좌클릭 토글, 완전히 종료하려면 우클릭 → 종료.
+- UI 언어 변경은 **개발 진행중** — 현재는 한국어로 표시된다.
+- 부팅할 때 자동으로 켜지게 하려면 시스템 설정 → 일반 → 로그인 항목에 `switcher.app`을 추가한다.
 
-- `switcher.app` 실행. Dock과 Cmd+Tab에는 나타나지 않고 메뉴바 오른쪽에 W 아이콘으로 상주
-- 위젯은 모든 데스크탑(Space)에서 오버뷰로 표시 됨
-- 창을 열고 숨기는 건 메뉴바 W 아이콘 좌클릭 토글, 완전히 종료하려면 우클릭 → 종료
-- 부팅할 때 자동으로 켜지게 하려면 시스템 설정 → 일반 → 로그인 항목에 `switcher.app`을 추가한다
-
-<p align="center"><img src="docs/screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
-<p align="center"><sub>세 가지 보기 모드 — Type 1 (전체) · Type 2 (위젯) · Type 3 (컴팩트)</sub></p>
+## 위젯 사용법 (Windows·macOS 공통)
 
 <table align="center">
 <tr>
@@ -61,7 +66,7 @@ switcher
 </td>
 <td width="430">
 
-**위젯 모드 동작** (Windows·macOS 동일)
+**위젯 모드 동작**
 
 - 계정 카드를 **더블클릭** → 해당 계정으로 인증 전환
 - 카드 밖 클릭·드래그는 **뒤 창으로 그대로 통과**
@@ -87,6 +92,7 @@ switcher는 이 과정을 없앤다. 계정마다 처음 한 번만 로그인해
 - 구독 레벨: 계정 옆에 Max(5x는 노랑, 20x는 빨강) / Pro / Plus가 붙는다.
 - 모드(Type1/2/3): 전체 → 위젯 → 컴팩트 순환. 위젯·컴팩트에서는 버튼이 숨고 클릭·드래그가 뒤 창으로 통과하며, 계정 카드를 더블클릭하면 전환된다. 창 이동은 ☰ 핸들.
 - 창 높이는 내용에 맞춰 자동 조절된다. 투명도 슬라이더를 내리면 배경이 먼저, 골조가 나중에 옅어진다.
+- UI 언어: 트레이 → 설정 → 언어에서 6개 언어(한국어·영어·일본어·간체중문·번체중문·힌디) 전환. macOS는 개발 진행중.
 
 ## 동작
 
