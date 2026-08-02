@@ -30,7 +30,9 @@ The first run of the `switcher` command automatically downloads the latest relea
 - While running, it lives in the tray (right side of the taskbar) as a W icon. Closing the window (Alt+F4) does not quit it.
 - Left-click the W tray icon to bring the window back. To quit completely, right-click the tray icon → Quit.
 - Change the UI language via right-click on the tray icon → Settings → Language (한국어·English·日本語·简体中文·繁體中文·हिन्दी).
-- To start it at boot, press `Win+R` → `shell:startup` and drop a shortcut to the exe into that folder.
+- On first launch, a `switcher` shortcut is created on the desktop automatically (not recreated if you delete it).
+- Run at startup is enabled by default — turn it off via tray Settings → Run at startup.
+- Every launch checks for a new release and auto-updates (applied on the next launch) — turn it off via tray Settings → Auto-update.
 
 ## macOS
 
@@ -93,6 +95,7 @@ switcher removes that loop. Log in once per account, and from then on switching 
 - Modes (Type1/2/3): full → widget → compact cycle. In widget/compact modes the buttons hide, clicks and drags pass through to the window behind, and double-clicking a card switches accounts. Move the window with the ☰ handle.
 - The window height auto-fits the content. Lowering the opacity slider fades the background first, then the frame.
 - UI language: tray → Settings → Language, 6 languages (Korean·English·Japanese·Simplified Chinese·Traditional Chinese·Hindi). Under development on macOS.
+- Auto-update, run-at-startup, and desktop shortcut (Windows): toggled in tray Settings. Under development on macOS.
 
 ## How it works
 
