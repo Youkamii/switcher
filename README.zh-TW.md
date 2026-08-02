@@ -14,7 +14,7 @@
 **以 npm 安裝(建議 — 無安全性警告)** — 需 Node.js 18 以上
 
 ```sh
-npm install -g https://github.com/Youkamii/switcher/releases/latest/download/switcher-npm.tgz
+npm install -g switcher-widget
 switcher
 ```
 
@@ -41,7 +41,7 @@ switcher
 **以 npm 安裝(建議 — 無安全性警告)** — 需 Node.js 18 以上
 
 ```sh
-npm install -g https://github.com/Youkamii/switcher/releases/latest/download/switcher-npm.tgz
+npm install -g switcher-widget
 switcher
 ```
 

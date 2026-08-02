@@ -14,7 +14,7 @@ Claude Code और Codex CLI अकाउंट्स को एक बटन �
 **npm से इंस्टॉल करें (अनुशंसित — कोई सुरक्षा चेतावनी नहीं)** — Node.js 18 या उससे ऊपर
 
 ```sh
-npm install -g https://github.com/Youkamii/switcher/releases/latest/download/switcher-npm.tgz
+npm install -g switcher-widget
 switcher
 ```
 
@@ -41,7 +41,7 @@ switcher
 **npm से इंस्टॉल करें (अनुशंसित — कोई सुरक्षा चेतावनी नहीं)** — Node.js 18 या उससे ऊपर
 
 ```sh
-npm install -g https://github.com/Youkamii/switcher/releases/latest/download/switcher-npm.tgz
+npm install -g switcher-widget
 switcher
 ```
 

@@ -14,7 +14,7 @@ Claude Code와 Codex CLI 계정을 버튼 하나로 갈아타는 데스크톱 �
 **npm으로 설치 (권장 — 보안 경고 없음)** — Node.js 18 이상
 
 ```sh
-npm install -g https://github.com/Youkamii/switcher/releases/latest/download/switcher-npm.tgz
+npm install -g switcher-widget
 switcher
 ```
 
@@ -41,7 +41,7 @@ switcher
 **npm으로 설치 (권장 — 보안 경고 없음)** — Node.js 18 이상
 
 ```sh
-npm install -g https://github.com/Youkamii/switcher/releases/latest/download/switcher-npm.tgz
+npm install -g switcher-widget
 switcher
 ```
 
