@@ -276,6 +276,107 @@ fn toggle_flag(app: &tauri::AppHandle, key: &'static str, default: bool) {
     }
 }
 
+/// 바탕화면 바로가기 (Windows) — 첫 실행 때 한 번만 만든다
+#[cfg(windows)]
+mod shortcut {
+    use std::path::{Path, PathBuf};
+
+    /// 바탕화면 실제 경로 — OneDrive 리디렉션까지 반영된 User Shell Folders 기준
+    fn desktop_dir() -> Result<PathBuf, String> {
+        use winreg::enums::HKEY_CURRENT_USER;
+        use winreg::RegKey;
+        let raw: Option<String> = RegKey::predef(HKEY_CURRENT_USER)
+            .open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders")
+            .ok()
+            .and_then(|key| key.get_value("Desktop").ok());
+        if let Some(raw) = raw {
+            let expanded = expand_env(&raw);
+            if !expanded.is_empty() {
+                return Ok(PathBuf::from(expanded));
+            }
+        }
+        std::env::var_os("USERPROFILE")
+            .map(|p| PathBuf::from(p).join("Desktop"))
+            .ok_or_else(|| "바탕화면 경로를 찾을 수 없습니다".to_string())
+    }
+
+    /// REG_EXPAND_SZ의 %VAR% 치환 — winreg는 확장하지 않은 원문을 돌려준다
+    fn expand_env(s: &str) -> String {
+        let mut out = String::new();
+        let mut rest = s;
+        while let Some(start) = rest.find('%') {
+            out.push_str(&rest[..start]);
+            let after = &rest[start + 1..];
+            match after.find('%') {
+                Some(end) => {
+                    let var = &after[..end];
+                    match std::env::var(var) {
+                        Ok(value) => out.push_str(&value),
+                        Err(_) => {
+                            out.push('%');
+                            out.push_str(var);
+                            out.push('%');
+                        }
+                    }
+                    rest = &after[end + 1..];
+                }
+                None => {
+                    out.push_str(&rest[start..]);
+                    rest = "";
+                }
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// dir 안에 switcher.lnk 생성. 이미 있으면 그대로 둔다.
+    fn create_in(dir: &Path, target: &Path) -> Result<(), String> {
+        let lnk = dir.join("switcher.lnk");
+        if lnk.exists() {
+            return Ok(());
+        }
+        let link =
+            mslnk::ShellLink::new(target).map_err(|e| format!("바로가기 생성 실패: {e}"))?;
+        link.create_lnk(&lnk)
+            .map_err(|e| format!("바로가기 저장 실패: {e}"))
+    }
+
+    /// 바탕화면에 switcher 바로가기 생성 (현재 실행 파일 대상)
+    pub fn create_on_desktop() -> Result<(), String> {
+        let exe = std::env::current_exe().map_err(|e| format!("실행 경로 확인 실패: {e}"))?;
+        create_in(&desktop_dir()?, &exe)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn expands_env_vars() {
+            std::env::set_var("SWITCHER_TEST_VAR", "C:\\probe");
+            assert_eq!(expand_env("%SWITCHER_TEST_VAR%\\Desktop"), "C:\\probe\\Desktop");
+            assert_eq!(expand_env("no-vars"), "no-vars");
+            // 정의되지 않은 변수는 원문 그대로 남긴다
+            assert_eq!(expand_env("%UNSET_VAR_XYZ%\\x"), "%UNSET_VAR_XYZ%\\x");
+        }
+
+        #[test]
+        fn creates_lnk_once() {
+            let dir =
+                std::env::temp_dir().join(format!("switcher-lnk-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let exe = std::env::current_exe().unwrap();
+            create_in(&dir, &exe).unwrap();
+            assert!(dir.join("switcher.lnk").exists());
+            // 이미 있으면 조용히 성공한다
+            create_in(&dir, &exe).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+}
+
 /// 부팅 시 자동 실행 — HKCU Run 키 (Windows, 관리자 권한 불필요)
 #[cfg(windows)]
 mod autostart {
@@ -559,6 +660,20 @@ pub fn run() {
             {
                 if let Err(e) = autostart::set_enabled(true) {
                     eprintln!("{e}");
+                }
+            }
+
+            // 첫 실행 시 바탕화면 바로가기 1회 생성 — 사용자가 지우면 다시 만들지 않는다
+            #[cfg(windows)]
+            if let Ok(env) = Env::real() {
+                if !settings::load_flag(&env.store, settings::KEY_SHORTCUT_DONE, false) {
+                    match shortcut::create_on_desktop() {
+                        Ok(()) => {
+                            let _ =
+                                settings::save_flag(&env.store, settings::KEY_SHORTCUT_DONE, true);
+                        }
+                        Err(e) => eprintln!("{e}"),
+                    }
                 }
             }
 

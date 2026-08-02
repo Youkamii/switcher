@@ -34,6 +34,8 @@ portable-pty = "0.9"
 [target.'cfg(windows)'.dependencies]
 # 부팅 시 자동 실행(HKCU Run 키)·바탕화면 실제 경로(User Shell Folders) 조회
 winreg = "0.55"
+# 바탕화면 바로가기(.lnk) 생성 — COM 없이 순수 Rust로 ShellLink 파일을 쓴다
+mslnk = "0.1"
 
 [target.'cfg(unix)'.dependencies]
 # 로그인 취소 시 PTY 프로세스 그룹을 통째로 종료하는 데 사용

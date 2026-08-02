@@ -9,6 +9,8 @@
 //! 현재 exe → `switcher.exe.old`로 비켜두고 새 exe를 원래 이름으로 복사한다.
 //! `.old`는 그 시점엔 실행 중이라 지울 수 없으므로 다음 시작 때 치운다.
 #![cfg(windows)]
+// dev 빌드는 확인 자체를 건너뛰므로(lib.rs, debug_assertions) 본체가 미사용으로 잡힌다
+#![cfg_attr(debug_assertions, allow(dead_code))]
 
 use std::fs;
 use std::path::{Path, PathBuf};
