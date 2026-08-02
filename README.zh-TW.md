@@ -18,7 +18,7 @@ npm install -g https://github.com/Youkamii/switcher/releases/latest/download/swi
 switcher
 ```
 
-第一次執行 `switcher` 指令時,會自動下載最新發行版本的建置檔(之後就會直接啟動)。因為不是透過瀏覽器下載,所以不會出現 SmartScreen 警告。要更新時,先結束小工具,再重新執行同一個安裝指令即可。
+第一次執行 `switcher` 指令時,會自動下載最新發行版本的建置檔(之後就會直接啟動)。因為不是透過瀏覽器下載,所以不會出現 SmartScreen 警告。更新是自動的 — 每次啟動都會檢查新版本,下次啟動生效。
 
 **直接下載** — 從[發行版本](https://github.com/Youkamii/switcher/releases/latest)下載 `switcher-win-x64.zip`,解壓縮後執行 `switcher.exe`。(Windows 10/11 64 位元)
 

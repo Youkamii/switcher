@@ -18,7 +18,7 @@ npm install -g https://github.com/Youkamii/switcher/releases/latest/download/swi
 switcher
 ```
 
-`switcher` 명령이 처음 실행될 때 최신 릴리스 빌드를 자동으로 받아온다(이후에는 바로 뜬다). 브라우저 다운로드가 아니라서 SmartScreen 경고가 뜨지 않는다. 업데이트는 위젯을 끄고 같은 설치 명령을 다시 실행.
+`switcher` 명령이 처음 실행될 때 최신 릴리스 빌드를 자동으로 받아온다(이후에는 바로 뜬다). 브라우저 다운로드가 아니라서 SmartScreen 경고가 뜨지 않는다. 업데이트는 자동이다 — 실행할 때마다 새 릴리스를 확인해 다음 실행부터 반영된다.
 
 **직접 다운로드** — [릴리스](https://github.com/Youkamii/switcher/releases/latest)에서 `switcher-win-x64.zip`을 받아 압축을 풀고 `switcher.exe`를 실행. (Windows 10/11 64비트)
 

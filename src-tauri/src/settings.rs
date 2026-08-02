@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 /// 지원 언어 (코드, 트레이 메뉴에 보일 이름). 배열 순서가 곧 메뉴 순서다.
 /// 언어 이름은 번역하지 않는다 — 어떤 언어로 잘못 바뀌어도 자기 언어를 찾을 수 있게.
+/// 주의: 프론트 src/i18n.ts의 SUPPORTED_LANGS와 짝이다 — 한쪽만 추가하면
+/// 트레이 체크는 옮겨가는데 UI는 안 바뀌는 반쪽 상태가 된다.
 pub const LANGS: [(&str, &str); 6] = [
     ("ko", "한국어"),
     ("en", "English"),
@@ -34,14 +36,23 @@ pub fn load_flag(store: &Path, key: &str, default: bool) -> bool {
 
 /// 불리언 설정 저장 — 다른 키는 보존한다
 pub fn save_flag(store: &Path, key: &str, value: bool) -> Result<(), String> {
+    save_value(store, key, Value::Bool(value))
+}
+
+/// 키 하나를 갱신해 저장. 다른 키는 보존하고, 임시 파일 + rename으로 원자적으로 쓴다 —
+/// 쓰다 만 파일이 남으면 다음 시작에서 모든 설정이 기본값으로 뒤집힌다 (자동 실행 재등록 등).
+fn save_value(store: &Path, key: &str, value: Value) -> Result<(), String> {
     fs::create_dir_all(store).map_err(|e| format!("설정 폴더 생성 실패: {e}"))?;
     let mut root = match read_settings(store) {
         Some(v @ Value::Object(_)) => v,
         _ => Value::Object(Default::default()),
     };
-    root[key] = Value::Bool(value);
+    root[key] = value;
     let text = serde_json::to_string_pretty(&root).map_err(|e| format!("설정 직렬화 실패: {e}"))?;
-    fs::write(settings_path(store), text).map_err(|e| format!("설정 저장 실패: {e}"))
+    let path = settings_path(store);
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, text).map_err(|e| format!("설정 저장 실패: {e}"))?;
+    fs::rename(&tmp, &path).map_err(|e| format!("설정 저장 실패: {e}"))
 }
 
 /// 트레이 라벨 — [열기, 숨기기, 설정, 언어, 자동 업데이트, 부팅 시 자동 실행, 종료] 순서
@@ -86,14 +97,7 @@ pub fn save_language(store: &Path, lang: &str) -> Result<(), String> {
     if !is_supported(lang) {
         return Err(format!("지원하지 않는 언어: {lang}"));
     }
-    fs::create_dir_all(store).map_err(|e| format!("설정 폴더 생성 실패: {e}"))?;
-    let mut value = match read_settings(store) {
-        Some(v @ Value::Object(_)) => v,
-        _ => Value::Object(Default::default()),
-    };
-    value["lang"] = Value::String(lang.to_string());
-    let text = serde_json::to_string_pretty(&value).map_err(|e| format!("설정 직렬화 실패: {e}"))?;
-    fs::write(settings_path(store), text).map_err(|e| format!("설정 저장 실패: {e}"))
+    save_value(store, "lang", Value::String(lang.to_string()))
 }
 
 #[cfg(test)]

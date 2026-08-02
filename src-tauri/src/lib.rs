@@ -268,8 +268,13 @@ fn toggle_flag(app: &tauri::AppHandle, key: &'static str, default: bool) {
             eprintln!("{e}");
         }
     }
-    let lang = settings::load_language(&env.store);
-    if let Ok(menu) = build_tray_menu(app, &lang) {
+    refresh_tray_menu(app, &settings::load_language(&env.store));
+}
+
+/// 트레이 메뉴를 주어진 언어로 다시 만들어 갈아 끼운다 (언어·체크 상태 변경 공통)
+#[cfg(not(target_os = "macos"))]
+fn refresh_tray_menu(app: &tauri::AppHandle, lang: &str) {
+    if let Ok(menu) = build_tray_menu(app, lang) {
         if let Some(tray) = app.tray_by_id("main") {
             let _ = tray.set_menu(Some(menu));
         }
@@ -445,11 +450,7 @@ fn apply_language(app: &tauri::AppHandle, lang: &str) {
         }
         Err(e) => eprintln!("언어 저장 실패: {e}"),
     }
-    if let Ok(menu) = build_tray_menu(app, lang) {
-        if let Some(tray) = app.tray_by_id("main") {
-            let _ = tray.set_menu(Some(menu));
-        }
-    }
+    refresh_tray_menu(app, lang);
     let _ = app.emit("language-changed", lang);
 }
 
@@ -648,9 +649,6 @@ pub fn run() {
                 }
             });
 
-            // 실행 시 자동 업데이트 (Windows·릴리스 빌드만): 새 버전이면 exe를 제자리
-            // 교체하고 다음 실행부터 반영된다. dev 빌드가 target 산출물을 덮지 않게
-            // debug_assertions에서는 확인 자체를 건너뛴다.
             // 부팅 시 자동 실행 (기본 켜짐): 켜져 있으면 시작마다 현재 경로로 재등록해
             // exe가 이동·업데이트돼도 자가 치유된다. 꺼짐이면 건드리지 않는다 (해제는 토글에서만).
             #[cfg(windows)]
@@ -677,6 +675,9 @@ pub fn run() {
                 }
             }
 
+            // 실행 시 자동 업데이트 (Windows·릴리스 빌드만): 새 버전이면 exe를 제자리
+            // 교체하고 다음 실행부터 반영된다. dev 빌드가 target 산출물을 덮지 않게
+            // debug_assertions에서는 확인 자체를 건너뛴다.
             #[cfg(windows)]
             {
                 update::sweep_old_exe();

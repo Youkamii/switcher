@@ -962,16 +962,22 @@ void listen<string>("update-ready", (event) => {
 });
 
 // 트레이(설정 → 언어)에서 바꾸면 Rust가 저장을 마친 뒤 알려온다
+let langFromEvent = false;
 void listen<string>("language-changed", (event) => {
   setLang(event.payload);
+  langFromEvent = true;
   applyStaticText();
-  void render({ immediate: true });
+  // 로그인 패널이 열려 있으면 재렌더하지 않는다 — render()의 "재렌더 = 로그인 포기"
+  // 정책이 진행 중 세션을 취소해 버린다. 본문은 패널이 닫힐 때(onExit) 새 언어로 그려진다.
+  if (!loginOpen) void render({ immediate: true });
 });
 
 // 시작: 저장된 언어를 먼저 읽고 첫 렌더 — 한국어로 그렸다 갈아엎는 깜빡임을 피한다
 void (async () => {
   try {
-    setLang(await invoke<string>("get_language"));
+    const saved = await invoke<string>("get_language");
+    // 조회 응답을 기다리는 사이 트레이 이벤트로 언어가 이미 정해졌으면 구값으로 덮지 않는다
+    if (!langFromEvent) setLang(saved);
   } catch {
     // 설정을 못 읽으면 한국어로 진행
   }

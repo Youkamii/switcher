@@ -1,5 +1,7 @@
 /// UI 문자열 사전 — 트레이(설정 → 언어)에서 고른 언어로 위젯 전체가 갈아입는다.
 /// 백엔드(Rust) 에러 메시지는 이 사전 밖이다 — 토스트에 원문 그대로 실린다.
+/// 주의: SUPPORTED_LANGS는 Rust settings.rs의 LANGS와 짝이다 — 한쪽만 추가하면
+/// 트레이 체크는 옮겨가는데 UI는 안 바뀌는 반쪽 상태가 된다.
 
 export const SUPPORTED_LANGS = ["ko", "en", "ja", "zh-CN", "zh-TW", "hi"] as const;
 export type Lang = (typeof SUPPORTED_LANGS)[number];

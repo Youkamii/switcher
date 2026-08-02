@@ -1,7 +1,28 @@
 {
-  "name": "switcher",
-  "private": true,
+  "name": "switcher-widget",
   "version": "1.1.0",
+  "description": "Desktop widget that switches between multiple Claude Code / Codex CLI accounts in one click, with per-account usage bars (Windows/macOS)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Youkamii/switcher.git"
+  },
+  "homepage": "https://github.com/Youkamii/switcher#readme",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "account-switcher",
+    "widget",
+    "tauri",
+    "cli"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "scripts/launch.mjs",
+    "scripts/dist.mjs"
+  ],
   "type": "module",
   "bin": {
     "switcher": "scripts/launch.mjs"

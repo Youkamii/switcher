@@ -17,6 +17,9 @@ use std::path::{Path, PathBuf};
 
 const RELEASE_LATEST_API: &str = "https://api.github.com/repos/Youkamii/switcher/releases/latest";
 const ASSET_NAME: &str = "switcher-win-x64.zip";
+/// 자산 URL은 반드시 이 저장소의 릴리스 다운로드 경로여야 한다 — API 응답이 어떤 이유로든
+/// 다른 호스트를 가리켜도 따라가지 않는다 (업데이트 채널의 신뢰 뿌리를 저장소 하나로 고정)
+const ASSET_URL_PREFIX: &str = "https://github.com/Youkamii/switcher/releases/download/";
 
 /// "v1.2.3" / "1.2.3-rc1" → (1, 2, 3). 해석 불가면 None (업데이트를 건너뛴다).
 fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
@@ -29,10 +32,23 @@ fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
     Some((major, minor, patch))
 }
 
-/// 지난 업데이트가 남긴 옛 실행 파일 청소 (교체 당시엔 그 프로세스가 살아 있어 못 지운다)
+/// 지난 업데이트가 남긴 잔재 청소: 옛 실행 파일(교체 당시엔 그 프로세스가 살아 있어
+/// 못 지운다), 중단된 준비 파일, 실패한 업데이트의 임시 폴더(pid 키라 그 실행만 안다)
 pub fn sweep_old_exe() {
     if let Ok(exe) = std::env::current_exe() {
         let _ = fs::remove_file(exe.with_extension("exe.old"));
+        let _ = fs::remove_file(exe.with_extension("exe.new"));
+    }
+    if let Ok(entries) = fs::read_dir(std::env::temp_dir()) {
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("switcher-update-")
+            {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
     }
 }
 
@@ -58,6 +74,8 @@ pub async fn check_and_apply() -> Result<Option<String>, String> {
         .map_err(|e| format!("업데이트 응답 해석 실패: {e}"))?;
     let tag = release["tag_name"].as_str().unwrap_or_default().to_string();
     let Some(latest) = parse_version(&tag) else {
+        // 태깅 실수(v1.2, 이상한 접두사 등)를 조용히 삼키면 "업데이트가 안 됨"만 남는다
+        eprintln!("업데이트 태그를 해석할 수 없습니다: {tag:?}");
         return Ok(None);
     };
     if latest <= current {
@@ -71,6 +89,9 @@ pub async fn check_and_apply() -> Result<Option<String>, String> {
         .and_then(|asset| asset["browser_download_url"].as_str())
         .ok_or("최신 릴리스에 Windows 빌드 자산이 없습니다")?
         .to_string();
+    if !url.starts_with(ASSET_URL_PREFIX) {
+        return Err(format!("업데이트 자산 주소가 예상 밖입니다: {url}"));
+    }
     let bytes = client
         .get(&url)
         .header("User-Agent", "switcher-widget")
@@ -107,11 +128,18 @@ fn apply(zip_bytes: &[u8]) -> Result<(), String> {
     }
     let current = std::env::current_exe().map_err(|e| format!("현재 경로 확인 실패: {e}"))?;
     let old = current.with_extension("exe.old");
+    // 크래시 안전 교체: 느린 단계(복사)를 같은 폴더의 .new로 먼저 끝내 두고,
+    // rename 두 번(빠른 메타데이터 연산)만으로 바꾼다 — 어느 시점에 죽어도
+    // 원본 또는 .old가 남아 실행 파일이 통째로 사라지는 창이 없다.
+    let staged = current.with_extension("exe.new");
+    let _ = fs::remove_file(&staged);
+    fs::copy(&new_exe, &staged).map_err(|e| format!("새 실행 파일 준비 실패: {e}"))?;
     let _ = fs::remove_file(&old);
     fs::rename(&current, &old).map_err(|e| format!("실행 파일 교체 준비 실패: {e}"))?;
-    if let Err(e) = fs::copy(&new_exe, &current) {
-        // 복사가 실패하면 원래 이름으로 되돌린다 — 실행 파일이 사라진 채 남지 않게
+    if let Err(e) = fs::rename(&staged, &current) {
+        // 되돌린다 — 실행 파일이 사라진 채 남지 않게
         let _ = fs::rename(&old, &current);
+        let _ = fs::remove_file(&staged);
         return Err(format!("실행 파일 교체 실패: {e}"));
     }
     let _ = fs::remove_dir_all(&work);
@@ -120,16 +148,17 @@ fn apply(zip_bytes: &[u8]) -> Result<(), String> {
 
 /// Windows 내장 bsdtar 절대 경로로 zip을 푼다.
 /// PATH의 tar는 Git Bash에서 GNU tar(zip 해제 불가)로 잡힐 수 있다 — dist.mjs와 동일한 함정.
+/// bsdtar는 절대 경로·`..` 항목을 기본 거부하므로 zip 경로 탈출도 함께 막힌다.
 fn extract_zip(zip: &Path, dir: &Path) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
-    let sys_tar = PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into()))
+    let tar = PathBuf::from(std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into()))
         .join("System32")
         .join("tar.exe");
-    let tar = if sys_tar.exists() {
-        sys_tar
-    } else {
-        PathBuf::from("tar")
-    };
+    if !tar.exists() {
+        // PATH 폴백은 두지 않는다 — 업데이트 경로에서 임의 tar를 부르는 위험보다
+        // 이번 업데이트를 건너뛰는 편이 낫다 (bsdtar는 Windows 10 1803+ 기본 탑재)
+        return Err("System32 tar.exe를 찾을 수 없어 업데이트를 건너뜁니다".to_string());
+    }
     const CREATE_NO_WINDOW: u32 = 0x0800_0000; // 콘솔 창을 띄우지 않는다
     let status = std::process::Command::new(tar)
         .arg("-xf")
