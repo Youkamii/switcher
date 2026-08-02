@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { LogicalSize, PhysicalPosition } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { currentLang, setLang, t } from "./i18n";
 
 type ProfileInfo = {
   name: string;
@@ -70,16 +71,16 @@ function formatReset(resetsAt: string | null): string {
 /// formatReset과 같은 내림(floor) 방식 (반올림이면 3599초가 "60분 전 값"이 된다)
 function staleLabel(usage: Usage): string {
   const secs = usage.stale_age_secs;
-  if (secs == null) return "사용량 조회 대기중";
-  if (secs < 3600) return `${Math.max(1, Math.floor(secs / 60))}분 전 값`;
-  return `${Math.floor(secs / 3600)}시간 전 값`;
+  if (secs == null) return t("usageWaiting");
+  if (secs < 3600) return t("staleMin", { n: Math.max(1, Math.floor(secs / 60)) });
+  return t("staleHour", { n: Math.floor(secs / 3600) });
 }
 
 /// 컴팩트용 나이 축약 ("3h 전", "45m 전") — 컴팩트의 축약 표기 관례를 따른다
 function compactStaleAge(secs: number | null | undefined): string {
   if (secs == null) return "";
-  if (secs < 3600) return `${Math.max(1, Math.floor(secs / 60))}m 전`;
-  return `${Math.floor(secs / 3600)}h 전`;
+  if (secs < 3600) return t("agoMin", { n: Math.max(1, Math.floor(secs / 60)) });
+  return t("agoHour", { n: Math.floor(secs / 3600) });
 }
 
 function usageRow(win: UsageWindow): HTMLElement {
@@ -108,7 +109,7 @@ function usageRow(win: UsageWindow): HTMLElement {
   const reset = document.createElement("span");
   reset.className = "usage-reset";
   reset.textContent = formatReset(win.resets_at);
-  reset.title = "리셋까지 남은 시간";
+  reset.title = t("resetTooltip");
 
   row.append(label, bar, pct, reset);
   return row;
@@ -119,7 +120,7 @@ async function loadUsage(provider: ProviderId, card: HTMLElement, profile: strin
   box.className = "usage-box";
   const loading = document.createElement("div");
   loading.className = "usage-note";
-  loading.textContent = "사용량 불러오는 중…";
+  loading.textContent = t("loadingUsage");
   box.appendChild(loading);
   card.appendChild(box);
 
@@ -129,7 +130,7 @@ async function loadUsage(provider: ProviderId, card: HTMLElement, profile: strin
     if (usage.windows.length === 0) {
       const empty = document.createElement("div");
       empty.className = "usage-note";
-      empty.textContent = "표시할 사용량 정보가 없습니다";
+      empty.textContent = t("noUsage");
       box.appendChild(empty);
       return;
     }
@@ -169,7 +170,7 @@ function profileCard(
   const email = document.createElement("span");
   email.className = "card-name";
   email.textContent = profile.email ?? profile.name;
-  email.title = `프로필 이름: ${profile.name}`;
+  email.title = t("profileNameTooltip", { name: profile.name });
   head.append(email);
   if (profile.plan) {
     const plan = document.createElement("span");
@@ -218,22 +219,22 @@ function profileCard(
 
     const switchBtn = document.createElement("button");
     switchBtn.className = "primary";
-    switchBtn.textContent = "이 계정으로 전환";
+    switchBtn.textContent = t("switchBtn");
     switchBtn.addEventListener("click", () => void doSwitch(switchBtn));
     actions.appendChild(switchBtn);
   }
 
   const deleteBtn = document.createElement("button");
-  deleteBtn.textContent = "삭제";
+  deleteBtn.textContent = t("del");
   let armed = false;
   deleteBtn.addEventListener("click", async () => {
     if (!armed) {
       armed = true;
-      deleteBtn.textContent = "정말 삭제할까요?";
+      deleteBtn.textContent = t("delConfirm");
       deleteBtn.classList.add("danger-armed");
       window.setTimeout(() => {
         armed = false;
-        deleteBtn.textContent = "삭제";
+        deleteBtn.textContent = t("del");
         deleteBtn.classList.remove("danger-armed");
       }, 3000);
       return;
@@ -241,7 +242,7 @@ function profileCard(
     deleteBtn.disabled = true;
     try {
       await invoke("delete_profile", { provider, name: profile.name });
-      toast(`'${profile.name}' 프로필을 삭제했습니다 (로그인 자체는 유지됩니다)`);
+      toast(t("delDone", { name: profile.name }));
       await render({ immediate: true });
     } catch (error) {
       toast(String(error), true);
@@ -269,10 +270,10 @@ type LoginPrompt = {
 async function copyText(value: string, button: HTMLButtonElement, label: string) {
   try {
     await navigator.clipboard.writeText(value);
-    button.textContent = "복사됨";
+    button.textContent = t("copied");
     window.setTimeout(() => (button.textContent = label), 1500);
   } catch {
-    toast("복사에 실패했습니다 — 직접 선택해 복사하세요", true);
+    toast(t("copyFailed"), true);
   }
 }
 
@@ -292,8 +293,8 @@ function copyBox(title: string, value: string, mono: boolean): HTMLElement {
   text.textContent = value;
   text.title = value;
   const btn = document.createElement("button");
-  btn.textContent = "복사";
-  btn.addEventListener("click", () => void copyText(value, btn, "복사"));
+  btn.textContent = t("copy");
+  btn.addEventListener("click", () => void copyText(value, btn, t("copy")));
   body.append(text, btn);
 
   box.append(head, body);
@@ -308,41 +309,39 @@ function loginPanel(prompt: LoginPrompt, onExit: () => void): HTMLElement {
 
   const steps = document.createElement("div");
   steps.className = "help";
-  steps.textContent = prompt.needs_code
-    ? "① 아래 주소를 원하는 브라우저에 붙여넣어 로그인 ② 화면에 뜨는 코드를 복사해 아래에 붙여넣기"
-    : "① 아래 주소를 원하는 브라우저에 붙여넣기 ② 그 화면에 아래 코드를 입력하면 자동으로 완료됩니다";
+  steps.textContent = prompt.needs_code ? t("stepsClaude") : t("stepsCodex");
   panel.appendChild(steps);
 
-  panel.appendChild(copyBox("로그인 주소", prompt.url, false));
+  panel.appendChild(copyBox(t("loginUrl"), prompt.url, false));
   if (prompt.device_code) {
-    panel.appendChild(copyBox("일회용 코드 (15분 유효)", prompt.device_code, true));
+    panel.appendChild(copyBox(t("oneTimeCode"), prompt.device_code, true));
   }
 
   if (prompt.needs_code) {
     const actions = document.createElement("div");
     actions.className = "add-row";
     const input = document.createElement("input");
-    input.placeholder = "로그인 후 받은 코드 붙여넣기";
+    input.placeholder = t("pasteCode");
     input.maxLength = 64;
     const okBtn = document.createElement("button");
     okBtn.className = "primary";
-    okBtn.textContent = "확인";
+    okBtn.textContent = t("ok");
     const submit = async () => {
       const code = input.value.trim();
       if (!code) {
-        toast("코드를 붙여넣으세요", true);
+        toast(t("codeEmpty"), true);
         return;
       }
       okBtn.disabled = true;
       input.disabled = true;
-      okBtn.textContent = "확인 중…";
+      okBtn.textContent = t("okWorking");
       try {
         const result = await invoke<LoginOutcome>("submit_login_code", { code });
         reportLogin(result);
       } catch (error) {
         // 코드 제출 후의 실패는 세션이 이미 끝난 상태라 재시도가 불가능하다 —
         // 패널을 닫고 처음부터 다시 시작하게 안내한다
-        toast(`${String(error)} — '계정 추가'로 처음부터 다시 시도하세요`, true);
+        toast(t("retryFromStart", { error: String(error) }), true);
       }
       onExit();
     };
@@ -356,13 +355,12 @@ function loginPanel(prompt: LoginPrompt, onExit: () => void): HTMLElement {
   } else {
     const waiting = document.createElement("div");
     waiting.className = "usage-note";
-    waiting.textContent = "브라우저에서 코드 입력을 기다리는 중…";
+    waiting.textContent = t("waitingBrowser");
     panel.appendChild(waiting);
     // 코덱스 장치 코드 인증은 계정에서 기본으로 꺼져 있다 — 거부당하면 여기부터 확인
     const prereq = document.createElement("div");
     prereq.className = "help";
-    prereq.textContent =
-      "\"장치 코드 인증을 활성화하세요\"가 뜨면: ChatGPT 설정 → 보안에서 'Codex 장치 코드 인증'을 켜고 다시 시도하세요.";
+    prereq.textContent = t("codexPrereq");
     panel.appendChild(prereq);
     void (async () => {
       try {
@@ -377,7 +375,7 @@ function loginPanel(prompt: LoginPrompt, onExit: () => void): HTMLElement {
 
   const cancelBtn = document.createElement("button");
   cancelBtn.className = "link";
-  cancelBtn.textContent = "취소";
+  cancelBtn.textContent = t("cancel");
   cancelBtn.addEventListener("click", () => {
     void invoke("cancel_login");
     onExit();
@@ -391,8 +389,8 @@ function reportLogin(result: LoginOutcome) {
   const who = result.email ?? result.profile;
   toast(
     result.updated_existing
-      ? `'${result.profile}' 계정(${who}) 로그인을 갱신했습니다`
-      : `계정 추가 완료 — '${result.profile}' (${who})`,
+      ? t("loginUpdated", { profile: result.profile, who })
+      : t("loginAdded", { profile: result.profile, who }),
   );
 }
 
@@ -402,7 +400,7 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
 
   const addBtn = document.createElement("button");
   addBtn.className = "primary";
-  addBtn.textContent = "＋ 계정 추가";
+  addBtn.textContent = t("addAccount");
   row.appendChild(addBtn);
   section.appendChild(row);
 
@@ -411,11 +409,11 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
 
   addBtn.addEventListener("click", async () => {
     if (loginOpen) {
-      toast("이미 로그인이 진행 중입니다 — 진행 중인 패널을 먼저 끝내세요", true);
+      toast(t("loginBusy"), true);
       return;
     }
     addBtn.disabled = true;
-    addBtn.textContent = "로그인 주소 받는 중…";
+    addBtn.textContent = t("gettingLoginUrl");
     try {
       const prompt = await invoke<LoginPrompt>("start_login", { provider });
       addBtn.hidden = true;
@@ -429,7 +427,7 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
     } catch (error) {
       toast(String(error), true);
       addBtn.disabled = false;
-      addBtn.textContent = "＋ 계정 추가";
+      addBtn.textContent = t("addAccount");
     }
   });
 }
@@ -438,19 +436,19 @@ function saveForm(provider: ProviderId, section: HTMLElement) {
   const row = document.createElement("div");
   row.className = "save-row";
   const input = document.createElement("input");
-  input.placeholder = "프로필 이름 (영문·숫자·-·_)";
+  input.placeholder = t("namePlaceholder");
   input.maxLength = 32;
   const saveBtn = document.createElement("button");
-  saveBtn.textContent = "현재 계정 저장";
+  saveBtn.textContent = t("saveCurrent");
   const submit = async () => {
     const name = input.value.trim();
     if (!name) {
-      toast("프로필 이름을 입력하세요", true);
+      toast(t("nameEmpty"), true);
       return;
     }
     try {
       await invoke("save_profile", { provider, name });
-      toast(`현재 계정을 '${name}' 프로필로 저장했습니다`);
+      toast(t("saveDone", { name }));
       await render({ immediate: true });
     } catch (error) {
       toast(String(error), true);
@@ -482,7 +480,7 @@ async function renderProvider(
     if (!snap.live && snap.profiles.length === 0) {
       const hint = document.createElement("p");
       hint.className = "hint";
-      hint.textContent = "저장된 계정이 없습니다 — 아래 버튼으로 추가하세요";
+      hint.textContent = t("noAccounts");
       section.appendChild(hint);
       addAccountButton(provider, section);
       target.appendChild(section);
@@ -492,7 +490,7 @@ async function renderProvider(
     if (snap.live && !snap.live_saved) {
       const hint = document.createElement("p");
       hint.className = "hint warn";
-      hint.textContent = `현재 로그인 계정(${snap.live.email ?? snap.live.id})이 아직 프로필로 저장되지 않았습니다 — 아래 입력칸으로 저장하세요`;
+      hint.textContent = t("liveNotSaved", { account: snap.live.email ?? snap.live.id });
       section.appendChild(hint);
     }
 
@@ -560,7 +558,7 @@ async function compactCard(provider: ProviderId, profile: ProfileInfo): Promise<
   const email = document.createElement("span");
   email.className = "card-name";
   email.textContent = profile.email ?? profile.name;
-  email.title = `프로필 이름: ${profile.name}`;
+  email.title = t("profileNameTooltip", { name: profile.name });
   head.appendChild(email);
   if (profile.plan) {
     const plan = document.createElement("span");
@@ -607,7 +605,7 @@ async function compactCard(provider: ProviderId, profile: ProfileInfo): Promise<
       const reset = document.createElement("span");
       reset.className = "c-reset";
       reset.textContent = compactReset(win.resets_at);
-      reset.title = "리셋까지 남은 시간";
+      reset.title = t("resetTooltip");
       row.append(label, bar, reset);
       card.appendChild(row);
     }
@@ -821,7 +819,7 @@ void listen<{ ok: boolean; provider?: string; name?: string; error?: string }>(
       el?.classList.add("switch-flash");
       window.setTimeout(() => void render({ immediate: true }), 380);
     } else if (!demoMode) {
-      toast(event.payload.error ?? "전환 실패", true);
+      toast(event.payload.error ?? t("switchFailed"), true);
     }
   },
 );
@@ -938,7 +936,7 @@ void invoke<string | null>("initial_view_mode").then((mode) => {
 
 document.getElementById("refresh")!.addEventListener("click", () => {
   if (loginOpen) {
-    toast("로그인을 진행 중입니다 — 끝내거나 취소한 뒤 새로고침하세요", true);
+    toast(t("refreshBusy"), true);
     return;
   }
   void render();
@@ -946,4 +944,32 @@ document.getElementById("refresh")!.addEventListener("click", () => {
 window.setInterval(() => {
   if (!userIsBusy()) void render();
 }, 5 * 60 * 1000);
-void render();
+
+/// 정적 골격(타이틀바)의 문자열 — 렌더 밖 요소라 언어가 바뀔 때 직접 갈아 끼운다
+function applyStaticText() {
+  document.documentElement.lang = currentLang();
+  const refreshBtn = document.getElementById("refresh")!;
+  refreshBtn.textContent = t("refresh");
+  refreshBtn.setAttribute("title", t("refreshTooltip"));
+  document.getElementById("drag-handle")!.setAttribute("title", t("dragHandle"));
+  alphaSlider.title = t("alphaTooltip");
+  lockBtn.title = t("typeTooltip");
+}
+
+// 트레이(설정 → 언어)에서 바꾸면 Rust가 저장을 마친 뒤 알려온다
+void listen<string>("language-changed", (event) => {
+  setLang(event.payload);
+  applyStaticText();
+  void render({ immediate: true });
+});
+
+// 시작: 저장된 언어를 먼저 읽고 첫 렌더 — 한국어로 그렸다 갈아엎는 깜빡임을 피한다
+void (async () => {
+  try {
+    setLang(await invoke<string>("get_language"));
+  } catch {
+    // 설정을 못 읽으면 한국어로 진행
+  }
+  applyStaticText();
+  void render();
+})();

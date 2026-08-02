@@ -1,5 +1,6 @@
 mod accounts;
 mod login;
+mod settings;
 mod usage;
 
 use accounts::{Env, Provider, Snapshot, SwitchResult};
@@ -148,6 +149,80 @@ fn demo_mode() -> bool {
     std::env::var("SWITCHER_DEMO").is_ok()
 }
 
+/// 저장된 UI 언어 — 프론트가 시작할 때 읽는다 (설정을 못 읽으면 한국어)
+#[tauri::command]
+fn get_language() -> String {
+    Env::real()
+        .map(|env| settings::load_language(&env.store))
+        .unwrap_or_else(|_| "ko".to_string())
+}
+
+/// 트레이 메뉴를 주어진 언어로 구성한다. 언어가 바뀌면 통째로 다시 만들어 갈아 끼운다.
+/// Windows: 설정 → 언어 서브메뉴(체크 표시). macOS: 언어 변경은 아직 개발 진행중 —
+/// 비활성 항목으로만 알린다 (메뉴바 앱 관례·키체인 경로 검증이 남아 있다).
+fn build_tray_menu(
+    app: &tauri::AppHandle,
+    lang: &str,
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, Submenu};
+    let [open_l, hide_l, settings_l, language_l, quit_l] = settings::tray_labels(lang);
+    let show = MenuItem::with_id(app, "show", open_l, true, None::<&str>)?;
+    let hide = MenuItem::with_id(app, "hide", hide_l, true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", quit_l, true, None::<&str>)?;
+    #[cfg(not(target_os = "macos"))]
+    let language = {
+        use tauri::menu::CheckMenuItem;
+        let mut items: Vec<CheckMenuItem<tauri::Wry>> = Vec::new();
+        for (code, name) in settings::LANGS {
+            items.push(CheckMenuItem::with_id(
+                app,
+                format!("lang:{code}"),
+                name,
+                true,
+                code == lang,
+                None::<&str>,
+            )?);
+        }
+        let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = items
+            .iter()
+            .map(|item| item as &dyn tauri::menu::IsMenuItem<tauri::Wry>)
+            .collect();
+        Submenu::with_id_and_items(app, "language", language_l, true, &refs)?
+    };
+    #[cfg(target_os = "macos")]
+    let language = {
+        // 맥 UI는 아직 한국어 고정이라 라벨도 한국어로 못박는다
+        let _ = language_l;
+        MenuItem::with_id(app, "lang-wip", "언어 변경 (개발 진행중)", false, None::<&str>)?
+    };
+    let settings_menu = Submenu::with_id_and_items(app, "settings", settings_l, true, &[&language])?;
+    Menu::with_items(app, &[&show, &hide, &settings_menu, &quit])
+}
+
+/// 언어 변경 적용: 저장 → 트레이 메뉴 재구성(체크 이동) → 웹뷰에 알림.
+/// 저장이 실패해도 이번 세션에는 적용한다 — 다음 시작 때만 원래 언어로 돌아간다.
+#[cfg(not(target_os = "macos"))]
+fn apply_language(app: &tauri::AppHandle, lang: &str) {
+    use tauri::Emitter;
+    if !settings::is_supported(lang) {
+        return;
+    }
+    match Env::real() {
+        Ok(env) => {
+            if let Err(e) = settings::save_language(&env.store, lang) {
+                eprintln!("언어 저장 실패: {e}");
+            }
+        }
+        Err(e) => eprintln!("언어 저장 실패: {e}"),
+    }
+    if let Ok(menu) = build_tray_menu(app, lang) {
+        if let Some(tray) = app.tray_by_id("main") {
+            let _ = tray.set_menu(Some(menu));
+        }
+    }
+    let _ = app.emit("language-changed", lang);
+}
+
 /// 프론트가 렌더 후 카드·버튼의 화면 좌표를 보고한다
 #[tauri::command]
 fn set_hit_regions(regions: Vec<HitRegion>) {
@@ -242,7 +317,6 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
     tauri::Builder::default()
@@ -460,11 +534,12 @@ pub fn run() {
                     }
                 });
             }
-            let show = MenuItem::with_id(app, "show", "열기", true, None::<&str>)?;
-            let hide = MenuItem::with_id(app, "hide", "숨기기", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &hide, &quit])?;
-            TrayIconBuilder::new()
+            // 트레이 메뉴는 저장된 UI 언어로 그린다 (설정을 못 읽으면 한국어)
+            let lang = Env::real()
+                .map(|env| settings::load_language(&env.store))
+                .unwrap_or_else(|_| "ko".to_string());
+            let menu = build_tray_menu(app.handle(), &lang)?;
+            TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
                 .show_menu_on_left_click(false)
@@ -481,6 +556,10 @@ pub fn run() {
                         // 진행 중인 로그인 프로세스·토큰 임시 폴더를 정리하고 종료
                         login::cancel();
                         app.exit(0);
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    id if id.starts_with("lang:") => {
+                        apply_language(app, id.trim_start_matches("lang:"));
                     }
                     _ => {}
                 })
@@ -517,7 +596,8 @@ pub fn run() {
             set_hit_regions,
             set_click_through,
             initial_view_mode,
-            demo_mode
+            demo_mode,
+            get_language
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

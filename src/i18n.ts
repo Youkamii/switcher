@@ -1,0 +1,351 @@
+/// UI 문자열 사전 — 트레이(설정 → 언어)에서 고른 언어로 위젯 전체가 갈아입는다.
+/// 백엔드(Rust) 에러 메시지는 이 사전 밖이다 — 토스트에 원문 그대로 실린다.
+
+export const SUPPORTED_LANGS = ["ko", "en", "ja", "zh-CN", "zh-TW", "hi"] as const;
+export type Lang = (typeof SUPPORTED_LANGS)[number];
+
+const ko = {
+  loadingUsage: "사용량 불러오는 중…",
+  noUsage: "표시할 사용량 정보가 없습니다",
+  usageWaiting: "사용량 조회 대기중",
+  staleMin: "{n}분 전 값",
+  staleHour: "{n}시간 전 값",
+  agoMin: "{n}m 전",
+  agoHour: "{n}h 전",
+  resetTooltip: "리셋까지 남은 시간",
+  profileNameTooltip: "프로필 이름: {name}",
+  switchBtn: "이 계정으로 전환",
+  del: "삭제",
+  delConfirm: "정말 삭제할까요?",
+  delDone: "'{name}' 프로필을 삭제했습니다 (로그인 자체는 유지됩니다)",
+  addAccount: "＋ 계정 추가",
+  gettingLoginUrl: "로그인 주소 받는 중…",
+  loginBusy: "이미 로그인이 진행 중입니다 — 진행 중인 패널을 먼저 끝내세요",
+  stepsClaude:
+    "① 아래 주소를 원하는 브라우저에 붙여넣어 로그인 ② 화면에 뜨는 코드를 복사해 아래에 붙여넣기",
+  stepsCodex:
+    "① 아래 주소를 원하는 브라우저에 붙여넣기 ② 그 화면에 아래 코드를 입력하면 자동으로 완료됩니다",
+  loginUrl: "로그인 주소",
+  oneTimeCode: "일회용 코드 (15분 유효)",
+  copy: "복사",
+  copied: "복사됨",
+  copyFailed: "복사에 실패했습니다 — 직접 선택해 복사하세요",
+  pasteCode: "로그인 후 받은 코드 붙여넣기",
+  ok: "확인",
+  okWorking: "확인 중…",
+  codeEmpty: "코드를 붙여넣으세요",
+  retryFromStart: "{error} — '계정 추가'로 처음부터 다시 시도하세요",
+  waitingBrowser: "브라우저에서 코드 입력을 기다리는 중…",
+  codexPrereq:
+    "\"장치 코드 인증을 활성화하세요\"가 뜨면: ChatGPT 설정 → 보안에서 'Codex 장치 코드 인증'을 켜고 다시 시도하세요.",
+  cancel: "취소",
+  loginUpdated: "'{profile}' 계정({who}) 로그인을 갱신했습니다",
+  loginAdded: "계정 추가 완료 — '{profile}' ({who})",
+  namePlaceholder: "프로필 이름 (영문·숫자·-·_)",
+  saveCurrent: "현재 계정 저장",
+  nameEmpty: "프로필 이름을 입력하세요",
+  saveDone: "현재 계정을 '{name}' 프로필로 저장했습니다",
+  noAccounts: "저장된 계정이 없습니다 — 아래 버튼으로 추가하세요",
+  liveNotSaved:
+    "현재 로그인 계정({account})이 아직 프로필로 저장되지 않았습니다 — 아래 입력칸으로 저장하세요",
+  switchFailed: "전환 실패",
+  refreshBusy: "로그인을 진행 중입니다 — 끝내거나 취소한 뒤 새로고침하세요",
+  refresh: "새로고침",
+  refreshTooltip: "사용량 새로고침",
+  dragHandle: "잡고 이동",
+  alphaTooltip: "투명도 (0 = 골조만)",
+  typeTooltip: "보기 모드 전환 (1 전체 / 2 위젯 / 3 컴팩트)",
+};
+
+export type MsgKey = keyof typeof ko;
+type Messages = Record<MsgKey, string>;
+
+const en: Messages = {
+  loadingUsage: "Loading usage…",
+  noUsage: "No usage info to show",
+  usageWaiting: "Waiting for usage query",
+  staleMin: "value from {n}m ago",
+  staleHour: "value from {n}h ago",
+  agoMin: "{n}m ago",
+  agoHour: "{n}h ago",
+  resetTooltip: "Time until reset",
+  profileNameTooltip: "Profile name: {name}",
+  switchBtn: "Switch to this account",
+  del: "Delete",
+  delConfirm: "Really delete?",
+  delDone: "Deleted profile '{name}' (the login itself is kept)",
+  addAccount: "＋ Add account",
+  gettingLoginUrl: "Getting login URL…",
+  loginBusy: "A login is already in progress — finish the open panel first",
+  stepsClaude:
+    "① Paste the URL below into any browser and log in ② Copy the code shown on screen and paste it below",
+  stepsCodex:
+    "① Paste the URL below into any browser ② Enter the code below on that page and the rest completes automatically",
+  loginUrl: "Login URL",
+  oneTimeCode: "One-time code (valid 15 min)",
+  copy: "Copy",
+  copied: "Copied",
+  copyFailed: "Copy failed — select and copy manually",
+  pasteCode: "Paste the code you received after logging in",
+  ok: "OK",
+  okWorking: "Checking…",
+  codeEmpty: "Paste the code first",
+  retryFromStart: "{error} — start over via 'Add account'",
+  waitingBrowser: "Waiting for the code to be entered in the browser…",
+  codexPrereq:
+    "If you see \"enable device code authentication\": turn on 'Codex device code authentication' in ChatGPT Settings → Security, then retry.",
+  cancel: "Cancel",
+  loginUpdated: "Refreshed login for account '{profile}' ({who})",
+  loginAdded: "Account added — '{profile}' ({who})",
+  namePlaceholder: "Profile name (letters·digits·-·_)",
+  saveCurrent: "Save current account",
+  nameEmpty: "Enter a profile name",
+  saveDone: "Saved the current account as profile '{name}'",
+  noAccounts: "No saved accounts — add one with the button below",
+  liveNotSaved:
+    "The current login ({account}) isn't saved as a profile yet — save it with the field below",
+  switchFailed: "Switch failed",
+  refreshBusy: "A login is in progress — finish or cancel it before refreshing",
+  refresh: "Refresh",
+  refreshTooltip: "Refresh usage",
+  dragHandle: "Drag to move",
+  alphaTooltip: "Opacity (0 = frame only)",
+  typeTooltip: "Cycle view mode (1 full / 2 widget / 3 compact)",
+};
+
+const ja: Messages = {
+  loadingUsage: "使用量を読み込み中…",
+  noUsage: "表示できる使用量情報がありません",
+  usageWaiting: "使用量の取得待ち",
+  staleMin: "{n}分前の値",
+  staleHour: "{n}時間前の値",
+  agoMin: "{n}分前",
+  agoHour: "{n}時間前",
+  resetTooltip: "リセットまでの残り時間",
+  profileNameTooltip: "プロファイル名: {name}",
+  switchBtn: "このアカウントに切り替え",
+  del: "削除",
+  delConfirm: "本当に削除しますか？",
+  delDone: "プロファイル「{name}」を削除しました（ログイン自体は維持されます）",
+  addAccount: "＋ アカウント追加",
+  gettingLoginUrl: "ログインURLを取得中…",
+  loginBusy: "すでにログインが進行中です — 先に進行中のパネルを終えてください",
+  stepsClaude:
+    "① 下のURLを好きなブラウザに貼り付けてログイン ② 画面に表示されるコードをコピーして下に貼り付け",
+  stepsCodex:
+    "① 下のURLを好きなブラウザに貼り付け ② その画面に下のコードを入力すると自動的に完了します",
+  loginUrl: "ログインURL",
+  oneTimeCode: "ワンタイムコード（15分有効）",
+  copy: "コピー",
+  copied: "コピー済み",
+  copyFailed: "コピーに失敗しました — 手動で選択してコピーしてください",
+  pasteCode: "ログイン後に受け取ったコードを貼り付け",
+  ok: "確認",
+  okWorking: "確認中…",
+  codeEmpty: "コードを貼り付けてください",
+  retryFromStart: "{error} — 「アカウント追加」から最初からやり直してください",
+  waitingBrowser: "ブラウザでのコード入力を待っています…",
+  codexPrereq:
+    "「デバイスコード認証を有効にしてください」と表示されたら: ChatGPT 設定 → セキュリティで「Codex デバイスコード認証」をオンにして再試行してください。",
+  cancel: "キャンセル",
+  loginUpdated: "「{profile}」アカウント（{who}）のログインを更新しました",
+  loginAdded: "アカウント追加完了 — 「{profile}」（{who}）",
+  namePlaceholder: "プロファイル名（英数字・-・_）",
+  saveCurrent: "現在のアカウントを保存",
+  nameEmpty: "プロファイル名を入力してください",
+  saveDone: "現在のアカウントを「{name}」プロファイルとして保存しました",
+  noAccounts: "保存されたアカウントがありません — 下のボタンで追加してください",
+  liveNotSaved:
+    "現在ログイン中のアカウント（{account}）はまだプロファイルとして保存されていません — 下の入力欄で保存してください",
+  switchFailed: "切り替え失敗",
+  refreshBusy: "ログインが進行中です — 終了またはキャンセルしてから更新してください",
+  refresh: "更新",
+  refreshTooltip: "使用量を更新",
+  dragHandle: "つかんで移動",
+  alphaTooltip: "透明度（0 = フレームのみ）",
+  typeTooltip: "表示モード切替（1 フル / 2 ウィジェット / 3 コンパクト）",
+};
+
+const zhCN: Messages = {
+  loadingUsage: "正在加载用量…",
+  noUsage: "没有可显示的用量信息",
+  usageWaiting: "等待用量查询",
+  staleMin: "{n}分钟前的值",
+  staleHour: "{n}小时前的值",
+  agoMin: "{n}分钟前",
+  agoHour: "{n}小时前",
+  resetTooltip: "距离重置的剩余时间",
+  profileNameTooltip: "配置名称: {name}",
+  switchBtn: "切换到此账号",
+  del: "删除",
+  delConfirm: "确定要删除吗？",
+  delDone: "已删除配置 '{name}'（登录本身仍保留）",
+  addAccount: "＋ 添加账号",
+  gettingLoginUrl: "正在获取登录地址…",
+  loginBusy: "登录正在进行中 — 请先完成当前面板",
+  stepsClaude: "① 将下方地址粘贴到任意浏览器中登录 ② 复制屏幕上显示的代码并粘贴到下方",
+  stepsCodex: "① 将下方地址粘贴到任意浏览器 ② 在该页面输入下方代码即可自动完成",
+  loginUrl: "登录地址",
+  oneTimeCode: "一次性代码（15分钟有效）",
+  copy: "复制",
+  copied: "已复制",
+  copyFailed: "复制失败 — 请手动选择并复制",
+  pasteCode: "粘贴登录后获得的代码",
+  ok: "确认",
+  okWorking: "确认中…",
+  codeEmpty: "请粘贴代码",
+  retryFromStart: "{error} — 请通过'添加账号'从头重试",
+  waitingBrowser: "正在等待浏览器中输入代码…",
+  codexPrereq:
+    "如果提示\"请启用设备代码认证\": 在 ChatGPT 设置 → 安全中开启 'Codex 设备代码认证' 后重试。",
+  cancel: "取消",
+  loginUpdated: "已更新账号 '{profile}'（{who}）的登录",
+  loginAdded: "账号添加完成 — '{profile}'（{who}）",
+  namePlaceholder: "配置名称（字母·数字·-·_）",
+  saveCurrent: "保存当前账号",
+  nameEmpty: "请输入配置名称",
+  saveDone: "已将当前账号保存为配置 '{name}'",
+  noAccounts: "没有已保存的账号 — 请用下方按钮添加",
+  liveNotSaved: "当前登录账号（{account}）尚未保存为配置 — 请在下方输入框保存",
+  switchFailed: "切换失败",
+  refreshBusy: "登录正在进行中 — 请完成或取消后再刷新",
+  refresh: "刷新",
+  refreshTooltip: "刷新用量",
+  dragHandle: "拖动移动",
+  alphaTooltip: "透明度（0 = 仅框架）",
+  typeTooltip: "切换视图模式（1 完整 / 2 挂件 / 3 紧凑）",
+};
+
+const zhTW: Messages = {
+  loadingUsage: "正在載入用量…",
+  noUsage: "沒有可顯示的用量資訊",
+  usageWaiting: "等待用量查詢",
+  staleMin: "{n}分鐘前的值",
+  staleHour: "{n}小時前的值",
+  agoMin: "{n}分鐘前",
+  agoHour: "{n}小時前",
+  resetTooltip: "距離重置的剩餘時間",
+  profileNameTooltip: "設定檔名稱: {name}",
+  switchBtn: "切換到此帳號",
+  del: "刪除",
+  delConfirm: "確定要刪除嗎？",
+  delDone: "已刪除設定檔 '{name}'（登入本身仍保留）",
+  addAccount: "＋ 新增帳號",
+  gettingLoginUrl: "正在取得登入網址…",
+  loginBusy: "登入正在進行中 — 請先完成目前的面板",
+  stepsClaude: "① 將下方網址貼到任意瀏覽器登入 ② 複製畫面上顯示的代碼並貼到下方",
+  stepsCodex: "① 將下方網址貼到任意瀏覽器 ② 在該頁面輸入下方代碼即會自動完成",
+  loginUrl: "登入網址",
+  oneTimeCode: "一次性代碼（15分鐘有效）",
+  copy: "複製",
+  copied: "已複製",
+  copyFailed: "複製失敗 — 請手動選取複製",
+  pasteCode: "貼上登入後取得的代碼",
+  ok: "確認",
+  okWorking: "確認中…",
+  codeEmpty: "請貼上代碼",
+  retryFromStart: "{error} — 請透過「新增帳號」從頭重試",
+  waitingBrowser: "正在等待瀏覽器輸入代碼…",
+  codexPrereq:
+    "若顯示「請啟用裝置代碼驗證」: 到 ChatGPT 設定 → 安全性開啟「Codex 裝置代碼驗證」後再試。",
+  cancel: "取消",
+  loginUpdated: "已更新帳號 '{profile}'（{who}）的登入",
+  loginAdded: "帳號新增完成 — '{profile}'（{who}）",
+  namePlaceholder: "設定檔名稱（英數字·-·_）",
+  saveCurrent: "儲存目前帳號",
+  nameEmpty: "請輸入設定檔名稱",
+  saveDone: "已將目前帳號儲存為設定檔 '{name}'",
+  noAccounts: "沒有已儲存的帳號 — 請用下方按鈕新增",
+  liveNotSaved: "目前登入帳號（{account}）尚未儲存為設定檔 — 請在下方輸入欄儲存",
+  switchFailed: "切換失敗",
+  refreshBusy: "登入正在進行中 — 請完成或取消後再重新整理",
+  refresh: "重新整理",
+  refreshTooltip: "重新整理用量",
+  dragHandle: "拖曳移動",
+  alphaTooltip: "透明度（0 = 僅框架）",
+  typeTooltip: "切換檢視模式（1 完整 / 2 小工具 / 3 精簡）",
+};
+
+const hi: Messages = {
+  loadingUsage: "उपयोग लोड हो रहा है…",
+  noUsage: "दिखाने के लिए कोई उपयोग जानकारी नहीं",
+  usageWaiting: "उपयोग क्वेरी की प्रतीक्षा में",
+  staleMin: "{n} मिनट पहले का मान",
+  staleHour: "{n} घंटे पहले का मान",
+  agoMin: "{n}मि. पहले",
+  agoHour: "{n}घं. पहले",
+  resetTooltip: "रीसेट तक शेष समय",
+  profileNameTooltip: "प्रोफ़ाइल नाम: {name}",
+  switchBtn: "इस अकाउंट पर स्विच करें",
+  del: "हटाएँ",
+  delConfirm: "वाक़ई हटाएँ?",
+  delDone: "प्रोफ़ाइल '{name}' हटा दी गई (लॉगिन बना रहेगा)",
+  addAccount: "＋ अकाउंट जोड़ें",
+  gettingLoginUrl: "लॉगिन URL प्राप्त हो रहा है…",
+  loginBusy: "लॉगिन पहले से चल रहा है — पहले चल रहे पैनल को पूरा करें",
+  stepsClaude:
+    "① नीचे का URL किसी भी ब्राउज़र में पेस्ट करके लॉगिन करें ② स्क्रीन पर दिखने वाला कोड कॉपी करके नीचे पेस्ट करें",
+  stepsCodex:
+    "① नीचे का URL किसी भी ब्राउज़र में पेस्ट करें ② उस पेज पर नीचे का कोड डालते ही बाक़ी अपने आप पूरा हो जाएगा",
+  loginUrl: "लॉगिन URL",
+  oneTimeCode: "वन-टाइम कोड (15 मिनट वैध)",
+  copy: "कॉपी",
+  copied: "कॉपी हो गया",
+  copyFailed: "कॉपी विफल — कृपया खुद चुनकर कॉपी करें",
+  pasteCode: "लॉगिन के बाद मिला कोड पेस्ट करें",
+  ok: "पुष्टि करें",
+  okWorking: "जाँच हो रही है…",
+  codeEmpty: "कोड पेस्ट करें",
+  retryFromStart: "{error} — 'अकाउंट जोड़ें' से फिर से शुरू करें",
+  waitingBrowser: "ब्राउज़र में कोड डालने की प्रतीक्षा में…",
+  codexPrereq:
+    "अगर \"डिवाइस कोड प्रमाणीकरण सक्षम करें\" दिखे: ChatGPT सेटिंग्स → सुरक्षा में 'Codex डिवाइस कोड प्रमाणीकरण' चालू करके फिर कोशिश करें।",
+  cancel: "रद्द करें",
+  loginUpdated: "अकाउंट '{profile}' ({who}) का लॉगिन अपडेट हो गया",
+  loginAdded: "अकाउंट जुड़ गया — '{profile}' ({who})",
+  namePlaceholder: "प्रोफ़ाइल नाम (अंग्रेज़ी अक्षर·अंक·-·_)",
+  saveCurrent: "मौजूदा अकाउंट सहेजें",
+  nameEmpty: "प्रोफ़ाइल नाम दर्ज करें",
+  saveDone: "मौजूदा अकाउंट प्रोफ़ाइल '{name}' के रूप में सहेजा गया",
+  noAccounts: "कोई सहेजा हुआ अकाउंट नहीं — नीचे के बटन से जोड़ें",
+  liveNotSaved:
+    "मौजूदा लॉगिन अकाउंट ({account}) अभी प्रोफ़ाइल के रूप में सहेजा नहीं गया — नीचे के इनपुट से सहेजें",
+  switchFailed: "स्विच विफल",
+  refreshBusy: "लॉगिन चल रहा है — पूरा करने या रद्द करने के बाद रीफ़्रेश करें",
+  refresh: "रीफ़्रेश",
+  refreshTooltip: "उपयोग रीफ़्रेश करें",
+  dragHandle: "पकड़कर खिसकाएँ",
+  alphaTooltip: "पारदर्शिता (0 = केवल फ़्रेम)",
+  typeTooltip: "व्यू मोड बदलें (1 पूर्ण / 2 विजेट / 3 कॉम्पैक्ट)",
+};
+
+const MESSAGES: Record<Lang, Messages> = {
+  ko,
+  en,
+  ja,
+  "zh-CN": zhCN,
+  "zh-TW": zhTW,
+  hi,
+};
+
+let current: Lang = "ko";
+
+/// 지원 목록 밖의 값은 조용히 무시한다 (설정 파일이 손으로 고쳐졌을 때 등)
+export function setLang(lang: string): void {
+  if ((SUPPORTED_LANGS as readonly string[]).includes(lang)) current = lang as Lang;
+}
+
+export function currentLang(): Lang {
+  return current;
+}
+
+/// 문자열 조회 + {자리표시자} 치환
+export function t(key: MsgKey, params?: Record<string, string | number>): string {
+  let text: string = MESSAGES[current][key];
+  if (params) {
+    for (const [name, value] of Object.entries(params)) {
+      text = text.split(`{${name}}`).join(String(value));
+    }
+  }
+  return text;
+}
