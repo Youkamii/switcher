@@ -20,15 +20,45 @@ pub fn is_supported(lang: &str) -> bool {
     LANGS.iter().any(|(code, _)| *code == lang)
 }
 
-/// 트레이 라벨 — [열기, 숨기기, 설정, 언어, 종료] 순서
-pub fn tray_labels(lang: &str) -> [&'static str; 5] {
+/// settings.json 불리언 키 (트레이 설정 토글)
+pub const KEY_AUTO_UPDATE: &str = "auto_update";
+pub const KEY_AUTO_START: &str = "auto_start";
+pub const KEY_SHORTCUT_DONE: &str = "desktop_shortcut_done";
+
+/// 불리언 설정 읽기 — 파일이 없거나 키가 없거나 타입이 다르면 default
+pub fn load_flag(store: &Path, key: &str, default: bool) -> bool {
+    read_settings(store)
+        .and_then(|v| v.get(key).and_then(Value::as_bool))
+        .unwrap_or(default)
+}
+
+/// 불리언 설정 저장 — 다른 키는 보존한다
+pub fn save_flag(store: &Path, key: &str, value: bool) -> Result<(), String> {
+    fs::create_dir_all(store).map_err(|e| format!("설정 폴더 생성 실패: {e}"))?;
+    let mut root = match read_settings(store) {
+        Some(v @ Value::Object(_)) => v,
+        _ => Value::Object(Default::default()),
+    };
+    root[key] = Value::Bool(value);
+    let text = serde_json::to_string_pretty(&root).map_err(|e| format!("설정 직렬화 실패: {e}"))?;
+    fs::write(settings_path(store), text).map_err(|e| format!("설정 저장 실패: {e}"))
+}
+
+/// 트레이 라벨 — [열기, 숨기기, 설정, 언어, 자동 업데이트, 부팅 시 자동 실행, 종료] 순서
+pub fn tray_labels(lang: &str) -> [&'static str; 7] {
     match lang {
-        "en" => ["Open", "Hide", "Settings", "Language", "Quit"],
-        "ja" => ["開く", "隠す", "設定", "言語", "終了"],
-        "zh-CN" => ["打开", "隐藏", "设置", "语言", "退出"],
-        "zh-TW" => ["開啟", "隱藏", "設定", "語言", "結束"],
-        "hi" => ["खोलें", "छिपाएँ", "सेटिंग्स", "भाषा", "बंद करें"],
-        _ => ["열기", "숨기기", "설정", "언어", "종료"],
+        "en" => [
+            "Open", "Hide", "Settings", "Language", "Auto-update", "Run at startup", "Quit",
+        ],
+        "ja" => [
+            "開く", "隠す", "設定", "言語", "自動アップデート", "起動時に自動実行", "終了",
+        ],
+        "zh-CN" => ["打开", "隐藏", "设置", "语言", "自动更新", "开机自启动", "退出"],
+        "zh-TW" => ["開啟", "隱藏", "設定", "語言", "自動更新", "開機自動啟動", "結束"],
+        "hi" => [
+            "खोलें", "छिपाएँ", "सेटिंग्स", "भाषा", "ऑटो-अपडेट", "बूट पर स्वतः चलाएँ", "बंद करें",
+        ],
+        _ => ["열기", "숨기기", "설정", "언어", "자동 업데이트", "부팅 시 자동 실행", "종료"],
     }
 }
 
@@ -109,6 +139,21 @@ mod tests {
         assert_eq!(load_language(&store), "ko");
         fs::write(settings_path(&store), r#"{"lang":"xx"}"#).unwrap();
         assert_eq!(load_language(&store), "ko");
+    }
+
+    #[test]
+    fn flag_defaults_and_roundtrip() {
+        let store = test_store("flags");
+        assert!(load_flag(&store, KEY_AUTO_UPDATE, true));
+        assert!(!load_flag(&store, KEY_AUTO_START, false));
+        save_flag(&store, KEY_AUTO_UPDATE, false).unwrap();
+        assert!(!load_flag(&store, KEY_AUTO_UPDATE, true));
+        // 플래그 저장이 언어 키를 보존하고, 언어 저장이 플래그를 보존한다
+        save_language(&store, "en").unwrap();
+        assert!(!load_flag(&store, KEY_AUTO_UPDATE, true));
+        save_flag(&store, KEY_AUTO_START, true).unwrap();
+        assert_eq!(load_language(&store), "en");
+        assert!(load_flag(&store, KEY_AUTO_START, false));
     }
 
     #[test]

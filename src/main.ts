@@ -956,6 +956,11 @@ function applyStaticText() {
   lockBtn.title = t("typeTooltip");
 }
 
+// 실행 시 자동 업데이트 결과 — 교체는 이미 끝났고 다음 실행부터 새 버전이다
+void listen<string>("update-ready", (event) => {
+  toast(t("updateReady", { ver: event.payload }));
+});
+
 // 트레이(설정 → 언어)에서 바꾸면 Rust가 저장을 마친 뒤 알려온다
 void listen<string>("language-changed", (event) => {
   setLang(event.payload);

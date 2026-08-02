@@ -55,6 +55,7 @@ const ko = {
   dragHandle: "잡고 이동",
   alphaTooltip: "투명도 (0 = 골조만)",
   typeTooltip: "보기 모드 전환 (1 전체 / 2 위젯 / 3 컴팩트)",
+  updateReady: "업데이트 다운로드 완료 — 다음 실행부터 v{ver}",
 };
 
 export type MsgKey = keyof typeof ko;
@@ -111,6 +112,7 @@ const en: Messages = {
   dragHandle: "Drag to move",
   alphaTooltip: "Opacity (0 = frame only)",
   typeTooltip: "Cycle view mode (1 full / 2 widget / 3 compact)",
+  updateReady: "Update downloaded — v{ver} takes effect next launch",
 };
 
 const ja: Messages = {
@@ -164,6 +166,7 @@ const ja: Messages = {
   dragHandle: "つかんで移動",
   alphaTooltip: "透明度（0 = フレームのみ）",
   typeTooltip: "表示モード切替（1 フル / 2 ウィジェット / 3 コンパクト）",
+  updateReady: "アップデートをダウンロードしました — 次回起動から v{ver}",
 };
 
 const zhCN: Messages = {
@@ -214,6 +217,7 @@ const zhCN: Messages = {
   dragHandle: "拖动移动",
   alphaTooltip: "透明度（0 = 仅框架）",
   typeTooltip: "切换视图模式（1 完整 / 2 挂件 / 3 紧凑）",
+  updateReady: "更新已下载 — 下次启动生效 v{ver}",
 };
 
 const zhTW: Messages = {
@@ -264,6 +268,7 @@ const zhTW: Messages = {
   dragHandle: "拖曳移動",
   alphaTooltip: "透明度（0 = 僅框架）",
   typeTooltip: "切換檢視模式（1 完整 / 2 小工具 / 3 精簡）",
+  updateReady: "更新已下載 — 下次啟動生效 v{ver}",
 };
 
 const hi: Messages = {
@@ -317,6 +322,7 @@ const hi: Messages = {
   dragHandle: "पकड़कर खिसकाएँ",
   alphaTooltip: "पारदर्शिता (0 = केवल फ़्रेम)",
   typeTooltip: "व्यू मोड बदलें (1 पूर्ण / 2 विजेट / 3 कॉम्पैक्ट)",
+  updateReady: "अपडेट डाउनलोड हो गया — अगली बार चलाने पर v{ver} लागू होगा",
 };
 
 const MESSAGES: Record<Lang, Messages> = {

@@ -1,6 +1,7 @@
 mod accounts;
 mod login;
 mod settings;
+mod update;
 mod usage;
 
 use accounts::{Env, Provider, Snapshot, SwitchResult};
@@ -165,16 +166,18 @@ fn build_tray_menu(
     lang: &str,
 ) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{Menu, MenuItem, Submenu};
-    let [open_l, hide_l, settings_l, language_l, quit_l] = settings::tray_labels(lang);
+    let [open_l, hide_l, settings_l, language_l, auto_update_l, auto_start_l, quit_l] =
+        settings::tray_labels(lang);
     let show = MenuItem::with_id(app, "show", open_l, true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", hide_l, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", quit_l, true, None::<&str>)?;
     #[cfg(not(target_os = "macos"))]
-    let language = {
+    let settings_menu = {
         use tauri::menu::CheckMenuItem;
-        let mut items: Vec<CheckMenuItem<tauri::Wry>> = Vec::new();
+        let _ = auto_start_l; // 부팅 자동 실행 토글은 #24에서 붙는다
+        let mut lang_items: Vec<CheckMenuItem<tauri::Wry>> = Vec::new();
         for (code, name) in settings::LANGS {
-            items.push(CheckMenuItem::with_id(
+            lang_items.push(CheckMenuItem::with_id(
                 app,
                 format!("lang:{code}"),
                 name,
@@ -183,20 +186,62 @@ fn build_tray_menu(
                 None::<&str>,
             )?);
         }
-        let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = items
+        let lang_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = lang_items
             .iter()
             .map(|item| item as &dyn tauri::menu::IsMenuItem<tauri::Wry>)
             .collect();
-        Submenu::with_id_and_items(app, "language", language_l, true, &refs)?
+        let language = Submenu::with_id_and_items(app, "language", language_l, true, &lang_refs)?;
+        let auto_update_on = Env::real()
+            .map(|env| settings::load_flag(&env.store, settings::KEY_AUTO_UPDATE, true))
+            .unwrap_or(true);
+        let auto_update = CheckMenuItem::with_id(
+            app,
+            "toggle-auto-update",
+            auto_update_l,
+            true,
+            auto_update_on,
+            None::<&str>,
+        )?;
+        Submenu::with_id_and_items(
+            app,
+            "settings",
+            settings_l,
+            true,
+            &[&language, &auto_update],
+        )?
     };
     #[cfg(target_os = "macos")]
-    let language = {
-        // 맥 UI는 아직 한국어 고정이라 라벨도 한국어로 못박는다
-        let _ = language_l;
-        MenuItem::with_id(app, "lang-wip", "언어 변경 (개발 진행중)", false, None::<&str>)?
+    let settings_menu = {
+        // 맥 UI는 아직 한국어 고정 — 개발 진행중 안내만 (비활성)
+        let _ = (language_l, auto_update_l, auto_start_l);
+        let language =
+            MenuItem::with_id(app, "lang-wip", "언어 변경 (개발 진행중)", false, None::<&str>)?;
+        let auto_update = MenuItem::with_id(
+            app,
+            "update-wip",
+            "자동 업데이트 (개발 진행중)",
+            false,
+            None::<&str>,
+        )?;
+        Submenu::with_id_and_items(app, "settings", settings_l, true, &[&language, &auto_update])?
     };
-    let settings_menu = Submenu::with_id_and_items(app, "settings", settings_l, true, &[&language])?;
     Menu::with_items(app, &[&show, &hide, &settings_menu, &quit])
+}
+
+/// 설정 체크 토글 공통: 플래그 반전 저장 → 부수 효과 적용 → 메뉴 재구성(체크 갱신)
+#[cfg(not(target_os = "macos"))]
+fn toggle_flag(app: &tauri::AppHandle, key: &'static str, default: bool) {
+    let Ok(env) = Env::real() else { return };
+    let now = !settings::load_flag(&env.store, key, default);
+    if let Err(e) = settings::save_flag(&env.store, key, now) {
+        eprintln!("설정 저장 실패: {e}");
+    }
+    let lang = settings::load_language(&env.store);
+    if let Ok(menu) = build_tray_menu(app, &lang) {
+        if let Some(tray) = app.tray_by_id("main") {
+            let _ = tray.set_menu(Some(menu));
+        }
+    }
 }
 
 /// 언어 변경 적용: 저장 → 트레이 메뉴 재구성(체크 이동) → 웹뷰에 알림.
@@ -418,6 +463,35 @@ pub fn run() {
                 }
             });
 
+            // 실행 시 자동 업데이트 (Windows·릴리스 빌드만): 새 버전이면 exe를 제자리
+            // 교체하고 다음 실행부터 반영된다. dev 빌드가 target 산출물을 덮지 않게
+            // debug_assertions에서는 확인 자체를 건너뛴다.
+            #[cfg(windows)]
+            {
+                update::sweep_old_exe();
+                #[cfg(not(debug_assertions))]
+                {
+                    let auto_update_on = Env::real()
+                        .map(|env| {
+                            settings::load_flag(&env.store, settings::KEY_AUTO_UPDATE, true)
+                        })
+                        .unwrap_or(true);
+                    if auto_update_on {
+                        let handle = app.handle().clone();
+                        tauri::async_runtime::spawn(async move {
+                            use tauri::Emitter;
+                            match update::check_and_apply().await {
+                                Ok(Some(version)) => {
+                                    let _ = handle.emit("update-ready", version);
+                                }
+                                Ok(None) => {}
+                                Err(e) => eprintln!("자동 업데이트 실패: {e}"),
+                            }
+                        });
+                    }
+                }
+            }
+
             // 시작 시 토큰 일괄 갱신 (무조건 1회) — 밤새 꺼져 있던 컴퓨터에서도
             // 위젯이 뜨자마자 비활성 프로필의 사용량이 되살아난다
             tauri::async_runtime::spawn(async {
@@ -560,6 +634,10 @@ pub fn run() {
                     #[cfg(not(target_os = "macos"))]
                     id if id.starts_with("lang:") => {
                         apply_language(app, id.trim_start_matches("lang:"));
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    "toggle-auto-update" => {
+                        toggle_flag(app, settings::KEY_AUTO_UPDATE, true);
                     }
                     _ => {}
                 })
