@@ -31,6 +31,10 @@ tokio = { version = "1", features = ["sync"] }
 # CLI 로그인 화면(TUI)을 읽으려면 진짜 콘솔이 필요하다 — 파이프로는 화면이 그려지지 않는다
 portable-pty = "0.9"
 
+[target.'cfg(windows)'.dependencies]
+# 부팅 시 자동 실행(HKCU Run 키)·바탕화면 실제 경로(User Shell Folders) 조회
+winreg = "0.55"
+
 [target.'cfg(unix)'.dependencies]
 # 로그인 취소 시 PTY 프로세스 그룹을 통째로 종료하는 데 사용
 libc = "0.2"

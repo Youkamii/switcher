@@ -174,7 +174,6 @@ fn build_tray_menu(
     #[cfg(not(target_os = "macos"))]
     let settings_menu = {
         use tauri::menu::CheckMenuItem;
-        let _ = auto_start_l; // 부팅 자동 실행 토글은 #24에서 붙는다
         let mut lang_items: Vec<CheckMenuItem<tauri::Wry>> = Vec::new();
         for (code, name) in settings::LANGS {
             lang_items.push(CheckMenuItem::with_id(
@@ -191,8 +190,14 @@ fn build_tray_menu(
             .map(|item| item as &dyn tauri::menu::IsMenuItem<tauri::Wry>)
             .collect();
         let language = Submenu::with_id_and_items(app, "language", language_l, true, &lang_refs)?;
-        let auto_update_on = Env::real()
-            .map(|env| settings::load_flag(&env.store, settings::KEY_AUTO_UPDATE, true))
+        let store = Env::real().map(|env| env.store).ok();
+        let auto_update_on = store
+            .as_deref()
+            .map(|s| settings::load_flag(s, settings::KEY_AUTO_UPDATE, true))
+            .unwrap_or(true);
+        let auto_start_on = store
+            .as_deref()
+            .map(|s| settings::load_flag(s, settings::KEY_AUTO_START, true))
             .unwrap_or(true);
         let auto_update = CheckMenuItem::with_id(
             app,
@@ -202,12 +207,20 @@ fn build_tray_menu(
             auto_update_on,
             None::<&str>,
         )?;
+        let auto_start = CheckMenuItem::with_id(
+            app,
+            "toggle-auto-start",
+            auto_start_l,
+            true,
+            auto_start_on,
+            None::<&str>,
+        )?;
         Submenu::with_id_and_items(
             app,
             "settings",
             settings_l,
             true,
-            &[&language, &auto_update],
+            &[&language, &auto_update, &auto_start],
         )?
     };
     #[cfg(target_os = "macos")]
@@ -223,7 +236,20 @@ fn build_tray_menu(
             false,
             None::<&str>,
         )?;
-        Submenu::with_id_and_items(app, "settings", settings_l, true, &[&language, &auto_update])?
+        let auto_start = MenuItem::with_id(
+            app,
+            "autostart-wip",
+            "자동 실행 (개발 진행중)",
+            false,
+            None::<&str>,
+        )?;
+        Submenu::with_id_and_items(
+            app,
+            "settings",
+            settings_l,
+            true,
+            &[&language, &auto_update, &auto_start],
+        )?
     };
     Menu::with_items(app, &[&show, &hide, &settings_menu, &quit])
 }
@@ -236,10 +262,68 @@ fn toggle_flag(app: &tauri::AppHandle, key: &'static str, default: bool) {
     if let Err(e) = settings::save_flag(&env.store, key, now) {
         eprintln!("설정 저장 실패: {e}");
     }
+    #[cfg(windows)]
+    if key == settings::KEY_AUTO_START {
+        if let Err(e) = autostart::set_enabled(now) {
+            eprintln!("{e}");
+        }
+    }
     let lang = settings::load_language(&env.store);
     if let Ok(menu) = build_tray_menu(app, &lang) {
         if let Some(tray) = app.tray_by_id("main") {
             let _ = tray.set_menu(Some(menu));
+        }
+    }
+}
+
+/// 부팅 시 자동 실행 — HKCU Run 키 (Windows, 관리자 권한 불필요)
+#[cfg(windows)]
+mod autostart {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+
+    const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+
+    pub fn set_enabled(enabled: bool) -> Result<(), String> {
+        set_named("switcher", enabled)
+    }
+
+    fn set_named(name: &str, enabled: bool) -> Result<(), String> {
+        let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey(RUN_KEY)
+            .map_err(|e| format!("자동 실행 레지스트리 열기 실패: {e}"))?;
+        if enabled {
+            let exe =
+                std::env::current_exe().map_err(|e| format!("실행 경로 확인 실패: {e}"))?;
+            key.set_value(name, &format!("\"{}\"", exe.display()))
+                .map_err(|e| format!("자동 실행 등록 실패: {e}"))
+        } else {
+            match key.delete_value(name) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(format!("자동 실행 해제 실패: {e}")),
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// 실제 HKCU Run 키에 시험 이름을 왕복시킨다 — 실사용 항목("switcher")은 건드리지 않는다
+        #[test]
+        fn roundtrip_named_value() {
+            let name = format!("switcher-selftest-{}", std::process::id());
+            set_named(&name, true).unwrap();
+            let key = RegKey::predef(HKEY_CURRENT_USER)
+                .open_subkey(RUN_KEY)
+                .unwrap();
+            let value: String = key.get_value(&name).unwrap();
+            assert!(value.to_lowercase().contains(".exe"));
+            set_named(&name, false).unwrap();
+            assert!(key.get_value::<String, _>(&name).is_err());
+            // 이미 없는 값을 다시 꺼도 조용히 성공해야 한다
+            set_named(&name, false).unwrap();
         }
     }
 }
@@ -466,6 +550,18 @@ pub fn run() {
             // 실행 시 자동 업데이트 (Windows·릴리스 빌드만): 새 버전이면 exe를 제자리
             // 교체하고 다음 실행부터 반영된다. dev 빌드가 target 산출물을 덮지 않게
             // debug_assertions에서는 확인 자체를 건너뛴다.
+            // 부팅 시 자동 실행 (기본 켜짐): 켜져 있으면 시작마다 현재 경로로 재등록해
+            // exe가 이동·업데이트돼도 자가 치유된다. 꺼짐이면 건드리지 않는다 (해제는 토글에서만).
+            #[cfg(windows)]
+            if Env::real()
+                .map(|env| settings::load_flag(&env.store, settings::KEY_AUTO_START, true))
+                .unwrap_or(true)
+            {
+                if let Err(e) = autostart::set_enabled(true) {
+                    eprintln!("{e}");
+                }
+            }
+
             #[cfg(windows)]
             {
                 update::sweep_old_exe();
@@ -638,6 +734,10 @@ pub fn run() {
                     #[cfg(not(target_os = "macos"))]
                     "toggle-auto-update" => {
                         toggle_flag(app, settings::KEY_AUTO_UPDATE, true);
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    "toggle-auto-start" => {
+                        toggle_flag(app, settings::KEY_AUTO_START, true);
                     }
                     _ => {}
                 })
