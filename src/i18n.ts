@@ -63,6 +63,7 @@ const ko = {
   ghAddHint: "계정 추가는 터미널에서: gh auth login",
   blackTooltip: "블랙 모니터 — 모든 화면을 검게. 마우스를 흔들거나 ESC로 해제",
   privacyTooltip: "계정 정보 가리기 (블러) — 이메일·GitHub 계정명",
+  dspUnsupported: "밝기 조절 미지원 — 모니터 OSD에서 DDC/CI를 켜보세요",
 };
 
 export type MsgKey = keyof typeof ko;
@@ -125,6 +126,7 @@ const en: Messages = {
   ghAddHint: "To add an account, run in a terminal: gh auth login",
   blackTooltip: "Black monitor — blacks out all screens. Shake the mouse or press ESC to exit",
   privacyTooltip: "Hide account info (blur) — emails and GitHub logins",
+  dspUnsupported: "Brightness control not supported — try enabling DDC/CI in the monitor OSD",
 };
 
 const ja: Messages = {
@@ -184,6 +186,7 @@ const ja: Messages = {
   ghAddHint: "アカウント追加はターミナルで: gh auth login",
   blackTooltip: "ブラックモニター — 全画面を黒く。マウスを振るか ESC で解除",
   privacyTooltip: "アカウント情報を隠す(ぼかし) — メール・GitHub アカウント名",
+  dspUnsupported: "明るさ調整非対応 — モニターの OSD で DDC/CI を有効にしてみてください",
 };
 
 const zhCN: Messages = {
@@ -240,6 +243,7 @@ const zhCN: Messages = {
   ghAddHint: "添加账号请在终端运行: gh auth login",
   blackTooltip: "黑屏模式 — 将所有屏幕变黑。晃动鼠标或按 ESC 退出",
   privacyTooltip: "隐藏账号信息（模糊）— 邮箱·GitHub 账号名",
+  dspUnsupported: "不支持亮度调节 — 请在显示器 OSD 中开启 DDC/CI",
 };
 
 const zhTW: Messages = {
@@ -296,6 +300,7 @@ const zhTW: Messages = {
   ghAddHint: "新增帳號請在終端機執行: gh auth login",
   blackTooltip: "黑屏模式 — 讓所有螢幕變黑。晃動滑鼠或按 ESC 解除",
   privacyTooltip: "隱藏帳號資訊(模糊) — 電子郵件·GitHub 帳號名",
+  dspUnsupported: "不支援亮度調整 — 請在螢幕 OSD 中開啟 DDC/CI",
 };
 
 const hi: Messages = {
@@ -355,6 +360,7 @@ const hi: Messages = {
   ghAddHint: "अकाउंट जोड़ने के लिए टर्मिनल में चलाएँ: gh auth login",
   blackTooltip: "ब्लैक मॉनिटर — सभी स्क्रीन काली। माउस हिलाएँ या ESC दबाकर बंद करें",
   privacyTooltip: "अकाउंट जानकारी छिपाएँ (धुंधला) — ईमेल·GitHub अकाउंट नाम",
+  dspUnsupported: "चमक नियंत्रण समर्थित नहीं — मॉनिटर OSD में DDC/CI चालू करके देखें",
 };
 
 const MESSAGES: Record<Lang, Messages> = {

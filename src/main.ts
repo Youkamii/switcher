@@ -517,8 +517,20 @@ type GithubAccount = { login: string; active: boolean };
 type GithubSnapshot = { gh_found: boolean; accounts: GithubAccount[] };
 
 /// 표시 기능 (트레이 설정 → 표시 기능) — 끈 섹션·버튼은 그리지 않는다
-type Visibility = { claude: boolean; codex: boolean; github: boolean; black: boolean };
-let visibility: Visibility = { claude: true, codex: true, github: true, black: true };
+type Visibility = {
+  claude: boolean;
+  codex: boolean;
+  github: boolean;
+  black: boolean;
+  display: boolean;
+};
+let visibility: Visibility = {
+  claude: true,
+  codex: true,
+  github: true,
+  black: true,
+  display: true,
+};
 
 async function loadVisibility() {
   try {
@@ -599,6 +611,71 @@ async function renderGithub(target: DocumentFragment) {
     section.appendChild(err);
   }
   target.appendChild(section);
+}
+
+type DisplayInfo = { id: number; name: string; brightness: number | null };
+
+/// DISPLAY 섹션 — 모니터별 밝기 슬라이더 (DDC/CI 실제 백라이트 명령).
+/// 모니터가 없거나 미지원 플랫폼이면 섹션 자체를 생략, 컴팩트 모드에서도 생략
+async function renderDisplays(target: DocumentFragment) {
+  try {
+    const monitors = await invoke<DisplayInfo[]>("display_list");
+    if (monitors.length === 0) return;
+    const section = document.createElement("section");
+    const heading = document.createElement("h2");
+    heading.className = "section-title";
+    heading.textContent = "DISPLAY";
+    section.appendChild(heading);
+    for (const monitor of monitors) {
+      const card = document.createElement("div");
+      card.className = "card";
+      const head = document.createElement("div");
+      head.className = "card-head";
+      const name = document.createElement("span");
+      name.className = "card-name";
+      name.textContent = monitor.name;
+      name.title = monitor.name;
+      head.appendChild(name);
+      card.appendChild(head);
+      if (monitor.brightness == null) {
+        const note = document.createElement("div");
+        note.className = "usage-note";
+        note.textContent = t("dspUnsupported");
+        card.appendChild(note);
+      } else {
+        const row = document.createElement("div");
+        row.className = "display-row";
+        const slider = document.createElement("input");
+        slider.type = "range";
+        slider.min = "0";
+        slider.max = "100";
+        slider.step = "1";
+        slider.value = String(monitor.brightness);
+        const pct = document.createElement("span");
+        pct.className = "display-pct";
+        pct.textContent = `${monitor.brightness}%`;
+        // 밝기 명령은 모니터마다 수십~수백 ms — 드래그 중엔 표시만 갱신하고
+        // 손을 잠깐 멈추면 마지막 값 하나만 보낸다
+        let debounce: number | undefined;
+        slider.addEventListener("input", () => {
+          pct.textContent = `${slider.value}%`;
+          window.clearTimeout(debounce);
+          debounce = window.setTimeout(() => {
+            void invoke("display_set_brightness", {
+              id: monitor.id,
+              percent: Number(slider.value),
+            }).catch((error) => toast(String(error), true));
+          }, 250);
+        });
+        row.append(slider, pct);
+        card.appendChild(row);
+      }
+      section.appendChild(card);
+    }
+    target.appendChild(section);
+  } catch {
+    // 표시 전용 — 조용히 넘긴다
+  }
 }
 
 /// 컴팩트의 GITHUB — 이름·활성·더블클릭 전환만, 계정이 없으면 섹션 생략
@@ -821,6 +898,9 @@ async function render(opts?: { immediate?: boolean }) {
         } else {
           await renderGithub(buffer);
         }
+      }
+      if (visibility.display && mode !== "compact") {
+        await renderDisplays(buffer);
       }
       if (!thisImmediate && app.childElementCount > 0 && !renderQueued) {
         // 스무스 새로고침: 기존 화면을 그대로 둔 채 사용량까지 받아진 뒤 교체한다.

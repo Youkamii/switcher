@@ -625,6 +625,22 @@ body.locked .titlebar:hover .tb-actions button {
   border-color: var(--danger);
 }
 
+/* DISPLAY 섹션 — 모니터별 밝기 슬라이더 */
+.display-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.display-row input[type="range"] {
+  flex: 1;
+}
+.display-pct {
+  min-width: 38px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 /* 계정 정보 가리기 (🙈) — 화면 공유·스크린샷에 이메일·GitHub 계정명이 노출되지
    않게 표시만 블러. 전환·삭제 등 동작은 그대로다 */
 body.privacy .card-name,

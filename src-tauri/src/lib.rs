@@ -1,4 +1,5 @@
 mod accounts;
+mod display;
 mod github;
 mod login;
 mod settings;
@@ -326,6 +327,7 @@ struct Visibility {
     codex: bool,
     github: bool,
     black: bool,
+    display: bool,
 }
 
 #[tauri::command]
@@ -342,6 +344,38 @@ fn get_visibility() -> Visibility {
         codex: flag(settings::KEY_SHOW_CODEX),
         github: flag(settings::KEY_SHOW_GITHUB),
         black: flag(settings::KEY_SHOW_BLACK),
+        display: flag(settings::KEY_SHOW_DISPLAY),
+    }
+}
+
+/// 모니터 목록·현재 밝기 (Windows: DDC/CI. 그 외 플랫폼은 빈 목록 → 섹션 생략)
+#[tauri::command]
+async fn display_list() -> Vec<display::DisplayInfo> {
+    #[cfg(windows)]
+    {
+        tauri::async_runtime::spawn_blocking(display::list)
+            .await
+            .unwrap_or_default()
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
+}
+
+/// 밝기 설정 — 실제 백라이트 명령이라 수십~수백 ms 걸릴 수 있어 blocking 풀에서
+#[tauri::command]
+async fn display_set_brightness(id: usize, percent: u32) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        tauri::async_runtime::spawn_blocking(move || display::set_brightness(id, percent))
+            .await
+            .map_err(|e| format!("밝기 설정 작업 실패: {e}"))?
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (id, percent);
+        Err("macOS 밝기 조절은 개발 진행중입니다".to_string())
     }
 }
 
@@ -361,7 +395,7 @@ fn build_tray_menu(
     lang: &str,
 ) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{Menu, MenuItem, Submenu};
-    let [open_l, hide_l, settings_l, language_l, auto_update_l, auto_start_l, black_l, visible_l, quit_l] =
+    let [open_l, hide_l, settings_l, language_l, auto_update_l, auto_start_l, black_l, visible_l, display_l, quit_l] =
         settings::tray_labels(lang);
     let show = MenuItem::with_id(app, "show", open_l, true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", hide_l, true, None::<&str>)?;
@@ -370,7 +404,7 @@ fn build_tray_menu(
     let black = MenuItem::with_id(app, "black-on", black_l, true, None::<&str>)?;
     #[cfg(target_os = "macos")]
     let black = {
-        let _ = (black_l, visible_l);
+        let _ = (black_l, visible_l, display_l);
         MenuItem::with_id(app, "black-wip", "블랙 모니터 (개발 진행중)", false, None::<&str>)?
     };
     #[cfg(not(target_os = "macos"))]
@@ -448,12 +482,20 @@ fn build_tray_menu(
             flag(settings::KEY_SHOW_BLACK, true),
             None::<&str>,
         )?;
+        let vis_display = CheckMenuItem::with_id(
+            app,
+            "vis:display",
+            display_l,
+            true,
+            flag(settings::KEY_SHOW_DISPLAY, true),
+            None::<&str>,
+        )?;
         let visible = Submenu::with_id_and_items(
             app,
             "visible",
             visible_l,
             true,
-            &[&vis_claude, &vis_codex, &vis_github, &vis_black],
+            &[&vis_claude, &vis_codex, &vis_github, &vis_black, &vis_display],
         )?;
         Submenu::with_id_and_items(
             app,
@@ -1129,6 +1171,7 @@ pub fn run() {
                             "codex" => Some(settings::KEY_SHOW_CODEX),
                             "github" => Some(settings::KEY_SHOW_GITHUB),
                             "black" => Some(settings::KEY_SHOW_BLACK),
+                            "display" => Some(settings::KEY_SHOW_DISPLAY),
                             _ => None,
                         };
                         if let Some(key) = key {
@@ -1190,7 +1233,9 @@ pub fn run() {
             github_list,
             github_switch,
             black_on,
-            black_off
+            black_off,
+            display_list,
+            display_set_brightness
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
