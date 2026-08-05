@@ -625,9 +625,9 @@ body.locked .titlebar:hover .tb-actions button {
   border-color: var(--danger);
 }
 
-/* 이메일 가리기 (🙈) — 화면 공유·스크린샷에 이메일이 노출되지 않게 표시만 블러.
-   전환·삭제 등 동작은 그대로다 */
-body.privacy .card-name.email,
+/* 계정 정보 가리기 (🙈) — 화면 공유·스크린샷에 이메일·GitHub 계정명이 노출되지
+   않게 표시만 블러. 전환·삭제 등 동작은 그대로다 */
+body.privacy .card-name,
 body.privacy .hint.warn {
   filter: blur(5px);
 }

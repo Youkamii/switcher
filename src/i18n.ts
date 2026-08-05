@@ -62,7 +62,7 @@ const ko = {
   ghNoAccounts: "gh에 로그인된 계정이 없습니다 — 터미널에서 gh auth login 후 새로고침",
   ghAddHint: "계정 추가는 터미널에서: gh auth login",
   blackTooltip: "블랙 모니터 — 모든 화면을 검게. 마우스를 흔들거나 ESC로 해제",
-  privacyTooltip: "이메일 가리기 (블러)",
+  privacyTooltip: "계정 정보 가리기 (블러) — 이메일·GitHub 계정명",
 };
 
 export type MsgKey = keyof typeof ko;
@@ -124,7 +124,7 @@ const en: Messages = {
   ghNoAccounts: "No accounts logged in to gh — run gh auth login in a terminal, then refresh",
   ghAddHint: "To add an account, run in a terminal: gh auth login",
   blackTooltip: "Black monitor — blacks out all screens. Shake the mouse or press ESC to exit",
-  privacyTooltip: "Hide emails (blur)",
+  privacyTooltip: "Hide account info (blur) — emails and GitHub logins",
 };
 
 const ja: Messages = {
@@ -183,7 +183,7 @@ const ja: Messages = {
   ghNoAccounts: "gh にログイン済みのアカウントがありません — ターミナルで gh auth login を実行して更新してください",
   ghAddHint: "アカウント追加はターミナルで: gh auth login",
   blackTooltip: "ブラックモニター — 全画面を黒く。マウスを振るか ESC で解除",
-  privacyTooltip: "メールアドレスを隠す(ぼかし)",
+  privacyTooltip: "アカウント情報を隠す(ぼかし) — メール・GitHub アカウント名",
 };
 
 const zhCN: Messages = {
@@ -239,7 +239,7 @@ const zhCN: Messages = {
   ghNoAccounts: "gh 中没有已登录的账号 — 请在终端运行 gh auth login 后刷新",
   ghAddHint: "添加账号请在终端运行: gh auth login",
   blackTooltip: "黑屏模式 — 将所有屏幕变黑。晃动鼠标或按 ESC 退出",
-  privacyTooltip: "隐藏邮箱（模糊）",
+  privacyTooltip: "隐藏账号信息（模糊）— 邮箱·GitHub 账号名",
 };
 
 const zhTW: Messages = {
@@ -295,7 +295,7 @@ const zhTW: Messages = {
   ghNoAccounts: "gh 中沒有已登入的帳號 — 請在終端機執行 gh auth login 後重新整理",
   ghAddHint: "新增帳號請在終端機執行: gh auth login",
   blackTooltip: "黑屏模式 — 讓所有螢幕變黑。晃動滑鼠或按 ESC 解除",
-  privacyTooltip: "隱藏電子郵件(模糊)",
+  privacyTooltip: "隱藏帳號資訊(模糊) — 電子郵件·GitHub 帳號名",
 };
 
 const hi: Messages = {
@@ -354,7 +354,7 @@ const hi: Messages = {
   ghNoAccounts: "gh में कोई लॉगिन अकाउंट नहीं — टर्मिनल में gh auth login चलाकर रीफ़्रेश करें",
   ghAddHint: "अकाउंट जोड़ने के लिए टर्मिनल में चलाएँ: gh auth login",
   blackTooltip: "ब्लैक मॉनिटर — सभी स्क्रीन काली। माउस हिलाएँ या ESC दबाकर बंद करें",
-  privacyTooltip: "ईमेल छिपाएँ (धुंधला)",
+  privacyTooltip: "अकाउंट जानकारी छिपाएँ (धुंधला) — ईमेल·GitHub अकाउंट नाम",
 };
 
 const MESSAGES: Record<Lang, Messages> = {

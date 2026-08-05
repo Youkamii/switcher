@@ -168,7 +168,7 @@ function profileCard(
   head.className = "card-head";
   // 사용자는 이메일로 계정을 구분한다 — 프로필 이름은 안 보여주고 이메일만
   const email = document.createElement("span");
-  email.className = "card-name email";
+  email.className = "card-name";
   email.textContent = profile.email ?? profile.name;
   email.title = t("profileNameTooltip", { name: profile.name });
   head.append(email);
@@ -679,7 +679,7 @@ async function compactCard(provider: ProviderId, profile: ProfileInfo): Promise<
   const head = document.createElement("div");
   head.className = "card-head";
   const email = document.createElement("span");
-  email.className = "card-name email";
+  email.className = "card-name";
   email.textContent = profile.email ?? profile.name;
   email.title = t("profileNameTooltip", { name: profile.name });
   head.appendChild(email);
