@@ -625,10 +625,31 @@ body.locked .titlebar:hover .tb-actions button {
   border-color: var(--danger);
 }
 
-/* 접이식 섹션 제목 (DISPLAY·GITHUB) — 클릭으로 펼치고 접는다 */
-.collapsible {
-  cursor: pointer;
+/* 접이식 섹션 토글 (DISPLAY·GITHUB) — 가로를 채우는 버튼, 누르면 아래로 열린다 */
+.section-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  margin: 4px 0 2px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--muted);
   user-select: none;
+}
+.section-toggle:hover {
+  color: var(--text);
+}
+.section-toggle .chev {
+  opacity: 0.7;
+  letter-spacing: 0;
+}
+.compact-toggle {
+  padding: 4px 8px;
+  font-size: 11px;
 }
 
 /* 접이식 섹션의 안내문 — .hint는 locked에서 숨겨지므로 별도 클래스 (red-review) */

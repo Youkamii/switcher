@@ -563,27 +563,23 @@ document.addEventListener("click", (event) => {
   collapseSectionsInPlace();
 });
 
-/// 접이식 섹션 머리 — ▸(접힘)/▾(펼침) 표시, 클릭으로 토글
+/// 접이식 섹션 토글 — 가로를 채우는 버튼(왼쪽 제목, 오른쪽 ▸/▾). 누르면 아래로 열린다.
+/// 텍스트 제목은 오른쪽이 텅 비어 어정쩡했다 (사용자 피드백)
 function collapsibleHeader(
   title: string,
   key: CollapsibleKey,
   compact: boolean,
 ): HTMLElement {
-  const arrow = expanded[key] ? "▾" : "▸";
-  let header: HTMLElement;
-  if (compact) {
-    header = document.createElement("div");
-    header.className = "compact-head collapsible";
-    const name = document.createElement("span");
-    name.textContent = `${title} ${arrow}`;
-    header.appendChild(name);
-  } else {
-    header = document.createElement("h2");
-    header.className = "section-title collapsible";
-    header.textContent = `${title} ${arrow}`;
-  }
-  header.addEventListener("click", () => toggleSection(key));
-  return header;
+  const button = document.createElement("button");
+  button.className = "section-toggle collapsible" + (compact ? " compact-toggle" : "");
+  const label = document.createElement("span");
+  label.textContent = title;
+  const chev = document.createElement("span");
+  chev.className = "chev";
+  chev.textContent = expanded[key] ? "▾" : "▸";
+  button.append(label, chev);
+  button.addEventListener("click", () => toggleSection(key));
+  return button;
 }
 
 /// 표시 기능 (트레이 설정 → 표시 기능) — 끈 섹션·버튼은 그리지 않는다
