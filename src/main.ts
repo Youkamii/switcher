@@ -513,6 +513,111 @@ async function renderProvider(
   target.appendChild(section);
 }
 
+type GithubAccount = { login: string; active: boolean };
+type GithubSnapshot = { gh_found: boolean; accounts: GithubAccount[] };
+
+/// GITHUB 계정 카드 — 사용량 없음: 이름·활성 표시·전환뿐.
+/// 토큰은 위젯이 만지지 않는다 (gh가 keyring에 관리, 전환은 gh auth switch 대행)
+function githubCard(acc: GithubAccount): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "card" + (acc.active ? " active" : "");
+  const head = document.createElement("div");
+  head.className = "card-head";
+  const name = document.createElement("span");
+  name.className = "card-name";
+  name.textContent = acc.login;
+  head.appendChild(name);
+  card.appendChild(head);
+  if (!acc.active) {
+    // 위젯 모드 더블클릭 전환 대상 — Rust가 provider "github"를 gh 통로로 보낸다
+    card.classList.add("switchable");
+    card.dataset.provider = "github";
+    card.dataset.name = acc.login;
+    const actions = document.createElement("div");
+    actions.className = "card-actions";
+    const switchBtn = document.createElement("button");
+    switchBtn.className = "primary";
+    switchBtn.textContent = t("switchBtn");
+    switchBtn.addEventListener("click", async () => {
+      switchBtn.disabled = true;
+      try {
+        await invoke("github_switch", { name: acc.login });
+        await render({ immediate: true });
+      } catch (error) {
+        toast(String(error), true);
+        switchBtn.disabled = false;
+      }
+    });
+    actions.appendChild(switchBtn);
+    card.appendChild(actions);
+  }
+  return card;
+}
+
+async function renderGithub(target: DocumentFragment) {
+  const section = document.createElement("section");
+  const heading = document.createElement("h2");
+  heading.className = "section-title";
+  heading.textContent = "GITHUB";
+  section.appendChild(heading);
+  try {
+    const snap = await invoke<GithubSnapshot>("github_list");
+    if (!snap.gh_found || snap.accounts.length === 0) {
+      const hint = document.createElement("p");
+      hint.className = "hint";
+      hint.textContent = snap.gh_found ? t("ghNoAccounts") : t("ghNotFound");
+      section.appendChild(hint);
+    } else {
+      for (const acc of snap.accounts) section.appendChild(githubCard(acc));
+      const help = document.createElement("p");
+      help.className = "hint";
+      help.textContent = t("ghAddHint");
+      section.appendChild(help);
+    }
+  } catch (error) {
+    const err = document.createElement("p");
+    err.className = "usage-error";
+    err.textContent = String(error);
+    section.appendChild(err);
+  }
+  target.appendChild(section);
+}
+
+/// 컴팩트의 GITHUB — 이름·활성·더블클릭 전환만, 계정이 없으면 섹션 생략
+async function renderGithubCompact(target: DocumentFragment) {
+  try {
+    const snap = await invoke<GithubSnapshot>("github_list");
+    if (!snap.gh_found || snap.accounts.length === 0) return;
+    const section = document.createElement("section");
+    const head = document.createElement("div");
+    head.className = "compact-head";
+    const name = document.createElement("span");
+    name.textContent = "GITHUB";
+    head.appendChild(name);
+    section.appendChild(head);
+    for (const acc of snap.accounts) {
+      const card = document.createElement("div");
+      card.className = "card compact-card" + (acc.active ? " active" : "");
+      if (!acc.active) {
+        card.classList.add("switchable");
+        card.dataset.provider = "github";
+        card.dataset.name = acc.login;
+      }
+      const cardHead = document.createElement("div");
+      cardHead.className = "card-head";
+      const login = document.createElement("span");
+      login.className = "card-name";
+      login.textContent = acc.login;
+      cardHead.appendChild(login);
+      card.appendChild(cardHead);
+      section.appendChild(card);
+    }
+    target.appendChild(section);
+  } catch {
+    // 컴팩트는 표시 전용 — 조용히 넘긴다
+  }
+}
+
 /// 컴팩트용 라벨 축약: "5 Hours"→5h, "Weekly"→wk, "Daily"→1d, Fable→fb, 그 외 모델→앞 2글자
 function compactLabel(win: UsageWindow): string {
   const label = win.label;
@@ -690,6 +795,11 @@ async function render(opts?: { immediate?: boolean }) {
         } else {
           await renderProvider(id, title, buffer, pending);
         }
+      }
+      if (mode === "compact") {
+        await renderGithubCompact(buffer);
+      } else {
+        await renderGithub(buffer);
       }
       if (!thisImmediate && app.childElementCount > 0 && !renderQueued) {
         // 스무스 새로고침: 기존 화면을 그대로 둔 채 사용량까지 받아진 뒤 교체한다.

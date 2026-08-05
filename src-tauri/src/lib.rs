@@ -1,4 +1,5 @@
 mod accounts;
+mod github;
 mod login;
 mod settings;
 mod update;
@@ -148,6 +149,25 @@ fn initial_view_mode() -> Option<String> {
 #[tauri::command]
 fn demo_mode() -> bool {
     std::env::var("SWITCHER_DEMO").is_ok()
+}
+
+/// gh CLI에 로그인된 GitHub 계정 목록 (토큰은 만지지 않는다 — 이름·활성 여부만)
+#[tauri::command]
+async fn github_list() -> github::GithubSnapshot {
+    tauri::async_runtime::spawn_blocking(github::list)
+        .await
+        .unwrap_or(github::GithubSnapshot {
+            gh_found: false,
+            accounts: Vec::new(),
+        })
+}
+
+/// GitHub 활성 계정 전환 (gh auth switch + setup-git)
+#[tauri::command]
+async fn github_switch(name: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || github::switch(&name))
+        .await
+        .map_err(|e| format!("GitHub 전환 작업 실패: {e}"))?
 }
 
 /// 저장된 UI 언어 — 프론트가 시작할 때 읽는다 (설정을 못 읽으면 한국어)
@@ -808,10 +828,16 @@ pub fn run() {
                         let Some((provider, name)) = regions[idx].action.clone() else {
                             continue;
                         };
-                        let result = (|| {
-                            let env = Env::real()?;
-                            accounts::switch(&env, Provider::parse(&provider)?, &name)
-                        })();
+                        // GitHub 카드는 gh 통로로, 나머지는 토큰 파일 교체로
+                        let result: Result<(), String> = if provider == "github" {
+                            github::switch(&name)
+                        } else {
+                            (|| {
+                                let env = Env::real()?;
+                                accounts::switch(&env, Provider::parse(&provider)?, &name)
+                                    .map(|_| ())
+                            })()
+                        };
                         let payload = match result {
                             Ok(_) => serde_json::json!({ "ok": true, "provider": provider, "name": name }),
                             Err(e) => serde_json::json!({ "ok": false, "error": e }),
@@ -891,7 +917,9 @@ pub fn run() {
             set_click_through,
             initial_view_mode,
             demo_mode,
-            get_language
+            get_language,
+            github_list,
+            github_switch
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

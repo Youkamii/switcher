@@ -225,7 +225,7 @@ fn cli_args(provider: Provider) -> (&'static str, &'static [&'static str], &'sta
 /// CLI가 흔히 설치되는 경로를 직접 짚는다. 끝내 못 찾으면 이름 그대로 돌려줘
 /// spawn이 명확한 미설치 에러를 내게 둔다.
 #[cfg(not(windows))]
-fn resolve_program(program: &str) -> String {
+pub(crate) fn resolve_program(program: &str) -> String {
     let shell = std::process::Command::new("/bin/zsh")
         .args(["-lc", &format!("command -v {program}")])
         .output();

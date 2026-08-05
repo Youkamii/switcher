@@ -58,6 +58,9 @@ const ko = {
   alphaTooltip: "투명도 (0 = 골조만)",
   typeTooltip: "보기 모드 전환 (1 전체 / 2 위젯 / 3 컴팩트)",
   updateReady: "업데이트 다운로드 완료 — 다음 실행부터 v{ver}",
+  ghNotFound: "gh CLI를 찾을 수 없습니다 — GitHub CLI 설치 후 새로고침하세요",
+  ghNoAccounts: "gh에 로그인된 계정이 없습니다 — 터미널에서 gh auth login 후 새로고침",
+  ghAddHint: "계정 추가는 터미널에서: gh auth login",
 };
 
 export type MsgKey = keyof typeof ko;
@@ -115,6 +118,9 @@ const en: Messages = {
   alphaTooltip: "Opacity (0 = frame only)",
   typeTooltip: "Cycle view mode (1 full / 2 widget / 3 compact)",
   updateReady: "Update downloaded — v{ver} takes effect next launch",
+  ghNotFound: "gh CLI not found — install GitHub CLI and refresh",
+  ghNoAccounts: "No accounts logged in to gh — run gh auth login in a terminal, then refresh",
+  ghAddHint: "To add an account, run in a terminal: gh auth login",
 };
 
 const ja: Messages = {
@@ -169,6 +175,9 @@ const ja: Messages = {
   alphaTooltip: "透明度（0 = フレームのみ）",
   typeTooltip: "表示モード切替（1 フル / 2 ウィジェット / 3 コンパクト）",
   updateReady: "アップデートをダウンロードしました — 次回起動から v{ver}",
+  ghNotFound: "gh CLI が見つかりません — GitHub CLI をインストールして更新してください",
+  ghNoAccounts: "gh にログイン済みのアカウントがありません — ターミナルで gh auth login を実行して更新してください",
+  ghAddHint: "アカウント追加はターミナルで: gh auth login",
 };
 
 const zhCN: Messages = {
@@ -220,6 +229,9 @@ const zhCN: Messages = {
   alphaTooltip: "透明度（0 = 仅框架）",
   typeTooltip: "切换视图模式（1 完整 / 2 挂件 / 3 紧凑）",
   updateReady: "更新已下载 — 下次启动生效 v{ver}",
+  ghNotFound: "未找到 gh CLI — 请安装 GitHub CLI 后刷新",
+  ghNoAccounts: "gh 中没有已登录的账号 — 请在终端运行 gh auth login 后刷新",
+  ghAddHint: "添加账号请在终端运行: gh auth login",
 };
 
 const zhTW: Messages = {
@@ -271,6 +283,9 @@ const zhTW: Messages = {
   alphaTooltip: "透明度（0 = 僅框架）",
   typeTooltip: "切換檢視模式（1 完整 / 2 小工具 / 3 精簡）",
   updateReady: "更新已下載 — 下次啟動生效 v{ver}",
+  ghNotFound: "找不到 gh CLI — 請安裝 GitHub CLI 後重新整理",
+  ghNoAccounts: "gh 中沒有已登入的帳號 — 請在終端機執行 gh auth login 後重新整理",
+  ghAddHint: "新增帳號請在終端機執行: gh auth login",
 };
 
 const hi: Messages = {
@@ -325,6 +340,9 @@ const hi: Messages = {
   alphaTooltip: "पारदर्शिता (0 = केवल फ़्रेम)",
   typeTooltip: "व्यू मोड बदलें (1 पूर्ण / 2 विजेट / 3 कॉम्पैक्ट)",
   updateReady: "अपडेट डाउनलोड हो गया — अगली बार चलाने पर v{ver} लागू होगा",
+  ghNotFound: "gh CLI नहीं मिला — GitHub CLI इंस्टॉल करके रीफ़्रेश करें",
+  ghNoAccounts: "gh में कोई लॉगिन अकाउंट नहीं — टर्मिनल में gh auth login चलाकर रीफ़्रेश करें",
+  ghAddHint: "अकाउंट जोड़ने के लिए टर्मिनल में चलाएँ: gh auth login",
 };
 
 const MESSAGES: Record<Lang, Messages> = {
