@@ -690,35 +690,44 @@ function githubAddButton(section: HTMLElement) {
 type DisplayInfo = { id: number; name: string; brightness: number | null };
 
 /// DISPLAY 섹션 — 모니터별 밝기 슬라이더 (DDC/CI 실제 백라이트 명령).
-/// 모니터가 없거나 미지원 플랫폼이면 섹션 자체를 생략, 컴팩트 모드에서도 생략
-async function renderDisplays(target: DocumentFragment) {
+/// 모든 모니터를 카드 하나에 모니터당 한 줄(번호·슬라이더·%)로 — 모니터마다
+/// 카드·이름 헤더를 두던 이전 구조는 세로 여백이 과했다. 전체 이름은 번호 툴팁에.
+/// Type 2/3(클릭 투과)에서도 조작된다 — reportHitRegions가 줄을 히트 영역으로 보고.
+async function renderDisplays(target: DocumentFragment, compact: boolean) {
   try {
     const monitors = await invoke<DisplayInfo[]>("display_list");
     if (monitors.length === 0) return;
     const section = document.createElement("section");
-    const heading = document.createElement("h2");
-    heading.className = "section-title";
-    heading.textContent = "DISPLAY";
-    section.appendChild(heading);
-    for (const monitor of monitors) {
-      const card = document.createElement("div");
-      card.className = "card";
+    if (compact) {
       const head = document.createElement("div");
-      head.className = "card-head";
+      head.className = "compact-head";
       const name = document.createElement("span");
-      name.className = "card-name";
-      name.textContent = monitor.name;
-      name.title = monitor.name;
+      name.textContent = "DISPLAY";
       head.appendChild(name);
-      card.appendChild(head);
+      section.appendChild(head);
+    } else {
+      const heading = document.createElement("h2");
+      heading.className = "section-title";
+      heading.textContent = "DISPLAY";
+      section.appendChild(heading);
+    }
+    const card = document.createElement("div");
+    card.className = compact ? "card compact-card" : "card";
+    for (const monitor of monitors) {
+      const row = document.createElement("div");
+      row.className = "display-row";
+      const label = document.createElement("span");
+      label.className = "display-name";
+      label.textContent = String(monitor.id + 1);
+      label.title = monitor.name;
+      row.appendChild(label);
       if (monitor.brightness == null) {
-        const note = document.createElement("div");
-        note.className = "usage-note";
+        const note = document.createElement("span");
+        note.className = "display-na";
         note.textContent = t("dspUnsupported");
-        card.appendChild(note);
+        note.title = t("dspUnsupported");
+        row.appendChild(note);
       } else {
-        const row = document.createElement("div");
-        row.className = "display-row";
         const slider = document.createElement("input");
         slider.type = "range";
         slider.min = "0";
@@ -745,10 +754,10 @@ async function renderDisplays(target: DocumentFragment) {
           }, 250);
         });
         row.append(slider, pct);
-        card.appendChild(row);
       }
-      section.appendChild(card);
+      card.appendChild(row);
     }
+    section.appendChild(card);
     target.appendChild(section);
   } catch {
     // 표시 전용 — 조용히 넘긴다
@@ -978,8 +987,8 @@ async function render(opts?: { immediate?: boolean }) {
           await renderGithub(buffer);
         }
       }
-      if (visibility.display && mode !== "compact") {
-        await renderDisplays(buffer);
+      if (visibility.display) {
+        await renderDisplays(buffer, mode === "compact");
       }
       if (!thisImmediate && app.childElementCount > 0 && !renderQueued) {
         // 스무스 새로고침: 기존 화면을 그대로 둔 채 사용량까지 받아진 뒤 교체한다.
@@ -1073,11 +1082,15 @@ function reportHitRegions() {
       });
       hitElements.push(el);
     });
-    document.querySelectorAll<HTMLElement>(".tb-actions, #drag-handle").forEach((el) => {
-      const r = el.getBoundingClientRect();
-      regions.push({ rect: [r.left, r.top, r.width, r.height], action: null });
-      hitElements.push(el);
-    });
+    // .display-row: 위젯·컴팩트 모드에서도 밝기 슬라이더를 조작할 수 있게
+    // 마우스를 실제로 받는 영역으로 등록한다
+    document
+      .querySelectorAll<HTMLElement>(".tb-actions, #drag-handle, .display-row")
+      .forEach((el) => {
+        const r = el.getBoundingClientRect();
+        regions.push({ rect: [r.left, r.top, r.width, r.height], action: null });
+        hitElements.push(el);
+      });
   }
   void invoke("set_hit_regions", { regions });
 }

@@ -625,20 +625,34 @@ body.locked .titlebar:hover .tb-actions button {
   border-color: var(--danger);
 }
 
-/* DISPLAY 섹션 — 모니터별 밝기 슬라이더 */
+/* DISPLAY 섹션 — 카드 하나에 모니터당 한 줄 (번호·슬라이더·%) */
 .display-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 6px;
+  margin: 2px 0;
+}
+.display-name {
+  min-width: 14px;
+  text-align: center;
+  opacity: 0.7;
 }
 .display-row input[type="range"] {
   flex: 1;
+  min-width: 0;
 }
 .display-pct {
-  min-width: 38px;
+  min-width: 34px;
   text-align: right;
   font-variant-numeric: tabular-nums;
+}
+.display-na {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.6;
+  font-size: 11px;
 }
 
 /* 계정 정보 가리기 (🙈) — 화면 공유·스크린샷에 이메일·GitHub 계정명이 노출되지
