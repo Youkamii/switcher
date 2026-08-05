@@ -224,6 +224,8 @@ fn cli_args(provider: Provider) -> (&'static str, &'static [&'static str], &'sta
 /// GUI 앱(Finder·Dock 실행)은 셸 PATH를 모른다 — 로그인 셸에 묻고, 실패하면
 /// CLI가 흔히 설치되는 경로를 직접 짚는다. 끝내 못 찾으면 이름 그대로 돌려줘
 /// spawn이 명확한 미설치 에러를 내게 둔다.
+/// 주의: program은 반드시 상수 이름("claude"·"codex"·"gh")만 — 셸 명령 문자열에
+/// 그대로 보간되므로 비상수 입력을 넘기면 셸 인젝션이 된다.
 #[cfg(not(windows))]
 pub(crate) fn resolve_program(program: &str) -> String {
     let shell = std::process::Command::new("/bin/zsh")

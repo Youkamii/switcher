@@ -516,6 +516,21 @@ async function renderProvider(
 type GithubAccount = { login: string; active: boolean };
 type GithubSnapshot = { gh_found: boolean; accounts: GithubAccount[] };
 
+/// 표시 기능 (트레이 설정 → 표시 기능) — 끈 섹션·버튼은 그리지 않는다
+type Visibility = { claude: boolean; codex: boolean; github: boolean; black: boolean };
+let visibility: Visibility = { claude: true, codex: true, github: true, black: true };
+
+async function loadVisibility() {
+  try {
+    visibility = await invoke<Visibility>("get_visibility");
+  } catch {
+    // 설정을 못 읽으면 전부 표시
+  }
+  (document.getElementById("blackbtn") as HTMLElement).style.display = visibility.black
+    ? ""
+    : "none";
+}
+
 /// GITHUB 계정 카드 — 사용량 없음: 이름·활성 표시·전환뿐.
 /// 토큰은 위젯이 만지지 않는다 (gh가 keyring에 관리, 전환은 gh auth switch 대행)
 function githubCard(acc: GithubAccount): HTMLElement {
@@ -790,16 +805,19 @@ async function render(opts?: { immediate?: boolean }) {
       const buffer = document.createDocumentFragment();
       const pending: Promise<unknown>[] = [];
       for (const { id, title } of PROVIDERS) {
+        if (!visibility[id]) continue;
         if (mode === "compact") {
           await renderProviderCompact(id, title, buffer);
         } else {
           await renderProvider(id, title, buffer, pending);
         }
       }
-      if (mode === "compact") {
-        await renderGithubCompact(buffer);
-      } else {
-        await renderGithub(buffer);
+      if (visibility.github) {
+        if (mode === "compact") {
+          await renderGithubCompact(buffer);
+        } else {
+          await renderGithub(buffer);
+        }
       }
       if (!thisImmediate && app.childElementCount > 0 && !renderQueued) {
         // 스무스 새로고침: 기존 화면을 그대로 둔 채 사용량까지 받아진 뒤 교체한다.
@@ -1077,6 +1095,11 @@ void listen<string>("update-ready", (event) => {
   toast(t("updateReady", { ver: event.payload }));
 });
 
+// 트레이(설정 → 표시 기능)에서 체크가 바뀌면 다시 그린다
+void listen("visibility-changed", () => {
+  void loadVisibility().then(() => render({ immediate: true }));
+});
+
 // 트레이(설정 → 언어)에서 바꾸면 Rust가 저장을 마친 뒤 알려온다
 let langFromEvent = false;
 void listen<string>("language-changed", (event) => {
@@ -1088,7 +1111,7 @@ void listen<string>("language-changed", (event) => {
   if (!loginOpen) void render({ immediate: true });
 });
 
-// 시작: 저장된 언어를 먼저 읽고 첫 렌더 — 한국어로 그렸다 갈아엎는 깜빡임을 피한다
+// 시작: 저장된 언어·표시 기능을 먼저 읽고 첫 렌더 — 그렸다 갈아엎는 깜빡임을 피한다
 void (async () => {
   try {
     const saved = await invoke<string>("get_language");
@@ -1097,6 +1120,7 @@ void (async () => {
   } catch {
     // 설정을 못 읽으면 한국어로 진행
   }
+  await loadVisibility();
   applyStaticText();
   void render();
 })();

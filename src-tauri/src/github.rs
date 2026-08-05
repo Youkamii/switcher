@@ -25,14 +25,67 @@ pub struct GithubSnapshot {
     pub accounts: Vec<GithubAccount>,
 }
 
-/// gh 명령 골격. Windows는 콘솔 창을 띄우지 않고(CREATE_NO_WINDOW),
+/// gh 실행 파일 해석 (Windows). `Command::new("gh")`의 기본 탐색은 앱 폴더
+/// (switcher.exe 옆)가 PATH보다 먼저라, Downloads에 놓인 가짜 gh.exe가 잡히는
+/// 바이너리 플랜팅(CWE-427)에 열린다 — update.rs가 tar를 System32 절대 경로로만
+/// 부르는 것과 같은 이유로, 알려진 설치 경로 → PATH 항목 순회(자기 폴더 제외)로
+/// 직접 해석한다. 못 찾으면 None → 목록이 "gh 없음" 안내로 이어진다.
+#[cfg(windows)]
+fn gh_path() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(pf) = std::env::var_os("ProgramFiles") {
+        candidates.push(PathBuf::from(pf).join("GitHub CLI").join("gh.exe"));
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let local = PathBuf::from(local);
+        candidates.push(local.join("Programs").join("GitHub CLI").join("gh.exe"));
+        candidates.push(
+            local
+                .join("Microsoft")
+                .join("WinGet")
+                .join("Links")
+                .join("gh.exe"),
+        );
+    }
+    if let Some(data) = std::env::var_os("ProgramData") {
+        candidates.push(PathBuf::from(data).join("chocolatey").join("bin").join("gh.exe"));
+    }
+    if let Some(home) = std::env::var_os("USERPROFILE") {
+        candidates.push(PathBuf::from(home).join("scoop").join("shims").join("gh.exe"));
+    }
+    if let Some(found) = candidates.into_iter().find(|p| p.is_file()) {
+        return Some(found);
+    }
+    // 비표준 설치 폴백: PATH를 직접 순회한다 — CreateProcess 기본 탐색과 달리
+    // 앱 폴더·현재 폴더가 끼어들지 않고, 자기 exe 폴더는 명시적으로 건너뛴다
+    let own_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    for entry in std::env::split_paths(&std::env::var_os("PATH")?) {
+        if entry.as_os_str().is_empty() || own_dir.as_deref() == Some(entry.as_path()) {
+            continue;
+        }
+        let candidate = entry.join("gh.exe");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// gh 명령 골격. Windows는 위 해석 경로로 콘솔 창 없이(CREATE_NO_WINDOW) 실행하고,
 /// 맥 GUI 앱은 셸 PATH를 모르므로 로그인 셸로 경로를 해석한다.
 fn gh_command() -> std::process::Command {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let mut cmd = std::process::Command::new("gh");
+        // 해석 실패 시 존재하지 않는 이름을 넘겨 spawn이 명확한 에러를 내게 한다
+        // (PATH 재탐색이 일어나지 않도록 경로 구분자를 포함시킨다)
+        let program = gh_path()
+            .unwrap_or_else(|| std::path::PathBuf::from(r".\gh-cli-not-found.exe"));
+        let mut cmd = std::process::Command::new(program);
         cmd.creation_flags(CREATE_NO_WINDOW);
         cmd
     }

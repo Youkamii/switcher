@@ -26,6 +26,11 @@ pub fn is_supported(lang: &str) -> bool {
 pub const KEY_AUTO_UPDATE: &str = "auto_update";
 pub const KEY_AUTO_START: &str = "auto_start";
 pub const KEY_SHORTCUT_DONE: &str = "desktop_shortcut_done";
+/// 표시 기능 — 끄면 위젯에서 해당 섹션·기능이 사라진다 (기본 전부 켜짐)
+pub const KEY_SHOW_CLAUDE: &str = "show_claude";
+pub const KEY_SHOW_CODEX: &str = "show_codex";
+pub const KEY_SHOW_GITHUB: &str = "show_github";
+pub const KEY_SHOW_BLACK: &str = "show_black";
 
 /// 불리언 설정 읽기 — 파일이 없거나 키가 없거나 타입이 다르면 default
 pub fn load_flag(store: &Path, key: &str, default: bool) -> bool {
@@ -55,8 +60,9 @@ fn save_value(store: &Path, key: &str, value: Value) -> Result<(), String> {
     fs::rename(&tmp, &path).map_err(|e| format!("설정 저장 실패: {e}"))
 }
 
-/// 트레이 라벨 — [열기, 숨기기, 설정, 언어, 자동 업데이트, 부팅 시 자동 실행, 블랙 모니터, 종료] 순서
-pub fn tray_labels(lang: &str) -> [&'static str; 8] {
+/// 트레이 라벨 — [열기, 숨기기, 설정, 언어, 자동 업데이트, 부팅 시 자동 실행,
+/// 블랙 모니터, 표시 기능, 종료] 순서
+pub fn tray_labels(lang: &str) -> [&'static str; 9] {
     match lang {
         "en" => [
             "Open",
@@ -66,6 +72,7 @@ pub fn tray_labels(lang: &str) -> [&'static str; 8] {
             "Auto-update",
             "Run at startup",
             "Black monitor",
+            "Visible features",
             "Quit",
         ],
         "ja" => [
@@ -76,13 +83,16 @@ pub fn tray_labels(lang: &str) -> [&'static str; 8] {
             "自動アップデート",
             "起動時に自動実行",
             "ブラックモニター",
+            "表示する機能",
             "終了",
         ],
         "zh-CN" => [
-            "打开", "隐藏", "设置", "语言", "自动更新", "开机自启动", "黑屏模式", "退出",
+            "打开", "隐藏", "设置", "语言", "自动更新", "开机自启动", "黑屏模式", "显示的功能",
+            "退出",
         ],
         "zh-TW" => [
-            "開啟", "隱藏", "設定", "語言", "自動更新", "開機自動啟動", "黑屏模式", "結束",
+            "開啟", "隱藏", "設定", "語言", "自動更新", "開機自動啟動", "黑屏模式", "顯示的功能",
+            "結束",
         ],
         "hi" => [
             "खोलें",
@@ -92,6 +102,7 @@ pub fn tray_labels(lang: &str) -> [&'static str; 8] {
             "ऑटो-अपडेट",
             "बूट पर स्वतः चलाएँ",
             "ब्लैक मॉनिटर",
+            "दिखाए जाने वाले फ़ीचर",
             "बंद करें",
         ],
         _ => [
@@ -102,6 +113,7 @@ pub fn tray_labels(lang: &str) -> [&'static str; 8] {
             "자동 업데이트",
             "부팅 시 자동 실행",
             "블랙 모니터",
+            "표시 기능",
             "종료",
         ],
     }

@@ -293,6 +293,32 @@ async fn github_switch(name: String) -> Result<(), String> {
         .map_err(|e| format!("GitHub 전환 작업 실패: {e}"))?
 }
 
+/// 표시 기능 플래그 — 프론트가 어떤 섹션·버튼을 그릴지 정한다
+#[derive(serde::Serialize)]
+struct Visibility {
+    claude: bool,
+    codex: bool,
+    github: bool,
+    black: bool,
+}
+
+#[tauri::command]
+fn get_visibility() -> Visibility {
+    let store = Env::real().map(|env| env.store).ok();
+    let flag = |key: &str| {
+        store
+            .as_deref()
+            .map(|s| settings::load_flag(s, key, true))
+            .unwrap_or(true)
+    };
+    Visibility {
+        claude: flag(settings::KEY_SHOW_CLAUDE),
+        codex: flag(settings::KEY_SHOW_CODEX),
+        github: flag(settings::KEY_SHOW_GITHUB),
+        black: flag(settings::KEY_SHOW_BLACK),
+    }
+}
+
 /// 저장된 UI 언어 — 프론트가 시작할 때 읽는다 (설정을 못 읽으면 한국어)
 #[tauri::command]
 fn get_language() -> String {
@@ -309,7 +335,7 @@ fn build_tray_menu(
     lang: &str,
 ) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{Menu, MenuItem, Submenu};
-    let [open_l, hide_l, settings_l, language_l, auto_update_l, auto_start_l, black_l, quit_l] =
+    let [open_l, hide_l, settings_l, language_l, auto_update_l, auto_start_l, black_l, visible_l, quit_l] =
         settings::tray_labels(lang);
     let show = MenuItem::with_id(app, "show", open_l, true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", hide_l, true, None::<&str>)?;
@@ -318,7 +344,7 @@ fn build_tray_menu(
     let black = MenuItem::with_id(app, "black-on", black_l, true, None::<&str>)?;
     #[cfg(target_os = "macos")]
     let black = {
-        let _ = black_l;
+        let _ = (black_l, visible_l);
         MenuItem::with_id(app, "black-wip", "블랙 모니터 (개발 진행중)", false, None::<&str>)?
     };
     #[cfg(not(target_os = "macos"))]
@@ -341,20 +367,18 @@ fn build_tray_menu(
             .collect();
         let language = Submenu::with_id_and_items(app, "language", language_l, true, &lang_refs)?;
         let store = Env::real().map(|env| env.store).ok();
-        let auto_update_on = store
-            .as_deref()
-            .map(|s| settings::load_flag(s, settings::KEY_AUTO_UPDATE, true))
-            .unwrap_or(true);
-        let auto_start_on = store
-            .as_deref()
-            .map(|s| settings::load_flag(s, settings::KEY_AUTO_START, true))
-            .unwrap_or(true);
+        let flag = |key: &str, default: bool| {
+            store
+                .as_deref()
+                .map(|s| settings::load_flag(s, key, default))
+                .unwrap_or(default)
+        };
         let auto_update = CheckMenuItem::with_id(
             app,
             "toggle-auto-update",
             auto_update_l,
             true,
-            auto_update_on,
+            flag(settings::KEY_AUTO_UPDATE, true),
             None::<&str>,
         )?;
         let auto_start = CheckMenuItem::with_id(
@@ -362,15 +386,55 @@ fn build_tray_menu(
             "toggle-auto-start",
             auto_start_l,
             true,
-            auto_start_on,
+            flag(settings::KEY_AUTO_START, true),
             None::<&str>,
+        )?;
+        // 표시 기능 — 안 쓰는 섹션·기능을 위젯에서 숨긴다 (제품명은 번역하지 않는다)
+        let vis_claude = CheckMenuItem::with_id(
+            app,
+            "vis:claude",
+            "Claude",
+            true,
+            flag(settings::KEY_SHOW_CLAUDE, true),
+            None::<&str>,
+        )?;
+        let vis_codex = CheckMenuItem::with_id(
+            app,
+            "vis:codex",
+            "Codex",
+            true,
+            flag(settings::KEY_SHOW_CODEX, true),
+            None::<&str>,
+        )?;
+        let vis_github = CheckMenuItem::with_id(
+            app,
+            "vis:github",
+            "GitHub",
+            true,
+            flag(settings::KEY_SHOW_GITHUB, true),
+            None::<&str>,
+        )?;
+        let vis_black = CheckMenuItem::with_id(
+            app,
+            "vis:black",
+            black_l,
+            true,
+            flag(settings::KEY_SHOW_BLACK, true),
+            None::<&str>,
+        )?;
+        let visible = Submenu::with_id_and_items(
+            app,
+            "visible",
+            visible_l,
+            true,
+            &[&vis_claude, &vis_codex, &vis_github, &vis_black],
         )?;
         Submenu::with_id_and_items(
             app,
             "settings",
             settings_l,
             true,
-            &[&language, &auto_update, &auto_start],
+            &[&language, &visible, &auto_update, &auto_start],
         )?
     };
     #[cfg(target_os = "macos")]
@@ -401,7 +465,20 @@ fn build_tray_menu(
             &[&language, &auto_update, &auto_start],
         )?
     };
-    Menu::with_items(app, &[&show, &hide, &black, &settings_menu, &quit])
+    // 블랙 모니터 진입점은 표시 기능에서 껐으면 트레이에서도 숨긴다
+    #[cfg(not(target_os = "macos"))]
+    let black_visible = Env::real()
+        .map(|env| settings::load_flag(&env.store, settings::KEY_SHOW_BLACK, true))
+        .unwrap_or(true);
+    #[cfg(target_os = "macos")]
+    let black_visible = true;
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![&show, &hide];
+    if black_visible {
+        items.push(&black);
+    }
+    items.push(&settings_menu);
+    items.push(&quit);
+    Menu::with_items(app, &items)
 }
 
 /// 설정 체크 토글 공통: 플래그 반전 저장 → 부수 효과 적용 → 메뉴 재구성(체크 갱신)
@@ -1011,6 +1088,21 @@ pub fn run() {
                     "toggle-auto-start" => {
                         toggle_flag(app, settings::KEY_AUTO_START, true);
                     }
+                    #[cfg(not(target_os = "macos"))]
+                    id if id.starts_with("vis:") => {
+                        use tauri::Emitter;
+                        let key = match id.trim_start_matches("vis:") {
+                            "claude" => Some(settings::KEY_SHOW_CLAUDE),
+                            "codex" => Some(settings::KEY_SHOW_CODEX),
+                            "github" => Some(settings::KEY_SHOW_GITHUB),
+                            "black" => Some(settings::KEY_SHOW_BLACK),
+                            _ => None,
+                        };
+                        if let Some(key) = key {
+                            toggle_flag(app, key, true);
+                            let _ = app.emit("visibility-changed", ());
+                        }
+                    }
                     "black-on" => {
                         let handle = app.clone();
                         tauri::async_runtime::spawn(async move {
@@ -1056,6 +1148,7 @@ pub fn run() {
             initial_view_mode,
             demo_mode,
             get_language,
+            get_visibility,
             github_list,
             github_switch,
             black_on,
