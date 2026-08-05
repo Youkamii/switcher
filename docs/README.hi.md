@@ -147,6 +147,7 @@ Claude का एक्सेस टोकन कुछ ही घंटों �
 - कमिट author (`git config user.name/email`) नहीं बदलता — स्विच के बाद भी कमिट में पुराना नाम रहता है।
 - VS Code, Copilot आदि अन्य ऐप्स के GitHub सेशन अपने टोकन रखते हैं, वे फ़ॉलो नहीं करते।
 - SAML SSO वाले organization रिपॉज़िटरी के लिए हर अकाउंट की SSO स्वीकृति ज़रूरी है।
+- हर स्विच पर चलने वाला `gh auth setup-git` ग्लोबल git कॉन्फ़िग में github.com के लिए gh को credential helper के रूप में स्थायी रूप से दर्ज करता है और मौजूदा GCM सेटअप की जगह लेता है — हटाने के लिए `git config --global --unset-all credential.https://github.com.helper`।
 
 ## तकनीक
 

@@ -147,6 +147,7 @@ Claude 的访问令牌寿命只有几个小时，因此当保管的配置文件�
 - 提交作者（`git config user.name/email`）不会改变 — 切换后提交仍保留原有名字。
 - VS Code、Copilot 等其他应用的 GitHub 会话使用各自的令牌，不会跟随。
 - 使用 SAML SSO 的组织仓库需要按账号完成 SSO 授权才能访问。
+- 每次切换执行的 `gh auth setup-git` 会在全局 git 配置中为 github.com 永久注册 gh 作为 credential helper，替换现有的 GCM 设置 — 撤销：`git config --global --unset-all credential.https://github.com.helper`。
 
 ## 技术
 

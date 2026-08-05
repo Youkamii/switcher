@@ -147,6 +147,7 @@ Known limits:
 - The commit author (`git config user.name/email`) does not change — commits keep the existing name after a switch.
 - GitHub sessions in other apps (VS Code, Copilot, …) have their own tokens and do not follow.
 - Org repos behind SAML SSO require per-account SSO authorization.
+- The `gh auth setup-git` run on each switch permanently registers gh as the github.com credential helper in your global git config, replacing any existing GCM setup — undo with `git config --global --unset-all credential.https://github.com.helper`.
 
 ## Tech
 

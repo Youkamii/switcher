@@ -147,6 +147,7 @@ Claude のアクセストークンは寿命が数時間しかないため、保�
 - コミットの author(`git config user.name/email`)は変わりません — 切り替えてもコミットには元の名前が残ります。
 - VS Code・Copilot など他アプリの GitHub セッションは独自トークンのため追従しません。
 - SAML SSO を使う組織リポジトリはアカウントごとに SSO 承認が必要です。
+- 切り替え時に実行される `gh auth setup-git` は、グローバル git 設定に github.com 用の credential helper(gh)を恒久的に登録し、既存の GCM 設定を置き換えます — 元に戻すには `git config --global --unset-all credential.https://github.com.helper`。
 
 ## 技術
 

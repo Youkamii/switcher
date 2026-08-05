@@ -526,16 +526,17 @@ async function loadVisibility() {
   } catch {
     // 설정을 못 읽으면 전부 표시
   }
-  (document.getElementById("blackbtn") as HTMLElement).style.display = visibility.black
-    ? ""
-    : "none";
+  // macOS 블랙 모니터는 개발 진행중 — 트레이(비활성 표기)와 같은 규칙으로 버튼을 숨긴다
+  const isMac = navigator.userAgent.includes("Macintosh");
+  (document.getElementById("blackbtn") as HTMLElement).style.display =
+    visibility.black && !isMac ? "" : "none";
 }
 
-/// GITHUB 계정 카드 — 사용량 없음: 이름·활성 표시·전환뿐.
+/// GITHUB 계정 카드 — 사용량 없음: 이름·활성 표시·전환뿐. 컴팩트는 전환 버튼 생략.
 /// 토큰은 위젯이 만지지 않는다 (gh가 keyring에 관리, 전환은 gh auth switch 대행)
-function githubCard(acc: GithubAccount): HTMLElement {
+function githubCard(acc: GithubAccount, compact = false): HTMLElement {
   const card = document.createElement("div");
-  card.className = "card" + (acc.active ? " active" : "");
+  card.className = (compact ? "card compact-card" : "card") + (acc.active ? " active" : "");
   const head = document.createElement("div");
   head.className = "card-head";
   const name = document.createElement("span");
@@ -548,23 +549,25 @@ function githubCard(acc: GithubAccount): HTMLElement {
     card.classList.add("switchable");
     card.dataset.provider = "github";
     card.dataset.name = acc.login;
-    const actions = document.createElement("div");
-    actions.className = "card-actions";
-    const switchBtn = document.createElement("button");
-    switchBtn.className = "primary";
-    switchBtn.textContent = t("switchBtn");
-    switchBtn.addEventListener("click", async () => {
-      switchBtn.disabled = true;
-      try {
-        await invoke("github_switch", { name: acc.login });
-        await render({ immediate: true });
-      } catch (error) {
-        toast(String(error), true);
-        switchBtn.disabled = false;
-      }
-    });
-    actions.appendChild(switchBtn);
-    card.appendChild(actions);
+    if (!compact) {
+      const actions = document.createElement("div");
+      actions.className = "card-actions";
+      const switchBtn = document.createElement("button");
+      switchBtn.className = "primary";
+      switchBtn.textContent = t("switchBtn");
+      switchBtn.addEventListener("click", async () => {
+        switchBtn.disabled = true;
+        try {
+          await invoke("github_switch", { name: acc.login });
+          await render({ immediate: true });
+        } catch (error) {
+          toast(String(error), true);
+          switchBtn.disabled = false;
+        }
+      });
+      actions.appendChild(switchBtn);
+      card.appendChild(actions);
+    }
   }
   return card;
 }

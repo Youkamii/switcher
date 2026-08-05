@@ -147,6 +147,7 @@ Claude 的存取權杖壽命只有幾個小時,所以當保管庫設定檔裡的
 - 提交作者(`git config user.name/email`)不會改變 — 切換後提交仍保留原有名字。
 - VS Code、Copilot 等其他應用程式的 GitHub 工作階段使用各自的權杖,不會跟隨。
 - 使用 SAML SSO 的組織儲存庫需要各帳號完成 SSO 授權才能存取。
+- 每次切換執行的 `gh auth setup-git` 會在全域 git 設定中為 github.com 永久註冊 gh 作為 credential helper,取代既有的 GCM 設定 — 復原:`git config --global --unset-all credential.https://github.com.helper`。
 
 ## 技術
 

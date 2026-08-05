@@ -220,10 +220,19 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
         Ok(())
     })();
     if result.is_err() {
-        BLACK_ACTIVE.store(false, Ordering::Relaxed);
+        // 일부 모니터만 덮인 채 남지 않게, 만들어진 오버레이를 전부 걷어낸다
+        close_black_overlays(&app);
         return result;
     }
-    // 최상위 재확인 감시 — 블랙 모니터가 꺼지면 스스로 끝난다
+    // 창을 만드는 사이 꺼짐 요청(black_off)이 끼었으면 방금 만든 것까지 걷어낸다 —
+    // 감시 스레드 없는 잔존 오버레이를 남기지 않기 위함 (red-review)
+    if !BLACK_ACTIVE.load(Ordering::Relaxed) {
+        close_black_overlays(&app);
+        return Ok(());
+    }
+    // 감시 스레드: ① 150ms마다 네이티브 ESC 폴링 — 오버레이 웹뷰가 죽어도
+    // 갇히지 않는 최후의 해제 수단 ② ~2초마다 z-순서를 최상위로 재상승.
+    // 블랙 모니터가 꺼지면 스스로 끝난다.
     let handle = app.clone();
     std::thread::spawn(move || {
         use tauri::Manager;
@@ -231,7 +240,18 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
         const SWP_NOMOVE: u32 = 0x0002;
         const SWP_NOACTIVATE: u32 = 0x0010;
         const HWND_TOPMOST: isize = -1;
+        const VK_ESCAPE: i32 = 0x1B;
+        let mut tick: u32 = 0;
         while BLACK_ACTIVE.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            if (unsafe { GetAsyncKeyState(VK_ESCAPE) } as u16 & 0x8000) != 0 {
+                close_black_overlays(&handle);
+                break;
+            }
+            tick += 1;
+            if tick % 13 != 0 {
+                continue;
+            }
             for (label, window) in handle.webview_windows() {
                 if !label.starts_with("black-") {
                     continue;
@@ -250,7 +270,6 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
                     }
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(2000));
         }
     });
     Ok(())
@@ -262,16 +281,23 @@ async fn black_on(_app: tauri::AppHandle) -> Result<(), String> {
     Err("macOS 블랙 모니터는 개발 진행중입니다".to_string())
 }
 
-/// 블랙 모니터 끄기 — 모든 오버레이를 닫는다 (흔들기·ESC·어느 모니터에서든)
-#[tauri::command]
-fn black_off(app: tauri::AppHandle) {
+/// 모든 오버레이 닫기 — black_off 커맨드·네이티브 ESC 감시·부분 실패 롤백이 공유한다.
+/// close()가 아니라 destroy()다: close는 CloseRequested를 거치므로 가로채기에 취약하고,
+/// 오버레이는 어떤 경우에도 확실히 사라져야 한다.
+fn close_black_overlays(app: &tauri::AppHandle) {
     use tauri::Manager;
     BLACK_ACTIVE.store(false, Ordering::Relaxed);
     for (label, window) in app.webview_windows() {
         if label.starts_with("black-") {
-            let _ = window.close();
+            let _ = window.destroy();
         }
     }
+}
+
+/// 블랙 모니터 끄기 — (흔들기·ESC·어느 모니터에서든)
+#[tauri::command]
+fn black_off(app: tauri::AppHandle) {
+    close_black_overlays(&app);
 }
 
 /// gh CLI에 로그인된 GitHub 계정 목록 (토큰은 만지지 않는다 — 이름·활성 여부만)
@@ -1035,16 +1061,23 @@ pub fn run() {
                         let Some((provider, name)) = regions[idx].action.clone() else {
                             continue;
                         };
-                        // GitHub 카드는 gh 통로로, 나머지는 토큰 파일 교체로
-                        let result: Result<(), String> = if provider == "github" {
-                            github::switch(&name)
-                        } else {
-                            (|| {
-                                let env = Env::real()?;
-                                accounts::switch(&env, Provider::parse(&provider)?, &name)
-                                    .map(|_| ())
-                            })()
-                        };
+                        // GitHub 카드는 gh 통로로 — 프로세스 2회(switch+setup-git)라 수 초
+                        // 걸릴 수 있어 폴링 스레드를 막지 않게 별도 스레드에서 돌린다
+                        if provider == "github" {
+                            let emit_handle = handle.clone();
+                            std::thread::spawn(move || {
+                                let payload = match github::switch(&name) {
+                                    Ok(()) => serde_json::json!({ "ok": true, "provider": provider, "name": name }),
+                                    Err(e) => serde_json::json!({ "ok": false, "error": e }),
+                                };
+                                let _ = emit_handle.emit("account-switched", payload);
+                            });
+                            continue;
+                        }
+                        let result: Result<(), String> = (|| {
+                            let env = Env::real()?;
+                            accounts::switch(&env, Provider::parse(&provider)?, &name).map(|_| ())
+                        })();
                         let payload = match result {
                             Ok(_) => serde_json::json!({ "ok": true, "provider": provider, "name": name }),
                             Err(e) => serde_json::json!({ "ok": false, "error": e }),
@@ -1126,8 +1159,13 @@ pub fn run() {
                 .build(app)?;
             Ok(())
         })
-        // 창 닫기 = 트레이로 숨김 (완전 종료는 트레이 메뉴의 "종료")
+        // 창 닫기 = 트레이로 숨김 (완전 종료는 트레이 메뉴의 "종료").
+        // main 창에만 적용한다 — 블랙 오버레이(black-*)까지 가로채면 close()가
+        // 숨김으로 변해 "끈 줄 알았는데 숨어만 있는" 영구 고착이 된다 (red-review critical)
         .on_window_event(|window, event| {
+            if window.label() != "main" {
+                return;
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();

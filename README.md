@@ -147,6 +147,7 @@ switcher는 계정별 토큰을 `~/.switcher/` 아래 프로필로 보관하고 
 - 커밋 작성자(`git config user.name/email`)는 바뀌지 않는다 — 전환해도 커밋에는 기존 이름이 남는다.
 - VS Code·Copilot 등 다른 앱의 GitHub 세션은 자체 토큰이라 따라오지 않는다.
 - SAML SSO를 쓰는 조직 저장소는 계정별로 SSO 승인이 있어야 접근된다.
+- 전환 시 실행되는 `gh auth setup-git`은 전역 git 설정에 github.com용 credential helper(gh)를 영구 등록한다 — 기존 GCM 설정을 대체하며, 되돌리려면 `git config --global --unset-all credential.https://github.com.helper`.
 
 ## 기술
 
