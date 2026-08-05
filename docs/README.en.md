@@ -97,7 +97,7 @@ switcher removes that loop. Log in once per account, and from then on switching 
 - UI language: tray → Settings → Language, 6 languages (Korean·English·Japanese·Simplified Chinese·Traditional Chinese·Hindi). Under development on macOS.
 - Auto-update, run-at-startup, and desktop shortcut (Windows): toggled in tray Settings. Under development on macOS.
 - GitHub account switching: switch between accounts logged in to the gh CLI — git push/pull (HTTPS) follows the active account. No usage bars.
-- Black monitor (Windows): the 🌙 button or tray menu covers every screen with a topmost black veil. Moving the mouse briefly clears a fog-like circle around the cursor; shake the mouse or press ESC to exit. Under development on macOS.
+- Black monitor: the 🌙 button or tray menu covers every screen with a topmost black veil. Moving the mouse reveals a smoke-like opening around the cursor; shake the mouse hard for a second or two, or press ESC, to exit — the veil lifts as light spreads from the last cursor position. On macOS it cannot cover apps in fullscreen Spaces.
 - Account info hiding: the 🙈 button blurs emails and GitHub logins on the cards — for screen sharing and screenshots. Press again to reveal.
 - Screen brightness control (Windows): per-monitor sliders in the DISPLAY section drive the real backlight via DDC/CI. If DDC/CI is disabled on the monitor, a hint is shown. Under development on macOS.
 

@@ -50,6 +50,9 @@ extern "C" {
     /// 전역 마우스 버튼 상태 (state_id 0 = combined session, button 0 = 왼쪽).
     /// 이벤트 탭이 아닌 상태 조회라 입력 모니터링 권한 없이 동작한다 (실기기 확인).
     fn CGEventSourceButtonState(state_id: i32, button: u32) -> bool;
+    /// 전역 키 눌림 상태 (key 53 = ESC). ButtonState와 같은 상태 조회 계열 —
+    /// 블랙 모니터의 웹뷰가 죽었을 때를 위한 백업 해제 수단으로만 쓴다.
+    fn CGEventSourceKeyState(state_id: i32, key: u16) -> bool;
 }
 
 /// 시스템 더블클릭 간격(ms) — 맥은 setup에서 NSEvent 값으로 채운다 (500ms는 폴백)
@@ -165,11 +168,14 @@ fn demo_mode() -> bool {
 /// 블랙 모니터 활성 여부 — 최상위 재확인 감시 스레드의 수명을 제어한다
 static BLACK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// 블랙 모니터 켜기 (Windows): 모니터마다 최상위(topmost) 검은 오버레이 창을 띄운다.
-/// 켜져 있는 동안 2초마다 z-순서를 다시 최상위로 밀어 올려, 나중에 뜨는 다른
-/// 최상위 창(switcher 위젯 포함)도 오버레이 밑에 머물게 한다.
-/// UAC 같은 시스템 보안 화면은 OS가 보호하므로 덮을 수 없다 (의도된 한계).
-#[cfg(windows)]
+/// 블랙 모니터 켜기: 모니터마다 최상위 검은 오버레이 창을 띄운다.
+/// - Windows: topmost + 2초마다 z-순서 재상승 — 나중에 뜨는 다른 최상위 창
+///   (switcher 위젯 포함)도 오버레이 밑에 머물게 한다.
+///   UAC 같은 시스템 보안 화면은 OS가 보호하므로 덮을 수 없다 (의도된 한계).
+/// - macOS: 위젯과 같은 이유(일반 NSWindow는 전체화면 Space 불가)로 NSPanel로
+///   전환하고 스크린세이버 레벨(1000)로 올린다 — 메뉴바·위젯(floating)보다 위.
+///   Space를 옮기면 재-order해야 붙는 한계(실측)는 감시 스레드가 보완한다.
+#[cfg(any(windows, target_os = "macos"))]
 #[tauri::command]
 async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
@@ -212,11 +218,59 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
                 monitor.size().width,
                 monitor.size().height,
             ));
+            #[cfg(windows)]
             let _ = window.show();
         }
         // ESC 해제를 받을 수 있게 첫 오버레이에 키보드 포커스
+        #[cfg(windows)]
         if let Some(first) = app.get_webview_window("black-0") {
             let _ = first.set_focus();
+        }
+        // 맥: 첫 표시 전에 패널 전환·레벨·Space 참여를 정해야 처음부터 맞는 곳에
+        // 뜬다 (main 창과 같은 실측). NSWindow 조작이라 메인 스레드에서 처리.
+        #[cfg(target_os = "macos")]
+        {
+            let handle = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                use tauri::Manager;
+                for (label, window) in handle.webview_windows() {
+                    if !label.starts_with("black-") {
+                        continue;
+                    }
+                    let _ = window.set_visible_on_all_workspaces(true);
+                    if let Ok(ptr) = window.ns_window() {
+                        use objc2_app_kit::NSWindowCollectionBehavior;
+                        let ns_window = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+                        // 위젯과 달리 패널 스왑은 하지 않는다 — 런타임 생성 창을
+                        // 스왑하면 닫을 때 ObjC 예외로 프로세스가 abort한다 (실측).
+                        // 대가로 전체화면 앱 Space는 못 덮는다 (맥 한계, README 명시).
+                        // 스크린세이버 레벨(1000) — 메뉴바·Dock·위젯(floating) 전부 덮는다
+                        ns_window.setLevel(1000);
+                        ns_window.setCollectionBehavior(
+                            ns_window.collectionBehavior()
+                                | NSWindowCollectionBehavior::CanJoinAllSpaces
+                                | NSWindowCollectionBehavior::FullScreenAuxiliary,
+                        );
+                        // 맥은 mouseMoved를 기본으로 창에 주지 않는다 — 켜야
+                        // 안개 구멍·흔들기 해제(pointermove)가 동작한다
+                        ns_window.setAcceptsMouseMovedEvents(true);
+                    }
+                    let _ = window.show();
+                }
+                // 위젯(비활성 패널)의 버튼으로 켜면 앱이 비활성 상태다 — 활성화해야
+                // macOS가 mouseMoved·키 입력을 오버레이로 준다 (실측: 비활성이면
+                // 구멍·흔들기·ESC 전부 무반응). 블랙 모니터는 명시적 전체 덮기
+                // 동작이므로 이때만큼은 포커스를 가져와도 된다.
+                if let Some(mtm) = objc2::MainThreadMarker::new() {
+                    let ns_app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                    #[allow(deprecated)]
+                    ns_app.activateIgnoringOtherApps(true);
+                }
+                // ESC 해제를 받을 수 있게 첫 오버레이에 키보드 포커스
+                if let Some(first) = handle.get_webview_window("black-0") {
+                    let _ = first.set_focus();
+                }
+            });
         }
         Ok(())
     })();
@@ -232,20 +286,26 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
     // 감시 스레드: ① 150ms마다 네이티브 ESC 폴링 — 오버레이 웹뷰가 죽어도
-    // 갇히지 않는 최후의 해제 수단 ② ~2초마다 z-순서를 최상위로 재상승.
+    // 갇히지 않는 최후의 해제 수단 ② ~2초마다 창을 다시 위로 —
+    // Windows는 z-순서 재상승, 맥은 Space 이탈 감지 후 재-order.
     // 블랙 모니터가 꺼지면 스스로 끝난다.
     let handle = app.clone();
     std::thread::spawn(move || {
         use tauri::Manager;
-        const SWP_NOSIZE: u32 = 0x0001;
-        const SWP_NOMOVE: u32 = 0x0002;
-        const SWP_NOACTIVATE: u32 = 0x0010;
-        const HWND_TOPMOST: isize = -1;
-        const VK_ESCAPE: i32 = 0x1B;
         let mut tick: u32 = 0;
         while BLACK_ACTIVE.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(150));
-            if (unsafe { GetAsyncKeyState(VK_ESCAPE) } as u16 & 0x8000) != 0 {
+            #[cfg(windows)]
+            let esc = {
+                const VK_ESCAPE: i32 = 0x1B;
+                (unsafe { GetAsyncKeyState(VK_ESCAPE) } as u16 & 0x8000) != 0
+            };
+            // 웹뷰 keydown이 1차 해제 수단(오버레이가 키 포커스)이고 이 폴링은
+            // 백업이다. KeyState가 권한 문제로 항상 false여도 ESC 해제 자체는
+            // 웹뷰 경로로 동작한다 (key 53 = kVK_Escape).
+            #[cfg(target_os = "macos")]
+            let esc = unsafe { CGEventSourceKeyState(0, 53) };
+            if esc {
                 close_black_overlays(&handle);
                 break;
             }
@@ -253,33 +313,59 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
             if tick % 13 != 0 {
                 continue;
             }
-            for (label, window) in handle.webview_windows() {
-                if !label.starts_with("black-") {
-                    continue;
-                }
-                if let Ok(hwnd) = window.hwnd() {
-                    unsafe {
-                        SetWindowPos(
-                            hwnd.0 as isize,
-                            HWND_TOPMOST,
-                            0,
-                            0,
-                            0,
-                            0,
-                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                        );
+            #[cfg(windows)]
+            {
+                const SWP_NOSIZE: u32 = 0x0001;
+                const SWP_NOMOVE: u32 = 0x0002;
+                const SWP_NOACTIVATE: u32 = 0x0010;
+                const HWND_TOPMOST: isize = -1;
+                for (label, window) in handle.webview_windows() {
+                    if !label.starts_with("black-") {
+                        continue;
+                    }
+                    if let Ok(hwnd) = window.hwnd() {
+                        unsafe {
+                            SetWindowPos(
+                                hwnd.0 as isize,
+                                HWND_TOPMOST,
+                                0,
+                                0,
+                                0,
+                                0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                            );
+                        }
                     }
                 }
+            }
+            // 맥: Space를 옮기면 CanJoinAllSpaces여도 다시 order해야 붙는다
+            // (main 창 워치독과 같은 실측 보완)
+            #[cfg(target_os = "macos")]
+            {
+                let on_main = handle.clone();
+                let _ = handle.run_on_main_thread(move || {
+                    for (label, window) in on_main.webview_windows() {
+                        if !label.starts_with("black-") {
+                            continue;
+                        }
+                        if let Ok(ptr) = window.ns_window() {
+                            let ns_window = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+                            if !ns_window.isOnActiveSpace() {
+                                ns_window.orderFrontRegardless();
+                            }
+                        }
+                    }
+                });
             }
         }
     });
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 #[tauri::command]
 async fn black_on(_app: tauri::AppHandle) -> Result<(), String> {
-    Err("macOS 블랙 모니터는 개발 진행중입니다".to_string())
+    Err("이 플랫폼에서는 블랙 모니터를 지원하지 않습니다".to_string())
 }
 
 /// 모든 오버레이 닫기 — black_off 커맨드·네이티브 ESC 감시·부분 실패 롤백이 공유한다.
@@ -422,13 +508,7 @@ fn build_tray_menu(
     let show = MenuItem::with_id(app, "show", open_l, true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", hide_l, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", quit_l, true, None::<&str>)?;
-    #[cfg(not(target_os = "macos"))]
     let black = MenuItem::with_id(app, "black-on", black_l, true, None::<&str>)?;
-    #[cfg(target_os = "macos")]
-    let black = {
-        let _ = (black_l, visible_l, display_l);
-        MenuItem::with_id(app, "black-wip", "블랙 모니터 (개발 진행중)", false, None::<&str>)?
-    };
     #[cfg(not(target_os = "macos"))]
     let settings_menu = {
         use tauri::menu::CheckMenuItem;
@@ -530,7 +610,8 @@ fn build_tray_menu(
     #[cfg(target_os = "macos")]
     let settings_menu = {
         // 맥 UI는 아직 한국어 고정 — 개발 진행중 안내만 (비활성)
-        let _ = (language_l, auto_update_l, auto_start_l);
+        // (표시 기능·DISPLAY 섹션도 아직 — visible_l·display_l은 그때 쓴다)
+        let _ = (language_l, auto_update_l, auto_start_l, visible_l, display_l);
         let language =
             MenuItem::with_id(app, "lang-wip", "언어 변경 (개발 진행중)", false, None::<&str>)?;
         let auto_update = MenuItem::with_id(

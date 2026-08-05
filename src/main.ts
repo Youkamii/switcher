@@ -608,10 +608,8 @@ async function loadVisibility() {
   // 다음 아무 클릭이 무의미한 접힘 경로를 타는 사고가 있었다 (red-review)
   if (!visibility.github) expanded.github = false;
   if (!visibility.display) expanded.display = false;
-  // macOS 블랙 모니터는 개발 진행중 — 트레이(비활성 표기)와 같은 규칙으로 버튼을 숨긴다
-  const isMac = navigator.userAgent.includes("Macintosh");
   (document.getElementById("blackbtn") as HTMLElement).style.display =
-    visibility.black && !isMac ? "" : "none";
+    visibility.black ? "" : "none";
 }
 
 /// GITHUB 계정 카드 — 사용량 없음: 이름·활성 표시·전환뿐. 컴팩트는 전환 버튼 생략.
