@@ -1,10 +1,10 @@
-<h1><img src="docs/logo.svg" width="26" alt="" /> switcher</h1>
+<h1><img src="logo.svg" width="26" alt="" /> switcher</h1>
 
-[한국어](README.md) | [English](README.en.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | **हिन्दी**
+[한국어](../README.md) | [English](README.en.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | **हिन्दी**
 
 Claude Code और Codex CLI अकाउंट्स को एक बटन से स्विच करने वाला डेस्कटॉप विजेट (Windows·macOS)।
 
-<p align="center"><img src="docs/screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
+<p align="center"><img src="screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
 <p align="center"><sub>तीन व्यू मोड — Type 1 (फ़ुल) · Type 2 (विजेट) · Type 3 (कॉम्पैक्ट)</sub></p>
 
 ## Windows
@@ -64,7 +64,7 @@ switcher
 <table align="center">
 <tr>
 <td align="center" width="450">
-<img src="docs/demo.gif" width="420" alt="विजेट मोड डेमो — अकाउंट कार्ड पर डबल-क्लिक से स्विच, खाली क्षेत्र के क्लिक पीछे की विंडो तक पास-थ्रू" />
+<img src="demo.gif" width="420" alt="विजेट मोड डेमो — अकाउंट कार्ड पर डबल-क्लिक से स्विच, खाली क्षेत्र के क्लिक पीछे की विंडो तक पास-थ्रू" />
 </td>
 <td width="430">
 
@@ -96,6 +96,7 @@ switcher इस पूरी प्रक्रिया को खत्म क
 - विंडो की ऊँचाई कंटेंट के हिसाब से अपने आप एडजस्ट होती है। ओपैसिटी स्लाइडर घटाने पर पहले बैकग्राउंड, फिर फ़्रेम हल्का होता है।
 - UI भाषा: ट्रे → सेटिंग्स → भाषा से 6 भाषाओं (कोरियाई·अंग्रेज़ी·जापानी·सरलीकृत चीनी·पारंपरिक चीनी·हिन्दी) में स्विच। macOS पर विकासाधीन।
 - ऑटो-अपडेट·बूट पर स्वतः चलना·डेस्कटॉप शॉर्टकट (Windows): ट्रे सेटिंग्स से चालू/बंद। macOS पर विकासाधीन।
+- GitHub अकाउंट स्विचिंग: gh CLI में लॉगिन अकाउंट्स को विजेट से स्विच करें — git push/pull (HTTPS) सक्रिय अकाउंट को फ़ॉलो करता है। उपयोग बार नहीं।
 
 ## यह कैसे काम करता है
 
@@ -135,6 +136,17 @@ Claude का एक्सेस टोकन कुछ ही घंटों �
 
 नोट: Claude CLI लॉगिन शुरू करते समय डिफ़ॉल्ट ब्राउज़र एक बार खोलने की कोशिश करता है। उस विंडो को बंद कर सकते हैं; विजेट का URL पेस्ट किए हुए ब्राउज़र में आगे बढ़ें।
 
+## GitHub अकाउंट स्विचिंग
+
+[GitHub CLI (gh)](https://cli.github.com) इंस्टॉल हो तो विजेट में GITHUB सेक्शन दिखता है। हर अकाउंट के लिए टर्मिनल में एक बार `gh auth login` कर लें, फिर विजेट से स्विच कर सकते हैं — अंदरूनी तौर पर यह `gh auth switch` वाला ही रास्ता लेता है, और हर स्विच पर `gh auth setup-git` चलाता है ताकि git push/pull (HTTPS) सक्रिय अकाउंट को फ़ॉलो करे। टोकन gh के keyring में रहते हैं; विजेट उन्हें नहीं छूता।
+
+ज्ञात सीमाएँ:
+
+- SSH रिमोट (`git@github.com:...`) पर असर नहीं — पहचान SSH कुंजी तय करती है। केवल HTTPS रिमोट।
+- कमिट author (`git config user.name/email`) नहीं बदलता — स्विच के बाद भी कमिट में पुराना नाम रहता है।
+- VS Code, Copilot आदि अन्य ऐप्स के GitHub सेशन अपने टोकन रखते हैं, वे फ़ॉलो नहीं करते।
+- SAML SSO वाले organization रिपॉज़िटरी के लिए हर अकाउंट की SSO स्वीकृति ज़रूरी है।
+
 ## तकनीक
 
 Tauri 2 + Rust, फ़्रंटएंड वनीला TypeScript। अकाउंट स्विचिंग·उपयोग क्वेरी·आइसोलेटेड लॉगिन — सब कुछ Rust में हैंडल होता है।
@@ -160,5 +172,5 @@ npm run setup
 ---
 
 <div align="center">
-<sub>Licensed under the <a href="LICENSE">MIT License</a> — free for any use, including commercial. Keep the copyright and license notice.</sub>
+<sub>Licensed under the <a href="../LICENSE">MIT License</a> — free for any use, including commercial. Keep the copyright and license notice.</sub>
 </div>

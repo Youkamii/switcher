@@ -1,10 +1,10 @@
-<h1><img src="docs/logo.svg" width="26" alt="" /> switcher</h1>
+<h1><img src="logo.svg" width="26" alt="" /> switcher</h1>
 
-[한국어](README.md) | [English](README.en.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | **繁體中文** | [हिन्दी](README.hi.md)
+[한국어](../README.md) | [English](README.en.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | **繁體中文** | [हिन्दी](README.hi.md)
 
 一鍵切換 Claude Code 與 Codex CLI 帳號的桌面小工具(Windows·macOS)。
 
-<p align="center"><img src="docs/screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
+<p align="center"><img src="screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
 <p align="center"><sub>三種檢視模式 — Type 1(完整)· Type 2(小工具)· Type 3(精簡)</sub></p>
 
 ## Windows
@@ -64,7 +64,7 @@ switcher
 <table align="center">
 <tr>
 <td align="center" width="450">
-<img src="docs/demo.gif" width="420" alt="小工具模式示範 — 雙擊帳號卡片即切換,空白區域的點擊會穿透到後方視窗" />
+<img src="demo.gif" width="420" alt="小工具模式示範 — 雙擊帳號卡片即切換,空白區域的點擊會穿透到後方視窗" />
 </td>
 <td width="430">
 
@@ -96,6 +96,7 @@ switcher 把這整段流程省掉。每個帳號只要最初登入一次,之後�
 - 視窗高度會依內容自動調整。調低透明度滑桿時,背景會先變淡,框架其後才變淡。
 - UI 語言:在系統匣 → 設定 → 語言中可切換 6 種語言(韓文、英文、日文、簡體中文、繁體中文、印地文)。macOS 版開發中。
 - 自動更新、開機自動啟動、桌面捷徑(Windows):在系統匣設定中開關。macOS 版開發中。
+- GitHub 帳號切換:在小工具中切換已登入 gh CLI 的帳號 — git push/pull(HTTPS)會跟隨作用中帳號。無用量顯示。
 
 ## 運作方式
 
@@ -135,6 +136,17 @@ Claude 的存取權杖壽命只有幾個小時,所以當保管庫設定檔裡的
 
 附註:Claude CLI 在開始登入時會嘗試打開一次預設瀏覽器。那個視窗關掉也沒關係,直接在貼上小工具網址的瀏覽器裡進行即可。
 
+## GitHub 帳號切換
+
+安裝了 [GitHub CLI (gh)](https://cli.github.com) 後,小工具中會出現 GITHUB 區塊。每個帳號在終端機執行一次 `gh auth login`,之後就能在小工具中切換 — 內部走與 `gh auth switch` 相同的通道,並在每次切換時執行 `gh auth setup-git`,讓 git push/pull(HTTPS)跟隨作用中帳號。權杖由 gh 保存在 keyring 中,小工具不會接觸。
+
+已知限制:
+
+- SSH 遠端(`git@github.com:...`)由 SSH 金鑰決定身分,不受此切換影響。僅 HTTPS 遠端有效。
+- 提交作者(`git config user.name/email`)不會改變 — 切換後提交仍保留原有名字。
+- VS Code、Copilot 等其他應用程式的 GitHub 工作階段使用各自的權杖,不會跟隨。
+- 使用 SAML SSO 的組織儲存庫需要各帳號完成 SSO 授權才能存取。
+
 ## 技術
 
 Tauri 2 + Rust,前端為 vanilla TypeScript。帳號切換、用量查詢與隔離登入全部在 Rust 端處理。
@@ -160,5 +172,5 @@ npm run setup
 ---
 
 <div align="center">
-<sub>Licensed under the <a href="LICENSE">MIT License</a> — free for any use, including commercial. Keep the copyright and license notice.</sub>
+<sub>Licensed under the <a href="../LICENSE">MIT License</a> — free for any use, including commercial. Keep the copyright and license notice.</sub>
 </div>

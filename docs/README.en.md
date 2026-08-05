@@ -1,10 +1,10 @@
-<h1><img src="docs/logo.svg" width="26" alt="" /> switcher</h1>
+<h1><img src="logo.svg" width="26" alt="" /> switcher</h1>
 
-[한국어](README.md) | **English** | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [हिन्दी](README.hi.md)
+[한국어](../README.md) | **English** | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [हिन्दी](README.hi.md)
 
 A desktop widget that switches between multiple Claude Code / Codex CLI accounts in one click, with per-account usage bars (Windows·macOS).
 
-<p align="center"><img src="docs/screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
+<p align="center"><img src="screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
 <p align="center"><sub>Three view modes — Type 1 (full) · Type 2 (widget) · Type 3 (compact)</sub></p>
 
 ## Windows
@@ -64,7 +64,7 @@ The first run of the `switcher` command automatically downloads the latest relea
 <table align="center">
 <tr>
 <td align="center" width="450">
-<img src="docs/demo.gif" width="420" alt="Widget mode demo — double-click an account card to switch; clicks on empty areas pass through to the window behind" />
+<img src="demo.gif" width="420" alt="Widget mode demo — double-click an account card to switch; clicks on empty areas pass through to the window behind" />
 </td>
 <td width="430">
 
@@ -96,6 +96,7 @@ switcher removes that loop. Log in once per account, and from then on switching 
 - The window height auto-fits the content. Lowering the opacity slider fades the background first, then the frame.
 - UI language: tray → Settings → Language, 6 languages (Korean·English·Japanese·Simplified Chinese·Traditional Chinese·Hindi). Under development on macOS.
 - Auto-update, run-at-startup, and desktop shortcut (Windows): toggled in tray Settings. Under development on macOS.
+- GitHub account switching: switch between accounts logged in to the gh CLI — git push/pull (HTTPS) follows the active account. No usage bars.
 
 ## How it works
 
@@ -135,6 +136,17 @@ Press "＋ Add account" in the widget and a login URL appears. Paste that URL in
 
 Note: the Claude CLI tries to open your default browser once when the login starts. You can close that window and continue in the browser where you pasted the widget's URL.
 
+## GitHub account switching
+
+If the [GitHub CLI (gh)](https://cli.github.com) is installed, a GITHUB section appears in the widget. Run `gh auth login` once per account in a terminal, and from then on you can switch in the widget — it goes through the same channel as `gh auth switch`, and runs `gh auth setup-git` on every switch so git push/pull (HTTPS) follows the active account. Tokens stay in gh's keyring; the widget never touches them.
+
+Known limits:
+
+- SSH remotes (`git@github.com:...`) are unaffected — SSH keys decide identity. HTTPS remotes only.
+- The commit author (`git config user.name/email`) does not change — commits keep the existing name after a switch.
+- GitHub sessions in other apps (VS Code, Copilot, …) have their own tokens and do not follow.
+- Org repos behind SAML SSO require per-account SSO authorization.
+
 ## Tech
 
 Tauri 2 + Rust, with a vanilla TypeScript frontend. Account switching, usage queries, and isolated logins are all handled in Rust.
@@ -160,5 +172,5 @@ For development, run `npm run tauri dev`.
 ---
 
 <div align="center">
-<sub>Licensed under the <a href="LICENSE">MIT License</a> — free for any use, including commercial. Keep the copyright and license notice.</sub>
+<sub>Licensed under the <a href="../LICENSE">MIT License</a> — free for any use, including commercial. Keep the copyright and license notice.</sub>
 </div>

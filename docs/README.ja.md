@@ -1,10 +1,10 @@
-<h1><img src="docs/logo.svg" width="26" alt="" /> switcher</h1>
+<h1><img src="logo.svg" width="26" alt="" /> switcher</h1>
 
-[한국어](README.md) | [English](README.en.md) | **日本語** | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [हिन्दी](README.hi.md)
+[한국어](../README.md) | [English](README.en.md) | **日本語** | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [हिन्दी](README.hi.md)
 
 Claude Code と Codex CLI のアカウントをボタンひとつで切り替えられるデスクトップウィジェット(Windows・macOS)。
 
-<p align="center"><img src="docs/screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
+<p align="center"><img src="screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
 <p align="center"><sub>3つの表示モード — Type 1(フル)・Type 2(ウィジェット)・Type 3(コンパクト)</sub></p>
 
 ## Windows
@@ -64,7 +64,7 @@ switcher
 <table align="center">
 <tr>
 <td align="center" width="450">
-<img src="docs/demo.gif" width="420" alt="ウィジェットモードのデモ — アカウントカードをダブルクリックで切り替え、空き領域のクリックは背後のウィンドウへ通過" />
+<img src="demo.gif" width="420" alt="ウィジェットモードのデモ — アカウントカードをダブルクリックで切り替え、空き領域のクリックは背後のウィンドウへ通過" />
 </td>
 <td width="430">
 
@@ -96,6 +96,7 @@ switcher はこの手間をなくします。アカウントごとに最初の1�
 - ウィンドウの高さは内容に合わせて自動調整されます。透明度スライダーを下げると、まず背景が、次に枠組みが薄くなります。
 - UI 言語: トレイ → 設定 → 言語 から6言語(韓国語・英語・日本語・簡体字中国語・繁体字中国語・ヒンディー語)を切り替え。macOS は開発進行中。
 - 自動アップデート・起動時の自動実行・デスクトップショートカット(Windows): トレイの設定でオン/オフ。macOS は開発進行中。
+- GitHub アカウント切り替え: gh CLI にログイン済みのアカウントをウィジェットから切り替え — git push/pull(HTTPS)がアクティブなアカウントに追従します。使用量表示はありません。
 
 ## 仕組み
 
@@ -135,6 +136,17 @@ Claude のアクセストークンは寿命が数時間しかないため、保�
 
 補足: Claude CLI はログイン開始時にデフォルトブラウザを一度開こうとします。そのウィンドウは閉じても構いません。ウィジェットの URL を貼り付けたブラウザで進めれば大丈夫です。
 
+## GitHub アカウント切り替え
+
+[GitHub CLI (gh)](https://cli.github.com) がインストールされていると、ウィジェットに GITHUB セクションが表示されます。アカウントごとにターミナルで一度 `gh auth login` しておけば、以後はウィジェットから切り替えられます — 内部では `gh auth switch` と同じ経路を使い、切り替えのたびに `gh auth setup-git` を実行して git push/pull(HTTPS)がアクティブなアカウントに追従するようにします。トークンは gh が keyring で管理し、ウィジェットは触れません。
+
+既知の制限:
+
+- SSH リモート(`git@github.com:...`)は SSH キーが身元を決めるため影響を受けません。HTTPS リモートのみ対象です。
+- コミットの author(`git config user.name/email`)は変わりません — 切り替えてもコミットには元の名前が残ります。
+- VS Code・Copilot など他アプリの GitHub セッションは独自トークンのため追従しません。
+- SAML SSO を使う組織リポジトリはアカウントごとに SSO 承認が必要です。
+
 ## 技術
 
 Tauri 2 + Rust、フロントはバニラ TypeScript。アカウント切り替え・使用量照会・隔離ログインはすべて Rust 側で処理します。
@@ -160,5 +172,5 @@ npm run setup
 ---
 
 <div align="center">
-<sub>Licensed under the <a href="LICENSE">MIT License</a> — free for any use, including commercial. Keep the copyright and license notice.</sub>
+<sub>Licensed under the <a href="../LICENSE">MIT License</a> — free for any use, including commercial. Keep the copyright and license notice.</sub>
 </div>

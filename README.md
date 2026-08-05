@@ -1,10 +1,10 @@
-<h1><img src="docs/logo.svg" width="26" alt="" /> switcher</h1>
+<h1><img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/logo.svg" width="26" alt="" /> switcher</h1>
 
-**한국어** | [English](README.en.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [हिन्दी](README.hi.md)
+**한국어** | [English](https://github.com/Youkamii/switcher/blob/main/docs/README.en.md) | [日本語](https://github.com/Youkamii/switcher/blob/main/docs/README.ja.md) | [简体中文](https://github.com/Youkamii/switcher/blob/main/docs/README.zh-CN.md) | [繁體中文](https://github.com/Youkamii/switcher/blob/main/docs/README.zh-TW.md) | [हिन्दी](https://github.com/Youkamii/switcher/blob/main/docs/README.hi.md)
 
 Claude Code와 Codex CLI 계정을 버튼 하나로 갈아타는 데스크톱 위젯 (Windows·macOS).
 
-<p align="center"><img src="docs/screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
+<p align="center"><img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
 <p align="center"><sub>세 가지 보기 모드 — Type 1 (전체) · Type 2 (위젯) · Type 3 (컴팩트)</sub></p>
 
 ## Windows
@@ -64,7 +64,7 @@ switcher
 <table align="center">
 <tr>
 <td align="center" width="450">
-<img src="docs/demo.gif" width="420" alt="위젯 모드 데모 — 계정 카드 더블클릭 전환, 빈 영역은 뒤 창으로 클릭 통과" />
+<img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/demo.gif" width="420" alt="위젯 모드 데모 — 계정 카드 더블클릭 전환, 빈 영역은 뒤 창으로 클릭 통과" />
 </td>
 <td width="430">
 
@@ -96,6 +96,7 @@ switcher는 이 과정을 없앤다. 계정마다 처음 한 번만 로그인해
 - 창 높이는 내용에 맞춰 자동 조절된다. 투명도 슬라이더를 내리면 배경이 먼저, 골조가 나중에 옅어진다.
 - UI 언어: 트레이 → 설정 → 언어에서 6개 언어(한국어·영어·일본어·간체중문·번체중문·힌디) 전환. macOS는 개발 진행중.
 - 자동 업데이트·부팅 시 자동 실행·바탕화면 바로가기 (Windows): 트레이 설정에서 켜고 끈다. macOS는 개발 진행중.
+- GitHub 계정 전환: gh CLI에 로그인된 계정들을 위젯에서 전환 — git push/pull(HTTPS)이 활성 계정을 따라간다. 사용량 표시는 없음.
 
 ## 동작
 
@@ -134,6 +135,17 @@ switcher는 계정별 토큰을 `~/.switcher/` 아래 프로필로 보관하고 
 - 팀·비즈니스 계정: 관리자가 워크스페이스 설정 → 권한 및 역할에서 활성화
 
 참고: Claude CLI는 로그인을 시작할 때 기본 브라우저를 한 번 열려고 한다. 그 창은 닫아도 되고, 위젯의 주소를 붙여넣은 브라우저에서 진행하면 된다.
+
+## GitHub 계정 전환
+
+[GitHub CLI(gh)](https://cli.github.com)가 설치되어 있으면 위젯에 GITHUB 섹션이 나타난다. 계정마다 터미널에서 `gh auth login`을 한 번씩 해두면, 그다음부터는 위젯에서 전환된다 — 내부적으로 `gh auth switch`와 같은 통로를 쓰고, 전환할 때마다 `gh auth setup-git`을 실행해 git push/pull(HTTPS)이 활성 계정을 따라가게 한다. 토큰은 gh가 keyring에 관리하며 위젯은 만지지 않는다.
+
+알아둘 한계:
+
+- SSH 리모트(`git@github.com:...`)는 SSH 키가 신원을 정하므로 이 전환의 영향을 받지 않는다. HTTPS 리모트만 해당.
+- 커밋 작성자(`git config user.name/email`)는 바뀌지 않는다 — 전환해도 커밋에는 기존 이름이 남는다.
+- VS Code·Copilot 등 다른 앱의 GitHub 세션은 자체 토큰이라 따라오지 않는다.
+- SAML SSO를 쓰는 조직 저장소는 계정별로 SSO 승인이 있어야 접근된다.
 
 ## 기술
 
