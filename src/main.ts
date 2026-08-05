@@ -168,7 +168,7 @@ function profileCard(
   head.className = "card-head";
   // 사용자는 이메일로 계정을 구분한다 — 프로필 이름은 안 보여주고 이메일만
   const email = document.createElement("span");
-  email.className = "card-name";
+  email.className = "card-name email";
   email.textContent = profile.email ?? profile.name;
   email.title = t("profileNameTooltip", { name: profile.name });
   head.append(email);
@@ -679,7 +679,7 @@ async function compactCard(provider: ProviderId, profile: ProfileInfo): Promise<
   const head = document.createElement("div");
   head.className = "card-head";
   const email = document.createElement("span");
-  email.className = "card-name";
+  email.className = "card-name email";
   email.textContent = profile.email ?? profile.name;
   email.title = t("profileNameTooltip", { name: profile.name });
   head.appendChild(email);
@@ -1084,6 +1084,7 @@ function applyStaticText() {
   refreshBtn.setAttribute("title", t("refreshTooltip"));
   document.getElementById("drag-handle")!.setAttribute("title", t("dragHandle"));
   document.getElementById("blackbtn")!.setAttribute("title", t("blackTooltip"));
+  document.getElementById("privacybtn")!.setAttribute("title", t("privacyTooltip"));
   alphaSlider.title = t("alphaTooltip");
   lockBtn.title = t("typeTooltip");
 }
@@ -1091,6 +1092,20 @@ function applyStaticText() {
 // 블랙 모니터 — 모든 화면을 최상위 검은 막으로 (해제는 오버레이 쪽: 흔들기·ESC)
 document.getElementById("blackbtn")!.addEventListener("click", () => {
   void invoke("black_on").catch((error) => toast(String(error), true));
+});
+
+// 이메일 가리기 (🙈) — 표시만 블러 처리, 동작·데이터는 그대로. 재시작 후에도 유지
+const privacyBtn = document.getElementById("privacybtn") as HTMLButtonElement;
+function applyPrivacy(on: boolean) {
+  document.body.classList.toggle("privacy", on);
+  privacyBtn.classList.toggle("pinned", on);
+}
+let privacyOn = localStorage.getItem("switcher.privacy") === "1";
+applyPrivacy(privacyOn);
+privacyBtn.addEventListener("click", () => {
+  privacyOn = !privacyOn;
+  localStorage.setItem("switcher.privacy", privacyOn ? "1" : "0");
+  applyPrivacy(privacyOn);
 });
 
 // 실행 시 자동 업데이트 결과 — 교체는 이미 끝났고 다음 실행부터 새 버전이다

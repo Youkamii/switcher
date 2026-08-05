@@ -98,6 +98,7 @@ switcher removes that loop. Log in once per account, and from then on switching 
 - Auto-update, run-at-startup, and desktop shortcut (Windows): toggled in tray Settings. Under development on macOS.
 - GitHub account switching: switch between accounts logged in to the gh CLI — git push/pull (HTTPS) follows the active account. No usage bars.
 - Black monitor (Windows): the 🌙 button or tray menu covers every screen with a topmost black veil. Moving the mouse briefly clears a fog-like circle around the cursor; shake the mouse or press ESC to exit. Under development on macOS.
+- Email hiding: the 🙈 button blurs emails on the cards — for screen sharing and screenshots. Press again to reveal.
 
 ## How it works
 
