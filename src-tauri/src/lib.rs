@@ -384,18 +384,19 @@ async fn display_list() -> Vec<display::DisplayInfo> {
     }
 }
 
-/// 밝기 설정 — 실제 백라이트 명령이라 수십~수백 ms 걸릴 수 있어 blocking 풀에서
+/// 밝기 설정 — 실제 백라이트 명령이라 수십~수백 ms 걸릴 수 있어 blocking 풀에서.
+/// name은 오매핑 방어용 — 목록 이후 모니터 구성이 바뀌면 쓰지 않고 에러
 #[tauri::command]
-async fn display_set_brightness(id: usize, percent: u32) -> Result<(), String> {
+async fn display_set_brightness(id: usize, percent: u32, name: String) -> Result<(), String> {
     #[cfg(windows)]
     {
-        tauri::async_runtime::spawn_blocking(move || display::set_brightness(id, percent))
+        tauri::async_runtime::spawn_blocking(move || display::set_brightness(id, percent, &name))
             .await
             .map_err(|e| format!("밝기 설정 작업 실패: {e}"))?
     }
     #[cfg(not(windows))]
     {
-        let _ = (id, percent);
+        let _ = (id, percent, name);
         Err("macOS 밝기 조절은 개발 진행중입니다".to_string())
     }
 }

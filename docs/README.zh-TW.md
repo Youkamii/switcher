@@ -99,6 +99,7 @@ switcher 把這整段流程省掉。每個帳號只要最初登入一次,之後�
 - GitHub 帳號切換:在小工具中切換已登入 gh CLI 的帳號 — git push/pull(HTTPS)會跟隨作用中帳號。無用量顯示。
 - 黑屏模式(Windows):🌙 按鈕或系統匣選單把所有螢幕蓋上置頂黑幕。移動滑鼠時游標周圍像霧散開般短暫透出畫面;快速晃動滑鼠或按 ESC 解除。macOS 版開發中。
 - 隱藏帳號資訊:🙈 按鈕將卡片上的電子郵件與 GitHub 帳號名模糊處理 — 防止螢幕分享·截圖外洩。再按一次恢復。
+- 螢幕亮度調整(Windows):DISPLAY 區域的每台螢幕滑桿透過 DDC/CI 調整真實背光。若螢幕未開啟 DDC/CI 會顯示提示。macOS 版開發中。
 
 ## 運作方式
 
@@ -148,7 +149,7 @@ Claude 的存取權杖壽命只有幾個小時,所以當保管庫設定檔裡的
 - 提交作者(`git config user.name/email`)不會改變 — 切換後提交仍保留原有名字。
 - VS Code、Copilot 等其他應用程式的 GitHub 工作階段使用各自的權杖,不會跟隨。
 - 使用 SAML SSO 的組織儲存庫需要各帳號完成 SSO 授權才能存取。
-- 每次切換執行的 `gh auth setup-git` 會在全域 git 設定中為 github.com 永久註冊 gh 作為 credential helper,取代既有的 GCM 設定 — 復原:`git config --global --unset-all credential.https://github.com.helper`。
+- 新增帳號·每次切換執行的 `gh auth setup-git` 會在全域 git 設定中為 github.com 永久註冊 gh 作為 credential helper,取代既有的 GCM 設定 — 復原:`git config --global --unset-all credential.https://github.com.helper`。
 
 ## 技術
 

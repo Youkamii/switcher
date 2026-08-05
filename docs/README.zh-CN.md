@@ -99,6 +99,7 @@ switcher 省掉了这个过程。每个账号只需首次登录一次，之后�
 - GitHub 账号切换：在小组件中切换已登录 gh CLI 的账号 — git push/pull（HTTPS）跟随活动账号。无用量显示。
 - 黑屏模式（Windows）：🌙 按钮或托盘菜单把所有屏幕盖上置顶黑幕。移动鼠标时光标周围像雾散开一样短暂透出画面；快速晃动鼠标或按 ESC 退出。macOS 版开发中。
 - 隐藏账号信息：🙈 按钮将卡片上的邮箱和 GitHub 账号名模糊处理 — 防止屏幕共享·截图泄露。再按一次恢复。
+- 屏幕亮度调节（Windows）：DISPLAY 区域的每台显示器滑块通过 DDC/CI 调节真实背光。若显示器未开启 DDC/CI 会显示提示。macOS 版开发中。
 
 ## 工作原理
 
@@ -148,7 +149,7 @@ Claude 的访问令牌寿命只有几个小时，因此当保管的配置文件�
 - 提交作者（`git config user.name/email`）不会改变 — 切换后提交仍保留原有名字。
 - VS Code、Copilot 等其他应用的 GitHub 会话使用各自的令牌，不会跟随。
 - 使用 SAML SSO 的组织仓库需要按账号完成 SSO 授权才能访问。
-- 每次切换执行的 `gh auth setup-git` 会在全局 git 配置中为 github.com 永久注册 gh 作为 credential helper，替换现有的 GCM 设置 — 撤销：`git config --global --unset-all credential.https://github.com.helper`。
+- 添加账号·每次切换执行的 `gh auth setup-git` 会在全局 git 配置中为 github.com 永久注册 gh 作为 credential helper，替换现有的 GCM 设置 — 撤销：`git config --global --unset-all credential.https://github.com.helper`。
 
 ## 技术
 

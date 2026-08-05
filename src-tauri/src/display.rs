@@ -10,7 +10,9 @@
 //!
 //! 핸들 수명: 물리 모니터 핸들은 호출마다 새로 얻고 반드시 Destroy로 돌려준다 —
 //! 핫플러그로 스테일 핸들이 남는 것보다 열거 비용이 싸다.
-#![cfg(windows)]
+//!
+//! DisplayInfo 타입은 전 플랫폼 공개다 — lib.rs의 display_list 커맨드가 macOS
+//! 빌드에서도 반환 타입으로 참조한다 (구현만 windows 게이트).
 
 use serde::Serialize;
 
@@ -23,6 +25,7 @@ pub struct DisplayInfo {
     pub brightness: Option<u32>,
 }
 
+#[cfg(windows)]
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct PhysicalMonitor {
@@ -30,6 +33,7 @@ struct PhysicalMonitor {
     description: [u16; 128],
 }
 
+#[cfg(windows)]
 #[link(name = "dxva2")]
 extern "system" {
     fn GetNumberOfPhysicalMonitorsFromHMONITOR(hmonitor: isize, count: *mut u32) -> i32;
@@ -43,6 +47,7 @@ extern "system" {
     fn DestroyPhysicalMonitor(handle: isize) -> i32;
 }
 
+#[cfg(windows)]
 #[link(name = "user32")]
 extern "system" {
     fn EnumDisplayMonitors(
@@ -53,6 +58,7 @@ extern "system" {
     ) -> i32;
 }
 
+#[cfg(windows)]
 extern "system" fn collect_monitor(
     hmonitor: isize,
     _hdc: isize,
@@ -64,6 +70,7 @@ extern "system" fn collect_monitor(
     1 // 계속 열거
 }
 
+#[cfg(windows)]
 fn hmonitors() -> Vec<isize> {
     let mut list: Vec<isize> = Vec::new();
     unsafe {
@@ -78,6 +85,7 @@ fn hmonitors() -> Vec<isize> {
 }
 
 /// HMONITOR 하나에 딸린 물리 모니터들 (복제 모드에서는 여러 개일 수 있다)
+#[cfg(windows)]
 fn physical_monitors(hmonitor: isize) -> Vec<PhysicalMonitor> {
     let mut count: u32 = 0;
     let ok = unsafe { GetNumberOfPhysicalMonitorsFromHMONITOR(hmonitor, &mut count) };
@@ -98,6 +106,7 @@ fn physical_monitors(hmonitor: isize) -> Vec<PhysicalMonitor> {
     monitors
 }
 
+#[cfg(windows)]
 fn monitor_name(pm: &PhysicalMonitor, index: usize) -> String {
     let end = pm
         .description
@@ -114,19 +123,24 @@ fn monitor_name(pm: &PhysicalMonitor, index: usize) -> String {
     }
 }
 
-/// (min, cur, max) → 0~100. max<=min이면 미지원으로 본다
+/// (min, cur, max) → 0~100. max<=min이면 미지원으로 본다.
+/// 값은 외부 장치(DDC/CI)가 보고한 것 — u64 중간 계산으로 오버플로를 차단한다
+#[cfg_attr(not(windows), allow(dead_code))]
 fn normalize(min: u32, cur: u32, max: u32) -> Option<u32> {
     if max <= min {
         return None;
     }
-    Some(((cur.saturating_sub(min)) * 100 / (max - min)).min(100))
+    let pct = cur.saturating_sub(min) as u64 * 100 / (max - min) as u64;
+    Some((pct as u32).min(100))
 }
 
-/// 0~100 → 모니터 고유 범위
+/// 0~100 → 모니터 고유 범위 (u64 중간 계산 — 비정상 max 보고 방어)
+#[cfg_attr(not(windows), allow(dead_code))]
 fn denormalize(min: u32, max: u32, percent: u32) -> u32 {
-    min + (max - min) * percent.min(100) / 100
+    min + ((max - min) as u64 * percent.min(100) as u64 / 100) as u32
 }
 
+#[cfg(windows)]
 fn read_brightness(handle: isize) -> Option<(u32, u32, u32)> {
     let (mut min, mut cur, mut max) = (0u32, 0u32, 0u32);
     let ok = unsafe { GetMonitorBrightness(handle, &mut min, &mut cur, &mut max) };
@@ -134,6 +148,7 @@ fn read_brightness(handle: isize) -> Option<(u32, u32, u32)> {
 }
 
 /// 모든 모니터와 현재 밝기 — 미지원 모니터는 brightness=None
+#[cfg(windows)]
 pub fn list() -> Vec<DisplayInfo> {
     let mut out: Vec<DisplayInfo> = Vec::new();
     for hmonitor in hmonitors() {
@@ -152,37 +167,49 @@ pub fn list() -> Vec<DisplayInfo> {
     out
 }
 
-/// id번째 모니터의 밝기를 percent(0~100)로 — 실제 백라이트 명령
-pub fn set_brightness(id: usize, percent: u32) -> Result<(), String> {
+/// id번째 모니터의 밝기를 percent(0~100)로 — 실제 백라이트 명령.
+/// expected_name 대조: id는 열거 순서라 목록 이후 모니터가 꽂히거나 빠지면 다른
+/// 모니터를 가리킬 수 있다 — 이름이 어긋나면 쓰지 않고 에러로 알린다 (red-review).
+/// 대상 처리 후에도 열거를 끝까지 돌며 모든 핸들을 Destroy한다 — 조기 return은
+/// 같은 그룹의 나머지 핸들을 누수시킨다 (red-review)
+#[cfg(windows)]
+pub fn set_brightness(id: usize, percent: u32, expected_name: &str) -> Result<(), String> {
     let mut index = 0usize;
+    let mut outcome: Option<Result<(), String>> = None;
     for hmonitor in hmonitors() {
         for pm in physical_monitors(hmonitor) {
             let this = index;
             index += 1;
-            if this != id {
-                unsafe { DestroyPhysicalMonitor(pm.handle) };
-                continue;
+            if this == id && outcome.is_none() {
+                if monitor_name(&pm, this) != expected_name {
+                    outcome = Some(Err(
+                        "모니터 구성이 바뀌었습니다 — 새로고침 후 다시 조절하세요".to_string(),
+                    ));
+                    unsafe { DestroyPhysicalMonitor(pm.handle) };
+                    continue;
+                }
+                outcome = Some((|| {
+                    let Some((min, _cur, max)) = read_brightness(pm.handle) else {
+                        return Err(
+                            "이 모니터는 밝기 조절을 지원하지 않습니다 (DDC/CI 확인)".to_string(),
+                        );
+                    };
+                    if max <= min {
+                        return Err("모니터가 밝기 범위를 보고하지 않습니다".to_string());
+                    }
+                    let raw = denormalize(min, max, percent);
+                    let ok = unsafe { SetMonitorBrightness(pm.handle, raw) };
+                    if ok == 0 {
+                        return Err("밝기 설정 실패 — 모니터가 응답하지 않습니다".to_string());
+                    }
+                    Ok(())
+                })());
             }
-            let result = (|| {
-                let Some((min, _cur, max)) = read_brightness(pm.handle) else {
-                    return Err(
-                        "이 모니터는 밝기 조절을 지원하지 않습니다 (DDC/CI 확인)".to_string()
-                    );
-                };
-                if max <= min {
-                    return Err("모니터가 밝기 범위를 보고하지 않습니다".to_string());
-                }
-                let ok = unsafe { SetMonitorBrightness(pm.handle, denormalize(min, max, percent)) };
-                if ok == 0 {
-                    return Err("밝기 설정 실패 — 모니터가 응답하지 않습니다".to_string());
-                }
-                Ok(())
-            })();
             unsafe { DestroyPhysicalMonitor(pm.handle) };
-            return result;
         }
     }
-    Err("모니터를 찾을 수 없습니다 — 연결이 바뀌었으면 새로고침하세요".to_string())
+    outcome
+        .unwrap_or_else(|| Err("모니터를 찾을 수 없습니다 — 연결이 바뀌었으면 새로고침하세요".to_string()))
 }
 
 #[cfg(test)]
@@ -206,6 +233,7 @@ mod tests {
     /// (`cargo test -- --ignored real_`)
     #[test]
     #[ignore]
+    #[cfg(windows)]
     fn real_display_roundtrip_same_value() {
         let monitors = list();
         assert!(!monitors.is_empty(), "모니터가 하나도 열거되지 않았다");
@@ -214,7 +242,7 @@ mod tests {
         }
         // DDC/CI 지원 모니터가 있으면 현재 값 그대로 되써서 쓰기 경로를 검증한다
         if let Some(m) = monitors.iter().find(|m| m.brightness.is_some()) {
-            set_brightness(m.id, m.brightness.unwrap()).expect("같은 값 되쓰기 실패");
+            set_brightness(m.id, m.brightness.unwrap(), &m.name).expect("같은 값 되쓰기 실패");
         }
     }
 }

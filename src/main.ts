@@ -414,10 +414,12 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
     }
     addBtn.disabled = true;
     addBtn.textContent = t("gettingLoginUrl");
+    // 주소를 받는 수 초 동안 주기 렌더가 DOM을 갈아엎으면 패널이 분리된 노드에
+    // 붙어 영영 안 보인다 — 시작 전에 loginOpen을 올려 렌더를 막는다 (red-review)
+    loginOpen = true;
     try {
       const prompt = await invoke<LoginPrompt>("start_login", { provider });
       addBtn.hidden = true;
-      loginOpen = true;
       slot.appendChild(
         loginPanel(prompt, () => {
           loginOpen = false;
@@ -425,6 +427,7 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
         }),
       );
     } catch (error) {
+      loginOpen = false;
       toast(String(error), true);
       addBtn.disabled = false;
       addBtn.textContent = t("addAccount");
@@ -636,10 +639,11 @@ function githubAddButton(section: HTMLElement) {
     }
     addBtn.disabled = true;
     addBtn.textContent = t("gettingLoginUrl");
+    // 시작 대기 중 재렌더가 패널을 분리된 DOM에 붙이는 사고 방지 (위 addAccountButton과 동일)
+    loginOpen = true;
     try {
       const prompt = await invoke<{ url: string; device_code: string }>("github_login_start");
       addBtn.hidden = true;
-      loginOpen = true;
       const onExit = () => {
         loginOpen = false;
         void render({ immediate: true });
@@ -675,6 +679,7 @@ function githubAddButton(section: HTMLElement) {
       panel.appendChild(cancelBtn);
       slot.appendChild(panel);
     } catch (error) {
+      loginOpen = false;
       toast(String(error), true);
       addBtn.disabled = false;
       addBtn.textContent = t("addAccount");
@@ -730,9 +735,12 @@ async function renderDisplays(target: DocumentFragment) {
           pct.textContent = `${slider.value}%`;
           window.clearTimeout(debounce);
           debounce = window.setTimeout(() => {
+            // name을 함께 보내 목록 이후 모니터 구성이 바뀐 경우 엉뚱한 모니터에
+            // 쓰지 않게 한다 (Rust가 대조 후 불일치면 에러)
             void invoke("display_set_brightness", {
               id: monitor.id,
               percent: Number(slider.value),
+              name: monitor.name,
             }).catch((error) => toast(String(error), true));
           }, 250);
         });
@@ -1002,10 +1010,13 @@ async function render(opts?: { immediate?: boolean }) {
   }
 }
 
-/// 자동 새로고침이 입력 중인 프로필 이름을 날리지 않게 한다
+/// 자동 새로고침이 입력 중인 프로필 이름을 날리지 않게 한다.
+/// 텍스트 입력만 본다 — range 슬라이더(투명도·밝기)는 value가 항상 차 있어
+/// 포커스가 남으면 새로고침이 영구 정지하는 오인이 있었다 (red-review)
 function userIsBusy(): boolean {
   const el = document.activeElement;
-  const typing = el instanceof HTMLInputElement && el.value.trim().length > 0;
+  const typing =
+    el instanceof HTMLInputElement && el.type === "text" && el.value.trim().length > 0;
   return typing || loginOpen;
 }
 

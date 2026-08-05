@@ -99,6 +99,7 @@ switcher removes that loop. Log in once per account, and from then on switching 
 - GitHub account switching: switch between accounts logged in to the gh CLI — git push/pull (HTTPS) follows the active account. No usage bars.
 - Black monitor (Windows): the 🌙 button or tray menu covers every screen with a topmost black veil. Moving the mouse briefly clears a fog-like circle around the cursor; shake the mouse or press ESC to exit. Under development on macOS.
 - Account info hiding: the 🙈 button blurs emails and GitHub logins on the cards — for screen sharing and screenshots. Press again to reveal.
+- Screen brightness control (Windows): per-monitor sliders in the DISPLAY section drive the real backlight via DDC/CI. If DDC/CI is disabled on the monitor, a hint is shown. Under development on macOS.
 
 ## How it works
 
@@ -148,7 +149,7 @@ Known limits:
 - The commit author (`git config user.name/email`) does not change — commits keep the existing name after a switch.
 - GitHub sessions in other apps (VS Code, Copilot, …) have their own tokens and do not follow.
 - Org repos behind SAML SSO require per-account SSO authorization.
-- The `gh auth setup-git` run on each switch permanently registers gh as the github.com credential helper in your global git config, replacing any existing GCM setup — undo with `git config --global --unset-all credential.https://github.com.helper`.
+- The `gh auth setup-git` run when adding an account or switching permanently registers gh as the github.com credential helper in your global git config, replacing any existing GCM setup — undo with `git config --global --unset-all credential.https://github.com.helper`.
 
 ## Tech
 

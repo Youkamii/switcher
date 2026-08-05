@@ -99,6 +99,7 @@ switcher はこの手間をなくします。アカウントごとに最初の1�
 - GitHub アカウント切り替え: gh CLI にログイン済みのアカウントをウィジェットから切り替え — git push/pull(HTTPS)がアクティブなアカウントに追従します。使用量表示はありません。
 - ブラックモニター(Windows): 🌙 ボタンまたはトレイメニューで全画面を最前面の黒い幕で覆います。マウスを動かすと周辺だけ霧が晴れるように一瞬透け、マウスを激しく振るか ESC で解除。macOS は開発進行中。
 - アカウント情報非表示: 🙈 ボタンでカードのメールアドレスと GitHub アカウント名をぼかします — 画面共有・スクリーンショット対策。もう一度押すと解除。
+- 画面の明るさ調整(Windows): DISPLAY セクションのモニターごとのスライダーで実際のバックライト(DDC/CI)を調整します。モニター側で DDC/CI が無効の場合は案内が表示されます。macOS は開発進行中。
 
 ## 仕組み
 
@@ -148,7 +149,7 @@ Claude のアクセストークンは寿命が数時間しかないため、保�
 - コミットの author(`git config user.name/email`)は変わりません — 切り替えてもコミットには元の名前が残ります。
 - VS Code・Copilot など他アプリの GitHub セッションは独自トークンのため追従しません。
 - SAML SSO を使う組織リポジトリはアカウントごとに SSO 承認が必要です。
-- 切り替え時に実行される `gh auth setup-git` は、グローバル git 設定に github.com 用の credential helper(gh)を恒久的に登録し、既存の GCM 設定を置き換えます — 元に戻すには `git config --global --unset-all credential.https://github.com.helper`。
+- アカウント追加・切り替え時に実行される `gh auth setup-git` は、グローバル git 設定に github.com 用の credential helper(gh)を恒久的に登録し、既存の GCM 設定を置き換えます — 元に戻すには `git config --global --unset-all credential.https://github.com.helper`。
 
 ## 技術
 

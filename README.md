@@ -99,6 +99,7 @@ switcher는 이 과정을 없앤다. 계정마다 처음 한 번만 로그인해
 - GitHub 계정 전환: gh CLI에 로그인된 계정들을 위젯에서 전환 — git push/pull(HTTPS)이 활성 계정을 따라간다. 사용량 표시는 없음.
 - 블랙 모니터 (Windows): 🌙 버튼 또는 트레이 메뉴로 모든 화면을 최상위 검은 막으로 덮는다. 마우스를 움직이면 주변만 안개 걷히듯 잠깐 비치고, 마우스를 마구 흔들거나 ESC로 해제. macOS는 개발 진행중.
 - 계정 정보 가리기: 🙈 버튼으로 카드의 이메일·GitHub 계정명을 블러 처리 — 화면 공유·스크린샷 노출 방지. 다시 누르면 해제.
+- 화면 밝기 조절 (Windows): DISPLAY 섹션의 모니터별 슬라이더로 실제 백라이트(DDC/CI)를 조절한다. 모니터에서 DDC/CI가 꺼져 있으면 안내가 뜬다. macOS는 개발 진행중.
 
 ## 동작
 
@@ -148,7 +149,7 @@ switcher는 계정별 토큰을 `~/.switcher/` 아래 프로필로 보관하고 
 - 커밋 작성자(`git config user.name/email`)는 바뀌지 않는다 — 전환해도 커밋에는 기존 이름이 남는다.
 - VS Code·Copilot 등 다른 앱의 GitHub 세션은 자체 토큰이라 따라오지 않는다.
 - SAML SSO를 쓰는 조직 저장소는 계정별로 SSO 승인이 있어야 접근된다.
-- 전환 시 실행되는 `gh auth setup-git`은 전역 git 설정에 github.com용 credential helper(gh)를 영구 등록한다 — 기존 GCM 설정을 대체하며, 되돌리려면 `git config --global --unset-all credential.https://github.com.helper`.
+- 계정 추가·전환 시 실행되는 `gh auth setup-git`은 전역 git 설정에 github.com용 credential helper(gh)를 영구 등록한다 — 기존 GCM 설정을 대체하며, 되돌리려면 `git config --global --unset-all credential.https://github.com.helper`.
 
 ## 기술
 

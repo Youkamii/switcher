@@ -274,6 +274,21 @@ const GH_PROMPT_TIMEOUT: Duration = Duration::from_secs(60);
 const GH_FINISH_TIMEOUT: Duration = Duration::from_secs(600);
 const GH_POLL: Duration = Duration::from_millis(300);
 const GH_OUTPUT_CAP: usize = 256 * 1024;
+/// 자식 종료 후 남은 출력이 버퍼에 도착하기를 기다리는 유예 (login.rs EXIT_FLUSH와 동일).
+/// 이게 없으면 gh가 "Logged in as"를 찍고 즉시 종료할 때 성공을 실패로 오인한다.
+const GH_EXIT_FLUSH: Duration = Duration::from_millis(700);
+
+/// 진행 중 세션의 PTY에 입력을 보낸다 (Enter·자동 응답 공용)
+fn gh_send(bytes: &[u8]) {
+    if let Ok(guard) = GH_LOGIN.lock() {
+        if let Some(session) = guard.as_ref() {
+            if let Ok(mut w) = session.writer.lock() {
+                let _ = w.write_all(bytes);
+                let _ = w.flush();
+            }
+        }
+    }
+}
 
 /// gh의 일회용 코드 추출: "! First copy your one-time code: XXXX-XXXX" (실측).
 /// 코덱스와 달리 코드가 문장 안에 있어 login.rs의 단독-줄 추출기로는 못 잡는다.
@@ -315,8 +330,14 @@ pub fn login_start() -> Result<GhLoginPrompt, String> {
     };
     {
         let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
-        if guard.is_some() {
-            return Err("이미 GitHub 로그인이 진행 중입니다".to_string());
+        if let Some(session) = guard.as_mut() {
+            // 좀비 세션 리퍼: 웹뷰 리로드 등으로 wait/cancel이 못 불린 채 gh가 이미
+            // 종료했으면 걷어내고 새로 시작한다 — 앱 재시작 없이 복구 (red-review)
+            if matches!(session.child.try_wait(), Ok(Some(_))) {
+                *guard = None;
+            } else {
+                return Err("이미 GitHub 로그인이 진행 중입니다".to_string());
+            }
         }
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -398,19 +419,27 @@ pub fn login_start() -> Result<GhLoginPrompt, String> {
     // 자동 응답한다 (실측: 이 질문에서 멈춘다). 전환마다 setup-git을 돌리는 우리
     // 설계에서 Y는 항상 안전하다. 화면 버퍼가 누적이라 1회만 답하도록 표시해 둔다.
     let mut answered_git_prompt = false;
+    // 자식이 종료해도 즉시 실패로 접지 않는다 — 마지막 출력이 리더 스레드를 거쳐
+    // 버퍼에 닿을 유예(GH_EXIT_FLUSH)를 준다 (login.rs와 동일한 경합 방어)
+    let mut exited_at: Option<Instant> = None;
     loop {
         {
             let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
             let Some(session) = guard.as_mut() else {
                 return Err("로그인을 취소했습니다".to_string());
             };
-            if let Ok(Some(status)) = session.child.try_wait() {
-                let text = crate::login::strip_ansi(
-                    &session.buffer.lock().map_err(|_| "내부 잠금 오류")?,
-                );
-                *guard = None;
+            if exited_at.is_none() {
+                if let Ok(Some(_)) = session.child.try_wait() {
+                    exited_at = Some(Instant::now());
+                }
+            }
+        }
+        if let Some(at) = exited_at {
+            if at.elapsed() >= GH_EXIT_FLUSH {
+                let text = crate::login::strip_ansi(&gh_login_take_buffer()?);
+                login_cleanup();
                 return Err(format!(
-                    "gh가 로그인 화면을 띄우기 전에 종료했습니다 ({status:?}): {}",
+                    "gh가 로그인 화면을 띄우기 전에 종료했습니다: {}",
                     text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("")
                 ));
             }
@@ -420,14 +449,7 @@ pub fn login_start() -> Result<GhLoginPrompt, String> {
         if !answered_git_prompt && text.contains("Authenticate Git with your GitHub credentials?")
         {
             answered_git_prompt = true;
-            if let Ok(guard) = GH_LOGIN.lock() {
-                if let Some(session) = guard.as_ref() {
-                    if let Ok(mut w) = session.writer.lock() {
-                        let _ = w.write_all(b"y\r");
-                        let _ = w.flush();
-                    }
-                }
-            }
+            gh_send(b"y\r");
         }
         if let Some(code) = extract_gh_code(&text) {
             let url = crate::login::pick_login_url(crate::login::extract_osc8_urls(&raw))
@@ -435,14 +457,7 @@ pub fn login_start() -> Result<GhLoginPrompt, String> {
                 .unwrap_or_else(|| "https://github.com/login/device".to_string());
             // "Press Enter to open ..." 프롬프트를 넘긴다 — gh가 기본 브라우저를 한 번
             // 열려고 시도하지만(닫아도 됨), 이후 폴링이 시작된다
-            if let Ok(guard) = GH_LOGIN.lock() {
-                if let Some(session) = guard.as_ref() {
-                    if let Ok(mut w) = session.writer.lock() {
-                        let _ = w.write_all(b"\r");
-                        let _ = w.flush();
-                    }
-                }
-            }
+            gh_send(b"\r");
             return Ok(GhLoginPrompt {
                 url,
                 device_code: code,
@@ -468,15 +483,29 @@ pub fn login_start() -> Result<GhLoginPrompt, String> {
 /// 브라우저 쪽 완료를 기다린다 — 성공하면 로그인된 계정 이름
 pub fn login_wait() -> Result<String, String> {
     let deadline = Instant::now() + GH_FINISH_TIMEOUT;
+    // 종료 감지 후에도 GH_EXIT_FLUSH 동안은 성공 마커를 계속 찾는다 —
+    // "Logged in as"를 찍자마자 종료하는 gh와의 경합 방어 (login.rs와 동일)
+    let mut exited_at: Option<Instant> = None;
+    let mut answered_git_prompt = false;
     loop {
-        let exited = {
+        {
             let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
             let Some(session) = guard.as_mut() else {
                 return Err("로그인을 취소했습니다".to_string());
             };
-            matches!(session.child.try_wait(), Ok(Some(_)))
-        };
+            if exited_at.is_none() {
+                if let Ok(Some(_)) = session.child.try_wait() {
+                    exited_at = Some(Instant::now());
+                }
+            }
+        }
         let text = crate::login::strip_ansi(&gh_login_take_buffer()?);
+        // gh 버전에 따라 git 인증 질문이 코드 표시 뒤에 올 수도 있다 — 여기서도 방어
+        if !answered_git_prompt && text.contains("Authenticate Git with your GitHub credentials?")
+        {
+            answered_git_prompt = true;
+            gh_send(b"y\r");
+        }
         // 성공 마커: "✓ Logged in as <login>" (gh 실측 출력)
         if let Some(login) = text
             .lines()
@@ -488,15 +517,17 @@ pub fn login_wait() -> Result<String, String> {
             login_cleanup();
             return Ok(login);
         }
-        if exited {
-            let last = text
-                .lines()
-                .rev()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or("")
-                .to_string();
-            login_cleanup();
-            return Err(format!("GitHub 로그인이 완료되지 않았습니다: {last}"));
+        if let Some(at) = exited_at {
+            if at.elapsed() >= GH_EXIT_FLUSH {
+                let last = text
+                    .lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("")
+                    .to_string();
+                login_cleanup();
+                return Err(format!("GitHub 로그인이 완료되지 않았습니다: {last}"));
+            }
         }
         if Instant::now() > deadline {
             login_cancel();
