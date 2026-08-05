@@ -10,6 +10,15 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  // 멀티 페이지: index.html(위젯) + black.html(블랙 모니터 오버레이)
+  build: {
+    rollupOptions: {
+      input: {
+        main: "index.html",
+        black: "black.html",
+      },
+    },
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,

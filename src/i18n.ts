@@ -61,6 +61,7 @@ const ko = {
   ghNotFound: "gh CLI를 찾을 수 없습니다 — GitHub CLI 설치 후 새로고침하세요",
   ghNoAccounts: "gh에 로그인된 계정이 없습니다 — 터미널에서 gh auth login 후 새로고침",
   ghAddHint: "계정 추가는 터미널에서: gh auth login",
+  blackTooltip: "블랙 모니터 — 모든 화면을 검게. 마우스를 흔들거나 ESC로 해제",
 };
 
 export type MsgKey = keyof typeof ko;
@@ -121,6 +122,7 @@ const en: Messages = {
   ghNotFound: "gh CLI not found — install GitHub CLI and refresh",
   ghNoAccounts: "No accounts logged in to gh — run gh auth login in a terminal, then refresh",
   ghAddHint: "To add an account, run in a terminal: gh auth login",
+  blackTooltip: "Black monitor — blacks out all screens. Shake the mouse or press ESC to exit",
 };
 
 const ja: Messages = {
@@ -178,6 +180,7 @@ const ja: Messages = {
   ghNotFound: "gh CLI が見つかりません — GitHub CLI をインストールして更新してください",
   ghNoAccounts: "gh にログイン済みのアカウントがありません — ターミナルで gh auth login を実行して更新してください",
   ghAddHint: "アカウント追加はターミナルで: gh auth login",
+  blackTooltip: "ブラックモニター — 全画面を黒く。マウスを振るか ESC で解除",
 };
 
 const zhCN: Messages = {
@@ -232,6 +235,7 @@ const zhCN: Messages = {
   ghNotFound: "未找到 gh CLI — 请安装 GitHub CLI 后刷新",
   ghNoAccounts: "gh 中没有已登录的账号 — 请在终端运行 gh auth login 后刷新",
   ghAddHint: "添加账号请在终端运行: gh auth login",
+  blackTooltip: "黑屏模式 — 将所有屏幕变黑。晃动鼠标或按 ESC 退出",
 };
 
 const zhTW: Messages = {
@@ -286,6 +290,7 @@ const zhTW: Messages = {
   ghNotFound: "找不到 gh CLI — 請安裝 GitHub CLI 後重新整理",
   ghNoAccounts: "gh 中沒有已登入的帳號 — 請在終端機執行 gh auth login 後重新整理",
   ghAddHint: "新增帳號請在終端機執行: gh auth login",
+  blackTooltip: "黑屏模式 — 讓所有螢幕變黑。晃動滑鼠或按 ESC 解除",
 };
 
 const hi: Messages = {
@@ -343,6 +348,7 @@ const hi: Messages = {
   ghNotFound: "gh CLI नहीं मिला — GitHub CLI इंस्टॉल करके रीफ़्रेश करें",
   ghNoAccounts: "gh में कोई लॉगिन अकाउंट नहीं — टर्मिनल में gh auth login चलाकर रीफ़्रेश करें",
   ghAddHint: "अकाउंट जोड़ने के लिए टर्मिनल में चलाएँ: gh auth login",
+  blackTooltip: "ब्लैक मॉनिटर — सभी स्क्रीन काली। माउस हिलाएँ या ESC दबाकर बंद करें",
 };
 
 const MESSAGES: Record<Lang, Messages> = {

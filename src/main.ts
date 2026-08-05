@@ -1062,9 +1062,15 @@ function applyStaticText() {
   refreshBtn.textContent = t("refresh");
   refreshBtn.setAttribute("title", t("refreshTooltip"));
   document.getElementById("drag-handle")!.setAttribute("title", t("dragHandle"));
+  document.getElementById("blackbtn")!.setAttribute("title", t("blackTooltip"));
   alphaSlider.title = t("alphaTooltip");
   lockBtn.title = t("typeTooltip");
 }
+
+// 블랙 모니터 — 모든 화면을 최상위 검은 막으로 (해제는 오버레이 쪽: 흔들기·ESC)
+document.getElementById("blackbtn")!.addEventListener("click", () => {
+  void invoke("black_on").catch((error) => toast(String(error), true));
+});
 
 // 실행 시 자동 업데이트 결과 — 교체는 이미 끝났고 다음 실행부터 새 버전이다
 void listen<string>("update-ready", (event) => {

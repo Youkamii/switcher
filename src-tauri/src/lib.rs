@@ -31,6 +31,16 @@ struct HitRegion {
 extern "system" {
     fn GetAsyncKeyState(v_key: i32) -> i16;
     fn GetDoubleClickTime() -> u32;
+    /// 블랙 모니터 오버레이를 최상위 밴드의 맨 위로 재상승시키는 데 사용
+    fn SetWindowPos(
+        hwnd: isize,
+        insert_after: isize,
+        x: i32,
+        y: i32,
+        cx: i32,
+        cy: i32,
+        flags: u32,
+    ) -> i32;
 }
 
 #[cfg(target_os = "macos")]
@@ -151,6 +161,119 @@ fn demo_mode() -> bool {
     std::env::var("SWITCHER_DEMO").is_ok()
 }
 
+/// 블랙 모니터 활성 여부 — 최상위 재확인 감시 스레드의 수명을 제어한다
+static BLACK_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// 블랙 모니터 켜기 (Windows): 모니터마다 최상위(topmost) 검은 오버레이 창을 띄운다.
+/// 켜져 있는 동안 2초마다 z-순서를 다시 최상위로 밀어 올려, 나중에 뜨는 다른
+/// 최상위 창(switcher 위젯 포함)도 오버레이 밑에 머물게 한다.
+/// UAC 같은 시스템 보안 화면은 OS가 보호하므로 덮을 수 없다 (의도된 한계).
+#[cfg(windows)]
+#[tauri::command]
+async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if BLACK_ACTIVE.swap(true, Ordering::Relaxed) {
+        return Ok(()); // 이미 켜져 있다
+    }
+    let result = (|| -> Result<(), String> {
+        let monitors = app
+            .available_monitors()
+            .map_err(|e| format!("모니터 조회 실패: {e}"))?;
+        if monitors.is_empty() {
+            return Err("모니터를 찾을 수 없습니다".to_string());
+        }
+        for (index, monitor) in monitors.iter().enumerate() {
+            let label = format!("black-{index}");
+            if app.get_webview_window(&label).is_some() {
+                continue;
+            }
+            let window = tauri::WebviewWindowBuilder::new(
+                &app,
+                &label,
+                tauri::WebviewUrl::App("black.html".into()),
+            )
+            .title("black")
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .shadow(false)
+            .visible(false)
+            .focused(false)
+            .build()
+            .map_err(|e| format!("오버레이 창 생성 실패: {e}"))?;
+            // 혼합 DPI 환경에서도 정확히 그 모니터를 덮도록 물리 좌표로 배치한다
+            let _ = window.set_position(tauri::PhysicalPosition::new(
+                monitor.position().x,
+                monitor.position().y,
+            ));
+            let _ = window.set_size(tauri::PhysicalSize::new(
+                monitor.size().width,
+                monitor.size().height,
+            ));
+            let _ = window.show();
+        }
+        // ESC 해제를 받을 수 있게 첫 오버레이에 키보드 포커스
+        if let Some(first) = app.get_webview_window("black-0") {
+            let _ = first.set_focus();
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        BLACK_ACTIVE.store(false, Ordering::Relaxed);
+        return result;
+    }
+    // 최상위 재확인 감시 — 블랙 모니터가 꺼지면 스스로 끝난다
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        use tauri::Manager;
+        const SWP_NOSIZE: u32 = 0x0001;
+        const SWP_NOMOVE: u32 = 0x0002;
+        const SWP_NOACTIVATE: u32 = 0x0010;
+        const HWND_TOPMOST: isize = -1;
+        while BLACK_ACTIVE.load(Ordering::Relaxed) {
+            for (label, window) in handle.webview_windows() {
+                if !label.starts_with("black-") {
+                    continue;
+                }
+                if let Ok(hwnd) = window.hwnd() {
+                    unsafe {
+                        SetWindowPos(
+                            hwnd.0 as isize,
+                            HWND_TOPMOST,
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                        );
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2000));
+        }
+    });
+    Ok(())
+}
+
+#[cfg(not(windows))]
+#[tauri::command]
+async fn black_on(_app: tauri::AppHandle) -> Result<(), String> {
+    Err("macOS 블랙 모니터는 개발 진행중입니다".to_string())
+}
+
+/// 블랙 모니터 끄기 — 모든 오버레이를 닫는다 (흔들기·ESC·어느 모니터에서든)
+#[tauri::command]
+fn black_off(app: tauri::AppHandle) {
+    use tauri::Manager;
+    BLACK_ACTIVE.store(false, Ordering::Relaxed);
+    for (label, window) in app.webview_windows() {
+        if label.starts_with("black-") {
+            let _ = window.close();
+        }
+    }
+}
+
 /// gh CLI에 로그인된 GitHub 계정 목록 (토큰은 만지지 않는다 — 이름·활성 여부만)
 #[tauri::command]
 async fn github_list() -> github::GithubSnapshot {
@@ -186,11 +309,18 @@ fn build_tray_menu(
     lang: &str,
 ) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{Menu, MenuItem, Submenu};
-    let [open_l, hide_l, settings_l, language_l, auto_update_l, auto_start_l, quit_l] =
+    let [open_l, hide_l, settings_l, language_l, auto_update_l, auto_start_l, black_l, quit_l] =
         settings::tray_labels(lang);
     let show = MenuItem::with_id(app, "show", open_l, true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", hide_l, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", quit_l, true, None::<&str>)?;
+    #[cfg(not(target_os = "macos"))]
+    let black = MenuItem::with_id(app, "black-on", black_l, true, None::<&str>)?;
+    #[cfg(target_os = "macos")]
+    let black = {
+        let _ = black_l;
+        MenuItem::with_id(app, "black-wip", "블랙 모니터 (개발 진행중)", false, None::<&str>)?
+    };
     #[cfg(not(target_os = "macos"))]
     let settings_menu = {
         use tauri::menu::CheckMenuItem;
@@ -271,7 +401,7 @@ fn build_tray_menu(
             &[&language, &auto_update, &auto_start],
         )?
     };
-    Menu::with_items(app, &[&show, &hide, &settings_menu, &quit])
+    Menu::with_items(app, &[&show, &hide, &black, &settings_menu, &quit])
 }
 
 /// 설정 체크 토글 공통: 플래그 반전 저장 → 부수 효과 적용 → 메뉴 재구성(체크 갱신)
@@ -881,6 +1011,14 @@ pub fn run() {
                     "toggle-auto-start" => {
                         toggle_flag(app, settings::KEY_AUTO_START, true);
                     }
+                    "black-on" => {
+                        let handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(e) = black_on(handle).await {
+                                eprintln!("블랙 모니터 켜기 실패: {e}");
+                            }
+                        });
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -919,7 +1057,9 @@ pub fn run() {
             demo_mode,
             get_language,
             github_list,
-            github_switch
+            github_switch,
+            black_on,
+            black_off
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
