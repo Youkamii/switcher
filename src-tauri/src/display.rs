@@ -1,4 +1,4 @@
-//! 화면별 밝기 조절 (Windows) — DDC/CI 표준 경로.
+//! 화면별 밝기 조절 (Windows: DDC/CI, macOS: DisplayServices).
 //!
 //! 그래픽카드 벤더 SDK 없이 dxva2.dll의 모니터 구성 API를 직접 바인딩한다.
 //! SetMonitorBrightness는 모니터 OSD에서 밝기를 바꾸는 것과 같은 하드웨어
@@ -11,8 +11,11 @@
 //! 핸들 수명: 물리 모니터 핸들은 호출마다 새로 얻고 반드시 Destroy로 돌려준다 —
 //! 핫플러그로 스테일 핸들이 남는 것보다 열거 비용이 싸다.
 //!
-//! DisplayInfo 타입은 전 플랫폼 공개다 — lib.rs의 display_list 커맨드가 macOS
-//! 빌드에서도 반환 타입으로 참조한다 (구현만 windows 게이트).
+//! macOS: 내장 디스플레이는 DisplayServices 비공개 프레임워크로 조절한다 —
+//! MonitorControl·brightness CLI가 쓰는 검증된 경로. 비공개 API라 링크하지 않고
+//! dlopen으로 열며, 없으면(미래 macOS 변경 등) 밝기 미지원으로만 강등된다.
+//! 외장 모니터 DDC(IOAVService 역공학 경로)는 검증할 장비가 없어 미구현 —
+//! brightness=None으로 보고되고 프론트가 미지원 안내를 띄운다.
 
 use serde::Serialize;
 
@@ -212,6 +215,123 @@ pub fn set_brightness(id: usize, percent: u32, expected_name: &str) -> Result<()
         .unwrap_or_else(|| Err("모니터를 찾을 수 없습니다 — 연결이 바뀌었으면 새로고침하세요".to_string()))
 }
 
+// ── macOS ───────────────────────────────────────────────────────────────
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGGetOnlineDisplayList(max: u32, displays: *mut u32, count: *mut u32) -> i32;
+    fn CGDisplayIsBuiltin(display: u32) -> u32;
+}
+
+/// DisplayServices 비공개 프레임워크 — dlopen으로 열어 없어도 앱은 뜬다
+#[cfg(target_os = "macos")]
+mod display_services {
+    use std::sync::OnceLock;
+
+    pub struct Api {
+        pub get: unsafe extern "C" fn(u32, *mut f32) -> i32,
+        pub set: unsafe extern "C" fn(u32, f32) -> i32,
+        pub can_change: unsafe extern "C" fn(u32) -> bool,
+    }
+
+    pub fn api() -> Option<&'static Api> {
+        static API: OnceLock<Option<Api>> = OnceLock::new();
+        API.get_or_init(|| unsafe {
+            let handle = libc::dlopen(
+                c"/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices"
+                    .as_ptr(),
+                libc::RTLD_LAZY,
+            );
+            if handle.is_null() {
+                return None;
+            }
+            let get = libc::dlsym(handle, c"DisplayServicesGetBrightness".as_ptr());
+            let set = libc::dlsym(handle, c"DisplayServicesSetBrightness".as_ptr());
+            let can = libc::dlsym(handle, c"DisplayServicesCanChangeBrightness".as_ptr());
+            if get.is_null() || set.is_null() || can.is_null() {
+                return None;
+            }
+            Some(Api {
+                get: std::mem::transmute(get),
+                set: std::mem::transmute(set),
+                can_change: std::mem::transmute(can),
+            })
+        })
+        .as_ref()
+    }
+}
+
+/// 켜져 있는 디스플레이 ID 목록 (CoreGraphics 공개 API — 스레드 안전)
+#[cfg(target_os = "macos")]
+fn online_displays() -> Vec<u32> {
+    let mut ids = [0u32; 16];
+    let mut count = 0u32;
+    let ok = unsafe { CGGetOnlineDisplayList(ids.len() as u32, ids.as_mut_ptr(), &mut count) };
+    if ok != 0 {
+        return Vec::new();
+    }
+    ids[..count as usize].to_vec()
+}
+
+/// 모든 디스플레이와 현재 밝기 — 조절 불가(외장 DDC 미구현 등)는 brightness=None
+#[cfg(target_os = "macos")]
+pub fn list() -> Vec<DisplayInfo> {
+    let api = display_services::api();
+    online_displays()
+        .into_iter()
+        .enumerate()
+        .map(|(index, did)| {
+            let name = if unsafe { CGDisplayIsBuiltin(did) } != 0 {
+                "Built-in Display".to_string()
+            } else {
+                format!("Display {}", index + 1)
+            };
+            let brightness = api.and_then(|api| {
+                if !unsafe { (api.can_change)(did) } {
+                    return None;
+                }
+                let mut value = 0f32;
+                if unsafe { (api.get)(did, &mut value) } != 0 {
+                    return None;
+                }
+                Some((value * 100.0).round().clamp(0.0, 100.0) as u32)
+            });
+            // id는 CGDirectDisplayID 그대로 — 열거 순서가 아니라 시스템 ID라
+            // 목록 이후 구성이 바뀌어도 다른 디스플레이를 가리키지 않는다
+            DisplayInfo {
+                id: did as usize,
+                name,
+                brightness,
+            }
+        })
+        .collect()
+}
+
+/// id 디스플레이의 밝기를 percent(0~100)로 — 실제 백라이트 명령.
+/// expected_name 대조는 윈도우와 같은 계약 (id가 시스템 ID라 사고 여지는 작지만 유지)
+#[cfg(target_os = "macos")]
+pub fn set_brightness(id: usize, percent: u32, expected_name: &str) -> Result<(), String> {
+    let Some(api) = display_services::api() else {
+        return Err("밝기 API(DisplayServices)를 사용할 수 없습니다".to_string());
+    };
+    let Some(target) = list().into_iter().find(|d| d.id == id) else {
+        return Err("디스플레이를 찾을 수 없습니다 — 연결이 바뀌었으면 새로고침하세요".to_string());
+    };
+    if target.name != expected_name {
+        return Err("모니터 구성이 바뀌었습니다 — 새로고침 후 다시 조절하세요".to_string());
+    }
+    let did = id as u32;
+    if !unsafe { (api.can_change)(did) } {
+        return Err("이 디스플레이는 밝기 조절을 지원하지 않습니다".to_string());
+    }
+    let value = percent.min(100) as f32 / 100.0;
+    if unsafe { (api.set)(did, value) } != 0 {
+        return Err("밝기 설정 실패 — 디스플레이가 응답하지 않습니다".to_string());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,7 +353,7 @@ mod tests {
     /// (`cargo test -- --ignored real_`)
     #[test]
     #[ignore]
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     fn real_display_roundtrip_same_value() {
         let monitors = list();
         assert!(!monitors.is_empty(), "모니터가 하나도 열거되지 않았다");

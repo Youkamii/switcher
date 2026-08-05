@@ -47,6 +47,8 @@ sha2 = "0.10"
 # 위젯 창을 비활성 NSPanel로 바꿔 모든 Space·전체화면 위에 띄운다 (lib.rs 참고)
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSEvent", "NSWindow", "NSResponder", "NSPanel"] }
+# 부팅 시 자동 실행 — 로그인 항목 등록 (SMAppService, macOS 13+)
+objc2-service-management = { version = "0.3", features = ["SMAppService"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros"] }

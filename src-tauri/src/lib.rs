@@ -455,16 +455,17 @@ fn get_visibility() -> Visibility {
     }
 }
 
-/// 모니터 목록·현재 밝기 (Windows: DDC/CI. 그 외 플랫폼은 빈 목록 → 섹션 생략)
+/// 모니터 목록·현재 밝기 (Windows: DDC/CI, macOS: DisplayServices.
+/// 그 외 플랫폼은 빈 목록 → 섹션 생략)
 #[tauri::command]
 async fn display_list() -> Vec<display::DisplayInfo> {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         tauri::async_runtime::spawn_blocking(display::list)
             .await
             .unwrap_or_default()
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         Vec::new()
     }
@@ -474,16 +475,16 @@ async fn display_list() -> Vec<display::DisplayInfo> {
 /// name은 오매핑 방어용 — 목록 이후 모니터 구성이 바뀌면 쓰지 않고 에러
 #[tauri::command]
 async fn display_set_brightness(id: usize, percent: u32, name: String) -> Result<(), String> {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         tauri::async_runtime::spawn_blocking(move || display::set_brightness(id, percent, &name))
             .await
             .map_err(|e| format!("밝기 설정 작업 실패: {e}"))?
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = (id, percent, name);
-        Err("macOS 밝기 조절은 개발 진행중입니다".to_string())
+        Err("이 플랫폼에서는 밝기 조절을 지원하지 않습니다".to_string())
     }
 }
 
@@ -509,7 +510,6 @@ fn build_tray_menu(
     let hide = MenuItem::with_id(app, "hide", hide_l, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", quit_l, true, None::<&str>)?;
     let black = MenuItem::with_id(app, "black-on", black_l, true, None::<&str>)?;
-    #[cfg(not(target_os = "macos"))]
     let settings_menu = {
         use tauri::menu::CheckMenuItem;
         let mut lang_items: Vec<CheckMenuItem<tauri::Wry>> = Vec::new();
@@ -607,42 +607,10 @@ fn build_tray_menu(
             &[&language, &visible, &auto_update, &auto_start],
         )?
     };
-    #[cfg(target_os = "macos")]
-    let settings_menu = {
-        // 맥 UI는 아직 한국어 고정 — 개발 진행중 안내만 (비활성)
-        // (표시 기능·DISPLAY 섹션도 아직 — visible_l·display_l은 그때 쓴다)
-        let _ = (language_l, auto_update_l, auto_start_l, visible_l, display_l);
-        let language =
-            MenuItem::with_id(app, "lang-wip", "언어 변경 (개발 진행중)", false, None::<&str>)?;
-        let auto_update = MenuItem::with_id(
-            app,
-            "update-wip",
-            "자동 업데이트 (개발 진행중)",
-            false,
-            None::<&str>,
-        )?;
-        let auto_start = MenuItem::with_id(
-            app,
-            "autostart-wip",
-            "자동 실행 (개발 진행중)",
-            false,
-            None::<&str>,
-        )?;
-        Submenu::with_id_and_items(
-            app,
-            "settings",
-            settings_l,
-            true,
-            &[&language, &auto_update, &auto_start],
-        )?
-    };
     // 블랙 모니터 진입점은 표시 기능에서 껐으면 트레이에서도 숨긴다
-    #[cfg(not(target_os = "macos"))]
     let black_visible = Env::real()
         .map(|env| settings::load_flag(&env.store, settings::KEY_SHOW_BLACK, true))
         .unwrap_or(true);
-    #[cfg(target_os = "macos")]
-    let black_visible = true;
     let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![&show, &hide];
     if black_visible {
         items.push(&black);
@@ -653,14 +621,13 @@ fn build_tray_menu(
 }
 
 /// 설정 체크 토글 공통: 플래그 반전 저장 → 부수 효과 적용 → 메뉴 재구성(체크 갱신)
-#[cfg(not(target_os = "macos"))]
 fn toggle_flag(app: &tauri::AppHandle, key: &'static str, default: bool) {
     let Ok(env) = Env::real() else { return };
     let now = !settings::load_flag(&env.store, key, default);
     if let Err(e) = settings::save_flag(&env.store, key, now) {
         eprintln!("설정 저장 실패: {e}");
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if key == settings::KEY_AUTO_START {
         if let Err(e) = autostart::set_enabled(now) {
             eprintln!("{e}");
@@ -670,7 +637,6 @@ fn toggle_flag(app: &tauri::AppHandle, key: &'static str, default: bool) {
 }
 
 /// 트레이 메뉴를 주어진 언어로 다시 만들어 갈아 끼운다 (언어·체크 상태 변경 공통)
-#[cfg(not(target_os = "macos"))]
 fn refresh_tray_menu(app: &tauri::AppHandle, lang: &str) {
     if let Ok(menu) = build_tray_menu(app, lang) {
         if let Some(tray) = app.tray_by_id("main") {
@@ -832,9 +798,45 @@ mod autostart {
     }
 }
 
+/// 부팅 시 자동 실행 — 로그인 항목 (macOS 13+, SMAppService).
+/// 시스템 설정 → 일반 → 로그인 항목에 표시되고, 사용자가 거기서 꺼도 된다.
+#[cfg(target_os = "macos")]
+mod autostart {
+    pub fn set_enabled(enabled: bool) -> Result<(), String> {
+        use objc2_service_management::{SMAppService, SMAppServiceStatus};
+        // macOS 12 이하엔 SMAppService가 없다 — 클래스 존재로 판별
+        if objc2::runtime::AnyClass::get(c"SMAppService").is_none() {
+            return Err("자동 실행은 macOS 13 이상에서 지원됩니다".to_string());
+        }
+        // 번들(.app) 밖에서 돌면(개발 실행 등) 디버그 바이너리가 로그인 항목에
+        // 등록되는 사고를 막는다
+        if enabled
+            && !std::env::current_exe()
+                .map(|p| p.to_string_lossy().contains(".app/Contents/MacOS"))
+                .unwrap_or(false)
+        {
+            return Err("자동 실행 등록은 앱 번들(switcher.app)에서만 가능합니다".to_string());
+        }
+        let service = unsafe { SMAppService::mainAppService() };
+        let status = unsafe { service.status() };
+        if enabled {
+            if status == SMAppServiceStatus::Enabled {
+                return Ok(()); // 이미 등록됨
+            }
+            unsafe { service.registerAndReturnError() }
+                .map_err(|e| format!("자동 실행 등록 실패: {e}"))
+        } else {
+            if status != SMAppServiceStatus::Enabled {
+                return Ok(()); // 이미 없음 — 조용히 성공 (윈도우와 같은 계약)
+            }
+            unsafe { service.unregisterAndReturnError() }
+                .map_err(|e| format!("자동 실행 해제 실패: {e}"))
+        }
+    }
+}
+
 /// 언어 변경 적용: 저장 → 트레이 메뉴 재구성(체크 이동) → 웹뷰에 알림.
 /// 저장이 실패해도 이번 세션에는 적용한다 — 다음 시작 때만 원래 언어로 돌아간다.
-#[cfg(not(target_os = "macos"))]
 fn apply_language(app: &tauri::AppHandle, lang: &str) {
     use tauri::Emitter;
     if !settings::is_supported(lang) {
@@ -1047,9 +1049,10 @@ pub fn run() {
                 }
             });
 
-            // 부팅 시 자동 실행 (기본 켜짐): 켜져 있으면 시작마다 현재 경로로 재등록해
-            // exe가 이동·업데이트돼도 자가 치유된다. 꺼짐이면 건드리지 않는다 (해제는 토글에서만).
-            #[cfg(windows)]
+            // 부팅 시 자동 실행 (기본 켜짐): 켜져 있으면 시작마다 재등록해
+            // exe가 이동·업데이트돼도 자가 치유된다 (맥은 번들 실행일 때만).
+            // 꺼짐이면 건드리지 않는다 (해제는 토글에서만).
+            #[cfg(any(windows, target_os = "macos"))]
             if Env::real()
                 .map(|env| settings::load_flag(&env.store, settings::KEY_AUTO_START, true))
                 .unwrap_or(true)
@@ -1073,10 +1076,10 @@ pub fn run() {
                 }
             }
 
-            // 실행 시 자동 업데이트 (Windows·릴리스 빌드만): 새 버전이면 exe를 제자리
-            // 교체하고 다음 실행부터 반영된다. dev 빌드가 target 산출물을 덮지 않게
-            // debug_assertions에서는 확인 자체를 건너뛴다.
-            #[cfg(windows)]
+            // 실행 시 자동 업데이트 (릴리스 빌드만): 새 버전이면 실행 파일(윈도우 exe /
+            // 맥 .app 번들)을 제자리 교체하고 다음 실행부터 반영된다. dev 빌드가
+            // target 산출물을 덮지 않게 debug_assertions에서는 확인 자체를 건너뛴다.
+            #[cfg(any(windows, target_os = "macos"))]
             {
                 update::sweep_old_exe();
                 #[cfg(not(debug_assertions))]
@@ -1254,19 +1257,15 @@ pub fn run() {
                         login::cancel();
                         app.exit(0);
                     }
-                    #[cfg(not(target_os = "macos"))]
                     id if id.starts_with("lang:") => {
                         apply_language(app, id.trim_start_matches("lang:"));
                     }
-                    #[cfg(not(target_os = "macos"))]
                     "toggle-auto-update" => {
                         toggle_flag(app, settings::KEY_AUTO_UPDATE, true);
                     }
-                    #[cfg(not(target_os = "macos"))]
                     "toggle-auto-start" => {
                         toggle_flag(app, settings::KEY_AUTO_START, true);
                     }
-                    #[cfg(not(target_os = "macos"))]
                     id if id.starts_with("vis:") => {
                         use tauri::Emitter;
                         let key = match id.trim_start_matches("vis:") {
