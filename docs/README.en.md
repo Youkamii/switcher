@@ -45,7 +45,7 @@ npm install -g switcher-widget
 switcher
 ```
 
-The first run of the `switcher` command automatically downloads the latest release build (subsequent runs start instantly). Since it isn't a browser download, no "unidentified developer" warning appears. To update, quit the widget and run the same install command again.
+The first run of the `switcher` command automatically downloads the latest release build (subsequent runs start instantly). Since it isn't a browser download, no "unidentified developer" warning appears. Updates are automatic — every launch checks for a new release and applies it on the next launch.
 
 **Direct download** — grab `switcher-mac-arm64.zip` from the [releases page](https://github.com/Youkamii/switcher/releases/latest), extract it, and run `switcher.app`. Apple Silicon only — on Intel Macs, install via [Build from source](#build-from-source) below.
 
@@ -56,8 +56,9 @@ The first run of the `switcher` command automatically downloads the latest relea
 - Launch `switcher.app`. It does not appear in the Dock or Cmd+Tab; it lives in the right side of the menu bar as a W icon.
 - The widget stays on top across all desktops (Spaces) and even over full-screen apps.
 - Left-click the menu bar W icon to toggle the window; right-click → Quit to exit completely.
-- Changing the UI language on macOS is **under development** — the UI is currently shown in Korean.
-- To start it at boot, add `switcher.app` under System Settings → General → Login Items.
+- Change the UI language via right-click on the menu bar W icon → Settings → Language (한국어·English·日本語·简体中文·繁體中文·हिन्दी).
+- Run at startup is enabled by default — turn it off via tray Settings → Run at startup (it also appears under System Settings → Login Items).
+- Every launch checks for a new release and auto-updates (applied on the next launch) — turn it off via tray Settings → Auto-update.
 
 ## Using the widget (Windows·macOS)
 
@@ -94,12 +95,12 @@ switcher removes that loop. Log in once per account, and from then on switching 
 - Subscription tier: Max (5x yellow, 20x red) / Pro / Plus badges next to each account.
 - Modes (Type1/2/3): full → widget → compact cycle. In widget/compact modes the buttons hide, clicks and drags pass through to the window behind, and double-clicking a card switches accounts. Move the window with the ☰ handle.
 - The window height auto-fits the content. Lowering the opacity slider fades the background first, then the frame.
-- UI language: tray → Settings → Language, 6 languages (Korean·English·Japanese·Simplified Chinese·Traditional Chinese·Hindi). Under development on macOS.
-- Auto-update, run-at-startup, and desktop shortcut (Windows): toggled in tray Settings. Under development on macOS.
+- UI language: tray → Settings → Language, 6 languages (Korean·English·Japanese·Simplified Chinese·Traditional Chinese·Hindi).
+- Auto-update and run-at-startup: toggled in tray Settings. The desktop shortcut is Windows-only.
 - GitHub account switching: switch between accounts logged in to the gh CLI — git push/pull (HTTPS) follows the active account. No usage bars.
 - Black monitor: the 🌙 button or tray menu covers every screen with a topmost black veil. Moving the mouse reveals a smoke-like opening around the cursor; shake the mouse hard for a second or two, or press ESC, to exit — the veil lifts as light spreads from the last cursor position. On macOS it cannot cover apps in fullscreen Spaces.
 - Account info hiding: the 🙈 button blurs emails and GitHub logins on the cards — for screen sharing and screenshots. Press again to reveal.
-- Screen brightness control (Windows): per-monitor sliders in the DISPLAY section drive the real backlight via DDC/CI. If DDC/CI is disabled on the monitor, a hint is shown. Under development on macOS.
+- Screen brightness control: per-monitor sliders in the DISPLAY section drive the real backlight (DDC/CI on Windows, the built-in display on macOS). Monitors with DDC/CI disabled, and external monitors on a Mac, show an unsupported notice.
 
 ## How it works
 
