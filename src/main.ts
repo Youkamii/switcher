@@ -592,17 +592,21 @@ async function renderGithub(target: DocumentFragment) {
   section.appendChild(heading);
   try {
     const snap = await invoke<GithubSnapshot>("github_list");
-    if (!snap.gh_found || snap.accounts.length === 0) {
+    if (!snap.gh_found) {
       const hint = document.createElement("p");
       hint.className = "hint";
-      hint.textContent = snap.gh_found ? t("ghNoAccounts") : t("ghNotFound");
+      hint.textContent = t("ghNotFound");
       section.appendChild(hint);
     } else {
-      for (const acc of snap.accounts) section.appendChild(githubCard(acc));
-      const help = document.createElement("p");
-      help.className = "hint";
-      help.textContent = t("ghAddHint");
-      section.appendChild(help);
+      if (snap.accounts.length === 0) {
+        const hint = document.createElement("p");
+        hint.className = "hint";
+        hint.textContent = t("ghNoAccounts");
+        section.appendChild(hint);
+      } else {
+        for (const acc of snap.accounts) section.appendChild(githubCard(acc));
+      }
+      githubAddButton(section);
     }
   } catch (error) {
     const err = document.createElement("p");
@@ -611,6 +615,71 @@ async function renderGithub(target: DocumentFragment) {
     section.appendChild(err);
   }
   target.appendChild(section);
+}
+
+/// GITHUB 계정 추가 — 코덱스와 같은 장치 코드 UX (주소 + 일회용 코드 → 브라우저 입력)
+function githubAddButton(section: HTMLElement) {
+  const row = document.createElement("div");
+  row.className = "add-row";
+  const addBtn = document.createElement("button");
+  addBtn.className = "primary";
+  addBtn.textContent = t("addAccount");
+  row.appendChild(addBtn);
+  section.appendChild(row);
+  const slot = document.createElement("div");
+  section.appendChild(slot);
+
+  addBtn.addEventListener("click", async () => {
+    if (loginOpen) {
+      toast(t("loginBusy"), true);
+      return;
+    }
+    addBtn.disabled = true;
+    addBtn.textContent = t("gettingLoginUrl");
+    try {
+      const prompt = await invoke<{ url: string; device_code: string }>("github_login_start");
+      addBtn.hidden = true;
+      loginOpen = true;
+      const onExit = () => {
+        loginOpen = false;
+        void render({ immediate: true });
+      };
+      const panel = document.createElement("div");
+      panel.className = "login-panel";
+      const steps = document.createElement("div");
+      steps.className = "help";
+      steps.textContent = t("stepsCodex");
+      panel.appendChild(steps);
+      panel.appendChild(copyBox(t("loginUrl"), prompt.url, false));
+      panel.appendChild(copyBox(t("oneTimeCode"), prompt.device_code, true));
+      const waiting = document.createElement("div");
+      waiting.className = "usage-note";
+      waiting.textContent = t("waitingBrowser");
+      panel.appendChild(waiting);
+      void (async () => {
+        try {
+          const login = await invoke<string>("github_login_wait");
+          toast(t("ghAdded", { login }));
+        } catch (error) {
+          toast(String(error), true);
+        }
+        onExit();
+      })();
+      const cancelBtn = document.createElement("button");
+      cancelBtn.className = "link";
+      cancelBtn.textContent = t("cancel");
+      cancelBtn.addEventListener("click", () => {
+        void invoke("github_login_cancel");
+        onExit();
+      });
+      panel.appendChild(cancelBtn);
+      slot.appendChild(panel);
+    } catch (error) {
+      toast(String(error), true);
+      addBtn.disabled = false;
+      addBtn.textContent = t("addAccount");
+    }
+  });
 }
 
 type DisplayInfo = { id: number; name: string; brightness: number | null };
@@ -876,6 +945,8 @@ async function render(opts?: { immediate?: boolean }) {
       if (loginOpen) {
         loginOpen = false;
         void invoke("cancel_login");
+        // gh 로그인 세션도 같은 정책 — 안 열려 있으면 무해한 no-op
+        void invoke("github_login_cancel");
       }
       // 그리는 도중 모드가 바뀌어도 한 화면은 단일 모드로 —
       // 프로바이더마다 다른 모드로 그려지는 혼종 화면 방지

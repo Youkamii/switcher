@@ -140,7 +140,7 @@ Note: the Claude CLI tries to open your default browser once when the login star
 
 ## GitHub account switching
 
-If the [GitHub CLI (gh)](https://cli.github.com) is installed, a GITHUB section appears in the widget. Run `gh auth login` once per account in a terminal, and from then on you can switch in the widget — it goes through the same channel as `gh auth switch`, and runs `gh auth setup-git` on every switch so git push/pull (HTTPS) follows the active account. Tokens stay in gh's keyring; the widget never touches them.
+If the [GitHub CLI (gh)](https://cli.github.com) is installed, a GITHUB section appears in the widget. Add accounts with the "＋ Add account" button in the widget — it shows a URL and a one-time code to enter in your browser (a terminal `gh auth login` still works too). From then on you can switch in the widget — it goes through the same channel as `gh auth switch`, and runs `gh auth setup-git` on every switch so git push/pull (HTTPS) follows the active account. Tokens stay in gh's keyring; the widget never touches them.
 
 Known limits:
 

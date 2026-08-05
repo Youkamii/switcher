@@ -140,7 +140,7 @@ Claude 的访问令牌寿命只有几个小时，因此当保管的配置文件�
 
 ## GitHub 账号切换
 
-安装了 [GitHub CLI (gh)](https://cli.github.com) 后，小组件中会出现 GITHUB 区域。每个账号在终端执行一次 `gh auth login`，之后就能在小组件中切换 — 内部走与 `gh auth switch` 相同的通道，并在每次切换时执行 `gh auth setup-git`，让 git push/pull（HTTPS）跟随活动账号。令牌由 gh 保存在 keyring 中，小组件不会接触。
+安装了 [GitHub CLI (gh)](https://cli.github.com) 后，小组件中会出现 GITHUB 区域。添加账号用小组件中的“＋ 添加账号”按钮 — 会显示地址和一次性代码，在浏览器中输入即可（终端 `gh auth login` 也仍然可用）。之后就能在小组件中切换 — 内部走与 `gh auth switch` 相同的通道，并在每次切换时执行 `gh auth setup-git`，让 git push/pull（HTTPS）跟随活动账号。令牌由 gh 保存在 keyring 中，小组件不会接触。
 
 已知限制：
 

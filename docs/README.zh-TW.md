@@ -140,7 +140,7 @@ Claude 的存取權杖壽命只有幾個小時,所以當保管庫設定檔裡的
 
 ## GitHub 帳號切換
 
-安裝了 [GitHub CLI (gh)](https://cli.github.com) 後,小工具中會出現 GITHUB 區塊。每個帳號在終端機執行一次 `gh auth login`,之後就能在小工具中切換 — 內部走與 `gh auth switch` 相同的通道,並在每次切換時執行 `gh auth setup-git`,讓 git push/pull(HTTPS)跟隨作用中帳號。權杖由 gh 保存在 keyring 中,小工具不會接觸。
+安裝了 [GitHub CLI (gh)](https://cli.github.com) 後,小工具中會出現 GITHUB 區塊。新增帳號用小工具中的「＋ 新增帳號」按鈕 — 會顯示網址與一次性代碼,在瀏覽器中輸入即可(終端機 `gh auth login` 也仍然可用)。之後就能在小工具中切換 — 內部走與 `gh auth switch` 相同的通道,並在每次切換時執行 `gh auth setup-git`,讓 git push/pull(HTTPS)跟隨作用中帳號。權杖由 gh 保存在 keyring 中,小工具不會接觸。
 
 已知限制:
 

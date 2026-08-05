@@ -140,7 +140,7 @@ Claude のアクセストークンは寿命が数時間しかないため、保�
 
 ## GitHub アカウント切り替え
 
-[GitHub CLI (gh)](https://cli.github.com) がインストールされていると、ウィジェットに GITHUB セクションが表示されます。アカウントごとにターミナルで一度 `gh auth login` しておけば、以後はウィジェットから切り替えられます — 内部では `gh auth switch` と同じ経路を使い、切り替えのたびに `gh auth setup-git` を実行して git push/pull(HTTPS)がアクティブなアカウントに追従するようにします。トークンは gh が keyring で管理し、ウィジェットは触れません。
+[GitHub CLI (gh)](https://cli.github.com) がインストールされていると、ウィジェットに GITHUB セクションが表示されます。アカウント追加はウィジェットの「＋ アカウント追加」ボタンから — URL とワンタイムコードが表示され、ブラウザで入力すれば完了です(ターミナルの `gh auth login` もそのまま使えます)。以後はウィジェットから切り替えられます — 内部では `gh auth switch` と同じ経路を使い、切り替えのたびに `gh auth setup-git` を実行して git push/pull(HTTPS)がアクティブなアカウントに追従するようにします。トークンは gh が keyring で管理し、ウィジェットは触れません。
 
 既知の制限:
 

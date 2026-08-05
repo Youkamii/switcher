@@ -13,9 +13,12 @@
 //! 한계(README에 명시): SSH 리모트·커밋 author(user.name/email)·타 앱 세션은
 //! 이 전환의 영향 밖이다.
 
+use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
+use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct GithubAccount {
@@ -244,6 +247,280 @@ pub fn switch(login: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ── 인앱 계정 추가 (gh auth login, PTY) ──────────────────────────────────
+// 코덱스 장치 코드 로그인과 같은 UX: 위젯에 주소 + 일회용 코드(XXXX-XXXX)를
+// 띄우고, 브라우저에서 코드를 넣으면 gh가 알아서 끝낸다. gh는 다중 계정을
+// 네이티브 지원하므로 격리 폴더가 필요 없다 — 라이브 설정에 계정이 "추가"되고
+// 기존 계정은 유지된다 (주의: gh는 완료 시 새 계정을 활성으로 만든다).
+
+#[derive(Serialize)]
+pub struct GhLoginPrompt {
+    pub url: String,
+    pub device_code: String,
+}
+
+struct GhLoginSession {
+    child: Box<dyn Child + Send + Sync>,
+    /// 코드 표시 후 Enter를 보내는 데 쓴다 (reader 스레드의 커서 질의 응답과 공유)
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    buffer: Arc<Mutex<Vec<u8>>>,
+    _master: Box<dyn MasterPty + Send>,
+}
+
+static GH_LOGIN: Mutex<Option<GhLoginSession>> = Mutex::new(None);
+
+/// 로그인 링크·코드가 뜰 때까지 / 브라우저 완료까지 기다리는 시간 (login.rs와 동일 기준)
+const GH_PROMPT_TIMEOUT: Duration = Duration::from_secs(60);
+const GH_FINISH_TIMEOUT: Duration = Duration::from_secs(600);
+const GH_POLL: Duration = Duration::from_millis(300);
+const GH_OUTPUT_CAP: usize = 256 * 1024;
+
+/// gh의 일회용 코드 추출: "! First copy your one-time code: XXXX-XXXX" (실측).
+/// 코덱스와 달리 코드가 문장 안에 있어 login.rs의 단독-줄 추출기로는 못 잡는다.
+fn extract_gh_code(text: &str) -> Option<String> {
+    for line in text.lines() {
+        if let Some(rest) = line.split("one-time code:").nth(1) {
+            let token = rest.trim().split_whitespace().next().unwrap_or("");
+            let ok = token.len() >= 8
+                && token.len() <= 16
+                && token.contains('-')
+                && token
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-');
+            if ok {
+                return Some(token.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn gh_login_take_buffer() -> Result<Vec<u8>, String> {
+    // Arc만 복제해 세션 잠금을 즉시 놓는다 — 버퍼 잠금과 겹치지 않게
+    let buffer = {
+        let guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
+        let Some(session) = guard.as_ref() else {
+            return Err("로그인을 취소했습니다".to_string());
+        };
+        session.buffer.clone()
+    };
+    let data = buffer.lock().map_err(|_| "내부 잠금 오류")?.clone();
+    Ok(data)
+}
+
+/// gh auth login을 PTY로 시작해 주소와 일회용 코드를 돌려준다
+pub fn login_start() -> Result<GhLoginPrompt, String> {
+    let Some(bin) = gh_bin() else {
+        return Err("gh CLI를 찾을 수 없습니다 — GitHub CLI를 설치하세요".to_string());
+    };
+    {
+        let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
+        if guard.is_some() {
+            return Err("이미 GitHub 로그인이 진행 중입니다".to_string());
+        }
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 40,
+                cols: 500,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .map_err(|e| format!("가상 콘솔 생성 실패: {e}"))?;
+        // gh는 진짜 exe라 cmd 셔임 경유가 필요 없다. --web + 플래그로 질문을 없애
+        // 곧장 일회용 코드 화면으로 간다
+        let mut cmd = CommandBuilder::new(bin);
+        for arg in [
+            "auth",
+            "login",
+            "--hostname",
+            "github.com",
+            "--git-protocol",
+            "https",
+            "--web",
+        ] {
+            cmd.arg(arg);
+        }
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("gh 실행 실패: {e}"))?;
+        drop(pair.slave);
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("콘솔 읽기 실패: {e}"))?;
+        let writer = Arc::new(Mutex::new(
+            pair.master
+                .take_writer()
+                .map_err(|e| format!("콘솔 쓰기 실패: {e}"))?,
+        ));
+        let buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let responder = writer.clone();
+        let sink = buffer.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            let mut tail: Vec<u8> = Vec::new();
+            while let Ok(n) = reader.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                let piece = &buf[..n];
+                // 커서 위치 질의(ESC[6n)에 답해야 화면이 그려진다 (login.rs와 동일)
+                let mut probe = tail.clone();
+                probe.extend_from_slice(piece);
+                if probe.windows(4).any(|w| w == b"\x1b[6n") {
+                    if let Ok(mut w) = responder.lock() {
+                        let _ = w.write_all(b"\x1b[1;1R");
+                        let _ = w.flush();
+                    }
+                }
+                tail = probe[probe.len().saturating_sub(3)..].to_vec();
+                if let Ok(mut acc) = sink.lock() {
+                    acc.extend_from_slice(piece);
+                    if acc.len() > GH_OUTPUT_CAP {
+                        let cut = acc.len() - GH_OUTPUT_CAP;
+                        acc.drain(..cut);
+                    }
+                }
+            }
+        });
+        *guard = Some(GhLoginSession {
+            child,
+            writer,
+            buffer,
+            _master: pair.master,
+        });
+    }
+
+    // 일회용 코드가 화면에 뜰 때까지 (잠금 밖 — 취소 가능해야 하므로)
+    let deadline = Instant::now() + GH_PROMPT_TIMEOUT;
+    // gh가 중간에 묻는 "Authenticate Git with your GitHub credentials?"에는 Y로
+    // 자동 응답한다 (실측: 이 질문에서 멈춘다). 전환마다 setup-git을 돌리는 우리
+    // 설계에서 Y는 항상 안전하다. 화면 버퍼가 누적이라 1회만 답하도록 표시해 둔다.
+    let mut answered_git_prompt = false;
+    loop {
+        {
+            let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
+            let Some(session) = guard.as_mut() else {
+                return Err("로그인을 취소했습니다".to_string());
+            };
+            if let Ok(Some(status)) = session.child.try_wait() {
+                let text = crate::login::strip_ansi(
+                    &session.buffer.lock().map_err(|_| "내부 잠금 오류")?,
+                );
+                *guard = None;
+                return Err(format!(
+                    "gh가 로그인 화면을 띄우기 전에 종료했습니다 ({status:?}): {}",
+                    text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("")
+                ));
+            }
+        }
+        let raw = gh_login_take_buffer()?;
+        let text = crate::login::strip_ansi(&raw);
+        if !answered_git_prompt && text.contains("Authenticate Git with your GitHub credentials?")
+        {
+            answered_git_prompt = true;
+            if let Ok(guard) = GH_LOGIN.lock() {
+                if let Some(session) = guard.as_ref() {
+                    if let Ok(mut w) = session.writer.lock() {
+                        let _ = w.write_all(b"y\r");
+                        let _ = w.flush();
+                    }
+                }
+            }
+        }
+        if let Some(code) = extract_gh_code(&text) {
+            let url = crate::login::pick_login_url(crate::login::extract_osc8_urls(&raw))
+                .or_else(|| crate::login::extract_visible_url(&text))
+                .unwrap_or_else(|| "https://github.com/login/device".to_string());
+            // "Press Enter to open ..." 프롬프트를 넘긴다 — gh가 기본 브라우저를 한 번
+            // 열려고 시도하지만(닫아도 됨), 이후 폴링이 시작된다
+            if let Ok(guard) = GH_LOGIN.lock() {
+                if let Some(session) = guard.as_ref() {
+                    if let Ok(mut w) = session.writer.lock() {
+                        let _ = w.write_all(b"\r");
+                        let _ = w.flush();
+                    }
+                }
+            }
+            return Ok(GhLoginPrompt {
+                url,
+                device_code: code,
+            });
+        }
+        if Instant::now() > deadline {
+            let tail: String = text
+                .lines()
+                .rev()
+                .filter(|l| !l.trim().is_empty())
+                .take(3)
+                .collect::<Vec<_>>()
+                .join(" | ");
+            login_cancel();
+            return Err(format!(
+                "gh 로그인 화면이 60초 안에 뜨지 않았습니다 — 마지막 화면: {tail}"
+            ));
+        }
+        std::thread::sleep(GH_POLL);
+    }
+}
+
+/// 브라우저 쪽 완료를 기다린다 — 성공하면 로그인된 계정 이름
+pub fn login_wait() -> Result<String, String> {
+    let deadline = Instant::now() + GH_FINISH_TIMEOUT;
+    loop {
+        let exited = {
+            let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
+            let Some(session) = guard.as_mut() else {
+                return Err("로그인을 취소했습니다".to_string());
+            };
+            matches!(session.child.try_wait(), Ok(Some(_)))
+        };
+        let text = crate::login::strip_ansi(&gh_login_take_buffer()?);
+        // 성공 마커: "✓ Logged in as <login>" (gh 실측 출력)
+        if let Some(login) = text
+            .lines()
+            .rev()
+            .find_map(|line| line.trim().split("Logged in as ").nth(1))
+            .map(|rest| rest.split_whitespace().next().unwrap_or("").to_string())
+            .filter(|l| !l.is_empty())
+        {
+            login_cleanup();
+            return Ok(login);
+        }
+        if exited {
+            let last = text
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("")
+                .to_string();
+            login_cleanup();
+            return Err(format!("GitHub 로그인이 완료되지 않았습니다: {last}"));
+        }
+        if Instant::now() > deadline {
+            login_cancel();
+            return Err("GitHub 로그인 대기 시간(10분)을 넘겼습니다 — 다시 시도하세요".to_string());
+        }
+        std::thread::sleep(GH_POLL);
+    }
+}
+
+fn login_cleanup() {
+    if let Ok(mut guard) = GH_LOGIN.lock() {
+        *guard = None; // Drop이 PTY·자식 핸들을 정리한다
+    }
+}
+
+/// 진행 중 로그인 취소 — gh 프로세스를 죽이고 세션을 비운다
+pub fn login_cancel() {
+    if let Ok(mut guard) = GH_LOGIN.lock() {
+        if let Some(mut session) = guard.take() {
+            let _ = session.child.kill();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,6 +577,27 @@ mod tests {
         assert!(parse_hosts("").is_empty());
         assert!(parse_hosts("ghe.corp.com:\n    user: x\n").is_empty());
         assert!(parse_hosts("not yaml at all").is_empty());
+    }
+
+    #[test]
+    fn extracts_gh_one_time_code() {
+        let text = "? Authenticate Git with your GitHub credentials? Yes\n! First copy your one-time code: 3FAA-43FF\nPress Enter to open https://github.com/login/device in your browser...\n";
+        assert_eq!(extract_gh_code(text), Some("3FAA-43FF".to_string()));
+        assert_eq!(extract_gh_code("no code here"), None);
+        // 코드 형식이 아닌 것은 거부
+        assert_eq!(extract_gh_code("one-time code: hello-world"), None);
+    }
+
+    /// 실기기 전용: 인앱 로그인 프롬프트(주소+일회용 코드)가 뜨는지 확인하고
+    /// 즉시 취소한다 — 계정 무변경, 발급된 코드는 브라우저 입력 없이는 무효
+    #[test]
+    #[ignore]
+    fn real_github_login_prompt_then_cancel() {
+        let prompt = login_start().expect("로그인 프롬프트 실패");
+        println!("url={} code={}", prompt.url, prompt.device_code);
+        assert!(prompt.url.contains("github.com"));
+        assert!(prompt.device_code.contains('-'));
+        login_cancel();
     }
 
     /// 실기기 전용: gh가 설치·로그인된 환경에서 목록이 나오는지

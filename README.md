@@ -140,7 +140,7 @@ switcher는 계정별 토큰을 `~/.switcher/` 아래 프로필로 보관하고 
 
 ## GitHub 계정 전환
 
-[GitHub CLI(gh)](https://cli.github.com)가 설치되어 있으면 위젯에 GITHUB 섹션이 나타난다. 계정마다 터미널에서 `gh auth login`을 한 번씩 해두면, 그다음부터는 위젯에서 전환된다 — 내부적으로 `gh auth switch`와 같은 통로를 쓰고, 전환할 때마다 `gh auth setup-git`을 실행해 git push/pull(HTTPS)이 활성 계정을 따라가게 한다. 토큰은 gh가 keyring에 관리하며 위젯은 만지지 않는다.
+[GitHub CLI(gh)](https://cli.github.com)가 설치되어 있으면 위젯에 GITHUB 섹션이 나타난다. 계정 추가는 위젯의 "＋ 계정 추가" 버튼으로 한다 — 주소와 일회용 코드가 뜨고, 브라우저에서 코드를 입력하면 끝 (터미널 `gh auth login`도 그대로 동작). 추가 후에는 위젯에서 전환된다 — 내부적으로 `gh auth switch`와 같은 통로를 쓰고, 전환할 때마다 `gh auth setup-git`을 실행해 git push/pull(HTTPS)이 활성 계정을 따라가게 한다. 토큰은 gh가 keyring에 관리하며 위젯은 만지지 않는다.
 
 알아둘 한계:
 

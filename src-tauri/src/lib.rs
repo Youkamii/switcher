@@ -320,6 +320,27 @@ async fn github_switch(name: String) -> Result<(), String> {
         .map_err(|e| format!("GitHub 전환 작업 실패: {e}"))?
 }
 
+/// GitHub 계정 추가 시작 — 위젯에 띄울 주소·일회용 코드 (PTY로 gh auth login)
+#[tauri::command]
+async fn github_login_start() -> Result<github::GhLoginPrompt, String> {
+    tauri::async_runtime::spawn_blocking(github::login_start)
+        .await
+        .map_err(|e| format!("GitHub 로그인 시작 실패: {e}"))?
+}
+
+/// 브라우저에서 코드 입력이 끝나기를 기다린다 — 성공 시 로그인 이름
+#[tauri::command]
+async fn github_login_wait() -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(github::login_wait)
+        .await
+        .map_err(|e| format!("GitHub 로그인 대기 실패: {e}"))?
+}
+
+#[tauri::command]
+fn github_login_cancel() {
+    github::login_cancel();
+}
+
 /// 표시 기능 플래그 — 프론트가 어떤 섹션·버튼을 그릴지 정한다
 #[derive(serde::Serialize)]
 struct Visibility {
@@ -1232,6 +1253,9 @@ pub fn run() {
             get_visibility,
             github_list,
             github_switch,
+            github_login_start,
+            github_login_wait,
+            github_login_cancel,
             black_on,
             black_off,
             display_list,

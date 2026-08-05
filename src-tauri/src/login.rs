@@ -75,7 +75,7 @@ static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 /// 색상(SGR, 최종 바이트 m)은 글자 중간에도 끼므로 조용히 버리고,
 /// 커서 이동·지우기는 화면상 위치가 바뀐다는 뜻이라 줄바꿈으로 바꿔 토큰을 끊는다.
 /// (TUI는 줄바꿈 대신 커서 이동으로 그리기 때문에 이렇게 해야 글자가 붙지 않는다)
-fn strip_ansi(bytes: &[u8]) -> String {
+pub(crate) fn strip_ansi(bytes: &[u8]) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
@@ -126,7 +126,7 @@ fn strip_ansi(bytes: &[u8]) -> String {
 /// OSC 8 하이퍼링크(ESC]8;params;URL)의 대상 주소를 원시 바이트에서 줍는다.
 /// 하이퍼링크 대상은 화면 줄바꿈과 무관하게 항상 완전한 URL이므로,
 /// 가시 텍스트 추출보다 이쪽을 우선한다 (긴 OAuth 주소 절단 방지).
-fn extract_osc8_urls(bytes: &[u8]) -> Vec<String> {
+pub(crate) fn extract_osc8_urls(bytes: &[u8]) -> Vec<String> {
     let mut urls = Vec::new();
     let mut i = 0;
     while i + 3 < bytes.len() {
@@ -159,7 +159,7 @@ fn extract_osc8_urls(bytes: &[u8]) -> Vec<String> {
 }
 
 /// 화면 글자에서 로그인 주소를 찾는다 (OSC 8이 없을 때의 폴백)
-fn extract_visible_url(text: &str) -> Option<String> {
+pub(crate) fn extract_visible_url(text: &str) -> Option<String> {
     let mut candidates = Vec::new();
     let mut rest = text;
     while let Some(pos) = rest.find("https://") {
@@ -178,7 +178,7 @@ fn extract_visible_url(text: &str) -> Option<String> {
 }
 
 /// 후보 중 로그인용으로 보이는 주소를 고른다 (배너·안내 링크 오탐 방지)
-fn pick_login_url(candidates: Vec<String>) -> Option<String> {
+pub(crate) fn pick_login_url(candidates: Vec<String>) -> Option<String> {
     candidates
         .iter()
         .find(|u| u.contains("oauth") || u.contains("authorize") || u.contains("/device"))
@@ -189,7 +189,7 @@ fn pick_login_url(candidates: Vec<String>) -> Option<String> {
 /// 코덱스가 보여주는 일회용 코드(예: V4GM-HT05H)를 찾는다.
 /// 대시 구분선("----")이나 날짜("2026-07-28")를 오인하지 않도록
 /// 영문과 숫자가 모두 있고 양끝이 영숫자인 것만 인정한다.
-fn extract_device_code(text: &str) -> Option<String> {
+pub(crate) fn extract_device_code(text: &str) -> Option<String> {
     for line in text.lines() {
         let token = line.trim();
         let ok = token.len() >= 8
