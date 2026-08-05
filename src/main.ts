@@ -519,6 +519,73 @@ async function renderProvider(
 type GithubAccount = { login: string; active: boolean };
 type GithubSnapshot = { gh_found: boolean; accounts: GithubAccount[] };
 
+// ── 접이식 섹션 (DISPLAY·GITHUB) ─────────────────────────────────
+// 사용량처럼 상시 감시할 정보가 아니라 기본 접힘 — 제목 클릭으로 펼치고,
+// 하나를 펼치면 다른 하나는 접히며(아코디언), 섹션 밖 클릭에 다시 접힌다.
+// 접힌 동안엔 데이터 조회(gh 목록·DDC 읽기)도 건너뛰어 렌더가 가볍다.
+type CollapsibleKey = "github" | "display";
+const expanded: Record<CollapsibleKey, boolean> = { github: false, display: false };
+
+function toggleSection(key: CollapsibleKey) {
+  // 로그인 패널이 열려 있으면 토글하지 않는다 — 재렌더가 세션을 취소해 버린다 (red-review)
+  if (loginOpen) {
+    toast(t("loginBusy"), true);
+    return;
+  }
+  const next = !expanded[key];
+  expanded.github = false;
+  expanded.display = false;
+  expanded[key] = next;
+  void render({ immediate: true });
+}
+
+/// 바깥 클릭 시 펼쳐진 섹션만 **외과적으로** 접는다 — 전체 재렌더는 입력 중 텍스트·
+/// 삭제 확인 무장·로그인 패널을 날리는 부작용이 있어 쓰지 않는다 (red-review).
+/// bubble 단계라 클릭 대상의 원래 핸들러가 먼저 실행된다. 위젯 모드에서는 바깥
+/// 클릭이 뒤 창으로 투과되므로 제목 재클릭·다른 섹션 펼치기로 접는다.
+function collapseSectionsInPlace() {
+  expanded.github = false;
+  expanded.display = false;
+  document.querySelectorAll<HTMLElement>("section[data-collapsible]").forEach((el) => {
+    const key = el.dataset.collapsible as CollapsibleKey;
+    el.replaceChildren(
+      collapsibleHeader(key === "github" ? "GITHUB" : "DISPLAY", key, viewMode === "compact"),
+    );
+  });
+  fitHeight(); // 줄어든 높이 반영 — 완료 시 히트 영역도 다시 보고된다
+}
+
+document.addEventListener("click", (event) => {
+  if (!expanded.github && !expanded.display) return;
+  if (loginOpen) return; // 로그인 중엔 접지 않는다 — 패널·세션 보호
+  const target = event.target as HTMLElement | null;
+  if (target?.closest("section[data-collapsible]")) return;
+  collapseSectionsInPlace();
+});
+
+/// 접이식 섹션 머리 — ▸(접힘)/▾(펼침) 표시, 클릭으로 토글
+function collapsibleHeader(
+  title: string,
+  key: CollapsibleKey,
+  compact: boolean,
+): HTMLElement {
+  const arrow = expanded[key] ? "▾" : "▸";
+  let header: HTMLElement;
+  if (compact) {
+    header = document.createElement("div");
+    header.className = "compact-head collapsible";
+    const name = document.createElement("span");
+    name.textContent = `${title} ${arrow}`;
+    header.appendChild(name);
+  } else {
+    header = document.createElement("h2");
+    header.className = "section-title collapsible";
+    header.textContent = `${title} ${arrow}`;
+  }
+  header.addEventListener("click", () => toggleSection(key));
+  return header;
+}
+
 /// 표시 기능 (트레이 설정 → 표시 기능) — 끈 섹션·버튼은 그리지 않는다
 type Visibility = {
   claude: boolean;
@@ -541,6 +608,10 @@ async function loadVisibility() {
   } catch {
     // 설정을 못 읽으면 전부 표시
   }
+  // 표시 기능에서 꺼진 섹션의 펼침 상태는 정리한다 — 스테일 플래그가 남으면
+  // 다음 아무 클릭이 무의미한 접힘 경로를 타는 사고가 있었다 (red-review)
+  if (!visibility.github) expanded.github = false;
+  if (!visibility.display) expanded.display = false;
   // macOS 블랙 모니터는 개발 진행중 — 트레이(비활성 표기)와 같은 규칙으로 버튼을 숨긴다
   const isMac = navigator.userAgent.includes("Macintosh");
   (document.getElementById("blackbtn") as HTMLElement).style.display =
@@ -589,21 +660,23 @@ function githubCard(acc: GithubAccount, compact = false): HTMLElement {
 
 async function renderGithub(target: DocumentFragment) {
   const section = document.createElement("section");
-  const heading = document.createElement("h2");
-  heading.className = "section-title";
-  heading.textContent = "GITHUB";
-  section.appendChild(heading);
+  section.dataset.collapsible = "github";
+  section.appendChild(collapsibleHeader("GITHUB", "github", false));
+  if (!expanded.github) {
+    target.appendChild(section);
+    return;
+  }
   try {
     const snap = await invoke<GithubSnapshot>("github_list");
     if (!snap.gh_found) {
       const hint = document.createElement("p");
-      hint.className = "hint";
+      hint.className = "section-note";
       hint.textContent = t("ghNotFound");
       section.appendChild(hint);
     } else {
       if (snap.accounts.length === 0) {
         const hint = document.createElement("p");
-        hint.className = "hint";
+        hint.className = "section-note";
         hint.textContent = t("ghNoAccounts");
         section.appendChild(hint);
       } else {
@@ -694,109 +767,103 @@ type DisplayInfo = { id: number; name: string; brightness: number | null };
 /// 카드·이름 헤더를 두던 이전 구조는 세로 여백이 과했다. 전체 이름은 번호 툴팁에.
 /// Type 2/3(클릭 투과)에서도 조작된다 — reportHitRegions가 줄을 히트 영역으로 보고.
 async function renderDisplays(target: DocumentFragment, compact: boolean) {
+  const section = document.createElement("section");
+  section.dataset.collapsible = "display";
+  section.appendChild(collapsibleHeader("DISPLAY", "display", compact));
+  if (!expanded.display) {
+    target.appendChild(section);
+    return;
+  }
   try {
     const monitors = await invoke<DisplayInfo[]>("display_list");
-    if (monitors.length === 0) return;
-    const section = document.createElement("section");
-    if (compact) {
-      const head = document.createElement("div");
-      head.className = "compact-head";
-      const name = document.createElement("span");
-      name.textContent = "DISPLAY";
-      head.appendChild(name);
-      section.appendChild(head);
+    if (monitors.length === 0) {
+      // 펼쳤는데 모니터가 없으면(미지원 플랫폼 등) 안내만
+      const note = document.createElement("p");
+      note.className = "section-note";
+      note.textContent = t("dspUnsupported");
+      section.appendChild(note);
     } else {
-      const heading = document.createElement("h2");
-      heading.className = "section-title";
-      heading.textContent = "DISPLAY";
-      section.appendChild(heading);
-    }
-    const card = document.createElement("div");
-    card.className = compact ? "card compact-card" : "card";
-    for (const monitor of monitors) {
-      const row = document.createElement("div");
-      row.className = "display-row";
-      const label = document.createElement("span");
-      label.className = "display-name";
-      label.textContent = String(monitor.id + 1);
-      label.title = monitor.name;
-      row.appendChild(label);
-      if (monitor.brightness == null) {
-        const note = document.createElement("span");
-        note.className = "display-na";
-        note.textContent = t("dspUnsupported");
-        note.title = t("dspUnsupported");
-        row.appendChild(note);
-      } else {
-        const slider = document.createElement("input");
-        slider.type = "range";
-        slider.min = "0";
-        slider.max = "100";
-        slider.step = "1";
-        slider.value = String(monitor.brightness);
-        const pct = document.createElement("span");
-        pct.className = "display-pct";
-        pct.textContent = `${monitor.brightness}%`;
-        // 밝기 명령은 모니터마다 수십~수백 ms — 드래그 중엔 표시만 갱신하고
-        // 손을 잠깐 멈추면 마지막 값 하나만 보낸다
-        let debounce: number | undefined;
-        slider.addEventListener("input", () => {
-          pct.textContent = `${slider.value}%`;
-          window.clearTimeout(debounce);
-          debounce = window.setTimeout(() => {
-            // name을 함께 보내 목록 이후 모니터 구성이 바뀐 경우 엉뚱한 모니터에
-            // 쓰지 않게 한다 (Rust가 대조 후 불일치면 에러)
-            void invoke("display_set_brightness", {
-              id: monitor.id,
-              percent: Number(slider.value),
-              name: monitor.name,
-            }).catch((error) => toast(String(error), true));
-          }, 250);
-        });
-        row.append(slider, pct);
+      const card = document.createElement("div");
+      card.className = compact ? "card compact-card" : "card";
+      for (const monitor of monitors) {
+        const row = document.createElement("div");
+        row.className = "display-row";
+        const label = document.createElement("span");
+        label.className = "display-name";
+        label.textContent = String(monitor.id + 1);
+        label.title = monitor.name;
+        row.appendChild(label);
+        if (monitor.brightness == null) {
+          const note = document.createElement("span");
+          note.className = "display-na";
+          note.textContent = t("dspUnsupported");
+          note.title = t("dspUnsupported");
+          row.appendChild(note);
+        } else {
+          const slider = document.createElement("input");
+          slider.type = "range";
+          slider.min = "0";
+          slider.max = "100";
+          slider.step = "1";
+          slider.value = String(monitor.brightness);
+          const pct = document.createElement("span");
+          pct.className = "display-pct";
+          pct.textContent = `${monitor.brightness}%`;
+          // 밝기 명령은 모니터마다 수십~수백 ms — 드래그 중엔 표시만 갱신하고
+          // 손을 잠깐 멈추면 마지막 값 하나만 보낸다
+          let debounce: number | undefined;
+          slider.addEventListener("input", () => {
+            pct.textContent = `${slider.value}%`;
+            window.clearTimeout(debounce);
+            debounce = window.setTimeout(() => {
+              // name을 함께 보내 목록 이후 모니터 구성이 바뀐 경우 엉뚱한 모니터에
+              // 쓰지 않게 한다 (Rust가 대조 후 불일치면 에러)
+              void invoke("display_set_brightness", {
+                id: monitor.id,
+                percent: Number(slider.value),
+                name: monitor.name,
+              }).catch((error) => toast(String(error), true));
+            }, 250);
+          });
+          row.append(slider, pct);
+        }
+        card.appendChild(row);
       }
-      card.appendChild(row);
+      section.appendChild(card);
     }
-    section.appendChild(card);
-    target.appendChild(section);
   } catch {
-    // 표시 전용 — 조용히 넘긴다
+    // 조회 실패 — 제목까지 증발시키지 않고 안내만 남긴다
+    const note = document.createElement("p");
+    note.className = "section-note";
+    note.textContent = t("dspUnsupported");
+    section.appendChild(note);
   }
+  target.appendChild(section);
 }
 
 /// 컴팩트의 GITHUB — 이름·활성·더블클릭 전환만, 계정이 없으면 섹션 생략
 async function renderGithubCompact(target: DocumentFragment) {
+  const section = document.createElement("section");
+  section.dataset.collapsible = "github";
+  section.appendChild(collapsibleHeader("GITHUB", "github", true));
+  if (!expanded.github) {
+    target.appendChild(section);
+    return;
+  }
   try {
     const snap = await invoke<GithubSnapshot>("github_list");
-    if (!snap.gh_found || snap.accounts.length === 0) return;
-    const section = document.createElement("section");
-    const head = document.createElement("div");
-    head.className = "compact-head";
-    const name = document.createElement("span");
-    name.textContent = "GITHUB";
-    head.appendChild(name);
-    section.appendChild(head);
-    for (const acc of snap.accounts) {
-      const card = document.createElement("div");
-      card.className = "card compact-card" + (acc.active ? " active" : "");
-      if (!acc.active) {
-        card.classList.add("switchable");
-        card.dataset.provider = "github";
-        card.dataset.name = acc.login;
-      }
-      const cardHead = document.createElement("div");
-      cardHead.className = "card-head";
-      const login = document.createElement("span");
-      login.className = "card-name";
-      login.textContent = acc.login;
-      cardHead.appendChild(login);
-      card.appendChild(cardHead);
-      section.appendChild(card);
+    if (!snap.gh_found || snap.accounts.length === 0) {
+      const hint = document.createElement("p");
+      hint.className = "section-note";
+      hint.textContent = snap.gh_found ? t("ghNoAccounts") : t("ghNotFound");
+      section.appendChild(hint);
+    } else {
+      for (const acc of snap.accounts) section.appendChild(githubCard(acc, true));
     }
-    target.appendChild(section);
   } catch {
     // 컴팩트는 표시 전용 — 조용히 넘긴다
   }
+  target.appendChild(section);
 }
 
 /// 컴팩트용 라벨 축약: "5 Hours"→5h, "Weekly"→wk, "Daily"→1d, Fable→fb, 그 외 모델→앞 2글자
@@ -1082,10 +1149,10 @@ function reportHitRegions() {
       });
       hitElements.push(el);
     });
-    // .display-row: 위젯·컴팩트 모드에서도 밝기 슬라이더를 조작할 수 있게
-    // 마우스를 실제로 받는 영역으로 등록한다
+    // .display-row: 펼쳐진 밝기 슬라이더 조작용 (접힘 상태면 DOM에 없다)
+    // .collapsible: 접이식 섹션 제목 — 위젯 모드에서도 클릭해 펼칠 수 있게
     document
-      .querySelectorAll<HTMLElement>(".tb-actions, #drag-handle, .display-row")
+      .querySelectorAll<HTMLElement>(".tb-actions, #drag-handle, .display-row, .collapsible")
       .forEach((el) => {
         const r = el.getBoundingClientRect();
         regions.push({ rect: [r.left, r.top, r.width, r.height], action: null });

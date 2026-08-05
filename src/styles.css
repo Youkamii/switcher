@@ -625,6 +625,19 @@ body.locked .titlebar:hover .tb-actions button {
   border-color: var(--danger);
 }
 
+/* 접이식 섹션 제목 (DISPLAY·GITHUB) — 클릭으로 펼치고 접는다 */
+.collapsible {
+  cursor: pointer;
+  user-select: none;
+}
+
+/* 접이식 섹션의 안내문 — .hint는 locked에서 숨겨지므로 별도 클래스 (red-review) */
+.section-note {
+  margin: 4px 2px;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
 /* DISPLAY 섹션 — 카드 하나에 모니터당 한 줄 (번호·슬라이더·%) */
 .display-row {
   display: flex;
