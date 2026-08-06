@@ -1,10 +1,9 @@
 //! TFSD (Token Full Self-Driving) — 사용량 기반 자동 계정 전환.
 //!
-//! 활성 계정의 기준 창 사용률이 임계치(90%)에 닿으면, 같은 기준으로 여유가
-//! 가장 많은 계정으로 스스로 갈아탄다. 기준 창(사용자 결정, #35):
-//! - 클로드: "Fable" 창 — 모델 전용 한도가 실질 병목이라 5 Hours가 널널해도
-//!   Fable이 차면 그 계정은 끝이다. Fable 창이 없으면 "5 Hours" 폴백.
-//! - 코덱스: "5 Hours" (없으면 첫 창).
+//! 판정은 병목 규칙(#37) 하나다: 계정 상태 = 모든 사용량 창 중 최댓값(병목).
+//! 어느 창이든 하나가 차면(5 Hours든 Weekly든 Fable이든) 실사용이 막히는 건
+//! 같으므로, 활성 계정의 병목이 임계치(90%)에 닿으면 — 모든 창에 여유가 있는
+//! 후보 중 — 병목이 가장 낮은 계정으로 스스로 갈아탄다.
 //!
 //! 규칙 (red-review 반영):
 //! - stale(조회 막힘) 수치로는 판단하지 않는다 — 낡은 정보로 갈아타지 않는다
@@ -30,23 +29,13 @@ const SATURATED_BACKOFF: Duration = Duration::from_secs(300);
 /// (TTL보다 길면 매 틱이 캐시 미스 = 실호출이 된다 — red-review) 실호출은 ~2틱당 1회.
 const TICK: Duration = Duration::from_secs(55);
 
-/// 판단 기준 창의 사용률 — 기준 창이 없으면 None (판단 보류)
-fn criterion_percent(windows: &[UsageWindow], provider: Provider) -> Option<f64> {
-    if provider == Provider::Claude {
-        // 완전일치가 아니라 contains — API의 모델 표시명이 "Fable 5" 등으로 바뀌어도
-        // 판정 기준이 조용히 폴백으로 뒤바뀌지 않게 (red-review)
-        if let Some(window) = windows.iter().find(|w| w.label.contains("Fable")) {
-            return Some(window.percent);
-        }
-    }
-    windows
-        .iter()
-        .find(|w| w.label == "5 Hours")
-        .or_else(|| windows.first())
-        .map(|w| w.percent)
+/// 계정의 병목 사용률 — 모든 창 중 최댓값. 창이 없으면 None (판단 보류).
+/// 새 창 종류가 API에 추가돼도 자동으로 판정에 들어간다 — 라벨 특례 없음.
+fn bottleneck_percent(windows: &[UsageWindow]) -> Option<f64> {
+    windows.iter().map(|w| w.percent).reduce(f64::max)
 }
 
-/// 후보 중 목표 고르기 — 임계치 미만이면서 기준 사용률이 가장 낮은 계정
+/// 후보 중 목표 고르기 — 병목이 임계치 미만이면서 가장 낮은 계정
 fn choose_target(candidates: &[(String, f64)]) -> Option<&str> {
     candidates
         .iter()
@@ -59,7 +48,8 @@ fn choose_target(candidates: &[(String, f64)]) -> Option<&str> {
 enum Verdict {
     /// 전환 불필요 — 임계 미달·프로필 부족·판단 보류
     Idle,
-    /// 활성은 꽉 찼는데 갈 곳이 없다 — 백오프 대상
+    /// 활성은 꽉 찼는데 갈 곳이 없다 — 후보가 전부 만석이거나 전부
+    /// 조회 불가(stale·실패)인 경우를 구분하지 않는다. 백오프 대상.
     Saturated,
     Switch {
         /// 평가 시점의 활성 프로필 이름 — 전환 직전 재확인에 쓴다
@@ -86,7 +76,7 @@ async fn evaluate(env: &Env, provider: Provider) -> Verdict {
     if active_usage.stale {
         return Verdict::Idle;
     }
-    let Some(active_percent) = criterion_percent(&active_usage.windows, provider) else {
+    let Some(active_percent) = bottleneck_percent(&active_usage.windows) else {
         return Verdict::Idle;
     };
     if active_percent < THRESHOLD {
@@ -100,17 +90,9 @@ async fn evaluate(env: &Env, provider: Provider) -> Verdict {
         if profile_usage.stale {
             continue;
         }
-        // 세션 게이트: 기준 창(Fable)이 널널해도 5 Hours가 만석이면 전환 직후
-        // 막힌다 — 그런 후보는 제외한다 (red-review)
-        let session_open = profile_usage
-            .windows
-            .iter()
-            .find(|w| w.label == "5 Hours")
-            .map_or(true, |w| w.percent < THRESHOLD);
-        if !session_open {
-            continue;
-        }
-        if let Some(percent) = criterion_percent(&profile_usage.windows, provider) {
+        // 병목이 임계치 이상인 후보는 choose_target이 걸러낸다 — 어느 창이
+        // 막혔든(Weekly 포함) 전환 직후 막히는 계정으로는 가지 않는다 (#37)
+        if let Some(percent) = bottleneck_percent(&profile_usage.windows) {
             candidates.push((profile.name.clone(), percent));
         }
     }
@@ -189,8 +171,13 @@ pub fn spawn(app: tauri::AppHandle) {
                         target,
                         to,
                     } => {
-                        // 평가하는 사이(네트워크 대기 포함) 사용자가 손수 전환했으면
-                        // 그 선택을 존중한다 — 무인 프로세스가 사람을 이기면 안 된다
+                        // 평가하는 사이(네트워크 대기 최대 90초) 사용자가 TFSD를
+                        // 껐으면 전환을 강행하지 않는다 (red-review #37)
+                        if !settings::load_flag(&env.store, settings::KEY_TFSD, false) {
+                            break;
+                        }
+                        // 평가하는 사이 사용자가 손수 전환했으면 그 선택을
+                        // 존중한다 — 무인 프로세스가 사람을 이기면 안 된다
                         let still_active = accounts::list(&env, provider)
                             .ok()
                             .and_then(|s| s.profiles.into_iter().find(|p| p.active))
@@ -225,7 +212,7 @@ pub fn spawn(app: tauri::AppHandle) {
                                 );
                             }
                             Err(e) => {
-                                // 실패도 쿨다운 — 120초마다 무한 재시도하지 않는다
+                                // 실패도 쿨다운 — 틱(55초)마다 무한 재시도하지 않는다
                                 hold_until[index] = Some(Instant::now() + COOLDOWN);
                                 eprintln!("TFSD 전환 실패: {e}");
                             }
@@ -251,20 +238,35 @@ mod tests {
     }
 
     #[test]
-    fn claude_judges_by_fable_when_present() {
-        let windows = vec![window("5 Hours", 10.0), window("Weekly", 30.0), window("Fable", 95.0)];
-        assert_eq!(criterion_percent(&windows, Provider::Claude), Some(95.0));
-        // 코덱스는 Fable 창을 무시하고 5 Hours를 본다
-        assert_eq!(criterion_percent(&windows, Provider::Codex), Some(10.0));
+    fn bottleneck_is_worst_window_regardless_of_label() {
+        // Fable이 병목이면 Fable을 본다 — #35 결정의 일반화
+        let fable_bound = vec![window("5 Hours", 10.0), window("Weekly", 30.0), window("Fable", 95.0)];
+        assert_eq!(bottleneck_percent(&fable_bound), Some(95.0));
+        // Weekly가 병목이면 Weekly를 본다 — 기존 규칙이 놓치던 경우 (#37)
+        let weekly_bound = vec![window("5 Hours", 10.0), window("Weekly", 100.0), window("Fable", 50.0)];
+        assert_eq!(bottleneck_percent(&weekly_bound), Some(100.0));
+        let single = vec![window("5 Hours", 42.0)];
+        assert_eq!(bottleneck_percent(&single), Some(42.0));
+        assert_eq!(bottleneck_percent(&[]), None);
     }
 
     #[test]
-    fn falls_back_to_five_hours_then_first_window() {
-        let five = vec![window("5 Hours", 42.0), window("Weekly", 80.0)];
-        assert_eq!(criterion_percent(&five, Provider::Claude), Some(42.0));
-        let weekly_only = vec![window("Weekly", 63.0)];
-        assert_eq!(criterion_percent(&weekly_only, Provider::Claude), Some(63.0));
-        assert_eq!(criterion_percent(&[], Provider::Claude), None);
+    fn weekly_full_candidate_is_never_chosen() {
+        // Fable 널널 + 5 Hours 널널이어도 Weekly 만석이면 병목 100 → choose_target이 거른다
+        let trap = bottleneck_percent(&[
+            window("5 Hours", 5.0),
+            window("Weekly", 100.0),
+            window("Fable", 10.0),
+        ])
+        .unwrap();
+        let healthy = bottleneck_percent(&[
+            window("5 Hours", 60.0),
+            window("Weekly", 40.0),
+            window("Fable", 30.0),
+        ])
+        .unwrap();
+        let candidates = vec![("trap".to_string(), trap), ("healthy".to_string(), healthy)];
+        assert_eq!(choose_target(&candidates), Some("healthy"));
     }
 
     #[test]
