@@ -428,7 +428,8 @@ fn github_login_cancel() {
     github::login_cancel();
 }
 
-/// 표시 기능 플래그 — 프론트가 어떤 섹션·버튼을 그릴지 정한다
+/// 표시 기능 플래그 — 프론트가 어떤 섹션·버튼을 그릴지 정한다.
+/// tfsd는 섹션이 아니라 상태 표시등(활성 카드의 T 배지)용이다
 #[derive(serde::Serialize)]
 struct Visibility {
     claude: bool,
@@ -436,6 +437,7 @@ struct Visibility {
     github: bool,
     black: bool,
     display: bool,
+    tfsd: bool,
 }
 
 #[tauri::command]
@@ -447,12 +449,17 @@ fn get_visibility() -> Visibility {
             .map(|s| settings::load_flag(s, key, true))
             .unwrap_or(true)
     };
+    let tfsd = store
+        .as_deref()
+        .map(|s| settings::load_flag(s, settings::KEY_TFSD, false))
+        .unwrap_or(false);
     Visibility {
         claude: flag(settings::KEY_SHOW_CLAUDE),
         codex: flag(settings::KEY_SHOW_CODEX),
         github: flag(settings::KEY_SHOW_GITHUB),
         black: flag(settings::KEY_SHOW_BLACK),
         display: flag(settings::KEY_SHOW_DISPLAY),
+        tfsd,
     }
 }
 
@@ -1280,7 +1287,10 @@ pub fn run() {
                         toggle_flag(app, settings::KEY_AUTO_START, true);
                     }
                     "toggle-tfsd" => {
+                        use tauri::Emitter;
                         toggle_flag(app, settings::KEY_TFSD, false);
+                        // 활성 카드의 T 배지가 즉시 나타나고 사라지게
+                        let _ = app.emit("visibility-changed", ());
                     }
                     id if id.starts_with("vis:") => {
                         use tauri::Emitter;

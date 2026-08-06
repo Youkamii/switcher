@@ -625,6 +625,21 @@ body.locked .titlebar:hover .tb-actions button {
   border-color: var(--danger);
 }
 
+/* TFSD 상태등 — 자율주행 중임을 은은하게 알리는 T 배지 (호버 시 또렷 + 설명 툴팁) */
+.tfsd-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 5px;
+  color: #e82127;
+  opacity: 0.38;
+  transition: opacity 0.15s;
+  cursor: help;
+  flex: none;
+}
+.tfsd-badge:hover {
+  opacity: 0.95;
+}
+
 /* 접이식 섹션 토글 (DISPLAY·GITHUB) — 가로를 채우는 버튼, 누르면 아래로 열린다 */
 .section-toggle {
   width: 100%;

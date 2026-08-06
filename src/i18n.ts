@@ -64,6 +64,8 @@ const ko = {
   blackTooltip: "블랙 모니터 — 모든 화면을 검게. 마우스를 흔들거나 ESC로 해제",
   privacyTooltip: "계정 정보 가리기 (블러) — 이메일·GitHub 계정명",
   tfsdSwitched: "TFSD: {provider} 계정을 {from} → {to}로 자동 전환했습니다",
+  tfsdTooltip:
+    "TFSD (Token Full Self-Driving) 작동 중 — 이 계정의 한도가 90%에 닿으면 여유가 가장 많은 계정으로 자동 전환됩니다 (클로드는 Fable 창 기준). 끄기: 트레이 → 설정 → TFSD 자동 전환",
   dspUnsupported: "밝기 조절 미지원 — 모니터 OSD에서 DDC/CI를 켜보세요",
 };
 
@@ -128,6 +130,8 @@ const en: Messages = {
   blackTooltip: "Black monitor — blacks out all screens. Shake the mouse or press ESC to exit",
   privacyTooltip: "Hide account info (blur) — emails and GitHub logins",
   tfsdSwitched: "TFSD: switched {provider} account {from} → {to}",
+  tfsdTooltip:
+    "TFSD (Token Full Self-Driving) engaged — when this account's limit hits 90%, it auto-switches to the account with the most headroom (judged by the Fable window for Claude). Turn off: tray → Settings → TFSD auto-switch",
   dspUnsupported: "Brightness control not supported — try enabling DDC/CI in the monitor OSD",
 };
 
@@ -189,6 +193,8 @@ const ja: Messages = {
   blackTooltip: "ブラックモニター — 全画面を黒く。マウスを振るか ESC で解除",
   privacyTooltip: "アカウント情報を隠す(ぼかし) — メール・GitHub アカウント名",
   tfsdSwitched: "TFSD: {provider} アカウントを {from} → {to} に自動切り替えしました",
+  tfsdTooltip:
+    "TFSD (Token Full Self-Driving) 作動中 — このアカウントの上限が90%に達すると、最も余裕のあるアカウントへ自動切り替えします(Claude は Fable 枠基準)。オフ: トレイ → 設定 → TFSD 自動切り替え",
   dspUnsupported: "明るさ調整非対応 — モニターの OSD で DDC/CI を有効にしてみてください",
 };
 
@@ -247,6 +253,8 @@ const zhCN: Messages = {
   blackTooltip: "黑屏模式 — 将所有屏幕变黑。晃动鼠标或按 ESC 退出",
   privacyTooltip: "隐藏账号信息（模糊）— 邮箱·GitHub 账号名",
   tfsdSwitched: "TFSD：已自动切换 {provider} 账号 {from} → {to}",
+  tfsdTooltip:
+    "TFSD（Token Full Self-Driving）运行中 — 此账号额度达到 90% 时自动切换到余量最多的账号（Claude 以 Fable 窗口为准）。关闭：托盘 → 设置 → TFSD 自动切换",
   dspUnsupported: "不支持亮度调节 — 请在显示器 OSD 中开启 DDC/CI",
 };
 
@@ -305,6 +313,8 @@ const zhTW: Messages = {
   blackTooltip: "黑屏模式 — 讓所有螢幕變黑。晃動滑鼠或按 ESC 解除",
   privacyTooltip: "隱藏帳號資訊(模糊) — 電子郵件·GitHub 帳號名",
   tfsdSwitched: "TFSD:已自動切換 {provider} 帳號 {from} → {to}",
+  tfsdTooltip:
+    "TFSD(Token Full Self-Driving)運作中 — 此帳號額度達 90% 時自動切換到餘量最多的帳號(Claude 以 Fable 視窗為準)。關閉:系統匣 → 設定 → TFSD 自動切換",
   dspUnsupported: "不支援亮度調整 — 請在螢幕 OSD 中開啟 DDC/CI",
 };
 
@@ -366,6 +376,8 @@ const hi: Messages = {
   blackTooltip: "ब्लैक मॉनिटर — सभी स्क्रीन काली। माउस हिलाएँ या ESC दबाकर बंद करें",
   privacyTooltip: "अकाउंट जानकारी छिपाएँ (धुंधला) — ईमेल·GitHub अकाउंट नाम",
   tfsdSwitched: "TFSD: {provider} अकाउंट {from} → {to} स्वतः स्विच हुआ",
+  tfsdTooltip:
+    "TFSD (Token Full Self-Driving) सक्रिय — इस अकाउंट की लिमिट 90% पर पहुँचते ही सबसे ज़्यादा गुंजाइश वाले अकाउंट पर स्वतः स्विच होगा (Claude के लिए Fable विंडो)। बंद करें: ट्रे → सेटिंग्स → TFSD ऑटो-स्विच",
   dspUnsupported: "चमक नियंत्रण समर्थित नहीं — मॉनिटर OSD में DDC/CI चालू करके देखें",
 };
 

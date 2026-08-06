@@ -186,6 +186,9 @@ function profileCard(
     head.appendChild(plan);
   }
   // 활성 표시는 배지 대신 글자색으로 — 활성만 연둣빛 흰색, 나머지는 회색 (.card.active CSS)
+  if (profile.active && visibility.tfsd) {
+    head.appendChild(tfsdBadge());
+  }
   card.appendChild(head);
 
   // 활성 프로필은 활성 파일(항상 최신 토큰), 비활성은 보관함 토큰으로 조회.
@@ -589,6 +592,7 @@ type Visibility = {
   github: boolean;
   black: boolean;
   display: boolean;
+  tfsd: boolean;
 };
 let visibility: Visibility = {
   claude: true,
@@ -596,7 +600,38 @@ let visibility: Visibility = {
   github: true,
   black: true,
   display: true,
+  tfsd: false,
 };
+
+/// TFSD 상태등 — 켜져 있으면 활성 카드에 테슬라풍 T 배지 (연하게, 호버 시 또렷 + 설명).
+/// 자작 SVG를 DOM으로 조립한다 (innerHTML 금지 관례 유지, 공식 로고 파일 미사용)
+function tfsdBadge(): HTMLElement {
+  const badge = document.createElement("span");
+  badge.className = "tfsd-badge";
+  badge.title = t("tfsdTooltip");
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "11");
+  svg.setAttribute("height", "11");
+  svg.setAttribute("aria-hidden", "true");
+  const blade = document.createElementNS(svgNS, "path");
+  blade.setAttribute(
+    "d",
+    "M12 2C7.5 2 3.8 3.1 1.4 5.1L3.2 8C5.5 6.3 8.6 5.4 12 5.4s6.5.9 8.8 2.6l1.8-2.9C20.2 3.1 16.5 2 12 2Z",
+  );
+  const stem = document.createElementNS(svgNS, "path");
+  stem.setAttribute(
+    "d",
+    "M10.4 6.9 12 22.5 13.6 6.9c-.5-.06-1.03-.1-1.6-.1s-1.1.04-1.6.1Z",
+  );
+  for (const path of [blade, stem]) {
+    path.setAttribute("fill", "currentColor");
+    svg.appendChild(path);
+  }
+  badge.appendChild(svg);
+  return badge;
+}
 
 async function loadVisibility() {
   try {
@@ -918,6 +953,9 @@ async function compactCard(provider: ProviderId, profile: ProfileInfo): Promise<
       plan.appendChild(tier);
     }
     head.appendChild(plan);
+  }
+  if (profile.active && visibility.tfsd) {
+    head.appendChild(tfsdBadge());
   }
   card.appendChild(head);
 
