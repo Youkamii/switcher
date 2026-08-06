@@ -1344,6 +1344,13 @@ privacyBtn.addEventListener("click", () => {
   applyPrivacy(privacyOn);
 });
 
+// TFSD 자동 전환 알림 — 백그라운드에서 계정이 바뀌었으니 다시 그린다
+// (로그인 패널이 열려 있으면 재렌더를 미룬다 — 세션 보호 정책과 동일)
+void listen<{ provider: string; from: string; to: string }>("tfsd-switched", (event) => {
+  toast(t("tfsdSwitched", event.payload));
+  if (!loginOpen) void render({ immediate: true });
+});
+
 // 실행 시 자동 업데이트 결과 — 교체는 이미 끝났고 다음 실행부터 새 버전이다
 void listen<string>("update-ready", (event) => {
   toast(t("updateReady", { ver: event.payload }));

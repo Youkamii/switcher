@@ -63,6 +63,7 @@ const ko = {
   ghAdded: "GitHub 계정 추가 완료 — {login} (활성 계정이 됩니다)",
   blackTooltip: "블랙 모니터 — 모든 화면을 검게. 마우스를 흔들거나 ESC로 해제",
   privacyTooltip: "계정 정보 가리기 (블러) — 이메일·GitHub 계정명",
+  tfsdSwitched: "TFSD: {provider} 계정을 {from} → {to}로 자동 전환했습니다",
   dspUnsupported: "밝기 조절 미지원 — 모니터 OSD에서 DDC/CI를 켜보세요",
 };
 
@@ -126,6 +127,7 @@ const en: Messages = {
   ghAdded: "GitHub account added — {login} (becomes the active account)",
   blackTooltip: "Black monitor — blacks out all screens. Shake the mouse or press ESC to exit",
   privacyTooltip: "Hide account info (blur) — emails and GitHub logins",
+  tfsdSwitched: "TFSD: switched {provider} account {from} → {to}",
   dspUnsupported: "Brightness control not supported — try enabling DDC/CI in the monitor OSD",
 };
 
@@ -186,6 +188,7 @@ const ja: Messages = {
   ghAdded: "GitHub アカウント追加完了 — {login}(アクティブなアカウントになります)",
   blackTooltip: "ブラックモニター — 全画面を黒く。マウスを振るか ESC で解除",
   privacyTooltip: "アカウント情報を隠す(ぼかし) — メール・GitHub アカウント名",
+  tfsdSwitched: "TFSD: {provider} アカウントを {from} → {to} に自動切り替えしました",
   dspUnsupported: "明るさ調整非対応 — モニターの OSD で DDC/CI を有効にしてみてください",
 };
 
@@ -243,6 +246,7 @@ const zhCN: Messages = {
   ghAdded: "GitHub 账号添加完成 — {login}（将成为活动账号）",
   blackTooltip: "黑屏模式 — 将所有屏幕变黑。晃动鼠标或按 ESC 退出",
   privacyTooltip: "隐藏账号信息（模糊）— 邮箱·GitHub 账号名",
+  tfsdSwitched: "TFSD：已自动切换 {provider} 账号 {from} → {to}",
   dspUnsupported: "不支持亮度调节 — 请在显示器 OSD 中开启 DDC/CI",
 };
 
@@ -300,6 +304,7 @@ const zhTW: Messages = {
   ghAdded: "GitHub 帳號新增完成 — {login}(將成為作用中帳號)",
   blackTooltip: "黑屏模式 — 讓所有螢幕變黑。晃動滑鼠或按 ESC 解除",
   privacyTooltip: "隱藏帳號資訊(模糊) — 電子郵件·GitHub 帳號名",
+  tfsdSwitched: "TFSD:已自動切換 {provider} 帳號 {from} → {to}",
   dspUnsupported: "不支援亮度調整 — 請在螢幕 OSD 中開啟 DDC/CI",
 };
 
@@ -360,6 +365,7 @@ const hi: Messages = {
   ghAdded: "GitHub अकाउंट जुड़ गया — {login} (सक्रिय अकाउंट बन जाएगा)",
   blackTooltip: "ब्लैक मॉनिटर — सभी स्क्रीन काली। माउस हिलाएँ या ESC दबाकर बंद करें",
   privacyTooltip: "अकाउंट जानकारी छिपाएँ (धुंधला) — ईमेल·GitHub अकाउंट नाम",
+  tfsdSwitched: "TFSD: {provider} अकाउंट {from} → {to} स्वतः स्विच हुआ",
   dspUnsupported: "चमक नियंत्रण समर्थित नहीं — मॉनिटर OSD में DDC/CI चालू करके देखें",
 };
 

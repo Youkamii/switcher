@@ -101,6 +101,7 @@ switcher removes that loop. Log in once per account, and from then on switching 
 - Black monitor: the 🌙 button or tray menu covers every screen with a topmost black veil. Moving the mouse reveals a smoke-like opening around the cursor; shake the mouse hard for a second or two, or press ESC, to exit — the veil lifts as light spreads from the last cursor position. On macOS it cannot cover apps in fullscreen Spaces.
 - Account info hiding: the 🙈 button blurs emails and GitHub logins on the cards — for screen sharing and screenshots. Press again to reveal.
 - Screen brightness control: per-monitor sliders in the DISPLAY section drive the real backlight (DDC/CI on Windows, the built-in display on macOS). Monitors with DDC/CI disabled, and external monitors on a Mac, show an unsupported notice.
+- TFSD (Token Full Self-Driving): when the active account's limit hits 90%, automatically switches to the account with the most headroom — judged by the Fable window for Claude (5 Hours fallback) and 5 Hours for Codex. Enable in tray Settings (off by default).
 
 ## How it works
 

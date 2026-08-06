@@ -32,6 +32,8 @@ pub const KEY_SHOW_CODEX: &str = "show_codex";
 pub const KEY_SHOW_GITHUB: &str = "show_github";
 pub const KEY_SHOW_BLACK: &str = "show_black";
 pub const KEY_SHOW_DISPLAY: &str = "show_display";
+/// TFSD (Token Full Self-Driving) — 사용량 기반 자동 계정 전환 (기본 꺼짐, 옵트인)
+pub const KEY_TFSD: &str = "tfsd";
 
 /// 불리언 설정 읽기 — 파일이 없거나 키가 없거나 타입이 다르면 default
 pub fn load_flag(store: &Path, key: &str, default: bool) -> bool {
@@ -62,8 +64,8 @@ fn save_value(store: &Path, key: &str, value: Value) -> Result<(), String> {
 }
 
 /// 트레이 라벨 — [열기, 숨기기, 설정, 언어, 자동 업데이트, 부팅 시 자동 실행,
-/// 블랙 모니터, 표시 기능, 디스플레이 밝기, 종료] 순서
-pub fn tray_labels(lang: &str) -> [&'static str; 10] {
+/// 블랙 모니터, 표시 기능, 디스플레이 밝기, TFSD, 종료] 순서
+pub fn tray_labels(lang: &str) -> [&'static str; 11] {
     match lang {
         "en" => [
             "Open",
@@ -75,6 +77,7 @@ pub fn tray_labels(lang: &str) -> [&'static str; 10] {
             "Black monitor",
             "Visible features",
             "Display brightness",
+            "TFSD auto-switch",
             "Quit",
         ],
         "ja" => [
@@ -87,15 +90,16 @@ pub fn tray_labels(lang: &str) -> [&'static str; 10] {
             "ブラックモニター",
             "表示する機能",
             "ディスプレイの明るさ",
+            "TFSD 自動切り替え",
             "終了",
         ],
         "zh-CN" => [
             "打开", "隐藏", "设置", "语言", "自动更新", "开机自启动", "黑屏模式", "显示的功能",
-            "显示器亮度", "退出",
+            "显示器亮度", "TFSD 自动切换", "退出",
         ],
         "zh-TW" => [
             "開啟", "隱藏", "設定", "語言", "自動更新", "開機自動啟動", "黑屏模式", "顯示的功能",
-            "螢幕亮度", "結束",
+            "螢幕亮度", "TFSD 自動切換", "結束",
         ],
         "hi" => [
             "खोलें",
@@ -107,6 +111,7 @@ pub fn tray_labels(lang: &str) -> [&'static str; 10] {
             "ब्लैक मॉनिटर",
             "दिखाए जाने वाले फ़ीचर",
             "डिस्प्ले चमक",
+            "TFSD ऑटो-स्विच",
             "बंद करें",
         ],
         _ => [
@@ -119,6 +124,7 @@ pub fn tray_labels(lang: &str) -> [&'static str; 10] {
             "블랙 모니터",
             "표시 기능",
             "디스플레이 밝기",
+            "TFSD 자동 전환",
             "종료",
         ],
     }

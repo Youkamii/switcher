@@ -3,6 +3,7 @@ mod display;
 mod github;
 mod login;
 mod settings;
+mod tfsd;
 mod update;
 mod usage;
 
@@ -504,7 +505,7 @@ fn build_tray_menu(
     lang: &str,
 ) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{Menu, MenuItem, Submenu};
-    let [open_l, hide_l, settings_l, language_l, auto_update_l, auto_start_l, black_l, visible_l, display_l, quit_l] =
+    let [open_l, hide_l, settings_l, language_l, auto_update_l, auto_start_l, black_l, visible_l, display_l, tfsd_l, quit_l] =
         settings::tray_labels(lang);
     let show = MenuItem::with_id(app, "show", open_l, true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", hide_l, true, None::<&str>)?;
@@ -549,6 +550,15 @@ fn build_tray_menu(
             auto_start_l,
             true,
             flag(settings::KEY_AUTO_START, true),
+            None::<&str>,
+        )?;
+        // TFSD — 사용량 기반 자동 계정 전환 (옵트인이라 기본 꺼짐)
+        let tfsd = CheckMenuItem::with_id(
+            app,
+            "toggle-tfsd",
+            tfsd_l,
+            true,
+            flag(settings::KEY_TFSD, false),
             None::<&str>,
         )?;
         // 표시 기능 — 안 쓰는 섹션·기능을 위젯에서 숨긴다 (제품명은 번역하지 않는다)
@@ -604,7 +614,7 @@ fn build_tray_menu(
             "settings",
             settings_l,
             true,
-            &[&language, &visible, &auto_update, &auto_start],
+            &[&language, &visible, &auto_update, &auto_start, &tfsd],
         )?
     };
     // 블랙 모니터 진입점은 표시 기능에서 껐으면 트레이에서도 숨긴다
@@ -1113,6 +1123,9 @@ pub fn run() {
                 }
             });
 
+            // TFSD 자동 전환 감시 — 설정이 꺼져 있으면 틱마다 조용히 지나간다
+            tfsd::spawn(app.handle().clone());
+
             // 클릭 투과 폴링 (고정 모드, 25ms 주기):
             // - UI 영역(버튼·핸들) 위 → 마우스를 받는다
             // - 그 외 전부(카드 포함) → 뒤 창으로 통과. 단일 클릭·드래그를 절대 먹지 않는다.
@@ -1265,6 +1278,9 @@ pub fn run() {
                     }
                     "toggle-auto-start" => {
                         toggle_flag(app, settings::KEY_AUTO_START, true);
+                    }
+                    "toggle-tfsd" => {
+                        toggle_flag(app, settings::KEY_TFSD, false);
                     }
                     id if id.starts_with("vis:") => {
                         use tauri::Emitter;
