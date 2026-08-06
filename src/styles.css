@@ -638,15 +638,15 @@ body.locked .titlebar:hover .tb-actions button {
   justify-content: center;
   pointer-events: none;
   color: #e82127;
-  opacity: 0.09;
+  opacity: 0.18;
 }
 .tfsd-watermark svg {
-  width: 58px;
-  height: 58px;
+  width: 92px;
+  height: 92px;
 }
 .compact-card .tfsd-watermark svg {
-  width: 38px;
-  height: 38px;
+  width: 54px;
+  height: 54px;
 }
 
 /* 접이식 섹션 토글 (DISPLAY·GITHUB) — 가로를 채우는 버튼, 누르면 아래로 열린다 */
