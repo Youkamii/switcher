@@ -625,19 +625,28 @@ body.locked .titlebar:hover .tb-actions button {
   border-color: var(--danger);
 }
 
-/* TFSD 상태등 — 자율주행 중임을 은은하게 알리는 T 배지 (호버 시 또렷 + 설명 툴팁) */
-.tfsd-badge {
-  display: inline-flex;
-  align-items: center;
-  margin-left: 5px;
-  color: #e82127;
-  opacity: 0.38;
-  transition: opacity 0.15s;
-  cursor: help;
-  flex: none;
+/* TFSD 워터마크 — 자율주행 중인 활성 카드의 배경 정중앙에 은은한 T.
+   pointer-events 없음: 카드 안 버튼·슬라이더 조작을 가리지 않는다 */
+.card {
+  position: relative; /* 워터마크 기준점 (stale-overlay는 .usage-box 기준이라 무관) */
 }
-.tfsd-badge:hover {
-  opacity: 0.95;
+.tfsd-watermark {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  color: #e82127;
+  opacity: 0.09;
+}
+.tfsd-watermark svg {
+  width: 58px;
+  height: 58px;
+}
+.compact-card .tfsd-watermark svg {
+  width: 38px;
+  height: 38px;
 }
 
 /* 접이식 섹션 토글 (DISPLAY·GITHUB) — 가로를 채우는 버튼, 누르면 아래로 열린다 */

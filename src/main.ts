@@ -187,7 +187,9 @@ function profileCard(
   }
   // 활성 표시는 배지 대신 글자색으로 — 활성만 연둣빛 흰색, 나머지는 회색 (.card.active CSS)
   if (profile.active && visibility.tfsd) {
-    head.appendChild(tfsdBadge());
+    // 자율주행 중 표시 — 카드 배경 정중앙 워터마크 + 카드 호버 설명
+    card.appendChild(tfsdWatermark());
+    card.title = t("tfsdTooltip");
   }
   card.appendChild(head);
 
@@ -603,17 +605,15 @@ let visibility: Visibility = {
   tfsd: false,
 };
 
-/// TFSD 상태등 — 켜져 있으면 활성 카드에 테슬라풍 T 배지 (연하게, 호버 시 또렷 + 설명).
+/// TFSD 워터마크 — 자율주행 중인 활성 카드의 배경 정중앙에 은은한 T.
+/// pointer-events 없음(클릭·호버 방해 금지) — 설명 툴팁은 카드 자체에 단다.
 /// 자작 SVG를 DOM으로 조립한다 (innerHTML 금지 관례 유지, 공식 로고 파일 미사용)
-function tfsdBadge(): HTMLElement {
+function tfsdWatermark(): HTMLElement {
   const badge = document.createElement("span");
-  badge.className = "tfsd-badge";
-  badge.title = t("tfsdTooltip");
+  badge.className = "tfsd-watermark";
   const svgNS = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(svgNS, "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("width", "11");
-  svg.setAttribute("height", "11");
   svg.setAttribute("aria-hidden", "true");
   const blade = document.createElementNS(svgNS, "path");
   blade.setAttribute(
@@ -955,7 +955,8 @@ async function compactCard(provider: ProviderId, profile: ProfileInfo): Promise<
     head.appendChild(plan);
   }
   if (profile.active && visibility.tfsd) {
-    head.appendChild(tfsdBadge());
+    card.appendChild(tfsdWatermark());
+    card.title = t("tfsdTooltip");
   }
   card.appendChild(head);
 
@@ -1380,6 +1381,11 @@ privacyBtn.addEventListener("click", () => {
   privacyOn = !privacyOn;
   localStorage.setItem("switcher.privacy", privacyOn ? "1" : "0");
   applyPrivacy(privacyOn);
+});
+
+// 수동 전환 감지 → TFSD 해제 알림 (운전대를 잡으면 자율주행이 풀린다)
+void listen("tfsd-disengaged", () => {
+  toast(t("tfsdDisengaged"));
 });
 
 // TFSD 자동 전환 알림 — 백그라운드에서 계정이 바뀌었으니 다시 그린다

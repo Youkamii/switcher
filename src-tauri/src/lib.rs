@@ -109,8 +109,32 @@ fn save_profile(provider: String, name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn switch_profile(provider: String, name: String) -> Result<SwitchResult, String> {
-    accounts::switch(&Env::real()?, Provider::parse(&provider)?, &name)
+fn switch_profile(
+    app: tauri::AppHandle,
+    provider: String,
+    name: String,
+) -> Result<SwitchResult, String> {
+    let result = accounts::switch(&Env::real()?, Provider::parse(&provider)?, &name)?;
+    // 수동 전환 = 운전대를 잡은 것 — TFSD 자율주행을 해제한다 (#36 후속)
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || disengage_tfsd(&handle));
+    Ok(result)
+}
+
+/// 수동 전환이 감지되면 TFSD를 끈다 — 무인 프로세스가 사람의 선택을 되엎지 않게.
+/// 트레이 메뉴 갱신 때문에 메인 스레드에서 불러야 한다.
+fn disengage_tfsd(app: &tauri::AppHandle) {
+    use tauri::Emitter;
+    let Ok(env) = Env::real() else { return };
+    if !settings::load_flag(&env.store, settings::KEY_TFSD, false) {
+        return; // 애초에 꺼져 있으면 알림도 없다
+    }
+    if let Err(e) = settings::save_flag(&env.store, settings::KEY_TFSD, false) {
+        eprintln!("TFSD 해제 저장 실패: {e}");
+    }
+    refresh_tray_menu(app, &settings::load_language(&env.store));
+    let _ = app.emit("visibility-changed", ());
+    let _ = app.emit("tfsd-disengaged", ());
 }
 
 #[tauri::command]
@@ -1246,6 +1270,13 @@ pub fn run() {
                             let env = Env::real()?;
                             accounts::switch(&env, Provider::parse(&provider)?, &name).map(|_| ())
                         })();
+                        // 더블클릭 수동 전환도 운전대 잡기 — TFSD 해제 (메인 스레드에서)
+                        if result.is_ok() {
+                            let disengage_handle = handle.clone();
+                            let _ = handle.run_on_main_thread(move || {
+                                disengage_tfsd(&disengage_handle);
+                            });
+                        }
                         let payload = match result {
                             Ok(_) => serde_json::json!({ "ok": true, "provider": provider, "name": name }),
                             Err(e) => serde_json::json!({ "ok": false, "error": e }),
