@@ -607,7 +607,7 @@ let visibility: Visibility = {
 
 /// TFSD 워터마크 — 자율주행 중인 활성 카드의 배경 정중앙에 은은한 T.
 /// pointer-events 없음(클릭·호버 방해 금지) — 설명 툴팁은 카드 자체에 단다.
-/// 자작 SVG를 DOM으로 조립한다 (innerHTML 금지 관례 유지, 공식 로고 파일 미사용)
+/// 로고 패스는 simple-icons의 Tesla 아이콘(CC0) — DOM으로 조립 (innerHTML 금지 관례 유지)
 function tfsdWatermark(): HTMLElement {
   const badge = document.createElement("span");
   badge.className = "tfsd-watermark";
@@ -615,20 +615,13 @@ function tfsdWatermark(): HTMLElement {
   const svg = document.createElementNS(svgNS, "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("aria-hidden", "true");
-  const blade = document.createElementNS(svgNS, "path");
-  blade.setAttribute(
+  const logo = document.createElementNS(svgNS, "path");
+  logo.setAttribute(
     "d",
-    "M12 2C7.5 2 3.8 3.1 1.4 5.1L3.2 8C5.5 6.3 8.6 5.4 12 5.4s6.5.9 8.8 2.6l1.8-2.9C20.2 3.1 16.5 2 12 2Z",
+    "M12 5.362l2.475-3.026s4.245.09 8.471 2.054c-1.082 1.636-3.231 2.438-3.231 2.438-.146-1.439-1.154-1.79-4.354-1.79L12 24 8.619 5.034c-3.18 0-4.188.354-4.335 1.792 0 0-2.146-.795-3.229-2.43C5.28 2.431 9.525 2.34 9.525 2.34L12 5.362l-.004.002H12v-.002zm0-3.899c3.415-.03 7.326.528 11.328 2.28.535-.968.672-1.395.672-1.395C19.625.612 15.528.015 12 0 8.472.015 4.375.61 0 2.349c0 0 .195.525.672 1.396C4.674 1.989 8.585 1.435 12 1.46v.003z",
   );
-  const stem = document.createElementNS(svgNS, "path");
-  stem.setAttribute(
-    "d",
-    "M10.4 6.9 12 22.5 13.6 6.9c-.5-.06-1.03-.1-1.6-.1s-1.1.04-1.6.1Z",
-  );
-  for (const path of [blade, stem]) {
-    path.setAttribute("fill", "currentColor");
-    svg.appendChild(path);
-  }
+  logo.setAttribute("fill", "currentColor");
+  svg.appendChild(logo);
   badge.appendChild(svg);
   return badge;
 }
