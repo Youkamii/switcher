@@ -6,11 +6,15 @@
 //!   Fable이 차면 그 계정은 끝이다. Fable 창이 없으면 "5 Hours" 폴백.
 //! - 코덱스: "5 Hours" (없으면 첫 창).
 //!
-//! 규칙:
+//! 규칙 (red-review 반영):
 //! - stale(조회 막힘) 수치로는 판단하지 않는다 — 낡은 정보로 갈아타지 않는다
-//! - 전환 후 프로바이더당 10분 쿨다운 — 핑퐁 방지
-//! - CLI 세션 사용 중 전환도 허용 — 사용자 실측으로 문제 없음 확인 (#35),
-//!   별도 프로세스 감지 안전장치는 두지 않는다
+//! - 전환 직전에 활성 계정을 재확인한다 — 평가하는 사이 사용자가 손수 전환했으면
+//!   그 선택을 존중하고 물러난다 (TOCTOU)
+//! - 전환 성공·실패 후 10분, 전 계정 만석이면 5분 물러난다 — 핑퐁·무한 재시도·
+//!   지속 폴링 방지
+//! - 무인 전환은 ~/.switcher/tfsd-history.log에 영속 기록한다 — 위젯이 숨어
+//!   토스트를 못 봐도 사후 확인 가능 (토큰은 절대 싣지 않는다)
+//! - CLI 세션 사용 중 전환도 허용 — 사용자 실측으로 문제 없음 확인 (#35)
 
 use crate::accounts::{self, Env, Provider};
 use crate::settings;
@@ -20,13 +24,18 @@ use tauri::Emitter;
 
 const THRESHOLD: f64 = 90.0;
 const COOLDOWN: Duration = Duration::from_secs(600);
-/// 감시 주기 — 사용량 캐시(60초)보다 길게 잡아 API 부하를 늘리지 않는다
-const TICK: Duration = Duration::from_secs(120);
+/// 전 계정 만석(갈 곳 없음)일 때의 백오프 — 틱마다 전 계정 실조회를 반복하지 않는다
+const SATURATED_BACKOFF: Duration = Duration::from_secs(300);
+/// 감시 주기 — 사용량 캐시 TTL(60초) **안쪽**이어야 연속 틱이 캐시를 재사용한다.
+/// (TTL보다 길면 매 틱이 캐시 미스 = 실호출이 된다 — red-review) 실호출은 ~2틱당 1회.
+const TICK: Duration = Duration::from_secs(55);
 
 /// 판단 기준 창의 사용률 — 기준 창이 없으면 None (판단 보류)
 fn criterion_percent(windows: &[UsageWindow], provider: Provider) -> Option<f64> {
     if provider == Provider::Claude {
-        if let Some(window) = windows.iter().find(|w| w.label == "Fable") {
+        // 완전일치가 아니라 contains — API의 모델 표시명이 "Fable 5" 등으로 바뀌어도
+        // 판정 기준이 조용히 폴백으로 뒤바뀌지 않게 (red-review)
+        if let Some(window) = windows.iter().find(|w| w.label.contains("Fable")) {
             return Some(window.percent);
         }
     }
@@ -46,20 +55,42 @@ fn choose_target(candidates: &[(String, f64)]) -> Option<&str> {
         .map(|(name, _)| name.as_str())
 }
 
-/// 한 프로바이더 평가 — 전환해야 하면 (현재 표시명, 대상 프로필명, 대상 표시명)
-async fn evaluate(env: &Env, provider: Provider) -> Option<(String, String, String)> {
-    let snap = accounts::list(env, provider).ok()?;
+/// 한 프로바이더의 평가 결과
+enum Verdict {
+    /// 전환 불필요 — 임계 미달·프로필 부족·판단 보류
+    Idle,
+    /// 활성은 꽉 찼는데 갈 곳이 없다 — 백오프 대상
+    Saturated,
+    Switch {
+        /// 평가 시점의 활성 프로필 이름 — 전환 직전 재확인에 쓴다
+        active_name: String,
+        from: String,
+        target: String,
+        to: String,
+    },
+}
+
+async fn evaluate(env: &Env, provider: Provider) -> Verdict {
+    let Ok(snap) = accounts::list(env, provider) else {
+        return Verdict::Idle;
+    };
     if snap.profiles.len() < 2 {
-        return None;
+        return Verdict::Idle;
     }
-    let active = snap.profiles.iter().find(|p| p.active)?;
-    let active_usage = usage::fetch(env, provider, None).await.ok()?;
+    let Some(active) = snap.profiles.iter().find(|p| p.active) else {
+        return Verdict::Idle;
+    };
+    let Ok(active_usage) = usage::fetch(env, provider, None).await else {
+        return Verdict::Idle;
+    };
     if active_usage.stale {
-        return None;
+        return Verdict::Idle;
     }
-    let active_percent = criterion_percent(&active_usage.windows, provider)?;
+    let Some(active_percent) = criterion_percent(&active_usage.windows, provider) else {
+        return Verdict::Idle;
+    };
     if active_percent < THRESHOLD {
-        return None;
+        return Verdict::Idle;
     }
     let mut candidates: Vec<(String, f64)> = Vec::new();
     for profile in snap.profiles.iter().filter(|p| !p.active) {
@@ -69,52 +100,137 @@ async fn evaluate(env: &Env, provider: Provider) -> Option<(String, String, Stri
         if profile_usage.stale {
             continue;
         }
+        // 세션 게이트: 기준 창(Fable)이 널널해도 5 Hours가 만석이면 전환 직후
+        // 막힌다 — 그런 후보는 제외한다 (red-review)
+        let session_open = profile_usage
+            .windows
+            .iter()
+            .find(|w| w.label == "5 Hours")
+            .map_or(true, |w| w.percent < THRESHOLD);
+        if !session_open {
+            continue;
+        }
         if let Some(percent) = criterion_percent(&profile_usage.windows, provider) {
             candidates.push((profile.name.clone(), percent));
         }
     }
-    let target = choose_target(&candidates)?.to_string();
-    let to_display = snap
+    let Some(target) = choose_target(&candidates).map(str::to_string) else {
+        return Verdict::Saturated;
+    };
+    let to = snap
         .profiles
         .iter()
         .find(|p| p.name == target)
         .and_then(|p| p.email.clone())
         .unwrap_or_else(|| target.clone());
-    let from_display = active.email.clone().unwrap_or_else(|| active.name.clone());
-    Some((from_display, target, to_display))
+    Verdict::Switch {
+        active_name: active.name.clone(),
+        from: active.email.clone().unwrap_or_else(|| active.name.clone()),
+        target,
+        to,
+    }
+}
+
+/// 무인 전환의 영속 흔적 — 유닉스 초·프로바이더·표시명만. 64KB를 넘으면 새로 시작.
+fn append_history(store: &std::path::Path, provider: Provider, from: &str, to: &str) {
+    use std::io::Write;
+    let path = store.join("tfsd-history.log");
+    if std::fs::metadata(&path)
+        .map(|m| m.len() > 64 * 1024)
+        .unwrap_or(false)
+    {
+        let _ = std::fs::remove_file(&path);
+    }
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(file, "{secs}\t{}\t{from} -> {to}", provider.dir_name());
+    }
 }
 
 /// 감시 루프 — 앱 수명 동안 돌며, 설정이 꺼져 있으면 틱마다 조용히 지나간다
 pub fn spawn(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let mut last_switch: [Option<Instant>; 2] = [None, None];
+        // 프로바이더별 보류 만료 시각 (전환·실패 10분, 만석 5분)
+        let mut hold_until: [Option<Instant>; 2] = [None, None];
         loop {
             tokio::time::sleep(TICK).await;
             let Ok(env) = Env::real() else { continue };
-            if !settings::load_flag(&env.store, settings::KEY_TFSD, false) {
-                continue;
-            }
             for (index, provider) in [Provider::Claude, Provider::Codex].into_iter().enumerate()
             {
-                if last_switch[index].is_some_and(|at| at.elapsed() < COOLDOWN) {
+                // 평가·전환 사이에도 꺼짐이 즉시 먹도록 프로바이더마다 다시 읽는다
+                if !settings::load_flag(&env.store, settings::KEY_TFSD, false) {
+                    break;
+                }
+                if hold_until[index].is_some_and(|until| Instant::now() < until) {
                     continue;
                 }
-                let Some((from, target, to)) = evaluate(&env, provider).await else {
-                    continue;
+                // 타임아웃 — usage GET에 타임아웃이 없어(기존 코드) 행 걸린 커넥션
+                // 하나가 이 루프를 영구 정지시킬 수 있다 (red-review)
+                let verdict = match tokio::time::timeout(
+                    Duration::from_secs(90),
+                    evaluate(&env, provider),
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(_) => continue,
                 };
-                match accounts::switch(&env, provider, &target) {
-                    Ok(_) => {
-                        last_switch[index] = Some(Instant::now());
-                        let _ = app.emit(
-                            "tfsd-switched",
-                            serde_json::json!({
-                                "provider": provider.dir_name().to_uppercase(),
-                                "from": from,
-                                "to": to,
-                            }),
-                        );
+                match verdict {
+                    Verdict::Idle => {}
+                    Verdict::Saturated => {
+                        hold_until[index] = Some(Instant::now() + SATURATED_BACKOFF);
                     }
-                    Err(e) => eprintln!("TFSD 전환 실패: {e}"),
+                    Verdict::Switch {
+                        active_name,
+                        from,
+                        target,
+                        to,
+                    } => {
+                        // 평가하는 사이(네트워크 대기 포함) 사용자가 손수 전환했으면
+                        // 그 선택을 존중한다 — 무인 프로세스가 사람을 이기면 안 된다
+                        let still_active = accounts::list(&env, provider)
+                            .ok()
+                            .and_then(|s| s.profiles.into_iter().find(|p| p.active))
+                            .map(|p| p.name == active_name)
+                            .unwrap_or(false);
+                        if !still_active {
+                            continue;
+                        }
+                        // 파일·키체인 작업이라 블로킹 풀에서
+                        let target_owned = target.clone();
+                        let switched = tauri::async_runtime::spawn_blocking(move || {
+                            let env = Env::real()?;
+                            accounts::switch(&env, provider, &target_owned).map(|_| ())
+                        })
+                        .await
+                        .map_err(|e| format!("전환 작업 실패: {e}"))
+                        .and_then(|r| r);
+                        match switched {
+                            Ok(()) => {
+                                hold_until[index] = Some(Instant::now() + COOLDOWN);
+                                append_history(&env.store, provider, &from, &to);
+                                let _ = app.emit(
+                                    "tfsd-switched",
+                                    serde_json::json!({
+                                        "provider": match provider {
+                                            Provider::Claude => "Claude",
+                                            Provider::Codex => "Codex",
+                                        },
+                                        "from": from,
+                                        "to": to,
+                                    }),
+                                );
+                            }
+                            Err(e) => {
+                                // 실패도 쿨다운 — 120초마다 무한 재시도하지 않는다
+                                hold_until[index] = Some(Instant::now() + COOLDOWN);
+                                eprintln!("TFSD 전환 실패: {e}");
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -163,5 +279,23 @@ mod tests {
         let full = vec![("a".to_string(), 95.0), ("b".to_string(), 91.0)];
         assert_eq!(choose_target(&full), None);
         assert_eq!(choose_target(&[]), None);
+    }
+
+    #[test]
+    fn history_appends_and_resets_when_large() {
+        let store = std::env::temp_dir().join(format!("switcher-tfsd-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&store);
+        std::fs::create_dir_all(&store).unwrap();
+        append_history(&store, Provider::Claude, "a@x.com", "b@x.com");
+        let text = std::fs::read_to_string(store.join("tfsd-history.log")).unwrap();
+        assert!(text.contains("claude\ta@x.com -> b@x.com"));
+        assert!(!text.contains("token"), "토큰류 문자열이 실릴 자리가 없어야 한다");
+        // 64KB 초과 시 새로 시작
+        std::fs::write(store.join("tfsd-history.log"), vec![b'x'; 70 * 1024]).unwrap();
+        append_history(&store, Provider::Codex, "c", "d");
+        let text = std::fs::read_to_string(store.join("tfsd-history.log")).unwrap();
+        assert!(text.len() < 1024);
+        assert!(text.contains("codex\tc -> d"));
+        let _ = std::fs::remove_dir_all(&store);
     }
 }
