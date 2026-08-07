@@ -1,0 +1,29 @@
+# npm 신뢰 게시 (Trusted Publishing, OIDC) — 로컬 npm 인증 완전 제거.
+# npm의 토큰 단명화 정책(2025) 때문에 PC에서 npm login을 반복해야 했다 —
+# 이 워크플로는 토큰 없이 GitHub OIDC로 게시하므로 인증 자체가 사라진다.
+# 사전 조건(1회): npmjs.com → switcher-widget → Settings → Trusted Publisher에
+# 이 저장소(Youkamii/switcher)와 워크플로 파일명(npm-publish.yml)을 등록.
+name: npm-publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  id-token: write # OIDC 토큰 발급 — 신뢰 게시의 핵심 권한
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # OIDC 신뢰 게시는 npm 11.5.1+ 필요 — 러너 기본 npm이 낮을 수 있어 고정 업그레이드
+      - run: npm install -g npm@latest
+      # 패키지는 런처 스크립트만 담는다(실행 파일은 GitHub 릴리스에서 받음) — 빌드 불필요
+      - run: npm publish
