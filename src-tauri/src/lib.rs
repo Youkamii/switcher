@@ -536,12 +536,20 @@ fn build_tray_menu(
     lang: &str,
 ) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{Menu, MenuItem, Submenu};
-    let [open_l, hide_l, settings_l, language_l, auto_update_l, auto_start_l, black_l, visible_l, display_l, tfsd_l, quit_l] =
+    let [open_l, hide_l, settings_l, language_l, auto_update_l, auto_start_l, black_l, visible_l, display_l, tfsd_l, check_update_l, quit_l] =
         settings::tray_labels(lang);
     let show = MenuItem::with_id(app, "show", open_l, true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", hide_l, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", quit_l, true, None::<&str>)?;
     let black = MenuItem::with_id(app, "black-on", black_l, true, None::<&str>)?;
+    // 수동 업데이트 확인 — 라벨 뒤에 최근 결과 서픽스가 붙는다 (#44)
+    let check_update = MenuItem::with_id(
+        app,
+        "check-update",
+        format!("{check_update_l}{}", update_status_suffix()),
+        true,
+        None::<&str>,
+    )?;
     let settings_menu = {
         use tauri::menu::CheckMenuItem;
         let mut lang_items: Vec<CheckMenuItem<tauri::Wry>> = Vec::new();
@@ -657,8 +665,62 @@ fn build_tray_menu(
         items.push(&black);
     }
     items.push(&settings_menu);
+    items.push(&check_update);
     items.push(&quit);
     Menu::with_items(app, &items)
+}
+
+/// 수동 업데이트 확인의 최근 결과 — 트레이 라벨 뒤에 붙는 서픽스.
+/// 언어 중립 기호만 쓴다: " …" 확인 중 / " — ✓" 최신 / " — v{n} ↻" 재시작 시 적용 / " — ✗" 실패
+static UPDATE_STATUS: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+static UPDATE_CHECKING: AtomicBool = AtomicBool::new(false);
+
+fn update_status_suffix() -> String {
+    UPDATE_STATUS.lock().map(|s| s.clone()).unwrap_or_default()
+}
+
+/// 트레이의 "업데이트 확인" — 자동 업데이트와 같은 경로(check_and_apply)를 즉시 돈다.
+/// 결과는 팝업 없이 메뉴 라벨 서픽스로만 알린다 (이 앱은 조용한 게 미덕, #44)
+#[cfg(any(windows, target_os = "macos"))]
+fn check_update_now(app: &tauri::AppHandle) {
+    // dev 빌드는 자기 target 산출물을 덮으므로 자동 경로처럼 건너뛴다
+    if cfg!(debug_assertions) {
+        return;
+    }
+    if UPDATE_CHECKING.swap(true, Ordering::SeqCst) {
+        return; // 이미 확인 중 — 중복 다운로드 방지
+    }
+    if let Ok(mut status) = UPDATE_STATUS.lock() {
+        *status = " …".to_string();
+    }
+    if let Ok(env) = Env::real() {
+        refresh_tray_menu(app, &settings::load_language(&env.store));
+    }
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        use tauri::Emitter;
+        let suffix = match update::check_and_apply().await {
+            Ok(Some(version)) => {
+                // 프론트 콘솔에도 남긴다 (updateReady — 다음 실행부터 적용)
+                let _ = handle.emit("update-ready", version.clone());
+                format!(" — v{version} ↻")
+            }
+            Ok(None) => " — ✓".to_string(),
+            Err(e) => {
+                eprintln!("업데이트 확인 실패: {e}");
+                " — ✗".to_string()
+            }
+        };
+        if let Ok(mut status) = UPDATE_STATUS.lock() {
+            *status = suffix;
+        }
+        UPDATE_CHECKING.store(false, Ordering::SeqCst);
+        let lang = Env::real()
+            .map(|env| settings::load_language(&env.store))
+            .unwrap_or_else(|_| "ko".to_string());
+        let handle_for_menu = handle.clone();
+        let _ = handle.run_on_main_thread(move || refresh_tray_menu(&handle_for_menu, &lang));
+    });
 }
 
 /// 설정 체크 토글 공통: 플래그 반전 저장 → 부수 효과 적용 → 메뉴 재구성(체크 갱신)
@@ -1346,6 +1408,8 @@ pub fn run() {
                             }
                         });
                     }
+                    #[cfg(any(windows, target_os = "macos"))]
+                    "check-update" => check_update_now(app),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {

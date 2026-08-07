@@ -1266,8 +1266,9 @@ applyViewMode();
 
 // 투명도 — 2단계 커브.
 // 100%→50%: 배경 채움(--bg-alpha)만 1→0으로 빠지고 골조는 그대로.
-// 50%→0%: 배경은 이미 없고, 골조(--fg-alpha)가 1→0.05로 옅어져 사실상
-// 사라진다 — 타입 버튼·이동 핸들만 투명도 예외로 남는다 (#42).
+// 50%→0%: 배경은 이미 없고, 글자·테두리(--fg-alpha)가 1→0.18로 옅어진다.
+// 바닥 0.18: 0.05는 바만 둥둥 떠 이질감이 든다는 피드백 — 흐릿한 골조를
+// 남겨 위젯으로 읽히게 한다 (#42 후속). 바·타입 버튼·이동 핸들은 예외.
 const alphaSlider = document.getElementById("alpha") as HTMLInputElement;
 function applyAlpha(percent: number) {
   const clamped = Math.min(100, Math.max(0, percent));
@@ -1278,7 +1279,7 @@ function applyAlpha(percent: number) {
     fg = 1;
   } else {
     bg = 0;
-    fg = 0.05 + 0.95 * (clamped / 50);
+    fg = 0.18 + 0.82 * (clamped / 50);
   }
   document.documentElement.style.setProperty("--bg-alpha", bg.toFixed(3));
   document.documentElement.style.setProperty("--fg-alpha", fg.toFixed(3));

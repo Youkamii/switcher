@@ -65,7 +65,7 @@ fn save_value(store: &Path, key: &str, value: Value) -> Result<(), String> {
 
 /// 트레이 라벨 — [열기, 숨기기, 설정, 언어, 자동 업데이트, 부팅 시 자동 실행,
 /// 블랙 모니터, 표시 기능, 디스플레이 밝기, TFSD, 종료] 순서
-pub fn tray_labels(lang: &str) -> [&'static str; 11] {
+pub fn tray_labels(lang: &str) -> [&'static str; 12] {
     match lang {
         "en" => [
             "Open",
@@ -78,6 +78,7 @@ pub fn tray_labels(lang: &str) -> [&'static str; 11] {
             "Visible features",
             "Display brightness",
             "TFSD auto-switch",
+            "Check for updates",
             "Quit",
         ],
         "ja" => [
@@ -91,15 +92,16 @@ pub fn tray_labels(lang: &str) -> [&'static str; 11] {
             "表示する機能",
             "ディスプレイの明るさ",
             "TFSD 自動切り替え",
+            "アップデートを確認",
             "終了",
         ],
         "zh-CN" => [
             "打开", "隐藏", "设置", "语言", "自动更新", "开机自启动", "黑屏模式", "显示的功能",
-            "显示器亮度", "TFSD 自动切换", "退出",
+            "显示器亮度", "TFSD 自动切换", "检查更新", "退出",
         ],
         "zh-TW" => [
             "開啟", "隱藏", "設定", "語言", "自動更新", "開機自動啟動", "黑屏模式", "顯示的功能",
-            "螢幕亮度", "TFSD 自動切換", "結束",
+            "螢幕亮度", "TFSD 自動切換", "檢查更新", "結束",
         ],
         "hi" => [
             "खोलें",
@@ -112,6 +114,7 @@ pub fn tray_labels(lang: &str) -> [&'static str; 11] {
             "दिखाए जाने वाले फ़ीचर",
             "डिस्प्ले चमक",
             "TFSD ऑटो-स्विच",
+            "अपडेट जाँचें",
             "बंद करें",
         ],
         _ => [
@@ -125,6 +128,7 @@ pub fn tray_labels(lang: &str) -> [&'static str; 11] {
             "표시 기능",
             "디스플레이 밝기",
             "TFSD 자동 전환",
+            "업데이트 확인",
             "종료",
         ],
     }

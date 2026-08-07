@@ -1,10 +1,10 @@
 :root {
   color-scheme: dark;
   /* 투명 슬라이더는 2단계 커브: 100→50%는 배경 채움(--bg-alpha)만 빠지고,
-     50→0%는 글자·테두리(--fg-alpha)가 1→0.05로 옅어져 사실상 사라진다.
-     사용량 바(그래프)는 투명도의 영향을 받지 않는다 — 최하에서는 바만 남는
-     순수 그래프 위젯이 된다. 타입 버튼(#pin)·이동 핸들(#drag-handle)도
-     예외로 남는다 (#42). 글자 페이드는 --text/--muted 색 자체에 태운다. */
+     50→0%는 글자·테두리(--fg-alpha)가 1→0.18로 옅어진다 (0.05는 바만 둥둥
+     떠 이질감 — 사용자 피드백으로 바닥을 올림). 사용량 바(그래프)는 투명도의
+     영향을 받지 않고, 타입 버튼(#pin)·이동 핸들(#drag-handle)도 예외로
+     남는다 (#42). 글자 페이드는 --text/--muted 색 자체에 태운다. */
   --bg-alpha: 1;
   --fg-alpha: 1;
   --bg: rgba(22, 22, 30, var(--bg-alpha));
@@ -528,7 +528,8 @@ body.minimal #privacybtn {
   line-height: 1;
   padding: 6px 14px;
   cursor: grab;
-  opacity: 0.35;
+  /* 0.35는 최하 투명도에서 못 찾겠다는 피드백 — 손잡이는 또렷해야 한다 */
+  opacity: 0.6;
   transition: opacity 0.15s;
 }
 
