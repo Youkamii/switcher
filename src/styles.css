@@ -1,15 +1,17 @@
 :root {
   color-scheme: dark;
   /* 투명 슬라이더는 2단계 커브: 100→50%는 배경 채움(--bg-alpha)만 빠지고,
-     50→0%는 골조(--fg-alpha, 테두리·막대·글자)가 1→0.05로 옅어져 사실상
-     사라진다. 타입 버튼(#pin)·이동 핸들(#drag-handle)만 예외로 남는다 (#42). */
+     50→0%는 글자·테두리(--fg-alpha)가 1→0.05로 옅어져 사실상 사라진다.
+     사용량 바(그래프)는 투명도의 영향을 받지 않는다 — 최하에서는 바만 남는
+     순수 그래프 위젯이 된다. 타입 버튼(#pin)·이동 핸들(#drag-handle)도
+     예외로 남는다 (#42). 글자 페이드는 --text/--muted 색 자체에 태운다. */
   --bg-alpha: 1;
   --fg-alpha: 1;
   --bg: rgba(22, 22, 30, var(--bg-alpha));
   --panel: rgba(31, 31, 42, var(--bg-alpha));
   --panel-2: rgba(38, 38, 54, var(--bg-alpha));
-  --text: #e6e6ef;
-  --muted: #8b8b9e;
+  --text: rgba(230, 230, 239, var(--fg-alpha));
+  --muted: rgba(139, 139, 158, var(--fg-alpha));
   --accent: #a78bfa;
   --warn: #facc15;
   --danger: #f87171;
@@ -37,9 +39,9 @@ body {
 }
 
 /* 테두리 없는 투명 창 — shell이 위젯의 몸통이다.
-   골조 투명도(--fg-alpha)는 shell 전체가 아니라 main과 타이틀바 개별 요소에
-   건다 — CSS opacity는 자식이 부모보다 진해질 수 없어, shell에 걸면 최하
-   투명도에서 타입 버튼·이동 핸들을 남길 방법이 없다 (#42). */
+   골조 투명도(--fg-alpha)는 통짜 opacity가 아니라 글자색(--text/--muted)과
+   테두리색에 개별로 태운다 — CSS opacity는 자식이 부모보다 진해질 수 없어,
+   컨테이너에 걸면 사용량 바를 남길 방법이 없다 (#42 후속: 그래프는 남긴다). */
 .shell {
   display: flex;
   flex-direction: column;
@@ -48,10 +50,6 @@ body {
   border: 1px solid rgba(52, 52, 74, calc(0.9 * var(--fg-alpha)));
   border-radius: 12px;
   overflow: hidden;
-}
-
-main {
-  opacity: var(--fg-alpha);
 }
 
 /* 타이틀바 요소도 골조와 함께 옅어진다 — 단 #pin·#drag-handle은 예외.
@@ -259,14 +257,15 @@ button.link:hover {
 
 .card {
   background: var(--panel);
-  border: 1px solid #2b2b3d;
+  /* 카드 테두리도 글자와 함께 옅어진다 — 바만 남기기 위해 (#42 후속) */
+  border: 1px solid rgba(43, 43, 61, var(--fg-alpha));
   border-radius: 10px;
   padding: 10px 12px;
   margin-bottom: 8px;
 }
 
 .card.active {
-  border-color: var(--accent);
+  border-color: rgba(167, 139, 250, var(--fg-alpha));
 }
 
 .card-head {
@@ -288,7 +287,7 @@ button.link:hover {
 }
 
 .card.active .card-name {
-  color: #e4ffe8;
+  color: rgba(228, 255, 232, var(--fg-alpha));
 }
 
 /* 사용 중이 아닌 계정은 카드 전체 채도를 낮춰 한눈에 구분되게 */
@@ -318,6 +317,8 @@ button.link:hover {
   border-radius: 99px;
   padding: 1px 7px;
   flex: none;
+  /* 배지 글자·테두리는 고정색이라 opacity로 함께 페이드 (#42 후속) */
+  opacity: var(--fg-alpha);
 }
 
 .badge.plan {
@@ -416,24 +417,31 @@ button.link:hover {
   letter-spacing: -0.5px;
 }
 
-/* 미니멀(Type 3) — 이메일·플랜·리셋 없이 한 글자 라벨과 바만 (#41) */
+/* 미니멀(Type 3) — 섹션 제목·이메일·플랜·리셋 전부 없이 한 글자 라벨과
+   바만 쌓인다. 폭 150px, 여백·글자·바 두께도 한 단계씩 줄인다 (#41 후속) */
 #app.minimal .compact-row {
-  grid-template-columns: 14px 1fr;
+  grid-template-columns: 12px 1fr;
+  gap: 5px;
+  margin: 2px 0;
+  font-size: 10px;
 }
 
 #app.minimal .compact-card {
-  padding: 4px 7px;
-  margin-bottom: 4px;
+  padding: 3px 6px;
+  margin-bottom: 3px;
 }
 
-#app.minimal .compact-head {
-  font-size: 10px;
-  margin: 4px 0 2px;
+#app.minimal .compact-row .bar {
+  height: 4px;
 }
 
 #app.minimal .tfsd-watermark svg {
-  width: 30px;
-  height: 30px;
+  width: 24px;
+  height: 24px;
+}
+
+body.minimal main {
+  padding: 0 8px 6px;
 }
 
 /* 갱신 대기 상태 — 수치는 살짝 흐리게 유지하고, 우상단 작은 라벨로만 알린다 */
@@ -665,7 +673,7 @@ body.locked .titlebar:hover .tb-actions button#pin {
   justify-content: center;
   pointer-events: none;
   color: #e82127;
-  opacity: 0.18;
+  opacity: calc(0.18 * var(--fg-alpha));
 }
 .tfsd-watermark svg {
   width: 92px;
@@ -693,6 +701,10 @@ body.locked .titlebar:hover .tb-actions button#pin {
 }
 .section-toggle:hover {
   color: var(--text);
+}
+.section-toggle {
+  /* 접이식 토글의 테두리·배경도 글자와 함께 페이드 (#42 후속) */
+  opacity: var(--fg-alpha);
 }
 .section-toggle .chev {
   opacity: 0.7;

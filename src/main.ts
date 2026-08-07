@@ -1027,12 +1027,15 @@ async function renderProviderCompact(
     if (snap.profiles.length === 0) return; // 저장된 계정이 없으면 섹션 생략
 
     const section = document.createElement("section");
-    const head = document.createElement("div");
-    head.className = "compact-head";
-    const name = document.createElement("span");
-    name.textContent = title;
-    head.appendChild(name);
-    section.appendChild(head);
+    // 미니멀은 섹션 제목(CLAUDE/CODEX)도 없다 — 카드만 쌓인다 (#41 후속)
+    if (!minimal) {
+      const head = document.createElement("div");
+      head.className = "compact-head";
+      const name = document.createElement("span");
+      name.textContent = title;
+      head.appendChild(name);
+      section.appendChild(head);
+    }
 
     // 카드를 병렬로 준비해 순서대로 붙인다 — 하나씩 기다리며 주루룩 생기지 않게
     const cards = await Promise.all(
@@ -1169,6 +1172,7 @@ function applyViewMode() {
   app.classList.toggle("minimal", viewMode === "minimal");
   // 타이틀바도 위젯 모드로 (이름·새로고침·슬라이더 숨김, 남은 버튼은 호버 시에만 또렷)
   document.body.classList.toggle("locked", locked);
+  document.body.classList.toggle("minimal", viewMode === "minimal");
   lockBtn.classList.toggle("pinned", locked);
   lockBtn.textContent =
     viewMode === "normal" ? "Type1" : viewMode === "compact" ? "Type2" : "Type3";
@@ -1305,7 +1309,7 @@ function fitHeight() {
     const max = Math.floor(window.screen.availHeight * 0.9);
     const target = Math.round(Math.max(80, Math.min(total, max)));
     // 컴팩트 모드는 창 자체도 좁게, 미니멀은 더 좁게
-    const width = viewMode === "minimal" ? 170 : viewMode === "compact" ? 240 : 360;
+    const width = viewMode === "minimal" ? 150 : viewMode === "compact" ? 240 : 360;
     void (async () => {
       // 크기 조절 기준은 "오른쪽 상단" — 목표 폭이 실제로 바뀌는 전환에서만
       // 우측 가장자리를 고정한다. (바깥 크기에는 그림자가 포함되므로 실측 폭과
