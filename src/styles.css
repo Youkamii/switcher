@@ -81,6 +81,14 @@ input[type="range"] {
   accent-color: var(--accent);
 }
 
+/* 타이틀바 투명도 슬라이더는 짧게 — 길면 버튼들이 창 밖으로 밀린다
+   (디스플레이 밝기 슬라이더는 위 일반 규칙 그대로) */
+#alpha {
+  flex: 0 1 84px;
+  min-width: 48px;
+  max-width: 84px;
+}
+
 
 .titlebar {
   display: flex;
