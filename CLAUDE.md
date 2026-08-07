@@ -43,6 +43,8 @@
 
 ## macOS 전용 (실측 확인됨, 2026-07-29 / claude 2.1.220 / macOS 26.5)
 
+- **claude 2.1.223부터(실측 2026-08-07) 키체인 값이 "JSON의 16진수 문자열"로 저장되기도 한다.** CLI는 스스로 디코드해 읽으므로 CLI·전환(바이트 복사)은 멀쩡하고, JSON을 기대하는 사용량·갱신만 깨진다 — 읽기 관문(accounts.rs `normalize_cred`)이 순수 hex→JSON일 때만 투명 디코드한다. 위젯 쓰기는 raw JSON 유지 (CLI가 구형식도 읽는 것으로 추정 — 형식 전환기를 CLI가 스스로 넘겼음).
+
 - 키체인 접근은 claude CLI와 같은 통로인 `/usr/bin/security`를 쓴다 — 같은 통로여야 항목 ACL이 일치해 허용 팝업이 없다. 쓰기는 `security -i`(stdin) + `-X`(hex)로 — 토큰이 프로세스 인자에 노출되지 않는다.
 - 격리 로그인(`CLAUDE_CONFIG_DIR`)은 맥에서 파일 대신 키체인 항목 `Claude Code-credentials-<sha256(경로 문자열)[:8]>`을 만든다. 청소는 **키체인 먼저, 폴더 나중** — 폴더가 사라지면 항목 이름(경로 해시)을 복원할 수 없다.
 - 일반 NSWindow는 `CanJoinAllSpaces`·`FullScreenAuxiliary`를 줘도 다른 Space(특히 전체화면)에 올라가지 못한다 — **비활성 NSPanel로 클래스를 갈아끼워야** 한다 (lib.rs `SwitcherPanel`). 이때 tao가 덮어쓰던 `canBecomeKeyWindow`가 사라지므로 서브클래스에서 복원해야 입력칸이 포커스를 받는다.

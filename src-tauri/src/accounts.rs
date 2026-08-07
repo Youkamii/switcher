@@ -317,10 +317,63 @@ pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
     })
 }
 
+/// 자격증명 정규화 — claude CLI 2.1.223부터(실측 2026-08-07) 맥 키체인 값이
+/// "JSON의 16진수 문자열"로 저장되는 경우가 있다. CLI는 자기 형식을 스스로
+/// 디코드해 읽으므로 CLI는 멀쩡하지만, JSON을 기대하는 위젯의 사용량 조회·토큰
+/// 갱신이 전부 깨진다. 전환(바이트 복사)이 그 형식을 프로필 파일에도 전파하므로
+/// 읽기 관문에서 투명하게 디코드한다. 순수 hex이고 디코드 결과가 JSON일 때만
+/// 디코드하며(정상 JSON은 '{'로 시작해 hex일 수 없다), 아니면 원본 그대로 둔다.
+pub(crate) fn normalize_cred(data: Vec<u8>) -> Vec<u8> {
+    let Ok(text) = std::str::from_utf8(&data) else {
+        return data;
+    };
+    let trimmed = text.trim();
+    if trimmed.len() < 2
+        || trimmed.len() % 2 != 0
+        || !trimmed.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return data;
+    }
+    let decoded: Vec<u8> = trimmed
+        .as_bytes()
+        .chunks(2)
+        .map(|pair| {
+            let hi = (pair[0] as char).to_digit(16).unwrap_or(0) as u8;
+            let lo = (pair[1] as char).to_digit(16).unwrap_or(0) as u8;
+            (hi << 4) | lo
+        })
+        .collect();
+    if serde_json::from_slice::<Value>(&decoded).is_ok() {
+        decoded
+    } else {
+        data
+    }
+}
+
 pub(crate) fn read_json(path: &Path) -> Result<Value, String> {
-    let text =
-        fs::read_to_string(path).map_err(|e| format!("읽기 실패 {}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("JSON 파싱 실패 {}: {e}", path.display()))
+    let bytes = fs::read(path).map_err(|e| format!("읽기 실패 {}: {e}", path.display()))?;
+    let bytes = normalize_cred(bytes);
+    serde_json::from_slice(&bytes).map_err(|e| format!("JSON 파싱 실패 {}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod normalize_tests {
+    use super::*;
+
+    #[test]
+    fn hex_wrapped_json_is_decoded_and_others_untouched() {
+        let json = br#"{"claudeAiOauth":{"accessToken":"sk-test"}}"#.to_vec();
+        // 정상 JSON은 그대로
+        assert_eq!(normalize_cred(json.clone()), json);
+        // hex로 감싼 JSON은 디코드된다 (CLI 2.1.223 키체인 실측 형식)
+        let hex: String = json.iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(normalize_cred(hex.clone().into_bytes()), json);
+        // 키체인 -w 출력처럼 개행이 붙어도 된다
+        assert_eq!(normalize_cred(format!("{hex}\n").into_bytes()), json);
+        // hex처럼 보여도 디코드 결과가 JSON이 아니면 원본 유지
+        let not_json = b"deadbeef".to_vec();
+        assert_eq!(normalize_cred(not_json.clone()), not_json);
+    }
 }
 
 /// 다른 프로그램(실행 중인 CLI)이 쓰는 도중의 반쪽짜리 파일을 읽을 수 있으므로
@@ -344,6 +397,10 @@ fn read_json_retry(path: &Path) -> Result<Value, String> {
 /// 활성 자격증명 읽기 — 코덱스는 항상 파일, 클로드는 저장소(파일/키체인)에 따른다.
 /// 키체인 모드에서 항목이 없으면 구버전 파일로 폴백한다 (키체인 미사용 환경 대응).
 pub(crate) fn read_live_cred(env: &Env, provider: Provider) -> Result<Vec<u8>, String> {
+    read_live_cred_raw(env, provider).map(normalize_cred)
+}
+
+fn read_live_cred_raw(env: &Env, provider: Provider) -> Result<Vec<u8>, String> {
     let read_file = |path: &Path| -> Result<Vec<u8>, String> {
         fs::read(path).map_err(|e| format!("읽기 실패 {}: {e}", path.display()))
     };
