@@ -607,24 +607,6 @@ body.locked .titlebar:hover .tb-actions button {
   color: var(--warn);
 }
 
-#toast {
-  position: fixed;
-  left: 50%;
-  bottom: 16px;
-  transform: translateX(-50%);
-  background: var(--panel-2);
-  border: 1px solid var(--accent);
-  border-radius: 8px;
-  padding: 8px 14px;
-  font-size: 12px;
-  max-width: 90%;
-  z-index: 10;
-}
-
-#toast.error {
-  border-color: var(--danger);
-}
-
 /* TFSD 워터마크 — 자율주행 중인 활성 카드의 배경 정중앙에 은은한 T.
    pointer-events 없음: 카드 안 버튼·슬라이더 조작을 가리지 않는다 */
 .card {

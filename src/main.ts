@@ -38,18 +38,15 @@ type ProviderId = (typeof PROVIDERS)[number]["id"];
 
 const app = document.getElementById("app")!;
 const titlebarEl = document.querySelector(".titlebar") as HTMLElement;
-const toastEl = document.getElementById("toast")!;
-let toastTimer: number | undefined;
 let rendering = false;
 /// 로그인 패널이 열려 있으면 자동 새로고침이 화면을 갈아엎지 않게 한다
 let loginOpen = false;
 
+/// 화면 알림(토스트)은 제거됐다 — 의미 없는 메시지가 위젯 폭에도 안 맞게
+/// 떠서 없앰 (사용자 결정, 2026-08-07). 원인 추적을 위해 콘솔에만 남긴다.
 function toast(message: string, isError = false) {
-  toastEl.textContent = message;
-  toastEl.classList.toggle("error", isError);
-  toastEl.hidden = false;
-  window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => (toastEl.hidden = true), 3500);
+  if (isError) console.error(message);
+  else console.log(message);
 }
 
 /// 리셋까지 남은 시간을 짧게 (예: "3h 42m", "5d 23h")
