@@ -454,10 +454,14 @@ pub(crate) fn write_live_cred(env: &Env, provider: Provider, data: &[u8]) -> Res
                 account,
                 legacy_file,
             } => {
+                // 키체인(구형 CLI ~2.1.222용) + 파일(신형 CLI 2.1.223+용) 둘 다 쓴다.
+                // 실측(2026-08-07): 2.1.223은 네이티브 키체인 API로 바뀌어 위젯이
+                // security 도구로 쓴 항목을 ACL 불일치로 읽지 못한다("Not logged in").
+                // 대신 ~/.claude/.credentials.json이 있으면 그걸 읽어 자기 소유로
+                // 키체인에 이관하고 파일을 지운다 — 그래서 파일이 신형 CLI로 가는
+                // 신뢰 가능한 전달 통로다. 구형 CLI는 키체인(raw JSON)을 그대로 읽는다.
                 keychain::write_item(service, account, data)?;
-                if legacy_file.exists() {
-                    atomic_write(legacy_file, data)?;
-                }
+                atomic_write(legacy_file, data)?;
                 Ok(())
             }
         },
