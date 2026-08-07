@@ -935,6 +935,8 @@ async function compactCard(
 ): Promise<HTMLElement> {
   const card = document.createElement("div");
   card.className = "card compact-card" + (profile.active ? " active" : "");
+  // 미니멀의 프로바이더 구분은 왼쪽 색 스트라이프가 맡는다 (#41 후속)
+  card.classList.add(`prov-${provider}`);
   if (!profile.active) {
     card.classList.add("switchable");
     card.dataset.provider = provider;

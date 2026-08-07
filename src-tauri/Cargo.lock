@@ -3509,7 +3509,7 @@ dependencies = [
 
 [[package]]
 name = "switcher"
-version = "1.7.8"
+version = "1.7.9"
 dependencies = [
  "base64 0.22.1",
  "libc",
