@@ -1266,23 +1266,27 @@ applyViewMode();
 
 // 투명도 — 2단계 커브.
 // 100%→50%: 배경 채움(--bg-alpha)만 1→0으로 빠지고 골조는 그대로.
-// 50%→0%: 배경은 이미 없고, 글자·테두리(--fg-alpha)가 1→0.18로 옅어진다.
-// 바닥 0.18: 0.05는 바만 둥둥 떠 이질감이 든다는 피드백 — 흐릿한 골조를
-// 남겨 위젯으로 읽히게 한다 (#42 후속). 바·타입 버튼·이동 핸들은 예외.
+// 50%→0%: 배경은 이미 없고, 글자·테두리(--fg-alpha)는 1→0.05로 사실상
+// 사라지며, 사용량 바(--bar-alpha)도 1→0.45로 은은해진다 — "바까지 더
+// 투명하게"가 사용자 의도 (#42 후속 재수정). 타입 버튼·이동 핸들만 예외.
 const alphaSlider = document.getElementById("alpha") as HTMLInputElement;
 function applyAlpha(percent: number) {
   const clamped = Math.min(100, Math.max(0, percent));
   let bg: number;
   let fg: number;
+  let bar: number;
   if (clamped >= 50) {
     bg = (clamped - 50) / 50;
     fg = 1;
+    bar = 1;
   } else {
     bg = 0;
-    fg = 0.18 + 0.82 * (clamped / 50);
+    fg = 0.05 + 0.95 * (clamped / 50);
+    bar = 0.45 + 0.55 * (clamped / 50);
   }
   document.documentElement.style.setProperty("--bg-alpha", bg.toFixed(3));
   document.documentElement.style.setProperty("--fg-alpha", fg.toFixed(3));
+  document.documentElement.style.setProperty("--bar-alpha", bar.toFixed(3));
   alphaSlider.value = String(clamped);
 }
 applyAlpha(Number(localStorage.getItem("switcher.alpha") ?? "100"));

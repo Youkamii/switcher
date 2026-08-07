@@ -1,12 +1,13 @@
 :root {
   color-scheme: dark;
   /* 투명 슬라이더는 2단계 커브: 100→50%는 배경 채움(--bg-alpha)만 빠지고,
-     50→0%는 글자·테두리(--fg-alpha)가 1→0.18로 옅어진다 (0.05는 바만 둥둥
-     떠 이질감 — 사용자 피드백으로 바닥을 올림). 사용량 바(그래프)는 투명도의
-     영향을 받지 않고, 타입 버튼(#pin)·이동 핸들(#drag-handle)도 예외로
-     남는다 (#42). 글자 페이드는 --text/--muted 색 자체에 태운다. */
+     50→0%는 글자·테두리(--fg-alpha)가 1→0.05로 사실상 사라지며 사용량 바
+     (--bar-alpha)도 1→0.45로 은은해진다 — 바까지 함께 투명해지는 것이
+     사용자 의도 (#42 후속 재수정). 타입 버튼(#pin)·이동 핸들(#drag-handle)만
+     예외로 남는다. 글자 페이드는 --text/--muted 색 자체에 태운다. */
   --bg-alpha: 1;
   --fg-alpha: 1;
+  --bar-alpha: 1;
   --bg: rgba(22, 22, 30, var(--bg-alpha));
   --panel: rgba(31, 31, 42, var(--bg-alpha));
   --panel-2: rgba(38, 38, 54, var(--bg-alpha));
@@ -462,19 +463,19 @@ body.minimal #privacybtn {
 /* 미니멀의 프로바이더 구분 — 왼쪽 색 스트라이프 (클로드 보라, 코덱스 청록).
    투명도와 무관하게 남아, 최하에서도 어느 그래프가 누구 것인지 보인다 */
 #app.minimal .compact-card.prov-claude {
-  border-left: 3px solid rgba(167, 139, 250, 0.75);
+  border-left: 3px solid rgba(167, 139, 250, calc(0.75 * var(--bar-alpha)));
 }
 
 #app.minimal .compact-card.prov-codex {
-  border-left: 3px solid rgba(45, 212, 191, 0.75);
+  border-left: 3px solid rgba(45, 212, 191, calc(0.75 * var(--bar-alpha)));
 }
 
-/* 프로바이더 묶음 사이 칸막이 — 얇은 선과 여백. 스트라이프처럼 투명도와
-   무관하게 은은히 남아, 최하 투명도에서도 묶음 경계가 보인다 */
+/* 프로바이더 묶음 사이 칸막이 — 얇은 선과 여백. 스트라이프와 함께
+   바 투명도를 따라가 최하에서도 흐릿하게 남는다 */
 #app.minimal > section + section {
   margin-top: 6px;
   padding-top: 5px;
-  border-top: 1px solid rgba(139, 139, 158, 0.25);
+  border-top: 1px solid rgba(139, 139, 158, calc(0.25 * var(--bar-alpha)));
 }
 
 /* 갱신 대기 상태 — 수치는 살짝 흐리게 유지하고, 우상단 작은 라벨로만 알린다 */
@@ -623,6 +624,8 @@ body.locked .titlebar:hover .tb-actions button#pin {
   background: #2b2b3d;
   border-radius: 99px;
   overflow: hidden;
+  /* 투명도 최하에서 바도 은은해진다 (0.45 바닥 — 그래프 기능은 유지) */
+  opacity: var(--bar-alpha);
 }
 
 .bar-fill {
