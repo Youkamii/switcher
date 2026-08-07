@@ -509,6 +509,19 @@ body.minimal #privacybtn {
   white-space: nowrap;
 }
 
+/* 예측 소진(#45) — 리셋보다 먼저 만날 벽. 고정색이라 글자 페이드는 opacity로 */
+.usage-reset.exhaust-warn,
+.c-reset.exhaust-warn {
+  color: var(--warn);
+  opacity: var(--fg-alpha);
+}
+
+.usage-reset.exhaust-danger,
+.c-reset.exhaust-danger {
+  color: var(--danger);
+  opacity: var(--fg-alpha);
+}
+
 /* 고정 모드: 조작 요소를 전부 숨겨 사용량 전용 위젯이 된다 */
 #app.locked .card-actions,
 #app.locked .add-row,
