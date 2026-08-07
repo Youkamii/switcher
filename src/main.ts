@@ -914,9 +914,25 @@ function compactReset(resetsAt: string | null): string {
   return `${hours}:${String(minutes % 60).padStart(2, "0")}`;
 }
 
-/// 컴팩트 카드 하나 — 이메일·구독 배지·사용량 요약. Type 2와 같은 카드 규칙
+/// 미니멀용 초약자 라벨 — 5 Hours→5, Weekly→W, Fable→F. 그 외는 첫 글자 (#41)
+function minimalLabel(win: UsageWindow): string {
+  const label = win.label;
+  if (label === "5 Hours") return "5";
+  if (label === "Weekly") return "W";
+  if (label === "Fable") return "F";
+  const hours = label.match(/^(\d+) Hours?$/);
+  if (hours) return hours[1];
+  return label.charAt(0).toUpperCase();
+}
+
+/// 컴팩트 카드 하나 — 이메일·구독 배지·사용량 요약. Type 1과 같은 카드 규칙
 /// (.card/.active/.switchable)을 쓰므로 활성 색·채도·더블클릭 전환이 그대로 동작한다.
-async function compactCard(provider: ProviderId, profile: ProfileInfo): Promise<HTMLElement> {
+/// minimal(Type 3)이면 머리(이메일·플랜·나이)와 리셋 시각을 빼고 라벨+바만 남긴다.
+async function compactCard(
+  provider: ProviderId,
+  profile: ProfileInfo,
+  minimal: boolean,
+): Promise<HTMLElement> {
   const card = document.createElement("div");
   card.className = "card compact-card" + (profile.active ? " active" : "");
   if (!profile.active) {
@@ -926,29 +942,31 @@ async function compactCard(provider: ProviderId, profile: ProfileInfo): Promise<
   }
 
   const head = document.createElement("div");
-  head.className = "card-head";
-  const email = document.createElement("span");
-  email.className = "card-name";
-  email.textContent = profile.email ?? profile.name;
-  email.title = t("profileNameTooltip", { name: profile.name });
-  head.appendChild(email);
-  if (profile.plan) {
-    const plan = document.createElement("span");
-    plan.className = "badge plan";
-    plan.textContent = profile.plan;
-    if (profile.plan_tier) {
-      const tier = document.createElement("span");
-      tier.className = `tier tier-${profile.plan_tier}`;
-      tier.textContent = String(profile.plan_tier);
-      plan.appendChild(tier);
+  if (!minimal) {
+    head.className = "card-head";
+    const email = document.createElement("span");
+    email.className = "card-name";
+    email.textContent = profile.email ?? profile.name;
+    email.title = t("profileNameTooltip", { name: profile.name });
+    head.appendChild(email);
+    if (profile.plan) {
+      const plan = document.createElement("span");
+      plan.className = "badge plan";
+      plan.textContent = profile.plan;
+      if (profile.plan_tier) {
+        const tier = document.createElement("span");
+        tier.className = `tier tier-${profile.plan_tier}`;
+        tier.textContent = String(profile.plan_tier);
+        plan.appendChild(tier);
+      }
+      head.appendChild(plan);
     }
-    head.appendChild(plan);
+    card.appendChild(head);
   }
   if (profile.active && visibility.tfsd) {
     card.appendChild(tfsdWatermark());
     card.title = t("tfsdTooltip");
   }
-  card.appendChild(head);
 
   try {
     const usage = await invoke<Usage>("fetch_usage", {
@@ -957,18 +975,21 @@ async function compactCard(provider: ProviderId, profile: ProfileInfo): Promise<
     });
     if (usage.stale) {
       // 컴팩트에서도 이전 수치임을 숨기지 않는다 — 줄을 흐리고 머리에 나이를 붙인다
+      // (미니멀은 붙일 머리가 없으니 줄 흐림만 남는다)
       card.classList.add("stale");
-      const age = document.createElement("span");
-      age.className = "c-stale";
-      age.textContent = compactStaleAge(usage.stale_age_secs);
-      head.appendChild(age);
+      if (!minimal) {
+        const age = document.createElement("span");
+        age.className = "c-stale";
+        age.textContent = compactStaleAge(usage.stale_age_secs);
+        head.appendChild(age);
+      }
     }
     for (const win of usage.windows) {
       const row = document.createElement("div");
       row.className = "compact-row";
       const label = document.createElement("span");
       label.className = "c-label";
-      label.textContent = compactLabel(win);
+      label.textContent = minimal ? minimalLabel(win) : compactLabel(win);
       label.title = win.label;
       const bar = document.createElement("div");
       bar.className = "bar";
@@ -978,11 +999,14 @@ async function compactCard(provider: ProviderId, profile: ProfileInfo): Promise<
       else if (win.percent >= 60) fill.classList.add("warn");
       fill.style.width = `${Math.min(100, Math.max(0, win.percent))}%`;
       bar.appendChild(fill);
-      const reset = document.createElement("span");
-      reset.className = "c-reset";
-      reset.textContent = compactReset(win.resets_at);
-      reset.title = t("resetTooltip");
-      row.append(label, bar, reset);
+      row.append(label, bar);
+      if (!minimal) {
+        const reset = document.createElement("span");
+        reset.className = "c-reset";
+        reset.textContent = compactReset(win.resets_at);
+        reset.title = t("resetTooltip");
+        row.appendChild(reset);
+      }
       card.appendChild(row);
     }
   } catch {
@@ -991,11 +1015,12 @@ async function compactCard(provider: ProviderId, profile: ProfileInfo): Promise<
   return card;
 }
 
-/// 컴팩트 모드: Type 2의 축소판 — 모든 계정이 나오고 더블클릭 전환도 된다
+/// 컴팩트(Type 2)·미니멀(Type 3) 렌더 — 모든 계정이 나오고 더블클릭 전환도 된다
 async function renderProviderCompact(
   provider: ProviderId,
   title: string,
   target: DocumentFragment,
+  minimal: boolean,
 ) {
   try {
     const snap = await invoke<Snapshot>("list_profiles", { provider });
@@ -1011,7 +1036,7 @@ async function renderProviderCompact(
 
     // 카드를 병렬로 준비해 순서대로 붙인다 — 하나씩 기다리며 주루룩 생기지 않게
     const cards = await Promise.all(
-      snap.profiles.map((profile) => compactCard(provider, profile)),
+      snap.profiles.map((profile) => compactCard(provider, profile, minimal)),
     );
     for (const card of cards) section.appendChild(card);
     target.appendChild(section);
@@ -1064,20 +1089,21 @@ async function render(opts?: { immediate?: boolean }) {
       const pending: Promise<unknown>[] = [];
       for (const { id, title } of PROVIDERS) {
         if (!visibility[id]) continue;
-        if (mode === "compact") {
-          await renderProviderCompact(id, title, buffer);
+        if (mode !== "normal") {
+          await renderProviderCompact(id, title, buffer, mode === "minimal");
         } else {
           await renderProvider(id, title, buffer, pending);
         }
       }
-      if (visibility.github) {
+      // 미니멀은 사용량 전용 — GITHUB·DISPLAY 섹션은 아예 그리지 않는다 (#41)
+      if (visibility.github && mode !== "minimal") {
         if (mode === "compact") {
           await renderGithubCompact(buffer);
         } else {
           await renderGithub(buffer);
         }
       }
-      if (visibility.display) {
+      if (visibility.display && mode !== "minimal") {
         await renderDisplays(buffer, mode === "compact");
       }
       if (!thisImmediate && app.childElementCount > 0 && !renderQueued) {
@@ -1123,13 +1149,14 @@ const appWindow = getCurrentWindow();
 
 // 보기 모드 3단계 사이클: 일반 → 고정(사용량 위젯) → 컴팩트(활성 계정 요약만) → 일반
 // 고정·컴팩트 공통: 조작 숨김, 클릭 투과, ☰ 핸들로만 이동. (항상-위는 창 기본 설정)
-type ViewMode = "normal" | "locked" | "compact";
+type ViewMode = "normal" | "compact" | "minimal";
 const lockBtn = document.getElementById("pin") as HTMLButtonElement;
 let viewMode: ViewMode = (() => {
   const stored = localStorage.getItem("switcher.viewmode");
-  if (stored === "locked" || stored === "compact") return stored;
-  // 예전 저장값 이관
-  return localStorage.getItem("switcher.locked") === "1" ? "locked" : "normal";
+  if (stored === "compact" || stored === "minimal") return stored;
+  // Type2(위젯 풀형)는 폐지됐다(#41) — 예전 locked 저장값은 컴팩트로 이관
+  if (stored === "locked") return "compact";
+  return localStorage.getItem("switcher.locked") === "1" ? "compact" : "normal";
 })();
 // 파생: 위젯형(조작 숨김·투과) 여부
 let locked = viewMode !== "normal";
@@ -1137,12 +1164,14 @@ let locked = viewMode !== "normal";
 function applyViewMode() {
   locked = viewMode !== "normal";
   app.classList.toggle("locked", locked);
-  app.classList.toggle("compact", viewMode === "compact");
+  // 컴팩트·미니멀은 같은 축소 레이아웃을 공유하고, 미니멀이 위에 더 덜어낸다
+  app.classList.toggle("compact", locked);
+  app.classList.toggle("minimal", viewMode === "minimal");
   // 타이틀바도 위젯 모드로 (이름·새로고침·슬라이더 숨김, 남은 버튼은 호버 시에만 또렷)
   document.body.classList.toggle("locked", locked);
   lockBtn.classList.toggle("pinned", locked);
   lockBtn.textContent =
-    viewMode === "normal" ? "Type1" : viewMode === "locked" ? "Type2" : "Type3";
+    viewMode === "normal" ? "Type1" : viewMode === "compact" ? "Type2" : "Type3";
   // 위젯 모드에서는 ☰ 핸들을 잡아야만 창이 움직인다 — 타이틀바 전체 드래그를 끈다
   if (locked) {
     titlebarEl.removeAttribute("data-tauri-drag-region");
@@ -1221,7 +1250,7 @@ void listen<{ ok: boolean; provider?: string; name?: string; error?: string }>(
 );
 
 lockBtn.addEventListener("click", () => {
-  viewMode = viewMode === "normal" ? "locked" : viewMode === "locked" ? "compact" : "normal";
+  viewMode = viewMode === "normal" ? "compact" : viewMode === "compact" ? "minimal" : "normal";
   localStorage.setItem("switcher.viewmode", viewMode);
   applyViewMode();
   // 모드가 바뀌면 화면 구성이 달라진다 — 다시 그린다 (열려 있던 로그인 패널도 정리됨)
@@ -1231,7 +1260,8 @@ applyViewMode();
 
 // 투명도 — 2단계 커브.
 // 100%→50%: 배경 채움(--bg-alpha)만 1→0으로 빠지고 골조는 그대로.
-// 50%→0%: 배경은 이미 없고, 골조(--fg-alpha)가 1→0.6으로 옅어진다.
+// 50%→0%: 배경은 이미 없고, 골조(--fg-alpha)가 1→0.05로 옅어져 사실상
+// 사라진다 — 타입 버튼·이동 핸들만 투명도 예외로 남는다 (#42).
 const alphaSlider = document.getElementById("alpha") as HTMLInputElement;
 function applyAlpha(percent: number) {
   const clamped = Math.min(100, Math.max(0, percent));
@@ -1242,7 +1272,7 @@ function applyAlpha(percent: number) {
     fg = 1;
   } else {
     bg = 0;
-    fg = 0.6 + 0.4 * (clamped / 50);
+    fg = 0.05 + 0.95 * (clamped / 50);
   }
   document.documentElement.style.setProperty("--bg-alpha", bg.toFixed(3));
   document.documentElement.style.setProperty("--fg-alpha", fg.toFixed(3));
@@ -1274,8 +1304,8 @@ function fitHeight() {
     const total = titlebarEl.offsetHeight + content + 2; // 테두리
     const max = Math.floor(window.screen.availHeight * 0.9);
     const target = Math.round(Math.max(80, Math.min(total, max)));
-    // 컴팩트 모드는 창 자체도 좁게
-    const width = viewMode === "compact" ? 240 : 360;
+    // 컴팩트 모드는 창 자체도 좁게, 미니멀은 더 좁게
+    const width = viewMode === "minimal" ? 170 : viewMode === "compact" ? 240 : 360;
     void (async () => {
       // 크기 조절 기준은 "오른쪽 상단" — 목표 폭이 실제로 바뀌는 전환에서만
       // 우측 가장자리를 고정한다. (바깥 크기에는 그림자가 포함되므로 실측 폭과
@@ -1323,7 +1353,8 @@ void appWindow.onResized(() => {
 // 데모·스크린샷용 초기 모드 강제 (SWITCHER_VIEW 환경변수) —
 // 진행 중인 첫 렌더가 있으면 render()가 큐잉해 단일 모드로 다시 그린다
 void invoke<string | null>("initial_view_mode").then((mode) => {
-  if (mode === "normal" || mode === "locked" || mode === "compact") {
+  if (mode === "locked") mode = "compact"; // Type2 폐지(#41) — 옛 이름 이관
+  if (mode === "normal" || mode === "compact" || mode === "minimal") {
     viewMode = mode;
     applyViewMode();
     void render({ immediate: true });

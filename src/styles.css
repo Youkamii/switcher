@@ -1,7 +1,8 @@
 :root {
   color-scheme: dark;
   /* 투명 슬라이더는 2단계 커브: 100→50%는 배경 채움(--bg-alpha)만 빠지고,
-     50→0%는 골조(--fg-alpha, 테두리·막대·글자)가 1→0.6으로 옅어진다. */
+     50→0%는 골조(--fg-alpha, 테두리·막대·글자)가 1→0.05로 옅어져 사실상
+     사라진다. 타입 버튼(#pin)·이동 핸들(#drag-handle)만 예외로 남는다 (#42). */
   --bg-alpha: 1;
   --fg-alpha: 1;
   --bg: rgba(22, 22, 30, var(--bg-alpha));
@@ -36,16 +37,32 @@ body {
 }
 
 /* 테두리 없는 투명 창 — shell이 위젯의 몸통이다.
-   골조(테두리·막대·글자)는 opacity로만 옅어져 최소 농도를 유지한다. */
+   골조 투명도(--fg-alpha)는 shell 전체가 아니라 main과 타이틀바 개별 요소에
+   건다 — CSS opacity는 자식이 부모보다 진해질 수 없어, shell에 걸면 최하
+   투명도에서 타입 버튼·이동 핸들을 남길 방법이 없다 (#42). */
 .shell {
   display: flex;
   flex-direction: column;
   height: 100vh;
   background: var(--bg);
-  border: 1px solid rgba(52, 52, 74, 0.9);
+  border: 1px solid rgba(52, 52, 74, calc(0.9 * var(--fg-alpha)));
   border-radius: 12px;
   overflow: hidden;
+}
+
+main {
   opacity: var(--fg-alpha);
+}
+
+/* 타이틀바 요소도 골조와 함께 옅어진다 — 단 #pin·#drag-handle은 예외.
+   locked에서는 아래의 0.18 곱 규칙이 대신 맡는다 */
+body:not(.locked) :is(#logo, #alpha, #refresh, #privacybtn, #blackbtn) {
+  opacity: var(--fg-alpha);
+}
+
+/* 마우스를 타이틀바에 올리면 조작 요소가 되살아난다 — 투명해도 조작은 가능 */
+.titlebar:hover :is(#logo, #alpha, #refresh, #privacybtn, #blackbtn) {
+  opacity: 1;
 }
 
 /* 스크롤바는 아예 보이지 않는다 (휠 스크롤은 그대로 동작) */
@@ -399,6 +416,26 @@ button.link:hover {
   letter-spacing: -0.5px;
 }
 
+/* 미니멀(Type 3) — 이메일·플랜·리셋 없이 한 글자 라벨과 바만 (#41) */
+#app.minimal .compact-row {
+  grid-template-columns: 14px 1fr;
+}
+
+#app.minimal .compact-card {
+  padding: 4px 7px;
+  margin-bottom: 4px;
+}
+
+#app.minimal .compact-head {
+  font-size: 10px;
+  margin: 4px 0 2px;
+}
+
+#app.minimal .tfsd-watermark svg {
+  width: 30px;
+  height: 30px;
+}
+
 /* 갱신 대기 상태 — 수치는 살짝 흐리게 유지하고, 우상단 작은 라벨로만 알린다 */
 .usage-box {
   position: relative;
@@ -441,13 +478,14 @@ button.link:hover {
   display: none;
 }
 
-/* 이동 핸들(☰) — 고정 모드에서만 보이고, 이걸 잡아야만 창이 움직인다 */
+/* 이동 핸들(☰) — 고정 모드에서만 보이고, 이걸 잡아야만 창이 움직인다.
+   히트 영역은 이 박스 크기 그대로 보고되므로 패딩이 곧 잡히는 범위다 (#43) */
 #drag-handle {
   display: none;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 16px;
   line-height: 1;
-  padding: 2px 5px;
+  padding: 6px 14px;
   cursor: grab;
   opacity: 0.35;
   transition: opacity 0.15s;
@@ -489,13 +527,20 @@ body.locked main {
 }
 
 body.locked .tb-actions button {
-  opacity: 0.18;
+  /* 투명도 슬라이더를 최하로 내리면 나머지 버튼도 함께 사라진다 (#42) */
+  opacity: calc(0.18 * var(--fg-alpha));
   padding: 1px 6px;
   font-size: 10px;
   transition: opacity 0.15s;
 }
 
-body.locked .titlebar:hover .tb-actions button {
+/* 타입 버튼은 투명도와 무관하게 흐릿하게나마 항상 남는다 — 되돌아올 손잡이 */
+body.locked .tb-actions button#pin {
+  opacity: 0.18;
+}
+
+body.locked .titlebar:hover .tb-actions button,
+body.locked .titlebar:hover .tb-actions button#pin {
   opacity: 1;
 }
 
