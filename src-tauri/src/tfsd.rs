@@ -6,6 +6,7 @@
 //! 후보 중 — 병목이 가장 낮은 계정으로 스스로 갈아탄다.
 //!
 //! 규칙 (red-review 반영):
+//! - 꽉 찬 창들이 전부 30분 안에 리셋되면 전환을 보류한다 — 리셋 대기 (#39)
 //! - stale(조회 막힘) 수치로는 판단하지 않는다 — 낡은 정보로 갈아타지 않는다
 //! - 전환 직전에 활성 계정을 재확인한다 — 평가하는 사이 사용자가 손수 전환했으면
 //!   그 선택을 존중하고 물러난다 (TOCTOU)
@@ -28,11 +29,112 @@ const SATURATED_BACKOFF: Duration = Duration::from_secs(300);
 /// 감시 주기 — 사용량 캐시 TTL(60초) **안쪽**이어야 연속 틱이 캐시를 재사용한다.
 /// (TTL보다 길면 매 틱이 캐시 미스 = 실호출이 된다 — red-review) 실호출은 ~2틱당 1회.
 const TICK: Duration = Duration::from_secs(55);
+/// 리셋 대기(coasting) 유예 — 꽉 찬 창들이 전부 이 시간 안에 리셋되면 전환을
+/// 보류한다. 90% 시점에 남은 10%는 5 Hours 창 기준 비례 사용량 ~30분이라,
+/// 그 여유로 리셋까지 버티는 쪽이 계정 교체보다 낫다 (#39).
+const RESET_GRACE: Duration = Duration::from_secs(30 * 60);
 
 /// 계정의 병목 사용률 — 모든 창 중 최댓값. 창이 없으면 None (판단 보류).
 /// 새 창 종류가 API에 추가돼도 자동으로 판정에 들어간다 — 라벨 특례 없음.
 fn bottleneck_percent(windows: &[UsageWindow]) -> Option<f64> {
     windows.iter().map(|w| w.percent).reduce(f64::max)
+}
+
+/// 그레고리력 날짜 → 1970-01-01 기준 일수 (Howard Hinnant days_from_civil).
+/// chrono 없이 ISO-8601을 유닉스 초로 바꾸기 위한 최소 조각.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+/// resets_at → 유닉스 초. 실측 형식 둘만 감당한다: 코덱스는 유닉스 초 문자열,
+/// 클로드는 ISO-8601("2026-07-27T10:50:00Z"; 소수초·±HH:MM 오프셋 관용).
+/// 그 외 형식은 None — 보류 판단을 포기할 뿐 전환 판정 자체는 막지 않는다.
+fn parse_resets_at(text: &str) -> Option<i64> {
+    let text = text.trim();
+    if !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()) {
+        return text.parse().ok();
+    }
+    let bytes = text.as_bytes();
+    if bytes.len() < 19 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
+        return None;
+    }
+    // 필드는 숫자로만 — str::parse는 "+9" 같은 부호도 받아들이므로 직접 거른다 (red-review)
+    let num = |range: std::ops::Range<usize>| -> Option<i64> {
+        let field = text.get(range)?;
+        if !field.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        field.parse().ok()
+    };
+    let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (h, mi, s) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if !(1..=12).contains(&mo) || h > 23 || mi > 59 || s > 60 {
+        return None;
+    }
+    // 존재하지 않는 날짜(2월 31일, 평년 2월 29일)는 거른다 (red-review)
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    let month_days = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    if !(1..=month_days[(mo - 1) as usize]).contains(&d) {
+        return None;
+    }
+    let mut idx = 19;
+    if bytes.get(idx) == Some(&b'.') {
+        idx += 1;
+        while bytes.get(idx).is_some_and(|b| b.is_ascii_digit()) {
+            idx += 1;
+        }
+    }
+    let offset_secs = match bytes.get(idx) {
+        None => 0, // 오프셋 표기가 없으면 UTC로 간주
+        Some(b'Z') if idx + 1 == bytes.len() => 0,
+        Some(sign @ (b'+' | b'-')) => {
+            let rest = text.get(idx + 1..)?;
+            let (oh, om) = if rest.len() == 5 && rest.as_bytes()[2] == b':' {
+                (num(idx + 1..idx + 3)?, num(idx + 4..idx + 6)?)
+            } else if rest.len() == 4 {
+                (num(idx + 1..idx + 3)?, num(idx + 3..idx + 5)?)
+            } else {
+                return None;
+            };
+            if oh > 23 || om > 59 {
+                return None;
+            }
+            let total = oh * 3600 + om * 60;
+            if *sign == b'+' {
+                total
+            } else {
+                -total
+            }
+        }
+        _ => return None,
+    };
+    Some(days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + s - offset_secs)
+}
+
+/// 리셋 대기(coasting) — 임계 이상인 창들이 **전부** 유예 안에 리셋되면 참.
+/// 하나라도 리셋이 멀거나 리셋 시각을 모르면 거짓 — 모르는 정보로 전환을
+/// 막지 않는다 (#39). 임계 이상인 창이 없어도 거짓 (호출부는 병목 ≥ 임계 후).
+fn saturated_windows_reset_soon(windows: &[UsageWindow], now_secs: i64) -> bool {
+    let grace = RESET_GRACE.as_secs() as i64;
+    let mut any = false;
+    for window in windows.iter().filter(|w| w.percent >= THRESHOLD) {
+        any = true;
+        let Some(reset) = window.resets_at.as_deref().and_then(parse_resets_at) else {
+            return false;
+        };
+        // 리셋이 유예보다 한참 과거인데 창이 여전히 꽉 차 있으면 데이터 이상 —
+        // 영구 보류에 빠지지 않게 보류를 포기한다 (리셋 직후 캐시 지연은 유예가 흡수)
+        let diff = reset - now_secs;
+        if diff > grace || diff < -grace {
+            return false;
+        }
+    }
+    any
 }
 
 /// 후보 중 목표 고르기 — 병목이 임계치 미만이면서 가장 낮은 계정
@@ -80,6 +182,15 @@ async fn evaluate(env: &Env, provider: Provider) -> Verdict {
         return Verdict::Idle;
     };
     if active_percent < THRESHOLD {
+        return Verdict::Idle;
+    }
+    // 리셋 대기: 꽉 찬 창들이 전부 30분 안에 리셋되면 전환하지 않는다 —
+    // 남은 여유로 버티는 게 낫다. 다음 틱이 재평가하고, 리셋이 지나면 자연 해소.
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    if saturated_windows_reset_soon(&active_usage.windows, now_secs) {
         return Verdict::Idle;
     }
     let mut candidates: Vec<(String, f64)> = Vec::new();
@@ -281,6 +392,58 @@ mod tests {
         let full = vec![("a".to_string(), 95.0), ("b".to_string(), 91.0)];
         assert_eq!(choose_target(&full), None);
         assert_eq!(choose_target(&[]), None);
+    }
+
+    #[test]
+    fn parses_both_reset_formats() {
+        // 코덱스: 유닉스 초 문자열 / 클로드: ISO-8601 (2026-01-01T00:00:00Z = 1767225600)
+        assert_eq!(parse_resets_at("1767225600"), Some(1767225600));
+        assert_eq!(parse_resets_at("2026-01-01T00:00:00Z"), Some(1767225600));
+        // KST 오프셋과 소수초도 같은 시각으로 수렴한다
+        assert_eq!(parse_resets_at("2026-01-01T09:00:00+09:00"), Some(1767225600));
+        assert_eq!(parse_resets_at("2026-01-01T00:00:00.123Z"), Some(1767225600));
+        assert_eq!(parse_resets_at(""), None);
+        assert_eq!(parse_resets_at("곧"), None);
+        assert_eq!(parse_resets_at("2026-13-01T00:00:00Z"), None);
+        // 존재하지 않는 날짜·쓰레기 오프셋·부호 섞인 필드는 전부 거른다 (red-review)
+        assert_eq!(parse_resets_at("2026-02-31T00:00:00Z"), None);
+        assert_eq!(parse_resets_at("2100-02-29T00:00:00Z"), None); // 2100은 평년
+        assert_eq!(parse_resets_at("2024-02-29T00:00:00Z"), Some(1709164800)); // 윤년은 유효
+        assert_eq!(parse_resets_at("2026-01-01T00:00:00+99:99"), None);
+        assert_eq!(parse_resets_at("2026-+9-01T00:00:00Z"), None);
+    }
+
+    #[test]
+    fn coasts_only_when_every_full_window_resets_soon() {
+        let now = 1_700_000_000i64;
+        let soon = (now + 600).to_string(); // 10분 뒤
+        let far = (now + 7200).to_string(); // 2시간 뒤
+        let win = |percent: f64, resets: Option<&str>| UsageWindow {
+            key: "k".to_string(),
+            label: "w".to_string(),
+            percent,
+            resets_at: resets.map(String::from),
+        };
+        // 꽉 찬 창이 10분 뒤 리셋 → 보류 (여유 창의 먼 리셋은 무관)
+        assert!(saturated_windows_reset_soon(
+            &[win(95.0, Some(&soon)), win(50.0, Some(&far))],
+            now
+        ));
+        // 리셋이 먼 창이 90 이상이면 그게 진짜 병목 → 보류 안 함
+        assert!(!saturated_windows_reset_soon(
+            &[win(95.0, Some(&soon)), win(91.0, Some(&far))],
+            now
+        ));
+        // 리셋 시각을 모르는 꽉 찬 창 → 보류 안 함 (기존 동작 유지)
+        assert!(!saturated_windows_reset_soon(&[win(95.0, None)], now));
+        // 꽉 찬 창이 없으면 거짓
+        assert!(!saturated_windows_reset_soon(&[win(10.0, Some(&soon))], now));
+        // 리셋이 이미 지났으면(낡은 캐시) 곧 풀릴 것 — 보류로 친다
+        let past = (now - 60).to_string();
+        assert!(saturated_windows_reset_soon(&[win(99.0, Some(&past))], now));
+        // 리셋이 유예보다 한참 과거인데 여전히 만석 = 데이터 이상 — 영구 보류 방지 (red-review)
+        let stale_past = (now - 86400 * 30).to_string();
+        assert!(!saturated_windows_reset_soon(&[win(99.0, Some(&stale_past))], now));
     }
 
     #[test]

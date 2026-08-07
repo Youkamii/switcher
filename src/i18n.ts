@@ -65,7 +65,7 @@ const ko = {
   privacyTooltip: "계정 정보 가리기 (블러) — 이메일·GitHub 계정명",
   tfsdSwitched: "TFSD: {provider} 계정을 {from} → {to}로 자동 전환했습니다",
   tfsdTooltip:
-    "TFSD (Token Full Self-Driving) 작동 중 — 이 계정의 사용량 창 중 하나라도 90%에 닿으면 여유가 가장 많은 계정으로 자동 전환됩니다. 직접 전환하면 자율주행이 해제됩니다. 끄기: 트레이 → 설정 → TFSD 자동 전환",
+    "TFSD (Token Full Self-Driving) 작동 중 — 이 계정의 사용량 창 중 하나라도 90%에 닿으면 여유가 가장 많은 계정으로 자동 전환됩니다 (꽉 찬 창이 30분 안에 리셋되면 잠시 대기). 직접 전환하면 자율주행이 해제됩니다. 끄기: 트레이 → 설정 → TFSD 자동 전환",
   tfsdDisengaged: "TFSD 해제 — 수동 전환이 감지되어 자율주행을 껐습니다",
   dspUnsupported: "밝기 조절 미지원 — 모니터 OSD에서 DDC/CI를 켜보세요",
 };
@@ -132,7 +132,7 @@ const en: Messages = {
   privacyTooltip: "Hide account info (blur) — emails and GitHub logins",
   tfsdSwitched: "TFSD: switched {provider} account {from} → {to}",
   tfsdTooltip:
-    "TFSD (Token Full Self-Driving) engaged — when any usage window of this account hits 90%, it auto-switches to the account with the most headroom. Switching manually disengages it. Turn off: tray → Settings → TFSD auto-switch",
+    "TFSD (Token Full Self-Driving) engaged — when any usage window of this account hits 90%, it auto-switches to the account with the most headroom (it waits instead if the full window resets within 30 minutes). Switching manually disengages it. Turn off: tray → Settings → TFSD auto-switch",
   tfsdDisengaged: "TFSD disengaged — manual switch detected, self-driving turned off",
   dspUnsupported: "Brightness control not supported — try enabling DDC/CI in the monitor OSD",
 };
@@ -196,7 +196,7 @@ const ja: Messages = {
   privacyTooltip: "アカウント情報を隠す(ぼかし) — メール・GitHub アカウント名",
   tfsdSwitched: "TFSD: {provider} アカウントを {from} → {to} に自動切り替えしました",
   tfsdTooltip:
-    "TFSD (Token Full Self-Driving) 作動中 — このアカウントのいずれかの使用量枠が90%に達すると、最も余裕のあるアカウントへ自動切り替えします。手動で切り替えると自動運転は解除されます。オフ: トレイ → 設定 → TFSD 自動切り替え",
+    "TFSD (Token Full Self-Driving) 作動中 — このアカウントのいずれかの使用量枠が90%に達すると、最も余裕のあるアカウントへ自動切り替えします(満杯の枠が30分以内にリセットされる場合は待機)。手動で切り替えると自動運転は解除されます。オフ: トレイ → 設定 → TFSD 自動切り替え",
   tfsdDisengaged: "TFSD 解除 — 手動切り替えを検知したため自動運転をオフにしました",
   dspUnsupported: "明るさ調整非対応 — モニターの OSD で DDC/CI を有効にしてみてください",
 };
@@ -257,7 +257,7 @@ const zhCN: Messages = {
   privacyTooltip: "隐藏账号信息（模糊）— 邮箱·GitHub 账号名",
   tfsdSwitched: "TFSD：已自动切换 {provider} 账号 {from} → {to}",
   tfsdTooltip:
-    "TFSD（Token Full Self-Driving）运行中 — 此账号任一用量窗口达到 90% 时自动切换到余量最多的账号。手动切换会解除自动驾驶。关闭：托盘 → 设置 → TFSD 自动切换",
+    "TFSD（Token Full Self-Driving）运行中 — 此账号任一用量窗口达到 90% 时自动切换到余量最多的账号（若已满窗口将在 30 分钟内重置则暂缓）。手动切换会解除自动驾驶。关闭：托盘 → 设置 → TFSD 自动切换",
   tfsdDisengaged: "TFSD 已解除 — 检测到手动切换，已关闭自动驾驶",
   dspUnsupported: "不支持亮度调节 — 请在显示器 OSD 中开启 DDC/CI",
 };
@@ -318,7 +318,7 @@ const zhTW: Messages = {
   privacyTooltip: "隱藏帳號資訊(模糊) — 電子郵件·GitHub 帳號名",
   tfsdSwitched: "TFSD:已自動切換 {provider} 帳號 {from} → {to}",
   tfsdTooltip:
-    "TFSD(Token Full Self-Driving)運作中 — 此帳號任一用量視窗達 90% 時自動切換到餘量最多的帳號。手動切換會解除自動駕駛。關閉:系統匣 → 設定 → TFSD 自動切換",
+    "TFSD(Token Full Self-Driving)運作中 — 此帳號任一用量視窗達 90% 時自動切換到餘量最多的帳號(若已滿視窗將在 30 分鐘內重置則暫緩)。手動切換會解除自動駕駛。關閉:系統匣 → 設定 → TFSD 自動切換",
   tfsdDisengaged: "TFSD 已解除 — 偵測到手動切換,已關閉自動駕駛",
   dspUnsupported: "不支援亮度調整 — 請在螢幕 OSD 中開啟 DDC/CI",
 };
@@ -382,7 +382,7 @@ const hi: Messages = {
   privacyTooltip: "अकाउंट जानकारी छिपाएँ (धुंधला) — ईमेल·GitHub अकाउंट नाम",
   tfsdSwitched: "TFSD: {provider} अकाउंट {from} → {to} स्वतः स्विच हुआ",
   tfsdTooltip:
-    "TFSD (Token Full Self-Driving) सक्रिय — इस अकाउंट की कोई भी उपयोग विंडो 90% पर पहुँचते ही सबसे ज़्यादा गुंजाइश वाले अकाउंट पर स्वतः स्विच होगा। खुद स्विच करने पर सेल्फ-ड्राइविंग बंद हो जाती है। बंद करें: ट्रे → सेटिंग्स → TFSD ऑटो-स्विच",
+    "TFSD (Token Full Self-Driving) सक्रिय — इस अकाउंट की कोई भी उपयोग विंडो 90% पर पहुँचते ही सबसे ज़्यादा गुंजाइश वाले अकाउंट पर स्वतः स्विच होगा (भरी विंडो 30 मिनट में रीसेट होने वाली हो तो प्रतीक्षा)। खुद स्विच करने पर सेल्फ-ड्राइविंग बंद हो जाती है। बंद करें: ट्रे → सेटिंग्स → TFSD ऑटो-स्विच",
   tfsdDisengaged: "TFSD बंद — मैनुअल स्विच का पता चला, सेल्फ-ड्राइविंग बंद कर दी गई",
   dspUnsupported: "चमक नियंत्रण समर्थित नहीं — मॉनिटर OSD में DDC/CI चालू करके देखें",
 };
