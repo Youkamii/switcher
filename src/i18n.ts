@@ -73,6 +73,7 @@ const ko = {
   memoPlaceholder: "메모…",
   memoClose: "닫기 (내용은 저장됩니다)",
   monitorTooltip: "시스템 모니터 — CPU·메모리·디스크·네트워크",
+  memoAlphaTooltip: "투명도 (배경만 — 글자는 남습니다)",
 };
 
 export type MsgKey = keyof typeof ko;
@@ -145,6 +146,7 @@ const en: Messages = {
   memoPlaceholder: "Memo…",
   memoClose: "Close (content is saved)",
   monitorTooltip: "System monitor — CPU · memory · disk · network",
+  memoAlphaTooltip: "Opacity (background only — text stays)",
 };
 
 const ja: Messages = {
@@ -214,6 +216,7 @@ const ja: Messages = {
   memoPlaceholder: "メモ…",
   memoClose: "閉じる（内容は保存されます）",
   monitorTooltip: "システムモニター — CPU・メモリ・ディスク・ネットワーク",
+  memoAlphaTooltip: "透明度（背景のみ — 文字は残ります）",
 };
 
 const zhCN: Messages = {
@@ -280,6 +283,7 @@ const zhCN: Messages = {
   memoPlaceholder: "备注…",
   memoClose: "关闭（内容已保存）",
   monitorTooltip: "系统监视器 — CPU·内存·磁盘·网络",
+  memoAlphaTooltip: "透明度（仅背景 — 文字保留）",
 };
 
 const zhTW: Messages = {
@@ -346,6 +350,7 @@ const zhTW: Messages = {
   memoPlaceholder: "備註…",
   memoClose: "關閉（內容已儲存）",
   monitorTooltip: "系統監視器 — CPU·記憶體·磁碟·網路",
+  memoAlphaTooltip: "透明度（僅背景 — 文字保留）",
 };
 
 const hi: Messages = {
@@ -415,6 +420,7 @@ const hi: Messages = {
   memoPlaceholder: "मेमो…",
   memoClose: "बंद करें (सामग्री सहेजी जाती है)",
   monitorTooltip: "सिस्टम मॉनिटर — CPU·मेमोरी·डिस्क·नेटवर्क",
+  memoAlphaTooltip: "पारदर्शिता (केवल पृष्ठभूमि — टेक्स्ट बना रहेगा)",
 };
 
 const MESSAGES: Record<Lang, Messages> = {

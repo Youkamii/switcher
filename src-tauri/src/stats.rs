@@ -55,6 +55,13 @@ pub fn sample() -> SysStats {
 
     let (mut disk_used, mut disk_total) = (0u64, 0u64);
     for disk in sampler.disks.list() {
+        // macOS: APFS는 같은 컨테이너의 볼륨("/"·"/System/Volumes/Data" 등)을
+        // 별개 디스크로 나열해 단순 합산이 실물의 배수가 된다 — 루트 볼륨만
+        // 센다 (red-review 지적, 맥 실기기 미검증)
+        #[cfg(target_os = "macos")]
+        if disk.mount_point() != std::path::Path::new("/") {
+            continue;
+        }
         disk_total += disk.total_space();
         disk_used += disk.total_space().saturating_sub(disk.available_space());
     }

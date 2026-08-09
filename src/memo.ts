@@ -21,6 +21,9 @@ const alphaEl = document.getElementById("malpha") as HTMLInputElement;
 const tabEls = [...document.querySelectorAll<HTMLButtonElement>(".tab")];
 
 let data: MemoData = { tabs: ["", "", "", "", ""], active: 0, alpha: 100 };
+/// memo_load가 끝나기 전의 flush(블러·ESC 등)가 기본값(빈 탭)으로 저장 파일을
+/// 덮어쓰는 사고 방지 (red-review) — 로드 완료 전에는 어떤 저장도 하지 않는다
+let loaded = false;
 
 function applyAlpha(percent: number) {
   const clamped = Math.max(0, Math.min(100, percent));
@@ -47,6 +50,7 @@ function scheduleSave() {
 }
 
 async function flush() {
+  if (!loaded) return;
   window.clearTimeout(saveTimer);
   pull();
   try {
@@ -108,7 +112,7 @@ function applyText() {
   textEl.placeholder = t("memoPlaceholder");
   document.getElementById("mclose")!.setAttribute("title", t("memoClose"));
   document.getElementById("mdrag")!.setAttribute("title", t("dragHandle"));
-  alphaEl.title = t("alphaTooltip");
+  alphaEl.title = t("memoAlphaTooltip");
 }
 
 // 초기화: 언어 → 저장된 메모 순서로. 언어 변경(트레이)도 실시간 반영
@@ -120,6 +124,7 @@ void (async () => {
   }
   applyText();
   data = await invoke<MemoData>("memo_load");
+  loaded = true;
   textEl.value = data.tabs[data.active];
   applyAlpha(data.alpha);
   renderTabs();

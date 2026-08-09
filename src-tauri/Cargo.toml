@@ -30,7 +30,9 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio = { version = "1", features = ["sync", "time"] }
 # CLI 로그인 화면(TUI)을 읽으려면 진짜 콘솔이 필요하다 — 파이프로는 화면이 그려지지 않는다
 portable-pty = "0.9"
-sysinfo = "0.39.6"
+# 시스템 모니터(stats.rs) — 쓰는 것만: system(cpu·mem)·disk·network.
+# 기본 피처(component·user 등)는 의존성만 불린다 (reqwest와 같은 슬림 관례)
+sysinfo = { version = "0.39.6", default-features = false, features = ["system", "disk", "network", "multithread"] }
 
 [target.'cfg(windows)'.dependencies]
 # 부팅 시 자동 실행(HKCU Run 키)·바탕화면 실제 경로(User Shell Folders) 조회

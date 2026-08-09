@@ -60,14 +60,21 @@ const spark = document.getElementById("spark") as HTMLCanvasElement;
 const HISTORY = 60;
 const history: number[] = [];
 
+/// 캔버스 크기 반영은 초기 1회 + 리사이즈 때만 — width 대입은 값이 같아도
+/// 비트맵을 리셋·재할당하므로 매초 그리기 경로에 두지 않는다 (red-review)
+function fitSpark() {
+  const scale = window.devicePixelRatio || 1;
+  spark.width = Math.round(spark.clientWidth * scale);
+  spark.height = Math.round(spark.clientHeight * scale);
+  drawSpark();
+}
+
 function drawSpark() {
   const ctx = spark.getContext("2d");
   if (!ctx) return;
   const scale = window.devicePixelRatio || 1;
   const w = spark.clientWidth;
   const h = spark.clientHeight;
-  spark.width = Math.round(w * scale);
-  spark.height = Math.round(h * scale);
   ctx.setTransform(scale, 0, 0, scale, 0, 0);
   ctx.clearRect(0, 0, w, h);
   if (history.length < 2) return;
@@ -101,11 +108,20 @@ function moodFace(cpuPct: number): string {
 let netPeak = 1024 * 1024;
 
 let inflight = false;
+let lastTick = 0;
 async function tick() {
   if (document.visibilityState === "hidden" || inflight) return;
   inflight = true;
   try {
+    // visibilitychange는 WebView2에서 창 hide를 못 볼 수 있다 (red-review) —
+    // 창 표시 여부를 직접 물어 숨은 창이 CPU를 먹지 않게 이중으로 막는다
+    if (!(await monitorWindow.isVisible())) return;
     const s = await invoke<SysStats>("stats_read");
+    // 오래 숨어 있다 돌아왔으면 스파크라인을 새로 시작 — 공백 전후가
+    // 연속 60초처럼 이어져 그려지는 왜곡 방지 (red-review)
+    const now = Date.now();
+    if (lastTick > 0 && now - lastTick > 5000) history.length = 0;
+    lastTick = now;
     setBar(cpu, s.cpu);
     cpu.val.textContent = `${s.cpu.toFixed(1)}%`;
     history.push(s.cpu);
@@ -148,7 +164,8 @@ document.getElementById("mclose")!.addEventListener("click", () => void hideSelf
 window.addEventListener("keydown", (event) => {
   if (event.key === "Escape") void hideSelf();
 });
-window.addEventListener("resize", drawSpark);
+window.addEventListener("resize", fitSpark);
+fitSpark();
 
 document.getElementById("grip")!.addEventListener("mousedown", (event) => {
   event.preventDefault();

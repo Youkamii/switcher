@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "subwindow",
+  "description": "부속 창(메모·모니터) — 드래그 이동, 숨기기(닫기=hide), 그립 리사이즈만. 최소권한: main 창 조작 권한(set-size/position)은 주지 않는다 (red-review). 파일명 주의: aux.json은 Windows 예약 장치명(AUX)이라 git이 못 연다",
+  "windows": ["memo", "monitor"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-start-resize-dragging",
+    "core:window:allow-hide"
+  ]
+}

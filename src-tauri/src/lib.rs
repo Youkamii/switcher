@@ -997,7 +997,7 @@ fn toggle_aux_window(
         }
         return Ok(());
     }
-    let window =
+    let build_result =
         tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App(page.into()))
             .title(label)
             .inner_size(width, height)
@@ -1007,8 +1007,14 @@ fn toggle_aux_window(
             .skip_taskbar(true)
             .resizable(true)
             .visible(false)
-            .build()
-            .map_err(|e| format!("{label} 창 생성 실패: {e}"))?;
+            .build();
+    let window = match build_result {
+        Ok(window) => window,
+        // async 커맨드라 빠른 더블클릭이 겹치면 두 번째 build가 중복 라벨로
+        // 실패할 수 있다 — 창이 이미 생겼으면 첫 호출이 표시까지 책임진다
+        Err(_) if app.get_webview_window(label).is_some() => return Ok(()),
+        Err(e) => return Err(format!("{label} 창 생성 실패: {e}")),
+    };
     // 위젯 바로 왼쪽에 나란히 — 위젯은 관례상 우하단에 있다.
     // 왼쪽이 화면 밖이면 ensure_on_screen이 우하단(위젯 근처)으로 되돌린다.
     if let Some(main) = app.get_webview_window("main") {
@@ -1513,7 +1519,10 @@ pub fn run() {
         // main 창에만 적용한다 — 블랙 오버레이(black-*)까지 가로채면 close()가
         // 숨김으로 변해 "끈 줄 알았는데 숨어만 있는" 영구 고착이 된다 (red-review critical)
         .on_window_event(|window, event| {
-            if window.label() != "main" {
+            // 부속 창(memo·monitor)도 닫기=숨기기 — Alt+F4가 창을 파괴하면
+            // "창 재사용 + 숨김 전 저장" 계약이 깨진다 (red-review).
+            // black-* 오버레이는 black_off가 실제로 닫아야 하므로 제외.
+            if !matches!(window.label(), "main" | "memo" | "monitor") {
                 return;
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {

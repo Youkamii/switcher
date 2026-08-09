@@ -8,21 +8,21 @@ use std::path::{Path, PathBuf};
 /// 메모 탭 개수 — 프론트 memo.html의 탭 버튼 1~5와 짝이다
 pub const TAB_COUNT: usize = 5;
 
+/// 탭 하나의 본문 상한 (바이트) — 대용량 붙여넣기가 디바운스마다 전체 직렬화·
+/// 재기록을 돌려 자가 DoS가 되는 것을 막는다 (red-review)
+pub const TAB_MAX_BYTES: usize = 1_000_000;
+
+/// 누락 필드는 `Default`에서 가져온다 (컨테이너 `serde(default)`) —
+/// 기본값을 한 곳(Default impl)에만 명세하기 위함
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(default)]
 pub struct MemoData {
     /// 탭 1~5의 본문 (load/save에서 항상 TAB_COUNT개로 정규화)
-    #[serde(default)]
     pub tabs: Vec<String>,
     /// 마지막 활성 탭 (0-기준)
-    #[serde(default)]
     pub active: usize,
     /// 메모창 자체 투명도 0~100 — 위젯 투명도와 독립
-    #[serde(default = "default_alpha")]
     pub alpha: u8,
-}
-
-fn default_alpha() -> u8 {
-    100
 }
 
 impl Default for MemoData {
@@ -30,7 +30,7 @@ impl Default for MemoData {
         MemoData {
             tabs: vec![String::new(); TAB_COUNT],
             active: 0,
-            alpha: default_alpha(),
+            alpha: 100,
         }
     }
 }
@@ -39,6 +39,15 @@ impl MemoData {
     /// 손으로 고쳐졌거나 구버전 파일이어도 항상 유효한 형태로 맞춘다
     fn normalize(mut self) -> Self {
         self.tabs.resize(TAB_COUNT, String::new());
+        for tab in &mut self.tabs {
+            if tab.len() > TAB_MAX_BYTES {
+                let mut end = TAB_MAX_BYTES;
+                while !tab.is_char_boundary(end) {
+                    end -= 1;
+                }
+                tab.truncate(end);
+            }
+        }
         if self.active >= TAB_COUNT {
             self.active = 0;
         }
@@ -142,6 +151,18 @@ mod tests {
         assert_eq!(data.tabs[0], "only");
         assert!(data.tabs[1..].iter().all(String::is_empty));
         assert_eq!(data.alpha, 100);
+    }
+
+    #[test]
+    fn oversized_tab_is_truncated_at_char_boundary() {
+        let store = test_store("oversize");
+        let mut data = MemoData::default();
+        // 멀티바이트 문자로 채워 경계 절단이 문자 경계를 지키는지 확인
+        data.tabs[0] = "가".repeat(TAB_MAX_BYTES); // 3바이트 × 상한 = 3배 초과
+        save(&store, data).unwrap();
+        let loaded = load(&store);
+        assert!(loaded.tabs[0].len() <= TAB_MAX_BYTES);
+        assert!(loaded.tabs[0].chars().all(|c| c == '가'));
     }
 
     #[test]
