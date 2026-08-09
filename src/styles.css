@@ -99,10 +99,8 @@ body.locked:not(.minimal) #memobtn {
   display: inline-block;
 }
 
-/* 미니멀은 사용량 전용(#41) — SYSTEM 섹션을 안 그리므로 토글 버튼도 무의미 */
-body.minimal #monbtn {
-  display: none;
-}
+/* 미니멀에서도 📊 토글은 산다 — SYSTEM 섹션은 사용량 전용 독트린(#41)의
+   예외로 함께 나온다 (사용자 요청) */
 
 /* ── 시스템 모니터 섹션 (📊 토글, 위젯 본체 안) ──
    행별 파스텔 색: CPU 보라 / MEM 초록 / DSK 노랑 / NET 파랑.
@@ -201,6 +199,35 @@ body.minimal #monbtn {
 #app.compact .mon-val {
   font-size: 10px;
   min-width: 70px;
+}
+
+/* 미니멀(150px): 제목 줄 없이 카드만 쌓이는 독트린에 맞춰 SYSTEM도 제목을
+   떼고, 좁은 폭에 맞게 전부 조인다 (사용량 바 4px와 같은 두께) */
+#app.minimal .mon-title {
+  display: none;
+}
+
+#app.minimal .mon-row {
+  gap: 5px;
+  margin: 3px 0;
+}
+
+#app.minimal .mon-label {
+  width: 22px;
+  font-size: 9px;
+}
+
+#app.minimal .mon-row .bar {
+  height: 4px;
+}
+
+#app.minimal .mon-val {
+  font-size: 9px;
+  min-width: 56px;
+}
+
+#app.minimal #mon-spark {
+  height: 12px;
 }
 
 /* ── Type1 섹션 순서 바꾸기 (드래그 앤 드랍) ──

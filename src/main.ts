@@ -1139,7 +1139,8 @@ async function render(opts?: { immediate?: boolean }) {
       const pending: Promise<unknown>[] = [];
       // 섹션은 사용자가 정한 순서(sectionOrder)대로 그린다 — Type1에서 머리글
       // 드래그로 바꾸고, 컴팩트에도 같은 순서가 적용된다.
-      // 미니멀은 사용량 전용(#41) — GITHUB·DISPLAY·SYSTEM은 아예 그리지 않는다.
+      // 미니멀은 사용량 전용(#41)이라 GITHUB·DISPLAY는 그리지 않는다 —
+      // 단 SYSTEM은 예외로 함께 나온다 (사용자 요청: PC 상태는 미니멀에서도).
       for (const key of sectionOrder) {
         const before = buffer.lastElementChild;
         if (key === "claude" || key === "codex") {
@@ -1161,7 +1162,7 @@ async function render(opts?: { immediate?: boolean }) {
           if (!visibility.display || mode === "minimal") continue;
           await renderDisplays(buffer, mode === "compact");
         } else if (key === "system") {
-          if (!monitorOn || mode === "minimal") continue;
+          if (!monitorOn) continue;
           renderMonitor(buffer);
         }
         // 방금 붙은 섹션에 순서 키를 달고 Type1이면 드래그 이동을 붙인다

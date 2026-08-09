@@ -1043,8 +1043,7 @@ fn stats_read() -> stats::SysStats {
 
 /// 데모·검증용 (SWITCHER_OPEN): 프론트가 읽는 시작 옵션 — "monitor"가 있으면
 /// SYSTEM 섹션을 켠 채 시작한다 (메모창 "memo"는 setup에서 Rust가 직접 연다).
-/// 주의: 저장된 보기 모드가 미니멀이면 섹션이 안 그려지므로(사용량 전용 독트린)
-/// 검증 시엔 SWITCHER_VIEW=normal|compact와 함께 써라
+/// SYSTEM은 모든 보기 타입에서 그려진다 (미니멀 포함 — 사용자 요청)
 #[tauri::command]
 fn initial_open() -> String {
     std::env::var("SWITCHER_OPEN").unwrap_or_default()
