@@ -767,6 +767,17 @@ body.locked .titlebar:hover .tb-actions button#pin {
   opacity: 1;
 }
 
+/* Type3(150px): 📊가 늘며 타이틀바 내용이 162px로 넘쳐 타입 버튼이 잘렸다
+   (실측) — 버튼 패딩·간격을 조여 149px로 맞춘다. 넓은 이동 핸들(#43)과
+   #pin 52px(돌아올 손잡이)는 유지. locked 규칙(1px 6px)보다 뒤에 둬야 이긴다 */
+body.minimal .tb-actions {
+  gap: 2px;
+}
+
+body.minimal .tb-actions button {
+  padding: 1px 3px;
+}
+
 /* 고정 모드: 비활성 카드는 더블클릭으로 전환.
    마우스가 투과되므로 :hover 대신 Rust 커서 추적이 붙이는 .hit-hover를 쓴다 */
 #app.locked .card.switchable {
