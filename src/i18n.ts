@@ -72,6 +72,7 @@ const ko = {
   memoTooltip: "메모장 (탭 1~5) — 다시 누르면 숨김",
   memoPlaceholder: "메모…",
   memoClose: "닫기 (내용은 저장됩니다)",
+  monitorTooltip: "시스템 모니터 — CPU·메모리·디스크·네트워크",
 };
 
 export type MsgKey = keyof typeof ko;
@@ -143,6 +144,7 @@ const en: Messages = {
   memoTooltip: "Memo pad (tabs 1–5) — press again to hide",
   memoPlaceholder: "Memo…",
   memoClose: "Close (content is saved)",
+  monitorTooltip: "System monitor — CPU · memory · disk · network",
 };
 
 const ja: Messages = {
@@ -211,6 +213,7 @@ const ja: Messages = {
   memoTooltip: "メモ帳（タブ1〜5）— もう一度押すと隠れます",
   memoPlaceholder: "メモ…",
   memoClose: "閉じる（内容は保存されます）",
+  monitorTooltip: "システムモニター — CPU・メモリ・ディスク・ネットワーク",
 };
 
 const zhCN: Messages = {
@@ -276,6 +279,7 @@ const zhCN: Messages = {
   memoTooltip: "便签（标签 1~5）— 再按一次隐藏",
   memoPlaceholder: "备注…",
   memoClose: "关闭（内容已保存）",
+  monitorTooltip: "系统监视器 — CPU·内存·磁盘·网络",
 };
 
 const zhTW: Messages = {
@@ -341,6 +345,7 @@ const zhTW: Messages = {
   memoTooltip: "便籤（分頁 1~5）— 再按一次隱藏",
   memoPlaceholder: "備註…",
   memoClose: "關閉（內容已儲存）",
+  monitorTooltip: "系統監視器 — CPU·記憶體·磁碟·網路",
 };
 
 const hi: Messages = {
@@ -409,6 +414,7 @@ const hi: Messages = {
   memoTooltip: "मेमो पैड (टैब 1–5) — फिर दबाने पर छिप जाएगा",
   memoPlaceholder: "मेमो…",
   memoClose: "बंद करें (सामग्री सहेजी जाती है)",
+  monitorTooltip: "सिस्टम मॉनिटर — CPU·मेमोरी·डिस्क·नेटवर्क",
 };
 
 const MESSAGES: Record<Lang, Messages> = {

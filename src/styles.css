@@ -55,12 +55,12 @@ body {
 
 /* 타이틀바 요소도 골조와 함께 옅어진다 — 단 #pin·#drag-handle은 예외.
    locked에서는 아래의 0.18 곱 규칙이 대신 맡는다 */
-body:not(.locked) :is(#logo, #alpha, #refresh, #privacybtn, #blackbtn) {
+body:not(.locked) :is(#logo, #alpha, #refresh, #privacybtn, #blackbtn, #monbtn) {
   opacity: var(--fg-alpha);
 }
 
 /* 마우스를 타이틀바에 올리면 조작 요소가 되살아난다 — 투명해도 조작은 가능 */
-.titlebar:hover :is(#logo, #alpha, #refresh, #privacybtn, #blackbtn) {
+.titlebar:hover :is(#logo, #alpha, #refresh, #privacybtn, #blackbtn, #monbtn) {
   opacity: 1;
 }
 
