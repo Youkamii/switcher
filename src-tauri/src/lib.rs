@@ -1309,6 +1309,22 @@ pub fn run() {
             // TFSD 자동 전환 감시 — 설정이 꺼져 있으면 틱마다 조용히 지나간다
             tfsd::spawn(app.handle().clone());
 
+            // 데모·자가검증용: SWITCHER_OPEN=memo,monitor 이면 시작 직후 부속 창을
+            // 연다 (SWITCHER_VIEW·SWITCHER_DEMO와 같은 스크린샷/검증 훅 계열)
+            if let Ok(open) = std::env::var("SWITCHER_OPEN") {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                    if open.contains("memo") {
+                        let _ = toggle_aux_window(&handle, "memo", "memo.html", 280.0, 340.0);
+                    }
+                    if open.contains("monitor") {
+                        let _ =
+                            toggle_aux_window(&handle, "monitor", "monitor.html", 240.0, 200.0);
+                    }
+                });
+            }
+
             // 클릭 투과 폴링 (고정 모드, 25ms 주기):
             // - UI 영역(버튼·핸들) 위 → 마우스를 받는다
             // - 그 외 전부(카드 포함) → 뒤 창으로 통과. 단일 클릭·드래그를 절대 먹지 않는다.
