@@ -89,6 +89,16 @@ input[type="range"] {
   max-width: 84px;
 }
 
+/* 메모 버튼은 Type2(컴팩트)에서만 — 요청 범위. Type1은 타이틀바가 이미 꽉 차
+   버튼이 밀리고(#44 실측), Type3(미니멀)은 더 덜어낸 모드라 어울리지 않는다 */
+#memobtn {
+  display: none;
+}
+
+body.locked:not(.minimal) #memobtn {
+  display: inline-block;
+}
+
 
 .titlebar {
   display: flex;

@@ -2,6 +2,7 @@ mod accounts;
 mod display;
 mod github;
 mod login;
+mod memo;
 mod settings;
 mod tfsd;
 mod update;
@@ -957,6 +958,68 @@ fn apply_language(app: &tauri::AppHandle, lang: &str) {
     let _ = app.emit("language-changed", lang);
 }
 
+/// 메모장 내용 읽기 — 파일이 없거나 깨져 있으면 빈 탭 5개
+#[tauri::command]
+fn memo_load() -> memo::MemoData {
+    Env::real()
+        .map(|env| memo::load(&env.store))
+        .unwrap_or_default()
+}
+
+/// 메모장 저장 (본문·활성 탭·투명도 전체를 통째로)
+#[tauri::command]
+fn memo_save(data: memo::MemoData) -> Result<(), String> {
+    let env = Env::real()?;
+    memo::save(&env.store, data)
+}
+
+/// 메모창 토글 — 없으면 만들고, 보이면 숨기고, 숨어 있으면 앞으로 가져온다.
+/// 위젯(Type2)의 부속 창이라 위젯과 같은 최상위·작업표시줄 없는 창으로 띄운다.
+/// 닫기(✕·ESC)는 프론트가 hide만 하므로 창은 한 번 만들면 재사용된다.
+/// macOS: 런타임 생성 창은 패널 스왑 금지(black 창과 같은 실측 — 닫을 때 abort)
+/// — 전체화면 Space에는 못 올라가는 한계를 감수한다.
+#[tauri::command]
+async fn memo_toggle(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("memo") {
+        if window.is_visible().unwrap_or(false) {
+            let _ = window.hide();
+        } else {
+            ensure_on_screen(&window);
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        return Ok(());
+    }
+    let window = tauri::WebviewWindowBuilder::new(
+        &app,
+        "memo",
+        tauri::WebviewUrl::App("memo.html".into()),
+    )
+    .title("memo")
+    .inner_size(280.0, 340.0)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(true)
+    .visible(false)
+    .build()
+    .map_err(|e| format!("메모창 생성 실패: {e}"))?;
+    // 위젯 바로 왼쪽에 나란히 — 위젯은 관례상 우하단에 있다.
+    // 왼쪽이 화면 밖이면 ensure_on_screen이 우하단(위젯 근처)으로 되돌린다.
+    if let Some(main) = app.get_webview_window("main") {
+        if let (Ok(pos), Ok(size)) = (main.outer_position(), window.outer_size()) {
+            let x = pos.x - size.width as i32 - 12;
+            let _ = window.set_position(tauri::PhysicalPosition::new(x, pos.y));
+        }
+    }
+    ensure_on_screen(&window);
+    let _ = window.show();
+    let _ = window.set_focus();
+    Ok(())
+}
+
 /// 프론트가 렌더 후 카드·버튼의 화면 좌표를 보고한다
 #[tauri::command]
 fn set_hit_regions(regions: Vec<HitRegion>) {
@@ -1449,6 +1512,9 @@ pub fn run() {
             cancel_login,
             set_hit_regions,
             set_click_through,
+            memo_load,
+            memo_save,
+            memo_toggle,
             initial_view_mode,
             demo_mode,
             get_language,

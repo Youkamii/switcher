@@ -69,6 +69,9 @@ const ko = {
     "TFSD (Token Full Self-Driving) 작동 중 — 이 계정의 사용량 창 중 하나라도 90%에 닿으면 여유가 가장 많은 계정으로 자동 전환됩니다 (꽉 찬 창이 30분 안에 리셋되면 잠시 대기). 직접 전환하면 자율주행이 해제됩니다. 끄기: 트레이 → 설정 → TFSD 자동 전환",
   tfsdDisengaged: "TFSD 해제 — 수동 전환이 감지되어 자율주행을 껐습니다",
   dspUnsupported: "밝기 조절 미지원 — 모니터 OSD에서 DDC/CI를 켜보세요",
+  memoTooltip: "메모장 (탭 1~5) — 다시 누르면 숨김",
+  memoPlaceholder: "메모…",
+  memoClose: "닫기 (내용은 저장됩니다)",
 };
 
 export type MsgKey = keyof typeof ko;
@@ -137,6 +140,9 @@ const en: Messages = {
     "TFSD (Token Full Self-Driving) engaged — when any usage window of this account hits 90%, it auto-switches to the account with the most headroom (it waits instead if the full window resets within 30 minutes). Switching manually disengages it. Turn off: tray → Settings → TFSD auto-switch",
   tfsdDisengaged: "TFSD disengaged — manual switch detected, self-driving turned off",
   dspUnsupported: "Brightness control not supported — try enabling DDC/CI in the monitor OSD",
+  memoTooltip: "Memo pad (tabs 1–5) — press again to hide",
+  memoPlaceholder: "Memo…",
+  memoClose: "Close (content is saved)",
 };
 
 const ja: Messages = {
@@ -202,6 +208,9 @@ const ja: Messages = {
     "TFSD (Token Full Self-Driving) 作動中 — このアカウントのいずれかの使用量枠が90%に達すると、最も余裕のあるアカウントへ自動切り替えします(満杯の枠が30分以内にリセットされる場合は待機)。手動で切り替えると自動運転は解除されます。オフ: トレイ → 設定 → TFSD 自動切り替え",
   tfsdDisengaged: "TFSD 解除 — 手動切り替えを検知したため自動運転をオフにしました",
   dspUnsupported: "明るさ調整非対応 — モニターの OSD で DDC/CI を有効にしてみてください",
+  memoTooltip: "メモ帳（タブ1〜5）— もう一度押すと隠れます",
+  memoPlaceholder: "メモ…",
+  memoClose: "閉じる（内容は保存されます）",
 };
 
 const zhCN: Messages = {
@@ -264,6 +273,9 @@ const zhCN: Messages = {
     "TFSD（Token Full Self-Driving）运行中 — 此账号任一用量窗口达到 90% 时自动切换到余量最多的账号（若已满窗口将在 30 分钟内重置则暂缓）。手动切换会解除自动驾驶。关闭：托盘 → 设置 → TFSD 自动切换",
   tfsdDisengaged: "TFSD 已解除 — 检测到手动切换，已关闭自动驾驶",
   dspUnsupported: "不支持亮度调节 — 请在显示器 OSD 中开启 DDC/CI",
+  memoTooltip: "便签（标签 1~5）— 再按一次隐藏",
+  memoPlaceholder: "备注…",
+  memoClose: "关闭（内容已保存）",
 };
 
 const zhTW: Messages = {
@@ -326,6 +338,9 @@ const zhTW: Messages = {
     "TFSD(Token Full Self-Driving)運作中 — 此帳號任一用量視窗達 90% 時自動切換到餘量最多的帳號(若已滿視窗將在 30 分鐘內重置則暫緩)。手動切換會解除自動駕駛。關閉:系統匣 → 設定 → TFSD 自動切換",
   tfsdDisengaged: "TFSD 已解除 — 偵測到手動切換,已關閉自動駕駛",
   dspUnsupported: "不支援亮度調整 — 請在螢幕 OSD 中開啟 DDC/CI",
+  memoTooltip: "便籤（分頁 1~5）— 再按一次隱藏",
+  memoPlaceholder: "備註…",
+  memoClose: "關閉（內容已儲存）",
 };
 
 const hi: Messages = {
@@ -391,6 +406,9 @@ const hi: Messages = {
     "TFSD (Token Full Self-Driving) सक्रिय — इस अकाउंट की कोई भी उपयोग विंडो 90% पर पहुँचते ही सबसे ज़्यादा गुंजाइश वाले अकाउंट पर स्वतः स्विच होगा (भरी विंडो 30 मिनट में रीसेट होने वाली हो तो प्रतीक्षा)। खुद स्विच करने पर सेल्फ-ड्राइविंग बंद हो जाती है। बंद करें: ट्रे → सेटिंग्स → TFSD ऑटो-स्विच",
   tfsdDisengaged: "TFSD बंद — मैनुअल स्विच का पता चला, सेल्फ-ड्राइविंग बंद कर दी गई",
   dspUnsupported: "चमक नियंत्रण समर्थित नहीं — मॉनिटर OSD में DDC/CI चालू करके देखें",
+  memoTooltip: "मेमो पैड (टैब 1–5) — फिर दबाने पर छिप जाएगा",
+  memoPlaceholder: "मेमो…",
+  memoClose: "बंद करें (सामग्री सहेजी जाती है)",
 };
 
 const MESSAGES: Record<Lang, Messages> = {

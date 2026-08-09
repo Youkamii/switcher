@@ -1433,6 +1433,7 @@ function applyStaticText() {
   refreshBtn.setAttribute("title", t("refreshTooltip"));
   document.getElementById("drag-handle")!.setAttribute("title", t("dragHandle"));
   document.getElementById("blackbtn")!.setAttribute("title", t("blackTooltip"));
+  document.getElementById("memobtn")!.setAttribute("title", t("memoTooltip"));
   document.getElementById("privacybtn")!.setAttribute("title", t("privacyTooltip"));
   alphaSlider.title = t("alphaTooltip");
   lockBtn.title = t("typeTooltip");
@@ -1441,6 +1442,11 @@ function applyStaticText() {
 // 블랙 모니터 — 모든 화면을 최상위 검은 막으로 (해제는 오버레이 쪽: 흔들기·ESC)
 document.getElementById("blackbtn")!.addEventListener("click", () => {
   void invoke("black_on").catch((error) => toast(String(error), true));
+});
+
+// 메모장 (Type2 전용 버튼) — 별도 창 토글. 내용·투명도는 메모창이 스스로 관리
+document.getElementById("memobtn")!.addEventListener("click", () => {
+  void invoke("memo_toggle").catch((error) => toast(String(error), true));
 });
 
 // 이메일 가리기 (🙈) — 표시만 블러 처리, 동작·데이터는 그대로. 재시작 후에도 유지

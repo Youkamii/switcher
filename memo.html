@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>memo</title>
+    <style>
+      /* 메모창 — 위젯과 같은 팔레트의 부속 창. 투명도는 위젯과 독립:
+         배경(--bg-alpha)만 빠지고 글자·테두리는 남아 어디서든 읽힌다 */
+      :root {
+        color-scheme: dark;
+        --bg-alpha: 1;
+        --bg: rgba(22, 22, 30, var(--bg-alpha));
+        --panel: rgba(38, 38, 54, var(--bg-alpha));
+        --text: #e6e6ef;
+        --muted: #8b8b9e;
+        --accent: #a78bfa;
+        font-family: "Pretendard", "Malgun Gothic", system-ui, sans-serif;
+        font-size: 13px;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html,
+      body {
+        height: 100vh;
+        background: transparent;
+      }
+      body {
+        color: var(--text);
+        overflow: hidden;
+        user-select: none;
+      }
+      .shell {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        background: var(--bg);
+        border: 1px solid rgba(52, 52, 74, 0.9);
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      .mtb {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 8px 10px 6px;
+        cursor: grab;
+        flex: none;
+      }
+      #mdrag {
+        color: var(--muted);
+        font-size: 12px;
+        padding: 0 2px;
+      }
+      .tabs {
+        display: flex;
+        gap: 3px;
+        flex: 1;
+      }
+      .tab {
+        width: 24px;
+        height: 21px;
+        border: 1px solid rgba(52, 52, 74, 0.9);
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--muted);
+        font-size: 11px;
+        cursor: pointer;
+        position: relative;
+      }
+      .tab.active {
+        border-color: var(--accent);
+        color: var(--accent);
+        font-weight: 700;
+      }
+      /* 내용이 있는 탭은 숫자 아래 점이 붙는다 */
+      .tab.filled::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        bottom: 2px;
+        width: 3px;
+        height: 3px;
+        border-radius: 50%;
+        background: currentColor;
+        transform: translateX(-50%);
+      }
+      #malpha {
+        flex: 0 1 64px;
+        min-width: 40px;
+        accent-color: var(--accent);
+      }
+      #mclose {
+        border: none;
+        background: none;
+        color: var(--muted);
+        font-size: 12px;
+        cursor: pointer;
+        padding: 2px 4px;
+      }
+      #mclose:hover {
+        color: var(--text);
+      }
+      #mtext {
+        flex: 1;
+        resize: none;
+        border: none;
+        outline: none;
+        background: transparent;
+        color: var(--text);
+        padding: 6px 12px 12px;
+        font: inherit;
+        line-height: 1.5;
+        user-select: text;
+      }
+      #mtext::placeholder {
+        color: var(--muted);
+      }
+      #grip {
+        position: fixed;
+        right: 0;
+        bottom: 0;
+        width: 16px;
+        height: 16px;
+        cursor: nwse-resize;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="mtb" data-tauri-drag-region>
+        <span id="mdrag" data-tauri-drag-region>☰</span>
+        <div class="tabs">
+          <button class="tab" data-i="0">1</button>
+          <button class="tab" data-i="1">2</button>
+          <button class="tab" data-i="2">3</button>
+          <button class="tab" data-i="3">4</button>
+          <button class="tab" data-i="4">5</button>
+        </div>
+        <input id="malpha" type="range" min="0" max="100" step="5" />
+        <button id="mclose">✕</button>
+      </header>
+      <textarea id="mtext" spellcheck="false"></textarea>
+      <div id="grip"></div>
+    </div>
+    <script type="module" src="/src/memo.ts"></script>
+  </body>
+</html>
