@@ -1,4 +1,4 @@
-//! 시스템 상태 샘플링 (CPU·메모리·디스크·네트워크) — 모니터창(monitor.html)의 데이터원.
+//! 시스템 상태 샘플링 (CPU·메모리·디스크·네트워크) — 위젯 SYSTEM 섹션의 데이터원.
 //!
 //! System·Networks를 호출 사이에 유지해야 하는 이유:
 //! - CPU 사용률은 두 샘플 사이의 델타라 매번 새로 만들면 항상 0이 나온다.
@@ -32,7 +32,7 @@ struct Sampler {
     last: Instant,
 }
 
-/// 모니터창이 1초 주기로만 부르므로 잠금 경합은 사실상 없다
+/// SYSTEM 섹션이 1초 주기로만 부르므로 잠금 경합은 사실상 없다
 static SAMPLER: Mutex<Option<Sampler>> = Mutex::new(None);
 
 pub fn sample() -> SysStats {

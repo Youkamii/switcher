@@ -10,15 +10,13 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
-  // 멀티 페이지: index.html(위젯) + black.html(블랙 모니터 오버레이)
-  //             + memo.html(메모창) + monitor.html(시스템 모니터)
+  // 멀티 페이지: index.html(위젯) + black.html(블랙 모니터 오버레이) + memo.html(메모창)
   build: {
     rollupOptions: {
       input: {
         main: "index.html",
         black: "black.html",
         memo: "memo.html",
-        monitor: "monitor.html",
       },
     },
   },

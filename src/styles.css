@@ -99,6 +99,128 @@ body.locked:not(.minimal) #memobtn {
   display: inline-block;
 }
 
+/* 미니멀은 사용량 전용(#41) — SYSTEM 섹션을 안 그리므로 토글 버튼도 무의미 */
+body.minimal #monbtn {
+  display: none;
+}
+
+/* ── 시스템 모니터 섹션 (📊 토글, 위젯 본체 안) ──
+   행별 파스텔 색: CPU 보라 / MEM 초록 / DSK 노랑 / NET 파랑.
+   바는 기존 .bar를 재사용해 --bar-alpha 투명도 규칙을 그대로 따른다 */
+.mon-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#mon-beat {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  transition: transform 0.18s ease-out;
+  opacity: var(--bar-alpha);
+}
+
+#mon-beat.pump {
+  transform: scale(1.6);
+}
+
+#mon-mood {
+  margin-left: auto;
+  color: var(--muted);
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 10px;
+  letter-spacing: -1px;
+}
+
+.mon-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 5px 0;
+}
+
+.mon-label {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 10px;
+  color: var(--muted);
+  width: 26px;
+  flex: none;
+}
+
+.mon-row .bar {
+  flex: 1;
+  height: 6px;
+}
+
+.mon-val {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 10.5px;
+  color: var(--text);
+  text-align: right;
+  flex: none;
+  min-width: 78px;
+  white-space: nowrap;
+}
+
+.mon-fill-cpu {
+  background: var(--accent);
+}
+
+.mon-fill-mem {
+  background: var(--ok);
+}
+
+.mon-fill-dsk {
+  background: var(--warn);
+}
+
+.mon-fill-net {
+  background: #60a5fa;
+}
+
+/* 90% 넘으면 색과 무관하게 위험색 */
+.mon-bar.hot .bar-fill {
+  background: var(--danger);
+}
+
+#mon-spark {
+  display: block;
+  width: 100%;
+  height: 20px;
+  margin: 0 0 2px;
+  opacity: var(--bar-alpha);
+}
+
+/* 컴팩트(Type2)는 전체 밀도에 맞춰 살짝 조인다 */
+#app.compact .mon-row {
+  margin: 4px 0;
+}
+
+#app.compact .mon-val {
+  font-size: 10px;
+  min-width: 70px;
+}
+
+/* ── Type1 섹션 순서 바꾸기 (드래그 앤 드랍) ──
+   머리글을 잡아 다른 섹션 위/아래에 놓는다. 놓일 자리는 액센트 선으로 표시 */
+body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title) {
+  cursor: grab;
+}
+
+#app > section.dragging {
+  opacity: 0.35;
+}
+
+#app > section.drop-before {
+  box-shadow: 0 -2px 0 0 var(--accent);
+}
+
+#app > section.drop-after {
+  box-shadow: 0 2px 0 0 var(--accent);
+}
+
 
 .titlebar {
   display: flex;

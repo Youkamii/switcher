@@ -1035,16 +1035,19 @@ async fn memo_toggle(app: tauri::AppHandle) -> Result<(), String> {
     toggle_aux_window(&app, "memo", "memo.html", 280.0, 340.0)
 }
 
-/// 시스템 모니터창 토글 (타이틀바 📊)
-#[tauri::command]
-async fn monitor_toggle(app: tauri::AppHandle) -> Result<(), String> {
-    toggle_aux_window(&app, "monitor", "monitor.html", 240.0, 200.0)
-}
-
-/// 시스템 상태 샘플 — 모니터창이 1초 주기로 부른다
+/// 시스템 상태 샘플 — 위젯의 SYSTEM 섹션이 1초 주기로 부른다
 #[tauri::command]
 fn stats_read() -> stats::SysStats {
     stats::sample()
+}
+
+/// 데모·검증용 (SWITCHER_OPEN): 프론트가 읽는 시작 옵션 — "monitor"가 있으면
+/// SYSTEM 섹션을 켠 채 시작한다 (메모창 "memo"는 setup에서 Rust가 직접 연다).
+/// 주의: 저장된 보기 모드가 미니멀이면 섹션이 안 그려지므로(사용량 전용 독트린)
+/// 검증 시엔 SWITCHER_VIEW=normal|compact와 함께 써라
+#[tauri::command]
+fn initial_open() -> String {
+    std::env::var("SWITCHER_OPEN").unwrap_or_default()
 }
 
 /// 프론트가 렌더 후 카드·버튼의 화면 좌표를 보고한다
@@ -1309,18 +1312,14 @@ pub fn run() {
             // TFSD 자동 전환 감시 — 설정이 꺼져 있으면 틱마다 조용히 지나간다
             tfsd::spawn(app.handle().clone());
 
-            // 데모·자가검증용: SWITCHER_OPEN=memo,monitor 이면 시작 직후 부속 창을
-            // 연다 (SWITCHER_VIEW·SWITCHER_DEMO와 같은 스크린샷/검증 훅 계열)
+            // 데모·자가검증용: SWITCHER_OPEN=memo 이면 시작 직후 메모창을 연다
+            // (SWITCHER_VIEW·SWITCHER_DEMO와 같은 스크린샷/검증 훅 계열)
             if let Ok(open) = std::env::var("SWITCHER_OPEN") {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
                     if open.contains("memo") {
                         let _ = toggle_aux_window(&handle, "memo", "memo.html", 280.0, 340.0);
-                    }
-                    if open.contains("monitor") {
-                        let _ =
-                            toggle_aux_window(&handle, "monitor", "monitor.html", 240.0, 200.0);
                     }
                 });
             }
@@ -1535,10 +1534,10 @@ pub fn run() {
         // main 창에만 적용한다 — 블랙 오버레이(black-*)까지 가로채면 close()가
         // 숨김으로 변해 "끈 줄 알았는데 숨어만 있는" 영구 고착이 된다 (red-review critical)
         .on_window_event(|window, event| {
-            // 부속 창(memo·monitor)도 닫기=숨기기 — Alt+F4가 창을 파괴하면
+            // 메모창도 닫기=숨기기 — Alt+F4가 창을 파괴하면
             // "창 재사용 + 숨김 전 저장" 계약이 깨진다 (red-review).
             // black-* 오버레이는 black_off가 실제로 닫아야 하므로 제외.
-            if !matches!(window.label(), "main" | "memo" | "monitor") {
+            if !matches!(window.label(), "main" | "memo") {
                 return;
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -1561,8 +1560,8 @@ pub fn run() {
             memo_load,
             memo_save,
             memo_toggle,
-            monitor_toggle,
             stats_read,
+            initial_open,
             initial_view_mode,
             demo_mode,
             get_language,

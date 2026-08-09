@@ -590,6 +590,9 @@ function collapseSectionsInPlace() {
     el.replaceChildren(
       collapsibleHeader(key === "github" ? "GITHUB" : "DISPLAY", key, viewMode === "compact"),
     );
+    // 새로 만든 머리글에 드래그 시작을 다시 붙인다 — 안 하면 다음 전체
+    // 재렌더까지 이 섹션만 드래그가 안 된다 (red-review)
+    if (viewMode === "normal") attachHeaderDrag(el, key);
   });
   fitHeight(); // 줄어든 높이 반영 — 완료 시 히트 영역도 다시 보고된다
 }
@@ -1134,24 +1137,40 @@ async function render(opts?: { immediate?: boolean }) {
       // 주루룩 돌아온다 — 보이지 않는 버퍼에 완성해 두고 한 번에 교체한다
       const buffer = document.createDocumentFragment();
       const pending: Promise<unknown>[] = [];
-      for (const { id, title } of PROVIDERS) {
-        if (!visibility[id]) continue;
-        if (mode !== "normal") {
-          await renderProviderCompact(id, title, buffer, mode === "minimal");
-        } else {
-          await renderProvider(id, title, buffer, pending);
+      // 섹션은 사용자가 정한 순서(sectionOrder)대로 그린다 — Type1에서 머리글
+      // 드래그로 바꾸고, 컴팩트에도 같은 순서가 적용된다.
+      // 미니멀은 사용량 전용(#41) — GITHUB·DISPLAY·SYSTEM은 아예 그리지 않는다.
+      for (const key of sectionOrder) {
+        const before = buffer.lastElementChild;
+        if (key === "claude" || key === "codex") {
+          if (!visibility[key]) continue;
+          const title = PROVIDERS.find((p) => p.id === key)!.title;
+          if (mode !== "normal") {
+            await renderProviderCompact(key, title, buffer, mode === "minimal");
+          } else {
+            await renderProvider(key, title, buffer, pending);
+          }
+        } else if (key === "github") {
+          if (!visibility.github || mode === "minimal") continue;
+          if (mode === "compact") {
+            await renderGithubCompact(buffer);
+          } else {
+            await renderGithub(buffer);
+          }
+        } else if (key === "display") {
+          if (!visibility.display || mode === "minimal") continue;
+          await renderDisplays(buffer, mode === "compact");
+        } else if (key === "system") {
+          if (!monitorOn || mode === "minimal") continue;
+          renderMonitor(buffer);
         }
-      }
-      // 미니멀은 사용량 전용 — GITHUB·DISPLAY 섹션은 아예 그리지 않는다 (#41)
-      if (visibility.github && mode !== "minimal") {
-        if (mode === "compact") {
-          await renderGithubCompact(buffer);
-        } else {
-          await renderGithub(buffer);
+        // 방금 붙은 섹션에 순서 키를 달고 Type1이면 드래그 이동을 붙인다
+        // (렌더 함수가 아무것도 안 붙였을 수 있어 lastElementChild 변화로 판별)
+        const added = buffer.lastElementChild as HTMLElement | null;
+        if (added && added !== before && added.tagName === "SECTION") {
+          added.dataset.key = key;
+          enableSectionDrag(added, key, mode);
         }
-      }
-      if (visibility.display && mode !== "minimal") {
-        await renderDisplays(buffer, mode === "compact");
       }
       if (!thisImmediate && app.childElementCount > 0 && !renderQueued) {
         // 스무스 새로고침: 기존 화면을 그대로 둔 채 사용량까지 받아진 뒤 교체한다.
@@ -1174,6 +1193,14 @@ async function render(opts?: { immediate?: boolean }) {
       if (renderQueued || userIsBusy()) continue;
       // 첫 화면은 뼈대를 먼저 보여주고 사용량은 채워지는 대로 붙는다
       app.replaceChildren(buffer);
+      // 드래그 도중 재렌더로 노드가 갈리면 dragend가 안 올 수 있다 — 상태 리셋
+      dragKey = null;
+      // 새 SYSTEM 스켈레톤을 마지막 샘플로 즉시 채운다 — 스무스 교체마다
+      // 이 섹션만 '--'로 깜빡이던 문제 (red-review). 다음 틱이 이어받는다
+      if (monitorOn && monLastStats) {
+        paintMonitor(monLastStats);
+        drawMonSpark();
+      }
       thisImmediate = false;
     } while (renderQueued);
   } finally {
@@ -1189,7 +1216,8 @@ function userIsBusy(): boolean {
   const el = document.activeElement;
   const typing =
     el instanceof HTMLInputElement && el.type === "text" && el.value.trim().length > 0;
-  return typing || loginOpen;
+  // 섹션 드래그 중에도 스왑을 미룬다 — 잡고 있는 드래그가 소리 없이 죽지 않게
+  return typing || loginOpen || dragKey !== null;
 }
 
 const appWindow = getCurrentWindow();
@@ -1450,10 +1478,328 @@ document.getElementById("memobtn")!.addEventListener("click", () => {
   void invoke("memo_toggle").catch((error) => toast(String(error), true));
 });
 
-// 시스템 모니터 (전 타입) — CPU·메모리·디스크·네트워크 미니 위젯 토글
-document.getElementById("monbtn")!.addEventListener("click", () => {
-  void invoke("monitor_toggle").catch((error) => toast(String(error), true));
+// ── 시스템 모니터 (📊) — 위젯 본체 안 SYSTEM 섹션 토글 ─────────────
+// 별도 창은 메모장만이다 (사용자 지시) — 모니터는 위젯의 한 섹션으로 산다.
+// 미니멀(Type3)은 사용량 전용 독트린(#41)에 따라 그리지 않는다.
+interface SysStats {
+  cpu: number;
+  mem_used: number;
+  mem_total: number;
+  disk_used: number;
+  disk_total: number;
+  net_rx: number;
+  net_tx: number;
+}
+
+const monBtn = document.getElementById("monbtn") as HTMLButtonElement;
+let monitorOn = localStorage.getItem("switcher.monitor") === "1";
+monBtn.classList.toggle("pinned", monitorOn);
+monBtn.addEventListener("click", () => {
+  monitorOn = !monitorOn;
+  localStorage.setItem("switcher.monitor", monitorOn ? "1" : "0");
+  monBtn.classList.toggle("pinned", monitorOn);
+  void render({ immediate: true });
 });
+
+/// SYSTEM 섹션 골격 — 값은 monitorTick이 1초마다 id로 찾아 채운다
+/// (재렌더로 노드가 갈려도 다음 틱이 새 노드를 채우므로 참조를 들고 있지 않는다)
+function renderMonitor(target: DocumentFragment) {
+  const section = document.createElement("section");
+  section.className = "mon-section";
+  const title = document.createElement("div");
+  title.className = "section-title mon-title";
+  const label = document.createElement("span");
+  label.textContent = "SYSTEM";
+  const beat = document.createElement("span");
+  beat.id = "mon-beat";
+  const mood = document.createElement("span");
+  mood.id = "mon-mood";
+  mood.textContent = "(・ᴗ・)";
+  title.append(label, beat, mood);
+  section.appendChild(title);
+  for (const [key, name] of [
+    ["cpu", "CPU"],
+    ["mem", "MEM"],
+    ["dsk", "DSK"],
+    ["net", "NET"],
+  ]) {
+    const row = document.createElement("div");
+    row.className = "mon-row";
+    row.id = `mon-row-${key}`;
+    const lab = document.createElement("span");
+    lab.className = "mon-label";
+    lab.textContent = name;
+    const bar = document.createElement("span");
+    bar.className = "bar mon-bar";
+    const fill = document.createElement("span");
+    fill.className = `bar-fill mon-fill-${key}`;
+    bar.appendChild(fill);
+    const val = document.createElement("span");
+    val.className = "mon-val";
+    val.textContent = "--";
+    row.append(lab, bar, val);
+    section.appendChild(row);
+    // CPU 줄 밑에 60초 스파크라인
+    if (key === "cpu") {
+      const spark = document.createElement("canvas");
+      spark.id = "mon-spark";
+      section.appendChild(spark);
+    }
+  }
+  target.appendChild(section);
+}
+
+/// 1024 단위 자동 스케일 (GB·TB) — 용량 표기용
+function fmtBytes(bytes: number): string {
+  const gb = bytes / 1024 ** 3;
+  if (gb >= 1024) return `${(gb / 1024).toFixed(1)}T`;
+  return `${gb.toFixed(1)}G`;
+}
+
+/// 초당 바이트 → 사람 눈에 맞는 속도 표기
+function fmtRate(bytesPerSec: number): string {
+  if (bytesPerSec < 1024) return `${bytesPerSec}B`;
+  const kb = bytesPerSec / 1024;
+  if (kb < 1024) return `${Math.round(kb)}K`;
+  return `${(kb / 1024).toFixed(1)}M`;
+}
+
+const MON_HISTORY = 60;
+const monHistory: number[] = [];
+/// 네트워크 바의 기준 — 세션 최고 속도 (바닥 1MB/s: 유휴가 꽉 차 보이지 않게)
+let monNetPeak = 1024 * 1024;
+let monInflight = false;
+let monLastTick = 0;
+
+function drawMonSpark() {
+  const spark = document.getElementById("mon-spark") as HTMLCanvasElement | null;
+  if (!spark) return;
+  const ctx = spark.getContext("2d");
+  if (!ctx) return;
+  const scale = window.devicePixelRatio || 1;
+  const w = spark.clientWidth;
+  const h = spark.clientHeight;
+  // 재렌더로 캔버스가 새로 생겼거나 크기가 변한 경우에만 비트맵 재할당
+  const pw = Math.round(w * scale);
+  const ph = Math.round(h * scale);
+  if (spark.width !== pw || spark.height !== ph) {
+    spark.width = pw;
+    spark.height = ph;
+  }
+  ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (monHistory.length < 2) return;
+  const step = w / (MON_HISTORY - 1);
+  const y = (v: number) => h - 1 - (v / 100) * (h - 2);
+  ctx.beginPath();
+  monHistory.forEach((v, i) => {
+    const x = w - (monHistory.length - 1 - i) * step;
+    if (i === 0) ctx.moveTo(x, y(v));
+    else ctx.lineTo(x, y(v));
+  });
+  ctx.strokeStyle = "rgba(167, 139, 250, 0.9)";
+  ctx.lineWidth = 1.2;
+  ctx.stroke();
+  ctx.lineTo(w, h);
+  ctx.lineTo(w - (monHistory.length - 1) * step, h);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(167, 139, 250, 0.15)";
+  ctx.fill();
+}
+
+/// CPU 기분 — 한가하면 느긋, 바쁘면 진지, 뜨거우면 울상
+function monMood(cpuPct: number): string {
+  if (cpuPct < 40) return "(・ᴗ・)";
+  if (cpuPct < 80) return "(•̀ᴗ•́)";
+  return "(>﹏<)";
+}
+
+function monSetRow(key: string, percent: number, text: string) {
+  const row = document.getElementById(`mon-row-${key}`);
+  if (!row) return;
+  const clamped = Math.max(0, Math.min(100, percent));
+  const fill = row.querySelector<HTMLElement>(".bar-fill");
+  if (fill) fill.style.width = `${clamped}%`;
+  row.querySelector(".mon-bar")?.classList.toggle("hot", clamped >= 90);
+  const val = row.querySelector<HTMLElement>(".mon-val");
+  if (val) val.textContent = text;
+}
+
+/// 마지막 샘플 — 재렌더 직후 새 스켈레톤을 즉시 채우는 데 쓴다 (red-review:
+/// 스무스 교체마다 SYSTEM 섹션만 '--'로 깜빡이던 문제)
+let monLastStats: SysStats | null = null;
+
+/// 샘플 하나를 화면에 그린다 — 상태(monHistory 등)는 건드리지 않는다
+function paintMonitor(s: SysStats) {
+  monSetRow("cpu", s.cpu, `${s.cpu.toFixed(1)}%`);
+  const mood = document.getElementById("mon-mood");
+  if (mood) mood.textContent = monMood(s.cpu);
+  monSetRow(
+    "mem",
+    (s.mem_used / Math.max(1, s.mem_total)) * 100,
+    `${fmtBytes(s.mem_used)}/${fmtBytes(s.mem_total)}`,
+  );
+  monSetRow(
+    "dsk",
+    (s.disk_used / Math.max(1, s.disk_total)) * 100,
+    `${fmtBytes(s.disk_used)}/${fmtBytes(s.disk_total)}`,
+  );
+  const flow = s.net_rx + s.net_tx;
+  monSetRow(
+    "net",
+    (flow / Math.max(1, monNetPeak)) * 100,
+    `↓${fmtRate(s.net_rx)} ↑${fmtRate(s.net_tx)}`,
+  );
+}
+
+async function monitorTick() {
+  // 섹션이 화면에 없으면(꺼짐·미니멀·재렌더 중) 조용히 건너뛴다
+  if (!monitorOn || document.hidden || monInflight) return;
+  if (!document.getElementById("mon-row-cpu")) return;
+  monInflight = true;
+  try {
+    const s = await invoke<SysStats>("stats_read");
+    // 응답을 기다리는 사이 📊가 꺼졌으면 폐기 — 꺼진 동안의 샘플이
+    // monHistory·monLastTick을 오염시키지 않게 (red-review)
+    if (!monitorOn) return;
+    // 오래 쉬었다 돌아왔으면 스파크라인을 새로 시작 — 공백 전후가
+    // 연속 60초처럼 이어져 그려지는 왜곡 방지 (red-review)
+    const now = Date.now();
+    if (monLastTick > 0 && now - monLastTick > 5000) monHistory.length = 0;
+    monLastTick = now;
+    monNetPeak = Math.max(monNetPeak, s.net_rx + s.net_tx);
+    monLastStats = s;
+    monHistory.push(s.cpu);
+    if (monHistory.length > MON_HISTORY) monHistory.shift();
+    paintMonitor(s);
+    drawMonSpark();
+    // 심장박동 — 새 샘플이 도착했다는 신호 (재렌더 후 재채움에는 안 뛴다)
+    const beat = document.getElementById("mon-beat");
+    if (beat) {
+      beat.classList.add("pump");
+      window.setTimeout(() => beat?.classList.remove("pump"), 180);
+    }
+  } catch {
+    // 일시 실패는 다음 틱이 만회한다
+  } finally {
+    monInflight = false;
+  }
+}
+window.setInterval(() => void monitorTick(), 1000);
+
+// 데모·검증용 (SWITCHER_OPEN=monitor): SYSTEM 섹션을 켠 채 시작 — 저장하지 않는
+// 일회성 표시라 localStorage는 건드리지 않는다
+void invoke<string>("initial_open").then((open) => {
+  if (open.includes("monitor") && !monitorOn) {
+    monitorOn = true;
+    monBtn.classList.add("pinned");
+    void render({ immediate: true });
+  }
+});
+
+// ── 섹션 순서 (Type1 드래그 앤 드랍) ─────────────────────────────
+// 머리글을 잡아 다른 섹션 위/아래에 놓으면 순서가 바뀌고 저장된다.
+// 순서는 모든 타입에 적용되지만, 바꾸는 조작은 Type1에서만 (위젯 모드는 투과·표시 전용)
+type SectionKey = ProviderId | "github" | "display" | "system";
+const SECTION_ORDER_DEFAULT: SectionKey[] = ["claude", "codex", "github", "display", "system"];
+
+let sectionOrder: SectionKey[] = (() => {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem("switcher.order") ?? "[]");
+    if (!Array.isArray(raw)) return [...SECTION_ORDER_DEFAULT];
+    // 알 수 없는 키·중복 제거, 빠진 키는 기본 순서대로 뒤에 보충 —
+    // 새 섹션이 추가된 업데이트 후에도 저장된 순서가 안전하게 살아난다
+    const valid = raw.filter(
+      (k, i): k is SectionKey =>
+        SECTION_ORDER_DEFAULT.includes(k as SectionKey) && raw.indexOf(k) === i,
+    );
+    const missing = SECTION_ORDER_DEFAULT.filter((k) => !valid.includes(k));
+    return [...valid, ...missing];
+  } catch {
+    return [...SECTION_ORDER_DEFAULT];
+  }
+})();
+
+let dragKey: SectionKey | null = null;
+
+function clearDropMarks() {
+  document
+    .querySelectorAll(".drop-before, .drop-after")
+    .forEach((el) => el.classList.remove("drop-before", "drop-after"));
+}
+
+function moveSection(from: SectionKey, to: SectionKey, before: boolean) {
+  const rest = sectionOrder.filter((k) => k !== from);
+  const idx = rest.indexOf(to);
+  if (idx < 0) return;
+  rest.splice(before ? idx : idx + 1, 0, from);
+  sectionOrder = rest;
+  localStorage.setItem("switcher.order", JSON.stringify(sectionOrder));
+  void render({ immediate: true });
+}
+
+/// 머리글에 드래그 시작을 붙인다 — 접기(collapseSectionsInPlace)가 머리글을
+/// 새로 만들 때도 다시 불러야 한다 (red-review: 접힌 뒤 드래그 시작 불가)
+function attachHeaderDrag(section: HTMLElement, key: SectionKey) {
+  const header = section.querySelector<HTMLElement>(
+    ".section-title, .section-toggle, .compact-head",
+  );
+  if (!header) return;
+  header.draggable = true;
+  header.addEventListener("dragstart", (event) => {
+    dragKey = key;
+    // WebView2에서 데이터가 비어 있으면 드래그가 시작되지 않는 경우가 있다
+    event.dataTransfer?.setData("text/plain", key);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer?.setDragImage(section, 24, 12);
+    // 흐림은 고스트 캡처 다음 프레임에 — 같은 틱에 걸면 고스트까지 반투명해진다
+    // (Chromium 계열 공통, red-review)
+    requestAnimationFrame(() => {
+      if (dragKey === key) section.classList.add("dragging");
+    });
+  });
+  header.addEventListener("dragend", () => {
+    dragKey = null;
+    section.classList.remove("dragging");
+    clearDropMarks();
+  });
+}
+
+/// 섹션 하나에 드래그 이동을 붙인다 — 드래그 시작은 머리글에서만
+/// (본문에는 슬라이더·입력칸·버튼이 있어 섹션 전체를 draggable로 만들면 오동작)
+function enableSectionDrag(section: HTMLElement, key: SectionKey, mode: ViewMode) {
+  if (mode !== "normal") return;
+  attachHeaderDrag(section, key);
+  section.addEventListener("dragover", (event) => {
+    if (!dragKey || dragKey === key) return;
+    event.preventDefault(); // 드랍 허용
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    clearDropMarks();
+    section.classList.add(dropBefore(section, event.clientY) ? "drop-before" : "drop-after");
+  });
+  section.addEventListener("dragleave", (event) => {
+    // 자식(카드·바) 위로 지나갈 때도 dragleave가 연발한다 — 진짜로 섹션을
+    // 벗어날 때만 표시를 지운다 (red-review: 표시선 깜빡임)
+    if (section.contains(event.relatedTarget as Node | null)) return;
+    section.classList.remove("drop-before", "drop-after");
+  });
+  section.addEventListener("drop", (event) => {
+    if (!dragKey || dragKey === key) return;
+    event.preventDefault();
+    const from = dragKey;
+    dragKey = null;
+    clearDropMarks();
+    moveSection(from, key, dropBefore(section, event.clientY));
+  });
+}
+
+/// 드랍 위치 판정 — 접힌 섹션(머리글 한 줄, ~28px)은 midpoint 폭이 좁아
+/// "뒤에 놓기"가 사실상 불가능했다 (red-review). 커서가 아래 40% 밴드에
+/// 들어오면 뒤로 판정해 마지막 자리에도 자연스럽게 놓인다
+function dropBefore(section: HTMLElement, clientY: number): boolean {
+  const rect = section.getBoundingClientRect();
+  return clientY < rect.top + rect.height * 0.6;
+}
 
 // 이메일 가리기 (🙈) — 표시만 블러 처리, 동작·데이터는 그대로. 재시작 후에도 유지
 const privacyBtn = document.getElementById("privacybtn") as HTMLButtonElement;
