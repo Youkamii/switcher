@@ -1530,9 +1530,11 @@ function renderMonitor(target: DocumentFragment) {
     const lab = document.createElement("span");
     lab.className = "mon-label";
     lab.textContent = name;
-    const bar = document.createElement("span");
+    // div여야 한다 — span(inline)은 width가 무시돼 채움 바가 안 그려진다
+    // (사용량 카드의 .bar/.bar-fill과 동일하게, 사용자 보고로 수정)
+    const bar = document.createElement("div");
     bar.className = "bar mon-bar";
-    const fill = document.createElement("span");
+    const fill = document.createElement("div");
     fill.className = `bar-fill mon-fill-${key}`;
     bar.appendChild(fill);
     const val = document.createElement("span");
