@@ -195,6 +195,74 @@ fn demo_mode() -> bool {
 /// 블랙 모니터 활성 여부 — 최상위 재확인 감시 스레드의 수명을 제어한다
 static BLACK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// 블랙 모니터 밝기 연동 (#49): 켤 때 전 모니터 밝기를 저장하고 0으로 낮추며,
+/// 해제하면 복원한다. 저장값은 파일로도 남겨 앱이 켜진 채 죽어도 다음 시작에
+/// 되돌린다 — 최하 밝기로 고착되는 사고 방지.
+#[cfg(any(windows, target_os = "macos"))]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct SavedBrightness {
+    id: usize,
+    name: String,
+    percent: u32,
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+static BLACK_BRIGHTNESS: Mutex<Option<Vec<SavedBrightness>>> = Mutex::new(None);
+
+#[cfg(any(windows, target_os = "macos"))]
+fn black_brightness_path() -> Option<std::path::PathBuf> {
+    Env::real().ok().map(|env| env.store.join("black_brightness.json"))
+}
+
+/// 저장 후 전부 0으로 — DDC 명령이 모니터당 수십~수백 ms라 스레드에서 부른다.
+/// 밝기 미지원(None) 모니터는 건드리지 않는다.
+#[cfg(any(windows, target_os = "macos"))]
+fn black_dim_all() {
+    let saved: Vec<SavedBrightness> = display::list()
+        .into_iter()
+        .filter_map(|m| {
+            m.brightness.map(|percent| SavedBrightness {
+                id: m.id,
+                name: m.name,
+                percent,
+            })
+        })
+        .collect();
+    // 목록을 뽑는 사이 꺼짐이 끼었으면 아무것도 안 한다 (빠른 토글 경합)
+    if saved.is_empty() || !BLACK_ACTIVE.load(Ordering::Relaxed) {
+        return;
+    }
+    if let Ok(mut guard) = BLACK_BRIGHTNESS.lock() {
+        *guard = Some(saved.clone());
+    }
+    if let (Some(path), Ok(text)) = (black_brightness_path(), serde_json::to_string(&saved)) {
+        let _ = std::fs::write(path, text);
+    }
+    for monitor in &saved {
+        if !BLACK_ACTIVE.load(Ordering::Relaxed) {
+            break;
+        }
+        let _ = display::set_brightness(monitor.id, 0, &monitor.name);
+    }
+    // 낮추는 도중 꺼졌으면 즉시 복원 — 절반만 어두운 채 남지 않게
+    if !BLACK_ACTIVE.load(Ordering::Relaxed) {
+        black_restore_brightness();
+    }
+}
+
+/// 저장된 밝기 복원 + 영속 파일 정리 (해제 경로 전부가 공유)
+#[cfg(any(windows, target_os = "macos"))]
+fn black_restore_brightness() {
+    let saved = BLACK_BRIGHTNESS.lock().ok().and_then(|mut guard| guard.take());
+    let Some(saved) = saved else { return };
+    for monitor in &saved {
+        let _ = display::set_brightness(monitor.id, monitor.percent, &monitor.name);
+    }
+    if let Some(path) = black_brightness_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// 블랙 모니터 켜기: 모니터마다 최상위 검은 오버레이 창을 띄운다.
 /// - Windows: topmost + 2초마다 z-순서 재상승 — 나중에 뜨는 다른 최상위 창
 ///   (switcher 위젯 포함)도 오버레이 밑에 머물게 한다.
@@ -312,20 +380,33 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
         close_black_overlays(&app);
         return Ok(());
     }
-    // 감시 스레드: ① 150ms마다 네이티브 ESC 폴링 — 오버레이 웹뷰가 죽어도
-    // 갇히지 않는 최후의 해제 수단 ② ~2초마다 창을 다시 위로 —
+    // 밝기 최하 연동 (#49) — 오버레이가 이미 화면을 덮었으니 뒤에서 천천히 낮춘다
+    std::thread::spawn(black_dim_all);
+    // 감시 스레드: ① 80ms마다 네이티브 ESC 폴링 — 오버레이 웹뷰가 죽거나
+    // 키 포커스를 못 가져와도(Windows 포그라운드 잠금으로 set_focus가 조용히
+    // 실패할 수 있다) 갇히지 않는 해제 수단 ② ~2초마다 창을 다시 위로 —
     // Windows는 z-순서 재상승, 맥은 Space 이탈 감지 후 재-order.
     // 블랙 모니터가 꺼지면 스스로 끝난다.
     let handle = app.clone();
     std::thread::spawn(move || {
         use tauri::Manager;
+        // 0x0001은 "마지막 조회 이후"라 켜기 전에 눌렀던 ESC가 남아 있을 수
+        // 있다 — 한 번 버리는 조회로 잔존 비트를 비우고 시작한다
+        #[cfg(windows)]
+        {
+            const VK_ESCAPE: i32 = 0x1B;
+            let _ = unsafe { GetAsyncKeyState(VK_ESCAPE) };
+        }
         let mut tick: u32 = 0;
         while BLACK_ACTIVE.load(Ordering::Relaxed) {
-            std::thread::sleep(std::time::Duration::from_millis(150));
+            std::thread::sleep(std::time::Duration::from_millis(80));
             #[cfg(windows)]
             let esc = {
                 const VK_ESCAPE: i32 = 0x1B;
-                (unsafe { GetAsyncKeyState(VK_ESCAPE) } as u16 & 0x8000) != 0
+                // 0x8000(지금 눌림)만 보면 폴링 사이의 짧은 탭을 놓친다 —
+                // 0x0001(마지막 조회 이후 눌렸었음)을 함께 봐서 탭도 잡는다
+                // (사용자 보고: ESC가 안 먹음)
+                (unsafe { GetAsyncKeyState(VK_ESCAPE) } as u16 & 0x8001) != 0
             };
             // 웹뷰 keydown이 1차 해제 수단(오버레이가 키 포커스)이고 이 폴링은
             // 백업이다. KeyState가 권한 문제로 항상 false여도 ESC 해제 자체는
@@ -337,7 +418,8 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
                 break;
             }
             tick += 1;
-            if tick % 13 != 0 {
+            // 80ms × 25 ≈ 2초 — 기존 재상승 주기 유지
+            if tick % 25 != 0 {
                 continue;
             }
             #[cfg(windows)]
@@ -401,6 +483,9 @@ async fn black_on(_app: tauri::AppHandle) -> Result<(), String> {
 fn close_black_overlays(app: &tauri::AppHandle) {
     use tauri::Manager;
     BLACK_ACTIVE.store(false, Ordering::Relaxed);
+    // 밝기 복원 (#49) — DDC가 느려 스레드에서. 저장값이 없으면 no-op
+    #[cfg(any(windows, target_os = "macos"))]
+    std::thread::spawn(black_restore_brightness);
     for (label, window) in app.webview_windows() {
         if label.starts_with("black-") {
             let _ = window.destroy();
@@ -1310,6 +1395,20 @@ pub fn run() {
 
             // TFSD 자동 전환 감시 — 설정이 꺼져 있으면 틱마다 조용히 지나간다
             tfsd::spawn(app.handle().clone());
+
+            // 지난 세션이 블랙 모니터를 켠 채 죽었으면 밝기가 최하로 남아 있다 —
+            // 영속 파일이 있으면 복원하고 지운다 (#49)
+            #[cfg(any(windows, target_os = "macos"))]
+            std::thread::spawn(|| {
+                let Some(path) = black_brightness_path() else { return };
+                let Ok(text) = std::fs::read_to_string(&path) else { return };
+                if let Ok(saved) = serde_json::from_str::<Vec<SavedBrightness>>(&text) {
+                    for monitor in &saved {
+                        let _ = display::set_brightness(monitor.id, monitor.percent, &monitor.name);
+                    }
+                }
+                let _ = std::fs::remove_file(path);
+            });
 
             // 데모·자가검증용: SWITCHER_OPEN=memo 이면 시작 직후 메모창을 연다
             // (SWITCHER_VIEW·SWITCHER_DEMO와 같은 스크린샷/검증 훅 계열)
