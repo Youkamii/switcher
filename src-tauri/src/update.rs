@@ -48,8 +48,19 @@ fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
 pub fn sweep_old_exe() {
     #[cfg(windows)]
     if let Ok(exe) = std::env::current_exe() {
-        let _ = fs::remove_file(exe.with_extension("exe.old"));
         let _ = fs::remove_file(exe.with_extension("exe.new"));
+        // .old 계열 전부 — 교체가 잠긴 .old를 피해 옆 이름(.old<pid>)으로
+        // 비켜둔 잔재까지 청소한다 (apply의 대체 이름 방어와 짝)
+        if let (Some(dir), Some(name)) = (exe.parent(), exe.file_name()) {
+            let prefix = format!("{}.old", name.to_string_lossy());
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                        let _ = fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
     }
     #[cfg(target_os = "macos")]
     if let Some(bundle) = current_bundle() {
@@ -83,10 +94,23 @@ fn current_bundle() -> Option<PathBuf> {
 }
 
 /// 새 버전 확인 → 다운로드 → 제자리 교체. 교체했으면 새 버전 문자열을 돌려준다.
+/// 자동(시작 시)·수동(트레이) 확인의 전 구간 직렬화 — 겹치면 같은 임시 폴더
+/// (switcher-update-<pid>)와 같은 파일을 두 경로가 동시에 만져 교체가 깨진다
+static UPDATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// 이번 프로세스가 이미 받아 교체해 둔 업데이트 (버전, 재실행 경로).
+/// 시작 시 자동 확인이 교체를 끝낸 뒤 수동 확인이 오면, 같은 파일을 또
+/// 교체하려다 .old(실행 중인 우리 이미지 — 삭제 잠김)에 막혀 항상 실패했다
+/// (실측 2026-08-10: "업데이트 확인이 안 먹힘" — .new 잔존이 물증). 이미 적용된
+/// 버전이면 재교체 없이 이 경로로 재시작만 하면 된다.
+static APPLIED: std::sync::Mutex<Option<(String, std::path::PathBuf)>> =
+    std::sync::Mutex::new(None);
+
 /// 성공 시 (버전, 재실행에 쓸 실행 파일 경로). 경로는 교체를 마친 시점에 apply가
 /// 직접 계산한 것 — 교체 후 current_exe()가 rename을 따라가 .old를 가리키는
 /// 플랫폼 미묘함에 걸지 않기 위함이다.
 pub async fn check_and_apply() -> Result<Option<(String, std::path::PathBuf)>, String> {
+    let _gate = UPDATE_LOCK.lock().await;
     let current =
         parse_version(env!("CARGO_PKG_VERSION")).ok_or("현재 버전을 해석할 수 없습니다")?;
     let client = reqwest::Client::builder()
@@ -114,6 +138,16 @@ pub async fn check_and_apply() -> Result<Option<(String, std::path::PathBuf)>, S
     if latest <= current {
         return Ok(None);
     }
+    let expected = tag.trim_start_matches('v').to_string();
+    // 이 버전을 이미 받아 교체해 뒀으면(시작 시 자동 확인 등) 재다운로드·재교체
+    // 없이 재시작 경로만 돌려준다 (APPLIED 주석 — 잠긴 .old에 막히던 실패의 본체)
+    if let Ok(guard) = APPLIED.lock() {
+        if let Some((version, relaunch)) = guard.as_ref() {
+            if *version == expected {
+                return Ok(Some((version.clone(), relaunch.clone())));
+            }
+        }
+    }
     let url = release["assets"]
         .as_array()
         .into_iter()
@@ -137,11 +171,13 @@ pub async fn check_and_apply() -> Result<Option<(String, std::path::PathBuf)>, S
         .await
         .map_err(|e| format!("업데이트 다운로드 실패: {e}"))?;
     // 파일·프로세스 작업은 블로킹 풀에서
-    let expected = tag.trim_start_matches('v').to_string();
     let version = expected.clone();
     let relaunch = tauri::async_runtime::spawn_blocking(move || apply(&bytes, &version))
         .await
         .map_err(|e| format!("업데이트 적용 작업 실패: {e}"))??;
+    if let Ok(mut guard) = APPLIED.lock() {
+        *guard = Some((expected.clone(), relaunch.clone()));
+    }
     Ok(Some((expected, relaunch)))
 }
 
@@ -165,7 +201,7 @@ fn apply(zip_bytes: &[u8], _expected_version: &str) -> Result<std::path::PathBuf
         return Err("받은 실행 파일이 비정상적으로 작습니다 — 교체를 중단합니다".to_string());
     }
     let current = std::env::current_exe().map_err(|e| format!("현재 경로 확인 실패: {e}"))?;
-    let old = current.with_extension("exe.old");
+    let mut old = current.with_extension("exe.old");
     // 크래시 안전 교체: 느린 단계(복사)를 같은 폴더의 .new로 먼저 끝내 두고,
     // rename 두 번(빠른 메타데이터 연산)만으로 바꾼다 — 어느 시점에 죽어도
     // 원본 또는 .old가 남아 실행 파일이 통째로 사라지는 창이 없다.
@@ -173,6 +209,13 @@ fn apply(zip_bytes: &[u8], _expected_version: &str) -> Result<std::path::PathBuf
     let _ = fs::remove_file(&staged);
     fs::copy(&new_exe, &staged).map_err(|e| format!("새 실행 파일 준비 실패: {e}"))?;
     let _ = fs::remove_file(&old);
+    if old.exists() {
+        // 남은 .old = 이전 교체가 비켜둔 "실행 중인 이미지"라 삭제가 잠긴다 —
+        // rename 대상이 존재하면 교체 전체가 실패하므로 옆 이름으로 비킨다
+        // (sweep_old_exe가 다음 시작에 .old* 패턴으로 청소)
+        old = current.with_extension(format!("exe.old{}", std::process::id()));
+        let _ = fs::remove_file(&old);
+    }
     fs::rename(&current, &old).map_err(|e| format!("실행 파일 교체 준비 실패: {e}"))?;
     if let Err(e) = fs::rename(&staged, &current) {
         // 되돌린다 — 실행 파일이 사라진 채 남지 않게
