@@ -1219,9 +1219,9 @@ function userIsBusy(): boolean {
   const typing =
     el instanceof HTMLInputElement && el.type === "text" && el.value.trim().length > 0;
   // 섹션 드래그 중에도 스왑을 미룬다 — 잡고 있는 드래그가 소리 없이 죽지 않게.
-  // 단 살아 있는 드래그만 — 고착된 래치는 dragIsLive가 스스로 푼다 (리뷰 #53:
+  // dragend 유실로 고착된 래치는 pointermove 복구가 푼다 (리뷰 #53:
   // dragend 유실 시 렌더가 영구 차단되던 문제)
-  return typing || loginOpen || dragIsLive();
+  return typing || loginOpen || dragKey !== null;
 }
 
 const appWindow = getCurrentWindow();
@@ -1736,8 +1736,9 @@ let sectionOrder: SectionKey[] = (() => {
 })();
 
 let dragKey: SectionKey | null = null;
-/// 드래그 생존 신호 — dragstart와 창 위 dragover가 갱신한다
-let dragLastSeen = 0;
+/// dragstart 시각 — 시작 프레임에 코얼레싱돼 남은 pointermove가 래치를 바로
+/// 풀어버리지 않게 하는 가드 기준
+let dragStartAt = 0;
 
 function clearDropMarks() {
   document
@@ -1745,32 +1746,37 @@ function clearDropMarks() {
     .forEach((el) => el.classList.remove("drop-before", "drop-after"));
 }
 
-/// 드래그가 정말 진행 중인가 — dragend가 유실돼도(웹뷰 hidden 정지 등) 래치가
-/// 2초 뒤 스스로 풀린다. 진행 중인 드래그는 dragover가 계속 갱신하므로 안 끊긴다
-/// (리뷰 #53: 고착된 dragKey가 모든 렌더 스왑을 영구 차단하던 문제)
-function dragIsLive(): boolean {
-  if (dragKey === null) return false;
-  if (Date.now() - dragLastSeen < 2000) return true;
+/// 드래그 래치 해제 — dragend와 유실 복구(아래 pointermove)가 공유한다
+function clearDragState() {
   dragKey = null;
   clearDropMarks();
   document.querySelectorAll(".dragging").forEach((el) => el.classList.remove("dragging"));
-  return false;
 }
+
+// dragend 유실 복구 (리뷰 #53: 고착된 dragKey가 렌더 스왑을 영구 차단하던 문제):
+// HTML5 드래그 중에는 pointermove가 발화하지 않는다(드래그 이벤트로 대체) —
+// 래치가 있는데 pointermove가 왔다는 것은 dragend가 유실된 채 드래그가 끝났다는
+// 뜻이므로 즉시 푼다. 시간 TTL이 아니라서 창 밖에 오래 머무는 살아있는 드래그를
+// 오살하지 않는다 (red-review — 2초 TTL의 조기 해제·파일 드래그 연장 맞바꿈).
+// 200ms 가드: dragstart 발화 프레임의 잔여 pointermove 한 방에 시작 직후
+// 풀리는 것 방지 — 드래그 중엔 pointermove가 없어 이 가드는 오살과 무관하다.
+window.addEventListener("pointermove", () => {
+  if (dragKey !== null && Date.now() - dragStartAt > 200) clearDragState();
+});
 
 // OS 파일 드롭 무해화 (리뷰 #53): dragDropEnabled:false로 네이티브 가로채기를
 // 껐으므로(섹션 드래그용) 기본 동작 차단은 우리 몫 — 안 막으면 웹뷰가 드롭된
-// 파일로 내비게이션해 위젯이 통째로 죽는다. 내부 섹션 드래그(dragKey)는
-// 섹션 핸들러가 처리하고, 여기서는 생존 신호 갱신만 겸한다.
+// 파일로 내비게이션해 위젯이 통째로 죽는다. 내부 섹션 드래그와의 구분은 래치가
+// 아니라 Files 타입으로 — 래치가 고착돼도 차단이 뚫리지 않는다 (red-review)
 window.addEventListener("dragover", (event) => {
-  if (dragKey !== null) {
-    dragLastSeen = Date.now();
-    return;
-  }
+  if (!event.dataTransfer?.types.includes("Files")) return;
   event.preventDefault();
-  if (event.dataTransfer) event.dataTransfer.dropEffect = "none";
+  event.dataTransfer.dropEffect = "none";
 });
+// 내부 섹션 드롭은 섹션 핸들러가 이미 처리했다 — 기본 동작(드롭된 파일로
+// 내비게이션)만 무조건 죽인다
 window.addEventListener("drop", (event) => {
-  if (dragKey === null) event.preventDefault();
+  event.preventDefault();
 });
 
 function moveSection(from: SectionKey, to: SectionKey, before: boolean) {
@@ -1793,7 +1799,7 @@ function attachHeaderDrag(section: HTMLElement, key: SectionKey) {
   header.draggable = true;
   header.addEventListener("dragstart", (event) => {
     dragKey = key;
-    dragLastSeen = Date.now();
+    dragStartAt = Date.now();
     // WebView2에서 데이터가 비어 있으면 드래그가 시작되지 않는 경우가 있다
     event.dataTransfer?.setData("text/plain", key);
     if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
@@ -1804,11 +1810,7 @@ function attachHeaderDrag(section: HTMLElement, key: SectionKey) {
       if (dragKey === key) section.classList.add("dragging");
     });
   });
-  header.addEventListener("dragend", () => {
-    dragKey = null;
-    section.classList.remove("dragging");
-    clearDropMarks();
-  });
+  header.addEventListener("dragend", () => clearDragState());
 }
 
 /// 섹션 하나에 드래그 이동을 붙인다 — 드래그 시작은 머리글에서만

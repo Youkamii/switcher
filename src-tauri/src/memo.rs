@@ -77,6 +77,12 @@ pub fn load(store: &Path) -> MemoData {
 /// 프론트가 그걸 화면에 반영해 "보이는 것 = 저장된 것"을 지킨다 (리뷰 #53:
 /// 조용한 절단이 재시작 후에야 드러나던 문제)
 pub fn save(store: &Path, data: MemoData) -> Result<MemoData, String> {
+    // async 커맨드는 tokio 풀에서 병렬이라 flush가 겹치면(디바운스+블러 등) 같은
+    // tmp 파일에 두 태스크가 쓰다 rename이 꼬일 수 있다 — 저장을 직렬화한다
+    // (red-review). 나중 스냅샷이 먼저 완료되는 순서 역전까지 막지는 못하지만
+    // (발생 창 µs, 다음 플러시가 치유) 반쪽 상태·무음 rename 실패는 사라진다.
+    static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     fs::create_dir_all(store).map_err(|e| format!("메모 폴더 생성 실패: {e}"))?;
     let data = data.normalize();
     let text =

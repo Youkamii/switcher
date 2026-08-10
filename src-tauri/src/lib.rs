@@ -585,6 +585,9 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
             if let Some((x, y)) = global_cursor_pos() {
                 if shake.feed(x, y) {
                     black_graceful_dismiss(&handle);
+                    // 해제를 결정했으면 폴링 지속은 무의미 — ESC 경로와 대칭
+                    // (red-review: 계속 흔들면 eval·폴백이 중복 스폰되던 낭비)
+                    break;
                 }
             }
             #[cfg(windows)]
@@ -676,8 +679,16 @@ async fn black_on(_app: tauri::AppHandle) -> Result<(), String> {
 #[cfg(any(windows, target_os = "macos"))]
 fn black_graceful_dismiss(handle: &tauri::AppHandle) {
     use tauri::Manager;
-    if let Some(w) = handle.get_webview_window("black-0") {
-        let _ = w.eval("window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))");
+    // 웹뷰가 아예 없거나 eval조차 못 받으면 연출의 여지가 없다 — 즉시 닫아
+    // 기존(즉시 해제)과 같은 반응성을 유지한다 (red-review: 폴백만 기다리면
+    // 완전 암전이 1.3초 더 이어진다). 살아 있지만 얼어붙은 웹뷰는 아래 폴백 몫.
+    let alive = handle.get_webview_window("black-0").is_some_and(|w| {
+        w.eval("window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))")
+            .is_ok()
+    });
+    if !alive {
+        close_black_overlays(handle);
+        return;
     }
     let gen = BLACK_GEN.load(Ordering::Relaxed);
     let fallback = handle.clone();
@@ -722,8 +733,10 @@ fn black_off(app: tauri::AppHandle) {
 async fn black_off_delayed(app: tauri::AppHandle) {
     let gen = BLACK_GEN.load(Ordering::Relaxed);
     tokio::time::sleep(std::time::Duration::from_millis(550)).await;
-    // 잠든 사이 새 블랙 세션이 켜졌으면 그 세션은 건드리지 않는다
-    if BLACK_GEN.load(Ordering::Relaxed) == gen {
+    // 잠든 사이 새 블랙 세션이 켜졌으면 그 세션은 건드리지 않는다.
+    // ACTIVE 확인은 1.3초 폴백과 같은 가드 — 연출이 이미 닫은 일상 해제마다
+    // 빈 닫기+복원 스레드가 한 번 더 돌던 것을 없앤다 (red-review)
+    if BLACK_ACTIVE.load(Ordering::Relaxed) && BLACK_GEN.load(Ordering::Relaxed) == gen {
         close_black_overlays(&app);
     }
 }
@@ -1855,16 +1868,24 @@ pub fn run() {
                         // 진행 중인 로그인 프로세스·토큰 임시 폴더를 정리하고 종료
                         login::cancel();
                         // 메모 디바운스(600ms) 도중의 종료로 마지막 입력이 유실되지
-                        // 않게 — 메모창에 즉시 플러시(blur와 같은 경로)를 지시하고
-                        // invoke가 러스트에 닿을 짧은 여유를 준다 (리뷰 #53)
-                        {
-                            use tauri::Manager;
-                            if let Some(memo) = app.get_webview_window("memo") {
-                                let _ = memo.eval("window.dispatchEvent(new Event('blur'))");
+                        // 않게 — 메모창에 즉시 플러시(blur와 같은 경로)를 지시한다.
+                        // 대기·종료는 딴 스레드에서: 이 핸들러는 UI 스레드라 여기서
+                        // 자면 eval 전달도 memo_save IPC도 같은 메시지 펌프에 갇혀
+                        // "여유"가 여유가 아니게 된다 (red-review — 자기 봉쇄)
+                        use tauri::Manager;
+                        let flushing = app
+                            .get_webview_window("memo")
+                            .map(|memo| {
+                                memo.eval("window.dispatchEvent(new Event('blur'))").is_ok()
+                            })
+                            .unwrap_or(false);
+                        let handle = app.clone();
+                        std::thread::spawn(move || {
+                            if flushing {
                                 std::thread::sleep(std::time::Duration::from_millis(250));
                             }
-                        }
-                        app.exit(0);
+                            handle.exit(0);
+                        });
                     }
                     id if id.starts_with("lang:") => {
                         apply_language(app, id.trim_start_matches("lang:"));

@@ -563,6 +563,8 @@ fn read_login_result(
         Provider::Claude => config_dir.join(".credentials.json"),
         Provider::Codex => config_dir.join("auth.json"),
     };
+    // mut은 맥 전용(키체인 폴백의 재할당) — 다른 플랫폼에선 경고만 남아 잠재운다
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut cred: Option<Vec<u8>> = if cred_path.exists() {
         Some(fs::read(&cred_path).map_err(|e| format!("읽기 실패: {e}"))?)
     } else {
