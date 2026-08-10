@@ -231,8 +231,10 @@ body.locked:not(.minimal) #memobtn {
 }
 
 /* ── Type1 섹션 순서 바꾸기 (드래그 앤 드랍) ──
-   머리글을 잡아 다른 섹션 위/아래에 놓는다. 놓일 자리는 액센트 선으로 표시 */
-body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title) {
+   머리글을 잡아 다른 섹션 위/아래에 놓는다. 놓일 자리는 액센트 선으로 표시.
+   .section-toggle: 접힌 GITHUB·DISPLAY 머리글도 드래그 대상인데 grab 커서만
+   빠져 있었다 (리뷰 #53) */
+body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .section-toggle) {
   cursor: grab;
 }
 

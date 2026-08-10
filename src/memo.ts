@@ -53,8 +53,19 @@ async function flush() {
   if (!loaded) return;
   window.clearTimeout(saveTimer);
   pull();
+  const sent = data.tabs[data.active];
   try {
-    await invoke("memo_save", { data });
+    // 러스트가 실제 저장된(정규화된) 데이터를 돌려준다 — 1MB 상한 절단이
+    // 일어났으면 즉시 화면에 반영해 "보이는 것 = 저장된 것"을 지킨다
+    // (리뷰 #53: 조용한 절단이 재시작 후에야 드러나던 문제)
+    const saved = await invoke<MemoData>("memo_save", { data });
+    const cut = saved.tabs[data.active];
+    // 저장을 기다리는 사이 더 타이핑했다면 건드리지 않는다 — 다음 플러시가 맞춘다
+    if (cut.length < sent.length && textEl.value === sent) {
+      data.tabs[data.active] = cut;
+      textEl.value = cut;
+      renderTabs();
+    }
   } catch {
     // 저장 실패(디스크 등)는 다음 입력·플러시가 재시도한다 — 메모창은 계속 동작
   }

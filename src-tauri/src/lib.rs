@@ -370,7 +370,7 @@ struct SavedBrightness {
     percent: u32,
 }
 
-#[cfg(any(windows, target_os = "macos"))]
+#[cfg(windows)]
 static BLACK_BRIGHTNESS: Mutex<Option<Vec<SavedBrightness>>> = Mutex::new(None);
 
 #[cfg(any(windows, target_os = "macos"))]
@@ -408,14 +408,23 @@ fn black_dim_all() {
         }
         let _ = display::set_brightness(monitor.id, 0, &monitor.name);
     }
-    // 낮추는 도중 꺼졌으면 즉시 복원 — 절반만 어두운 채 남지 않게
+    // 낮추는 도중 꺼졌으면 즉시 복원 — 절반만 어두운 채 남지 않게.
+    // 정적(BLACK_BRIGHTNESS)이 아니라 **로컬 사본**으로 되돌린다: 병행
+    // black_restore_brightness가 이미 정적을 take()하고 파일까지 지운 뒤에
+    // 우리 set(0)이 늦게 착지하면, 정적 경유 복원은 no-op이라 모니터가
+    // 밝기 0으로 고착됐다 (리뷰 #53 경쟁). 같은 값을 두 스레드가 겹쳐 써도
+    // 목표값이 같아 무해하다.
     if !BLACK_ACTIVE.load(Ordering::Relaxed) {
-        black_restore_brightness();
+        for monitor in &saved {
+            let _ = display::set_brightness(monitor.id, monitor.percent, &monitor.name);
+        }
+        black_restore_brightness(); // 정적·영속 파일 정리 (남아 있으면)
     }
 }
 
-/// 저장된 밝기 복원 + 영속 파일 정리 (해제 경로 전부가 공유)
-#[cfg(any(windows, target_os = "macos"))]
+/// 저장된 밝기 복원 + 영속 파일 정리 (해제 경로 전부가 공유).
+/// Windows 전용 — 낮추기가 Windows뿐이라 맥에선 부를 일이 없다 (리뷰 #53)
+#[cfg(windows)]
 fn black_restore_brightness() {
     let saved = BLACK_BRIGHTNESS.lock().ok().and_then(|mut guard| guard.take());
     let Some(saved) = saved else { return };
@@ -572,26 +581,10 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
             std::thread::sleep(std::time::Duration::from_millis(80));
             // 네이티브 흔들기 감지 (#51) — 웹뷰가 이벤트를 못 받는 상태(앱 비활성·
             // 페이지 hidden 정지)에서도 흔들기 해제가 살아 있게 한다.
-            // 웹뷰가 살아 있으면 합성 ESC 주입으로 연출(빛 퍼짐)까지 태우고,
-            // 죽어 있으면 1.3초 뒤 강제 해제가 받친다.
             #[cfg(target_os = "macos")]
             if let Some((x, y)) = global_cursor_pos() {
                 if shake.feed(x, y) {
-                    if let Some(w) = handle.get_webview_window("black-0") {
-                        let _ = w.eval(
-                            "window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))",
-                        );
-                    }
-                    let gen = BLACK_GEN.load(Ordering::Relaxed);
-                    let fallback = handle.clone();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(1300));
-                        if BLACK_ACTIVE.load(Ordering::Relaxed)
-                            && BLACK_GEN.load(Ordering::Relaxed) == gen
-                        {
-                            close_black_overlays(&fallback);
-                        }
-                    });
+                    black_graceful_dismiss(&handle);
                 }
             }
             #[cfg(windows)]
@@ -608,7 +601,12 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
             #[cfg(target_os = "macos")]
             let esc = unsafe { CGEventSourceKeyState(0, 53) };
             if esc {
-                close_black_overlays(&handle);
+                // 즉시 파괴하지 않는다 — 웹뷰가 같은 keypress로 이미 연출을
+                // 시작했는데 여기서 80ms 만에 창을 부수면 연출이 항상 끊겨
+                // 흔들기 해제와 눈에 띄게 불일치했다 (리뷰 #53, 특히 Windows
+                // 0x0001 래치는 웹뷰가 소비한 탭도 반드시 본다). 연출 기회를
+                // 주고, 웹뷰가 죽어 있으면 1.3초 강제 해제가 받친다.
+                black_graceful_dismiss(&handle);
                 break;
             }
             tick += 1;
@@ -671,14 +669,36 @@ async fn black_on(_app: tauri::AppHandle) -> Result<(), String> {
     Err("이 플랫폼에서는 블랙 모니터를 지원하지 않습니다".to_string())
 }
 
+/// 네이티브 감시(ESC·흔들기)가 해제를 결정했을 때의 공용 경로 (#52, 리뷰 #53):
+/// 웹뷰가 살아 있으면 합성 ESC로 JS dismiss를 태워 연출(빛 퍼짐)과 예약 해제
+/// (black_off_delayed, 550ms)가 진행되고, 죽어 있으면 1.3초 뒤 강제 해제가 받친다.
+/// 즉시 파괴하지 않는 이유: 웹뷰 keydown이 1차라는 설계 그대로, 연출을 끊지 않기 위함.
+#[cfg(any(windows, target_os = "macos"))]
+fn black_graceful_dismiss(handle: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(w) = handle.get_webview_window("black-0") {
+        let _ = w.eval("window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))");
+    }
+    let gen = BLACK_GEN.load(Ordering::Relaxed);
+    let fallback = handle.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1300));
+        if BLACK_ACTIVE.load(Ordering::Relaxed) && BLACK_GEN.load(Ordering::Relaxed) == gen {
+            close_black_overlays(&fallback);
+        }
+    });
+}
+
 /// 모든 오버레이 닫기 — black_off 커맨드·네이티브 ESC 감시·부분 실패 롤백이 공유한다.
 /// close()가 아니라 destroy()다: close는 CloseRequested를 거치므로 가로채기에 취약하고,
 /// 오버레이는 어떤 경우에도 확실히 사라져야 한다.
 fn close_black_overlays(app: &tauri::AppHandle) {
     use tauri::Manager;
     BLACK_ACTIVE.store(false, Ordering::Relaxed);
-    // 밝기 복원 (#49) — DDC가 느려 스레드에서. 저장값이 없으면 no-op
-    #[cfg(any(windows, target_os = "macos"))]
+    // 밝기 복원 (#49) — DDC가 느려 스레드에서. Windows 전용: 낮추기(black_dim_all)가
+    // Windows뿐이라 맥에선 BLACK_BRIGHTNESS가 항상 비어 확정 no-op이었다 (리뷰 #53).
+    // 맥의 구버전(1.7.21) 잔재 치유는 시작 시 영속 파일 경로가 따로 맡는다.
+    #[cfg(windows)]
     std::thread::spawn(black_restore_brightness);
     for (label, window) in app.webview_windows() {
         if label.starts_with("black-") {
@@ -1253,17 +1273,19 @@ fn apply_language(app: &tauri::AppHandle, lang: &str) {
     let _ = app.emit("language-changed", lang);
 }
 
-/// 메모장 내용 읽기 — 파일이 없거나 깨져 있으면 빈 탭 5개
+/// 메모장 내용 읽기 — 파일이 없거나 깨져 있으면 빈 탭 5개.
+/// async: 동기 커맨드는 메인 스레드에서 돌아 디스크 I/O가 UI를 막는다 (리뷰 #53)
 #[tauri::command]
-fn memo_load() -> memo::MemoData {
+async fn memo_load() -> memo::MemoData {
     Env::real()
         .map(|env| memo::load(&env.store))
         .unwrap_or_default()
 }
 
-/// 메모장 저장 (본문·활성 탭·투명도 전체를 통째로)
+/// 메모장 저장 (본문·활성 탭·투명도 전체를 통째로) — 실제 저장된(정규화된)
+/// 데이터를 돌려줘 프론트가 절단 등을 화면에 반영한다
 #[tauri::command]
-fn memo_save(data: memo::MemoData) -> Result<(), String> {
+async fn memo_save(data: memo::MemoData) -> Result<memo::MemoData, String> {
     let env = Env::real()?;
     memo::save(&env.store, data)
 }
@@ -1309,7 +1331,8 @@ fn aux_show(window: &tauri::WebviewWindow) {
     }
 }
 
-/// 부속 창(메모·모니터) 공통 토글 — 없으면 만들고, 보이면 숨기고, 숨어 있으면 앞으로.
+/// 부속 창(현재는 메모뿐 — 모니터 창은 v1.7.14에서 위젯 섹션으로 흡수) 공통 토글 —
+/// 없으면 만들고, 보이면 숨기고, 숨어 있으면 앞으로.
 /// 위젯의 부속 창이라 위젯과 같은 최상위·작업표시줄 없는 창으로 띄운다.
 /// 닫기(✕·ESC)는 프론트가 hide만 하므로 창은 한 번 만들면 재사용된다.
 /// macOS 특례는 전부 aux_show에 — 여기는 플랫폼 공통 흐름만 남긴다.
@@ -1367,9 +1390,11 @@ async fn memo_toggle(app: tauri::AppHandle) -> Result<(), String> {
     toggle_aux_window(&app, "memo", "memo.html", 280.0, 340.0)
 }
 
-/// 시스템 상태 샘플 — 위젯의 SYSTEM 섹션이 1초 주기로 부른다
+/// 시스템 상태 샘플 — 위젯의 SYSTEM 섹션이 1초 주기로 부른다.
+/// async: 동기 커맨드는 메인 스레드에서 돌아 sysinfo 갱신(수 ms, 볼륨 많으면 더)이
+/// 매초 UI를 버벅이게 했다 (리뷰 #53)
 #[tauri::command]
-fn stats_read() -> stats::SysStats {
+async fn stats_read() -> stats::SysStats {
     stats::sample()
 }
 
@@ -1829,6 +1854,16 @@ pub fn run() {
                     "quit" => {
                         // 진행 중인 로그인 프로세스·토큰 임시 폴더를 정리하고 종료
                         login::cancel();
+                        // 메모 디바운스(600ms) 도중의 종료로 마지막 입력이 유실되지
+                        // 않게 — 메모창에 즉시 플러시(blur와 같은 경로)를 지시하고
+                        // invoke가 러스트에 닿을 짧은 여유를 준다 (리뷰 #53)
+                        {
+                            use tauri::Manager;
+                            if let Some(memo) = app.get_webview_window("memo") {
+                                let _ = memo.eval("window.dispatchEvent(new Event('blur'))");
+                                std::thread::sleep(std::time::Duration::from_millis(250));
+                            }
+                        }
                         app.exit(0);
                     }
                     id if id.starts_with("lang:") => {

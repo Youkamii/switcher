@@ -566,12 +566,23 @@ fn predict_exhaust(points: &[(i64, f64)]) -> Option<i64> {
 /// 응답에 예측을 싣는다 — **활성 계정 조회의 반환 직전**에만 부른다.
 /// 비활성 계정은 "현재 속도 유지" 전제가 성립하지 않는다 — 떠나기 전의
 /// 상승분이 이력에 남아 유령 소진 경고를 만든다 (red-review #45).
-/// 캐시에는 싣지 않고 반환 직전마다 계산하므로 예측이 낡을 창도 없다.
+/// 캐시에는 싣지 않고 반환 직전마다 계산한다.
 fn annotate_exhausts(account_key: &str, usage: &mut Usage) {
+    annotate_exhausts_at(account_key, usage, unix_now());
+}
+
+/// 시간 주입판 — predict_exhaust는 마지막 샘플 시각 기준이라, 캐시 히트로
+/// 샘플이 안 쌓인 동안(최대 CACHE_TTL) 지난 시간을 빼서 "지금 기준"으로 맞춘다.
+/// 안 빼면 TFSD가 남은 시간을 최대 60초 과대평가해 전환 대신 대기한다 (리뷰 #53)
+fn annotate_exhausts_at(account_key: &str, usage: &mut Usage, now: i64) {
     let Ok(map) = samples().lock() else { return };
     for window in &mut usage.windows {
         let key = format!("{account_key}|{}", window.key);
-        window.exhausts_in_secs = map.get(&key).and_then(|points| predict_exhaust(points));
+        window.exhausts_in_secs = map.get(&key).and_then(|points| {
+            let secs = predict_exhaust(points)?;
+            let last_t = points.last()?.0;
+            Some((secs - (now - last_t)).max(0))
+        });
     }
 }
 
@@ -932,6 +943,31 @@ mod tests {
         let noisy = vec![(t0, 0.0), (t0 + 600, 50.0), (t0 + 1200, 40.0)];
         let secs = predict_exhaust(&noisy).expect("양의 기울기 — 예측이 나와야 한다");
         assert!((secs - 1500).abs() <= 2, "secs={secs}");
+    }
+
+    #[test]
+    fn annotation_subtracts_elapsed_since_last_sample() {
+        let mk = |p: f64| Usage {
+            windows: vec![UsageWindow {
+                key: "session".into(),
+                label: "5 Hours".into(),
+                percent: p,
+                resets_at: None,
+                exhausts_in_secs: None,
+            }],
+            stale: false,
+            stale_age_secs: None,
+        };
+        let t0 = 1_700_000_000i64;
+        record_samples("test:acct-elapsed", &mk(60.0), t0);
+        record_samples("test:acct-elapsed", &mk(70.0), t0 + 600);
+        record_samples("test:acct-elapsed", &mk(80.0), t0 + 1200);
+        // 예측은 마지막 샘플 기준 1200초 뒤 소진 — 60초 지난 시점의 조회는
+        // 그만큼 빼서 1140초로 실려야 한다 (캐시 히트 동안 낡는 문제, 리뷰 #53)
+        let mut usage = mk(80.0);
+        annotate_exhausts_at("test:acct-elapsed", &mut usage, t0 + 1260);
+        let secs = usage.windows[0].exhausts_in_secs.expect("예측이 실려야 한다");
+        assert!((secs - 1140).abs() <= 2, "secs={secs}");
     }
 
     #[test]

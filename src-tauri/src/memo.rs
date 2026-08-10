@@ -72,15 +72,20 @@ pub fn load(store: &Path) -> MemoData {
 }
 
 /// 임시 파일 + rename 원자적 쓰기 — 쓰다 만 파일이 남으면 메모 전체가 유실된다
-/// (settings.rs와 같은 이유)
-pub fn save(store: &Path, data: MemoData) -> Result<(), String> {
+/// (settings.rs와 같은 이유).
+/// 실제로 저장된(정규화된) 데이터를 돌려준다 — 1MB 상한 절단이 일어났으면
+/// 프론트가 그걸 화면에 반영해 "보이는 것 = 저장된 것"을 지킨다 (리뷰 #53:
+/// 조용한 절단이 재시작 후에야 드러나던 문제)
+pub fn save(store: &Path, data: MemoData) -> Result<MemoData, String> {
     fs::create_dir_all(store).map_err(|e| format!("메모 폴더 생성 실패: {e}"))?;
-    let text = serde_json::to_string_pretty(&data.normalize())
-        .map_err(|e| format!("메모 직렬화 실패: {e}"))?;
+    let data = data.normalize();
+    let text =
+        serde_json::to_string_pretty(&data).map_err(|e| format!("메모 직렬화 실패: {e}"))?;
     let path = memo_path(store);
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, text).map_err(|e| format!("메모 저장 실패: {e}"))?;
-    fs::rename(&tmp, &path).map_err(|e| format!("메모 저장 실패: {e}"))
+    fs::rename(&tmp, &path).map_err(|e| format!("메모 저장 실패: {e}"))?;
+    Ok(data)
 }
 
 #[cfg(test)]

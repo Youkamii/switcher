@@ -75,8 +75,11 @@ function msUntil(resetsAt: string | null): number | null {
 }
 
 /// 예측 소진(#45) 표기 — 소진이 리셋보다 이르면 리셋 대신 이 벽을 보여준다.
-/// 리셋이 먼저 오면 null (평소처럼 리셋 카운트다운 표시)
+/// 리셋이 먼저 오면 null (평소처럼 리셋 카운트다운 표시).
+/// 이미 100%면 null — 벽에 닿은 뒤에는 "언제 풀리나"(리셋)가 유일한 관심사인데
+/// ▼0m이 그걸 몇 시간씩 가리고 있었다 (리뷰 #53)
 function exhaustText(win: UsageWindow, compact: boolean): string | null {
+  if (win.percent >= 100) return null;
   const secs = win.exhausts_in_secs;
   if (secs == null) return null;
   const resetMs = msUntil(win.resets_at);
@@ -1194,8 +1197,6 @@ async function render(opts?: { immediate?: boolean }) {
       if (renderQueued || userIsBusy()) continue;
       // 첫 화면은 뼈대를 먼저 보여주고 사용량은 채워지는 대로 붙는다
       app.replaceChildren(buffer);
-      // 드래그 도중 재렌더로 노드가 갈리면 dragend가 안 올 수 있다 — 상태 리셋
-      dragKey = null;
       // 새 SYSTEM 스켈레톤을 마지막 샘플로 즉시 채운다 — 스무스 교체마다
       // 이 섹션만 '--'로 깜빡이던 문제 (red-review). 다음 틱이 이어받는다
       if (monitorOn && monLastStats) {
@@ -1217,8 +1218,10 @@ function userIsBusy(): boolean {
   const el = document.activeElement;
   const typing =
     el instanceof HTMLInputElement && el.type === "text" && el.value.trim().length > 0;
-  // 섹션 드래그 중에도 스왑을 미룬다 — 잡고 있는 드래그가 소리 없이 죽지 않게
-  return typing || loginOpen || dragKey !== null;
+  // 섹션 드래그 중에도 스왑을 미룬다 — 잡고 있는 드래그가 소리 없이 죽지 않게.
+  // 단 살아 있는 드래그만 — 고착된 래치는 dragIsLive가 스스로 푼다 (리뷰 #53:
+  // dragend 유실 시 렌더가 영구 차단되던 문제)
+  return typing || loginOpen || dragIsLive();
 }
 
 const appWindow = getCurrentWindow();
@@ -1656,8 +1659,11 @@ function paintMonitor(s: SysStats) {
 }
 
 async function monitorTick() {
-  // 섹션이 화면에 없으면(꺼짐·미니멀·재렌더 중) 조용히 건너뛴다
-  if (!monitorOn || document.hidden || monInflight) return;
+  // 섹션이 화면에 없으면(꺼짐·재렌더 중) 조용히 건너뛴다.
+  // document.hidden은 보지 않는다 — 별도 모니터 창 시절의 고아 조건으로, 맥은
+  // 앱이 비활성이면(위젯의 평상시) 페이지가 hidden이라 SYSTEM이 얼어붙었다
+  // (리뷰 #53). 샘플은 1초에 한 번짜리 경량 호출이다.
+  if (!monitorOn || monInflight) return;
   if (!document.getElementById("mon-row-cpu")) return;
   monInflight = true;
   try {
@@ -1724,12 +1730,42 @@ let sectionOrder: SectionKey[] = (() => {
 })();
 
 let dragKey: SectionKey | null = null;
+/// 드래그 생존 신호 — dragstart와 창 위 dragover가 갱신한다
+let dragLastSeen = 0;
 
 function clearDropMarks() {
   document
     .querySelectorAll(".drop-before, .drop-after")
     .forEach((el) => el.classList.remove("drop-before", "drop-after"));
 }
+
+/// 드래그가 정말 진행 중인가 — dragend가 유실돼도(웹뷰 hidden 정지 등) 래치가
+/// 2초 뒤 스스로 풀린다. 진행 중인 드래그는 dragover가 계속 갱신하므로 안 끊긴다
+/// (리뷰 #53: 고착된 dragKey가 모든 렌더 스왑을 영구 차단하던 문제)
+function dragIsLive(): boolean {
+  if (dragKey === null) return false;
+  if (Date.now() - dragLastSeen < 2000) return true;
+  dragKey = null;
+  clearDropMarks();
+  document.querySelectorAll(".dragging").forEach((el) => el.classList.remove("dragging"));
+  return false;
+}
+
+// OS 파일 드롭 무해화 (리뷰 #53): dragDropEnabled:false로 네이티브 가로채기를
+// 껐으므로(섹션 드래그용) 기본 동작 차단은 우리 몫 — 안 막으면 웹뷰가 드롭된
+// 파일로 내비게이션해 위젯이 통째로 죽는다. 내부 섹션 드래그(dragKey)는
+// 섹션 핸들러가 처리하고, 여기서는 생존 신호 갱신만 겸한다.
+window.addEventListener("dragover", (event) => {
+  if (dragKey !== null) {
+    dragLastSeen = Date.now();
+    return;
+  }
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "none";
+});
+window.addEventListener("drop", (event) => {
+  if (dragKey === null) event.preventDefault();
+});
 
 function moveSection(from: SectionKey, to: SectionKey, before: boolean) {
   const rest = sectionOrder.filter((k) => k !== from);
@@ -1744,13 +1780,14 @@ function moveSection(from: SectionKey, to: SectionKey, before: boolean) {
 /// 머리글에 드래그 시작을 붙인다 — 접기(collapseSectionsInPlace)가 머리글을
 /// 새로 만들 때도 다시 불러야 한다 (red-review: 접힌 뒤 드래그 시작 불가)
 function attachHeaderDrag(section: HTMLElement, key: SectionKey) {
-  const header = section.querySelector<HTMLElement>(
-    ".section-title, .section-toggle, .compact-head",
-  );
+  // .compact-head는 안 찾는다 — 호출부가 전부 normal 모드 게이트라 컴팩트
+  // 머리글에는 닿을 일이 없다 (리뷰 #53: 죽은 셀렉터 정리)
+  const header = section.querySelector<HTMLElement>(".section-title, .section-toggle");
   if (!header) return;
   header.draggable = true;
   header.addEventListener("dragstart", (event) => {
     dragKey = key;
+    dragLastSeen = Date.now();
     // WebView2에서 데이터가 비어 있으면 드래그가 시작되지 않는 경우가 있다
     event.dataTransfer?.setData("text/plain", key);
     if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
