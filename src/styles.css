@@ -201,15 +201,15 @@ body.locked:not(.minimal) #memobtn {
   min-width: 70px;
 }
 
-/* 미니멀(150px): 제목 줄 없이 카드만 쌓이는 독트린에 맞춰 SYSTEM도 제목을
-   떼고, 좁은 폭에 맞게 전부 조인다 (사용량 바 4px와 같은 두께) */
+/* 미니멀(120px): 제목 줄 없이 카드만 쌓이는 독트린에 맞춰 SYSTEM도 제목을
+   떼고, 좁은 폭에 맞게 전부 조인다. 값이 정수·무단위로 짧아져 값 칸도 좁힌다 */
 #app.minimal .mon-title {
   display: none;
 }
 
 #app.minimal .mon-row {
-  gap: 5px;
-  margin: 3px 0;
+  gap: 4px;
+  margin: 2px 0;
 }
 
 #app.minimal .mon-label {
@@ -223,7 +223,7 @@ body.locked:not(.minimal) #memobtn {
 
 #app.minimal .mon-val {
   font-size: 9px;
-  min-width: 56px;
+  min-width: 40px;
 }
 
 #app.minimal #mon-spark {
@@ -277,7 +277,7 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
 }
 
 /* 타입 버튼은 모드가 바뀌어도 같은 크기 — ID 셀렉터라 locked의 축소 규칙
-   (padding 1px 6px, 10px)보다 우선한다. 미니멀 폭(150px) 안에도 들어간다 */
+   (padding 1px 6px, 10px)보다 우선한다. 미니멀에선 버튼 줄이 따로 흐른다 */
 #pin {
   width: 52px;
   padding: 3px 0;
@@ -568,8 +568,26 @@ button.link:hover {
   font-size: 11px;
 }
 
+/* 바를 글자 높이만큼 키워 남은 한도 숫자를 안에 얹는다 (사용자 지시) —
+   행 높이는 글자가 지배하므로 세로 공간은 그대로다 */
 .compact-row .bar {
-  height: 5px;
+  height: 12px;
+  position: relative;
+}
+
+/* 남은 한도 숫자 — 채움색·배경 어느 쪽 위에서도 읽히게 그림자를 깐다 */
+.bar-num {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 8.5px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text);
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
 }
 
 .c-label {
@@ -601,18 +619,18 @@ button.link:hover {
    바만 쌓인다. 폭 150px, 여백·글자·바 두께도 한 단계씩 줄인다 (#41 후속) */
 #app.minimal .compact-row {
   grid-template-columns: 12px 1fr;
-  gap: 5px;
-  margin: 2px 0;
+  gap: 4px;
+  margin: 1px 0;
   font-size: 10px;
 }
 
 #app.minimal .compact-card {
-  padding: 3px 6px;
-  margin-bottom: 3px;
+  padding: 2px 5px;
+  margin-bottom: 2px;
 }
 
 #app.minimal .compact-row .bar {
-  height: 4px;
+  height: 11px;
 }
 
 #app.minimal .tfsd-watermark svg {
@@ -621,7 +639,7 @@ button.link:hover {
 }
 
 body.minimal main {
-  padding: 0 8px 6px;
+  padding: 0 6px 4px;
 }
 
 /* 미니멀은 이메일을 아예 안 그리므로 블러 버튼도 무의미 — 숨긴다 */
@@ -642,8 +660,8 @@ body.minimal #privacybtn {
 /* 프로바이더 묶음 사이 칸막이 — 얇은 선과 여백. 스트라이프와 함께
    바 투명도를 따라가 최하에서도 흐릿하게 남는다 */
 #app.minimal > section + section {
-  margin-top: 6px;
-  padding-top: 5px;
+  margin-top: 4px;
+  padding-top: 3px;
   border-top: 1px solid rgba(139, 139, 158, calc(0.25 * var(--bar-alpha)));
 }
 
@@ -756,11 +774,19 @@ body.locked .titlebar:hover .tb-actions button#pin {
   opacity: 1;
 }
 
-/* Type3(150px): 📊가 늘며 타이틀바 내용이 162px로 넘쳐 타입 버튼이 잘렸다
-   (실측) — 버튼 패딩·간격을 조여 149px로 맞춘다. 넓은 이동 핸들(#43)과
-   #pin 52px(돌아올 손잡이)는 유지. locked 규칙(1px 6px)보다 뒤에 둬야 이긴다 */
+/* Type3(120px): 한 줄에 다 넣기를 포기한다 (사용자 지시) — 슬라이더·버튼이
+   폭에 맞게 다음 줄로 흐른다. 넓은 이동 핸들(#43)과 #pin 52px(돌아올
+   손잡이)는 유지. locked 규칙(1px 6px)보다 뒤에 둬야 이긴다 */
+body.minimal .titlebar {
+  flex-wrap: wrap;
+  row-gap: 2px;
+}
+
 body.minimal .tb-actions {
   gap: 2px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  row-gap: 2px;
 }
 
 body.minimal .tb-actions button {

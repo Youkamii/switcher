@@ -1004,6 +1004,11 @@ async function compactCard(
       else if (win.percent >= 60) fill.classList.add("warn");
       fill.style.width = `${Math.min(100, Math.max(0, win.percent))}%`;
       bar.appendChild(fill);
+      // 남은 한도 숫자를 바 위에 얹는다 (사용자 지시) — 컴팩트·미니멀 공통
+      const remain = document.createElement("span");
+      remain.className = "bar-num";
+      remain.textContent = String(Math.max(0, Math.round(100 - win.percent)));
+      bar.appendChild(remain);
       row.append(label, bar);
       if (!minimal) {
         const reset = document.createElement("span");
@@ -1344,8 +1349,9 @@ function fitHeight() {
     const total = titlebarEl.offsetHeight + content + 2; // 테두리
     const max = Math.floor(window.screen.availHeight * 0.9);
     const target = Math.round(Math.max(80, Math.min(total, max)));
-    // 컴팩트 모드는 창 자체도 좁게, 미니멀은 더 좁게
-    const width = viewMode === "minimal" ? 150 : viewMode === "compact" ? 240 : 360;
+    // 컴팩트 모드는 창 자체도 좁게, 미니멀은 더 좁게 (150→120, 사용자 지시 —
+    // 타이틀바 버튼은 한 줄을 포기하고 다음 줄로 흐른다)
+    const width = viewMode === "minimal" ? 120 : viewMode === "compact" ? 240 : 360;
     void (async () => {
       // 크기 조절 기준은 "오른쪽 상단" — 목표 폭이 실제로 바뀌는 전환에서만
       // 우측 가장자리를 고정한다. (바깥 크기에는 그림자가 포함되므로 실측 폭과
@@ -1510,19 +1516,15 @@ function renderMonitor(target: DocumentFragment) {
   target.appendChild(section);
 }
 
-/// 1024 단위 자동 스케일 (GB·TB) — 용량 표기용
-function fmtBytes(bytes: number): string {
-  const gb = bytes / 1024 ** 3;
-  if (gb >= 1024) return `${(gb / 1024).toFixed(1)}T`;
-  return `${gb.toFixed(1)}G`;
+/// 정수 GB — 소수점·단위 문자 없음 (행 라벨이 무엇인지 말해주므로, 사용자 지시)
+function gbInt(bytes: number): string {
+  return String(Math.round(bytes / 1024 ** 3));
 }
 
-/// 초당 바이트 → 사람 눈에 맞는 속도 표기
-function fmtRate(bytesPerSec: number): string {
-  if (bytesPerSec < 1024) return `${bytesPerSec}B`;
-  const kb = bytesPerSec / 1024;
-  if (kb < 1024) return `${Math.round(kb)}K`;
-  return `${(kb / 1024).toFixed(1)}M`;
+/// 정수 MB/s — 소수점·단위 문자 없음 (위와 동일). 유휴(1MB/s 미만)는 0으로
+/// 나온다 — "논다"는 정보로 충분하고, 미세 활동은 게이지 바가 마저 보여준다
+function mbsInt(bytesPerSec: number): string {
+  return String(Math.round(bytesPerSec / 1024 ** 2));
 }
 
 const MON_HISTORY = 60;
@@ -1594,13 +1596,15 @@ let monLastStats: SysStats | null = null;
 
 /// 샘플 하나를 화면에 그린다 — 상태(monHistory 등)는 건드리지 않는다
 function paintMonitor(s: SysStats) {
-  monSetRow("cpu", s.cpu, `${s.cpu.toFixed(1)}%`);
+  // 수치는 전부 정수·무단위 (사용자 지시: 라벨이 있으니 단위는 자명하다) —
+  // CPU는 %, MEM은 GB, DSK·NET은 MB/s
+  monSetRow("cpu", s.cpu, String(Math.round(s.cpu)));
   const mood = document.getElementById("mon-mood");
   if (mood) mood.textContent = monMood(s.cpu);
   monSetRow(
     "mem",
     (s.mem_used / Math.max(1, s.mem_total)) * 100,
-    `${fmtBytes(s.mem_used)}/${fmtBytes(s.mem_total)}`,
+    `${gbInt(s.mem_used)}/${gbInt(s.mem_total)}`,
   );
   // 디스크는 용량이 아니라 활동량(R/W 속도)이다 — 사용자 지시. 바는 NET처럼
   // 세션 피크 대비 비율
@@ -1608,13 +1612,13 @@ function paintMonitor(s: SysStats) {
   monSetRow(
     "dsk",
     (io / Math.max(1, monDskPeak)) * 100,
-    `R${fmtRate(s.disk_read)} W${fmtRate(s.disk_write)}`,
+    `R${mbsInt(s.disk_read)} W${mbsInt(s.disk_write)}`,
   );
   const flow = s.net_rx + s.net_tx;
   monSetRow(
     "net",
     (flow / Math.max(1, monNetPeak)) * 100,
-    `↓${fmtRate(s.net_rx)} ↑${fmtRate(s.net_tx)}`,
+    `↓${mbsInt(s.net_rx)} ↑${mbsInt(s.net_tx)}`,
   );
 }
 
