@@ -18,6 +18,10 @@ let reveal: (() => void) | null = null;
 function dismiss() {
   if (dismissing) return;
   dismissing = true;
+  // 러스트에 먼저 예약(550ms 뒤 확실히 닫힘) — 연출(rAF)·타이머는 페이지가
+  // hidden으로 정지되면 얼어붙을 수 있어(#51 맥 실측: 연출 중 정지 → 검은 화면
+  // 고착) 연출 완료 콜백만 믿지 않는다. 연출이 정상이면 그쪽이 먼저 닫는다.
+  void invoke("black_off_delayed");
   if (reveal) reveal();
   else void invoke("black_off");
 }
@@ -260,10 +264,10 @@ try {
 
   // ── 해제 연출: 마지막 커서 위치에서 빛이 퍼지듯 밝아진 뒤 닫는다 ──
   // 이 오버레이(해제를 감지한 모니터)에서만 그리고, 연출이 끝나면 black_off가
-  // 모든 모니터를 닫는다. 어떤 이유로든 연출이 못 끝나면 타임아웃이 닫는다.
+  // 모든 모니터를 닫는다 (가속 경로 — dismiss가 예약한 black_off_delayed보다
+  // 먼저 끝나면 즉시). 연출이 얼어붙어도 예약 해제가 550ms에 닫는다 (#51).
   const DISMISS_MS = 420;
   reveal = () => {
-    window.setTimeout(() => void invoke("black_off"), DISMISS_MS + 400);
     const cx = lastX >= 0 ? lastX : window.innerWidth / 2;
     const cy = lastY >= 0 ? lastY : window.innerHeight / 2;
     const maxR = Math.hypot(

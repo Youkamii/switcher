@@ -56,6 +56,38 @@ extern "C" {
     /// 전역 키 눌림 상태 (key 53 = ESC). ButtonState와 같은 상태 조회 계열 —
     /// 블랙 모니터의 웹뷰가 죽었을 때를 위한 백업 해제 수단으로만 쓴다.
     fn CGEventSourceKeyState(state_id: i32, key: u16) -> bool;
+    /// 전역 커서 위치 스냅숏 — 이벤트 탭이 아니라 권한 없이 동작한다.
+    /// 네이티브 흔들기 감지(#51)가 80ms마다 읽는다: 앱이 비활성이면 오버레이
+    /// 웹뷰가 마우스 이벤트를 아예 못 받으므로 JS 감지기만으로는 부족하다.
+    fn CGEventCreate(source: *const std::ffi::c_void) -> *mut std::ffi::c_void;
+    fn CGEventGetLocation(event: *mut std::ffi::c_void) -> CGPoint;
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CFRelease(cf: *mut std::ffi::c_void);
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+struct CGPoint {
+    x: f64,
+    y: f64,
+}
+
+/// 전역 커서 위치 — 만들 수 없으면 None (판정 한 틱 건너뜀)
+#[cfg(target_os = "macos")]
+fn global_cursor_pos() -> Option<(f64, f64)> {
+    unsafe {
+        let event = CGEventCreate(std::ptr::null());
+        if event.is_null() {
+            return None;
+        }
+        let point = CGEventGetLocation(event);
+        CFRelease(event);
+        Some((point.x, point.y))
+    }
 }
 
 /// 시스템 더블클릭 간격(ms) — 맥은 setup에서 NSEvent 값으로 채운다 (500ms는 폴백)
@@ -195,6 +227,135 @@ fn demo_mode() -> bool {
 /// 블랙 모니터 활성 여부 — 최상위 재확인 감시 스레드의 수명을 제어한다
 static BLACK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// 블랙 세션 세대 — 지연 해제(black_off_delayed·네이티브 흔들기 폴백)가 잠든 사이
+/// 새 세션이 켜졌으면 그 세션을 죽이지 않기 위한 가드 (#51)
+static BLACK_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 네이티브 흔들기 감지 (#51) — black.ts JS 감지기와 같은 기준
+/// (2초 창 · 0.8px/ms · 방향 반전 12회)을 전역 커서 폴링(80ms)으로 복제한다.
+/// 웹뷰는 앱이 비활성이거나(비활성 패널 위젯 특성상 흔함) 페이지가 hidden으로
+/// 정지되면 이벤트를 못 받아 흔들기가 죽는다 — 네이티브 ESC 폴러와 같은 백업 철학.
+#[cfg(target_os = "macos")]
+struct ShakeTracker {
+    last: Option<(f64, f64, std::time::Instant)>,
+    dir_x: f64,
+    dir_y: f64,
+    flips: std::collections::VecDeque<std::time::Instant>,
+}
+
+#[cfg(target_os = "macos")]
+impl ShakeTracker {
+    const WINDOW_MS: u128 = 2000;
+    const MIN_SPEED: f64 = 0.8; // px/ms — black.ts SHAKE_MIN_SPEED와 동일 (사용자 기준값)
+    const FLIPS: usize = 12; // black.ts SHAKE_FLIPS와 동일 (사용자 기준값)
+
+    fn new() -> Self {
+        ShakeTracker {
+            last: None,
+            dir_x: 0.0,
+            dir_y: 0.0,
+            flips: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// 한 축의 속도를 기록 — 고속(≥MIN_SPEED) 방향 반전만 반전 횟수에 올린다
+    fn record(
+        flips: &mut std::collections::VecDeque<std::time::Instant>,
+        prev: &mut f64,
+        velocity: f64,
+        now: std::time::Instant,
+    ) {
+        if velocity == 0.0 || velocity.abs() < Self::MIN_SPEED {
+            return;
+        }
+        let dir = velocity.signum();
+        if *prev != 0.0 && dir != *prev {
+            flips.push_back(now);
+        }
+        *prev = dir;
+    }
+
+    /// 새 좌표 하나를 먹이고, 흔들기 판정이 차면 true (내부 상태 초기화)
+    fn feed(&mut self, x: f64, y: f64) -> bool {
+        self.feed_at(x, y, std::time::Instant::now())
+    }
+
+    /// 시간 주입판 — 테스트가 가상 시각으로 판정 기준을 검증한다
+    fn feed_at(&mut self, x: f64, y: f64, now: std::time::Instant) -> bool {
+        let Some((lx, ly, lt)) = self.last.replace((x, y, now)) else {
+            return false;
+        };
+        let dt_ms = now.duration_since(lt).as_millis().max(1) as f64;
+        Self::record(&mut self.flips, &mut self.dir_x, (x - lx) / dt_ms, now);
+        Self::record(&mut self.flips, &mut self.dir_y, (y - ly) / dt_ms, now);
+        while self
+            .flips
+            .front()
+            .is_some_and(|t| now.duration_since(*t).as_millis() > Self::WINDOW_MS)
+        {
+            self.flips.pop_front();
+        }
+        if self.flips.len() >= Self::FLIPS {
+            self.flips.clear();
+            self.dir_x = 0.0;
+            self.dir_y = 0.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod shake_tests {
+    use super::ShakeTracker;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn fast_alternation_fires_within_two_seconds() {
+        // 80ms 폴링 간격으로 ±500px 좌우 반전 — 6.25px/ms, 매 표본이 반전.
+        // 12회째 반전(feed #13, ~1.0초)에 발동해야 한다 (black.ts 기준값과 동일)
+        let mut tracker = ShakeTracker::new();
+        let t0 = Instant::now();
+        let mut fired_at = None;
+        for i in 0..40u64 {
+            let x = if i % 2 == 0 { 250.0 } else { 750.0 };
+            if tracker.feed_at(x, 400.0, t0 + Duration::from_millis(80 * i)) {
+                fired_at = Some(i);
+                break;
+            }
+        }
+        assert_eq!(fired_at, Some(13));
+    }
+
+    #[test]
+    fn slow_or_sparse_movement_never_fires() {
+        let t0 = Instant::now();
+        // 저속 반전 (0.375px/ms < 0.8) — 아무리 반복해도 발동 금지
+        let mut slow = ShakeTracker::new();
+        for i in 0..60u64 {
+            let x = if i % 2 == 0 { 400.0 } else { 430.0 };
+            assert!(!slow.feed_at(x, 400.0, t0 + Duration::from_millis(80 * i)));
+        }
+        // 고속이지만 드문 반전 (400ms 간격 → 2초 창에 5회) — 발동 금지
+        let mut sparse = ShakeTracker::new();
+        for i in 0..60u64 {
+            let x = if i % 2 == 0 { 100.0 } else { 900.0 };
+            assert!(!sparse.feed_at(x, 400.0, t0 + Duration::from_millis(400 * i)));
+        }
+    }
+
+    #[test]
+    fn one_direction_sweep_never_fires() {
+        // 같은 방향 고속 이동(반전 없음) — 스크롤·드래그 오탐 금지
+        let mut tracker = ShakeTracker::new();
+        let t0 = Instant::now();
+        for i in 0..60u64 {
+            assert!(!tracker.feed_at(i as f64 * 200.0, 400.0, t0 + Duration::from_millis(80 * i)));
+        }
+    }
+}
+
 /// 블랙 모니터 밝기 연동 (#49, **낮추기는 Windows 전용** — #51): 켤 때 전 모니터
 /// 밝기를 저장하고 0으로 낮추며, 해제하면 복원한다. 저장값은 파일로도 남겨 앱이
 /// 켜진 채 죽어도 다음 시작에 되돌린다 — 최하 밝기로 고착되는 사고 방지.
@@ -280,6 +441,7 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
     if BLACK_ACTIVE.swap(true, Ordering::Relaxed) {
         return Ok(()); // 이미 켜져 있다
     }
+    BLACK_GEN.fetch_add(1, Ordering::Relaxed);
     let result = (|| -> Result<(), String> {
         let monitors = app
             .available_monitors()
@@ -404,8 +566,34 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
             let _ = unsafe { GetAsyncKeyState(VK_ESCAPE) };
         }
         let mut tick: u32 = 0;
+        #[cfg(target_os = "macos")]
+        let mut shake = ShakeTracker::new();
         while BLACK_ACTIVE.load(Ordering::Relaxed) {
             std::thread::sleep(std::time::Duration::from_millis(80));
+            // 네이티브 흔들기 감지 (#51) — 웹뷰가 이벤트를 못 받는 상태(앱 비활성·
+            // 페이지 hidden 정지)에서도 흔들기 해제가 살아 있게 한다.
+            // 웹뷰가 살아 있으면 합성 ESC 주입으로 연출(빛 퍼짐)까지 태우고,
+            // 죽어 있으면 1.3초 뒤 강제 해제가 받친다.
+            #[cfg(target_os = "macos")]
+            if let Some((x, y)) = global_cursor_pos() {
+                if shake.feed(x, y) {
+                    if let Some(w) = handle.get_webview_window("black-0") {
+                        let _ = w.eval(
+                            "window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))",
+                        );
+                    }
+                    let gen = BLACK_GEN.load(Ordering::Relaxed);
+                    let fallback = handle.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(1300));
+                        if BLACK_ACTIVE.load(Ordering::Relaxed)
+                            && BLACK_GEN.load(Ordering::Relaxed) == gen
+                        {
+                            close_black_overlays(&fallback);
+                        }
+                    });
+                }
+            }
             #[cfg(windows)]
             let esc = {
                 const VK_ESCAPE: i32 = 0x1B;
@@ -503,6 +691,21 @@ fn close_black_overlays(app: &tauri::AppHandle) {
 #[tauri::command]
 fn black_off(app: tauri::AppHandle) {
     close_black_overlays(&app);
+}
+
+/// 예약 해제 (#51) — 해제 연출을 시작하는 순간 웹뷰가 먼저 이걸 부른다.
+/// 연출(rAF)·타이머는 페이지가 hidden으로 정지되면 얼어붙을 수 있어(맥 실측:
+/// 비활성 패널 앱은 페이지가 hidden 취급) 연출 완료 콜백의 black_off만 믿으면
+/// 오버레이가 검은 채 고착된다. 550ms는 연출(420ms)이 끝나고도 남는 여유 —
+/// 연출이 정상이면 그쪽 black_off가 먼저 닫고 이건 no-op이 된다.
+#[tauri::command]
+async fn black_off_delayed(app: tauri::AppHandle) {
+    let gen = BLACK_GEN.load(Ordering::Relaxed);
+    tokio::time::sleep(std::time::Duration::from_millis(550)).await;
+    // 잠든 사이 새 블랙 세션이 켜졌으면 그 세션은 건드리지 않는다
+    if BLACK_GEN.load(Ordering::Relaxed) == gen {
+        close_black_overlays(&app);
+    }
 }
 
 /// gh CLI에 로그인된 GitHub 계정 목록 (토큰은 만지지 않는다 — 이름·활성 여부만)
@@ -1468,6 +1671,12 @@ pub fn run() {
                     if open.contains("memo") {
                         let _ = toggle_aux_window(&handle, "memo", "memo.html", 280.0, 340.0);
                     }
+                    // 검증 훅: 블랙 모니터를 켠 채 시작 — 해제(ESC·흔들기)는 실제
+                    // 경로로 검증한다 (memo·monitor와 같은 SWITCHER_OPEN 계열)
+                    #[cfg(any(windows, target_os = "macos"))]
+                    if open.contains("black") {
+                        let _ = black_on(handle.clone()).await;
+                    }
                 });
             }
 
@@ -1720,6 +1929,7 @@ pub fn run() {
             github_login_cancel,
             black_on,
             black_off,
+            black_off_delayed,
             display_list,
             display_set_brightness
         ])
