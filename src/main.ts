@@ -25,8 +25,6 @@ type UsageWindow = {
   label: string;
   percent: number;
   resets_at: string | null;
-  /// 예측 소진(#45) — 현재 속도 유지 시 몇 초 뒤 100%에 닿는지 (없으면 예측 불가)
-  exhausts_in_secs?: number | null;
 };
 
 type Usage = { windows: UsageWindow[]; stale?: boolean; stale_age_secs?: number | null };
@@ -64,38 +62,6 @@ function formatReset(resetsAt: string | null): string {
   if (days >= 1) return `${days}d ${hours % 24}h`;
   if (hours >= 1) return `${hours}h ${minutes % 60}m`;
   return `${minutes}m`;
-}
-
-/// resets_at까지 남은 ms — 표기와 무관한 비교용 (코덱스 유닉스초·클로드 ISO 겸용)
-function msUntil(resetsAt: string | null): number | null {
-  if (!resetsAt) return null;
-  const ts = /^\d+$/.test(resetsAt) ? Number(resetsAt) * 1000 : Date.parse(resetsAt);
-  if (Number.isNaN(ts)) return null;
-  return ts - Date.now();
-}
-
-/// 예측 소진(#45) 표기 — 소진이 리셋보다 이르면 리셋 대신 이 벽을 보여준다.
-/// 리셋이 먼저 오면 null (평소처럼 리셋 카운트다운 표시).
-/// 이미 100%면 null — 벽에 닿은 뒤에는 "언제 풀리나"(리셋)가 유일한 관심사인데
-/// ▼0m이 그걸 몇 시간씩 가리고 있었다 (리뷰 #53)
-function exhaustText(win: UsageWindow, compact: boolean): string | null {
-  if (win.percent >= 100) return null;
-  const secs = win.exhausts_in_secs;
-  if (secs == null) return null;
-  const resetMs = msUntil(win.resets_at);
-  if (resetMs != null && resetMs <= secs * 1000) return null;
-  const minutes = Math.floor(secs / 60);
-  const hours = Math.floor(minutes / 60);
-  if (compact) return `▼${hours}:${String(minutes % 60).padStart(2, "0")}`;
-  if (hours >= 1) return `▼${hours}h ${minutes % 60}m`;
-  return `▼${minutes}m`;
-}
-
-/// 소진 표기를 스팬에 적용 — 30분 안이면 danger, 그 외 warn
-function applyExhaust(span: HTMLElement, text: string, secs: number) {
-  span.textContent = text;
-  span.classList.add(secs <= 1800 ? "exhaust-danger" : "exhaust-warn");
-  span.title = t("exhaustTooltip");
 }
 
 /// 지금 조회가 막혀 이전 수치를 보여줄 때의 라벨 — 몇 시간 전 값인지 감추지 않는다.
@@ -136,17 +102,11 @@ function usageRow(win: UsageWindow): HTMLElement {
   pct.className = "usage-pct";
   pct.textContent = `${Math.round(win.percent)}%`;
 
-  // 리셋까지 남은 시간은 모든 창에 각각 표시한다 —
-  // 단 소진 예측이 리셋보다 이르면 먼저 만날 벽(▼)을 대신 보여준다 (#45)
+  // 리셋까지 남은 시간은 모든 창에 각각 표시한다
   const reset = document.createElement("span");
   reset.className = "usage-reset";
-  const exhaust = exhaustText(win, false);
-  if (exhaust != null && win.exhausts_in_secs != null) {
-    applyExhaust(reset, exhaust, win.exhausts_in_secs);
-  } else {
-    reset.textContent = formatReset(win.resets_at);
-    reset.title = t("resetTooltip");
-  }
+  reset.textContent = formatReset(win.resets_at);
+  reset.title = t("resetTooltip");
 
   row.append(label, bar, pct, reset);
   return row;
@@ -1048,13 +1008,8 @@ async function compactCard(
       if (!minimal) {
         const reset = document.createElement("span");
         reset.className = "c-reset";
-        const exhaust = exhaustText(win, true);
-        if (exhaust != null && win.exhausts_in_secs != null) {
-          applyExhaust(reset, exhaust, win.exhausts_in_secs);
-        } else {
-          reset.textContent = compactReset(win.resets_at);
-          reset.title = t("resetTooltip");
-        }
+        reset.textContent = compactReset(win.resets_at);
+        reset.title = t("resetTooltip");
         row.appendChild(reset);
       }
       card.appendChild(row);

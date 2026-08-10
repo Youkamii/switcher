@@ -33,10 +33,6 @@ const TICK: Duration = Duration::from_secs(55);
 /// 보류한다. 90% 시점에 남은 10%는 5 Hours 창 기준 비례 사용량 ~30분이라,
 /// 그 여유로 리셋까지 버티는 쪽이 계정 교체보다 낫다 (#39).
 const RESET_GRACE: Duration = Duration::from_secs(30 * 60);
-/// 선제 전환 지평(#45) — 소진 예측이 이 안이면 임계(90%) 전이라도 발동한다.
-/// 고속 소모 중엔 90% 도달 직후 몇 분 만에 벽이라, 닿기 전에 미리 갈아탄다.
-const EXHAUST_SOON: i64 = 600;
-
 /// 계정의 병목 사용률 — 모든 창 중 최댓값. 창이 없으면 None (판단 보류).
 /// 새 창 종류가 API에 추가돼도 자동으로 판정에 들어간다 — 라벨 특례 없음.
 fn bottleneck_percent(windows: &[UsageWindow]) -> Option<f64> {
@@ -119,22 +115,14 @@ fn parse_resets_at(text: &str) -> Option<i64> {
     Some(days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + s - offset_secs)
 }
 
-/// 리셋 대기(coasting) — 막힘이 임박한 창들(임계 이상 또는 소진 예측 임박)이
-/// **전부** 유예 안에 리셋되고 그 리셋이 예측 소진보다 이를 때만 참.
-/// 하나라도 리셋이 멀거나·리셋 시각을 모르거나·리셋 전에 벽에 닿을 전망이면
-/// 거짓 — 모르는 정보로 전환을 막지 않는다 (#39, #45).
+/// 리셋 대기(coasting) — 임계 이상인 창들이 **전부** 유예 안에 리셋되면 참.
+/// 하나라도 리셋이 멀거나 리셋 시각을 모르면 거짓 — 모르는 정보로 전환을
+/// 막지 않는다 (#39). 임계 이상인 창이 없어도 거짓 (호출부는 병목 ≥ 임계 후).
 fn saturated_windows_reset_soon(windows: &[UsageWindow], now_secs: i64) -> bool {
     let grace = RESET_GRACE.as_secs() as i64;
     let mut any = false;
-    for window in windows.iter().filter(|w| {
-        w.percent >= THRESHOLD || w.exhausts_in_secs.is_some_and(|s| s <= EXHAUST_SOON)
-    }) {
+    for window in windows.iter().filter(|w| w.percent >= THRESHOLD) {
         any = true;
-        // 이미 다 찬 창은 기다릴 여유 자체가 없다 — 리셋이 코앞이어도 전환이
-        // 즉시 구제한다. 이력 유무로 행동이 갈리던 비결정성 제거 (red-review #45)
-        if window.percent >= 100.0 {
-            return false;
-        }
         let Some(reset) = window.resets_at.as_deref().and_then(parse_resets_at) else {
             return false;
         };
@@ -142,10 +130,6 @@ fn saturated_windows_reset_soon(windows: &[UsageWindow], now_secs: i64) -> bool 
         // 영구 보류에 빠지지 않게 보류를 포기한다 (리셋 직후 캐시 지연은 유예가 흡수)
         let diff = reset - now_secs;
         if diff > grace || diff < -grace {
-            return false;
-        }
-        // 리셋 전에 벽에 닿을 전망이면 기다릴 이유가 없다 (#45)
-        if window.exhausts_in_secs.is_some_and(|s| s < diff) {
             return false;
         }
     }
@@ -196,13 +180,7 @@ async fn evaluate(env: &Env, provider: Provider) -> Verdict {
     let Some(active_percent) = bottleneck_percent(&active_usage.windows) else {
         return Verdict::Idle;
     };
-    // 예측 소진(#45): 어느 창이든 현재 속도로 10분 안에 벽에 닿을 전망이면
-    // 임계 전이라도 발동한다 — 특히 Fable 같은 주간 창은 소진되면 며칠짜리다
-    let exhaust_imminent = active_usage
-        .windows
-        .iter()
-        .any(|w| w.exhausts_in_secs.is_some_and(|s| s <= EXHAUST_SOON));
-    if active_percent < THRESHOLD && !exhaust_imminent {
+    if active_percent < THRESHOLD {
         return Verdict::Idle;
     }
     // 리셋 대기: 꽉 찬 창들이 전부 30분 안에 리셋되면 전환하지 않는다 —
@@ -366,7 +344,6 @@ mod tests {
             label: label.to_string(),
             percent,
             resets_at: None,
-            exhausts_in_secs: None,
         }
     }
 
@@ -445,7 +422,6 @@ mod tests {
             label: "w".to_string(),
             percent,
             resets_at: resets.map(String::from),
-            exhausts_in_secs: None,
         };
         // 꽉 찬 창이 10분 뒤 리셋 → 보류 (여유 창의 먼 리셋은 무관)
         assert!(saturated_windows_reset_soon(
@@ -467,46 +443,6 @@ mod tests {
         // 리셋이 유예보다 한참 과거인데 여전히 만석 = 데이터 이상 — 영구 보류 방지 (red-review)
         let stale_past = (now - 86400 * 30).to_string();
         assert!(!saturated_windows_reset_soon(&[win(99.0, Some(&stale_past))], now));
-    }
-
-    #[test]
-    fn exhaustion_prediction_beats_coasting_and_triggers_early() {
-        let now = 1_700_000_000i64;
-        let reset_10m = (now + 600).to_string();
-        let mk = |percent: f64, resets: Option<&str>, exhausts: Option<i64>| UsageWindow {
-            key: "k".to_string(),
-            label: "w".to_string(),
-            percent,
-            resets_at: resets.map(String::from),
-            exhausts_in_secs: exhausts,
-        };
-        // 리셋 10분 뒤인데 소진 예측 5분 — 기다리면 벽에 박는다 → 보류 안 함 (#45)
-        assert!(!saturated_windows_reset_soon(
-            &[mk(92.0, Some(&reset_10m), Some(300))],
-            now
-        ));
-        // 소진 예측 15분 > 리셋 10분 — 리셋이 먼저 온다 → 보류
-        assert!(saturated_windows_reset_soon(
-            &[mk(92.0, Some(&reset_10m), Some(900))],
-            now
-        ));
-        // 임계 미만이어도 소진 임박이면 막힘 후보 — 리셋이 멀면 보류 안 함 (선제 전환 경로)
-        let reset_2h = (now + 7200).to_string();
-        assert!(!saturated_windows_reset_soon(
-            &[mk(85.0, Some(&reset_2h), Some(300))],
-            now
-        ));
-        // 소진 임박 창의 리셋이 코앞이면(2분) 보류 — 갈아탈 필요가 없다
-        let reset_2m = (now + 120).to_string();
-        assert!(saturated_windows_reset_soon(
-            &[mk(85.0, Some(&reset_2m), Some(300))],
-            now
-        ));
-        // 이미 100% = 여유 제로 — 리셋이 코앞이고 이력이 없어도 보류하지 않는다
-        assert!(!saturated_windows_reset_soon(
-            &[mk(100.0, Some(&reset_2m), None)],
-            now
-        ));
     }
 
     #[test]

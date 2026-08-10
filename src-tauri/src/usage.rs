@@ -33,11 +33,6 @@ pub struct UsageWindow {
     pub label: String,
     pub percent: f64,
     pub resets_at: Option<String>,
-    /// 예측 소진(#45) — 현재 소모 속도가 유지되면 몇 초 뒤 100%에 닿는지.
-    /// 실조회 성공 응답에만 실리고, stale·디스크 재기동 값에는 싣지 않는다
-    /// (낡은 예측 금지). 표시·TFSD 선제 전환이 이 값을 쓴다.
-    #[serde(default)]
-    pub exhausts_in_secs: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -274,7 +269,6 @@ fn parse_claude_usage(body: &Value) -> Usage {
                     .get("resets_at")
                     .and_then(|v| v.as_str())
                     .map(String::from),
-                exhausts_in_secs: None,
             });
         }
     }
@@ -296,7 +290,6 @@ fn parse_claude_usage(body: &Value) -> Usage {
                         .pointer(&format!("/{field}/resets_at"))
                         .and_then(|v| v.as_str())
                         .map(String::from),
-                    exhausts_in_secs: None,
                 });
             }
         }
@@ -421,7 +414,6 @@ fn push_codex_window(windows: &mut Vec<UsageWindow>, key: &str, label: Option<&s
             .get("reset_at")
             .and_then(|v| v.as_i64())
             .map(|t| t.to_string()),
-        exhausts_in_secs: None,
     });
 }
 
@@ -460,137 +452,6 @@ async fn fetch_codex(env: &Env, profile: Option<&str>) -> Result<Usage, FetchErr
     }
     let body = get_json(req).await?;
     Ok(parse_codex_usage(&body))
-}
-
-// ── 예측 소진 (#45) ──────────────────────────────────────────────────
-// 실조회 성공마다 (유닉스초, percent) 샘플을 계정 id·창 키별로 축적하고,
-// 최소제곱 기울기로 "현재 속도면 몇 초 뒤 100%에 닿는지"를 계산한다.
-// 실가치는 주간 창(Fable·Weekly)에 있다 — 5 Hours는 coasting이 감당하는
-// 단기 창이고, 주간 창 소진은 며칠짜리 벽이라 조기 경보가 필요하다.
-
-/// 샘플 저장소 — 키는 cache_key와 같은 계정 id 기준이라 전환·활성 여부와
-/// 무관하게 계정을 따라간다 (메모리 전용 — 재시작하면 예측도 새로 쌓인다)
-fn samples() -> &'static std::sync::Mutex<std::collections::HashMap<String, Vec<(i64, f64)>>> {
-    static SAMPLES: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, Vec<(i64, f64)>>>,
-    > = std::sync::OnceLock::new();
-    SAMPLES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
-}
-
-/// 기울기 관측 지평 — "현재 세션의 페이스"를 반영할 만큼 짧게
-const SAMPLE_HORIZON_SECS: i64 = 45 * 60;
-/// 예측 게이트: 최소 샘플 수·최소 관측 폭 — 점 두 개짜리 요행 기울기 방지
-const PREDICT_MIN_SAMPLES: usize = 3;
-const PREDICT_MIN_SPAN_SECS: i64 = 10 * 60;
-/// 이보다 먼 예측은 의미 없는 외삽 — 싣지 않는다
-const PREDICT_MAX_HORIZON_SECS: i64 = 24 * 3600;
-/// 연속 샘플 간 이만큼 넘는 하락 = 창 리셋 — 이력을 비워 기울기 오염을 막는다
-const RESET_DROP: f64 = 5.0;
-
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-/// 실조회 성공 수치를 이력에 기록 — 리셋 감지·지평 밖 정리 포함
-fn record_samples(account_key: &str, usage: &Usage, now: i64) {
-    let Ok(mut map) = samples().lock() else { return };
-    for window in &usage.windows {
-        let key = format!("{account_key}|{}", window.key);
-        let entry = map.entry(key).or_default();
-        if entry
-            .last()
-            .is_some_and(|(_, last)| last - window.percent > RESET_DROP)
-        {
-            entry.clear();
-        }
-        entry.push((now, window.percent));
-        entry.retain(|(t, _)| now - t <= SAMPLE_HORIZON_SECS);
-    }
-}
-
-/// 최소제곱 기울기(%/초) — 시각이 한 점에 몰려 있으면 None
-fn slope_per_sec(points: &[(i64, f64)]) -> Option<f64> {
-    let n = points.len() as f64;
-    let mean_t = points.iter().map(|(t, _)| *t as f64).sum::<f64>() / n;
-    let mean_p = points.iter().map(|(_, p)| *p).sum::<f64>() / n;
-    let mut cov = 0.0;
-    let mut var = 0.0;
-    for (t, p) in points {
-        let dt = *t as f64 - mean_t;
-        cov += dt * (p - mean_p);
-        var += dt * dt;
-    }
-    if var <= 0.0 {
-        return None;
-    }
-    Some(cov / var)
-}
-
-/// 이력으로 소진(100%)까지 남은 초를 예측 — 게이트를 못 넘으면 None
-fn predict_exhaust(points: &[(i64, f64)]) -> Option<i64> {
-    if points.len() < PREDICT_MIN_SAMPLES {
-        return None;
-    }
-    let span = points.last()?.0 - points.first()?.0;
-    if span < PREDICT_MIN_SPAN_SECS {
-        return None;
-    }
-    let (last_t, last_percent) = *points.last()?;
-    if last_percent >= 100.0 {
-        return Some(0);
-    }
-    let slope = slope_per_sec(points)?;
-    if slope <= 0.0 {
-        return None; // 안 오르는 중 — 예측할 벽이 없다
-    }
-    // 외삽 기준점은 원시 마지막 샘플이 아니라 회귀선 값 — 마지막 점 하나의
-    // 노이즈(대형 요청 직후 계단)가 예측을 흔들지 않게 (red-review #45)
-    let n = points.len() as f64;
-    let mean_t = points.iter().map(|(t, _)| *t as f64).sum::<f64>() / n;
-    let mean_p = points.iter().map(|(_, p)| *p).sum::<f64>() / n;
-    let fitted = mean_p + slope * (last_t as f64 - mean_t);
-    if fitted >= 100.0 {
-        return Some(0);
-    }
-    let secs = ((100.0 - fitted) / slope).round() as i64;
-    if secs > PREDICT_MAX_HORIZON_SECS {
-        None
-    } else {
-        Some(secs.max(0))
-    }
-}
-
-/// 응답에 예측을 싣는다 — **활성 계정 조회의 반환 직전**에만 부른다.
-/// 비활성 계정은 "현재 속도 유지" 전제가 성립하지 않는다 — 떠나기 전의
-/// 상승분이 이력에 남아 유령 소진 경고를 만든다 (red-review #45).
-/// 캐시에는 싣지 않고 반환 직전마다 계산한다.
-fn annotate_exhausts(account_key: &str, usage: &mut Usage) {
-    annotate_exhausts_at(account_key, usage, unix_now());
-}
-
-/// 시간 주입판 — predict_exhaust는 마지막 샘플 시각 기준이라, 캐시 히트로
-/// 샘플이 안 쌓인 동안(최대 CACHE_TTL) 지난 시간을 빼서 "지금 기준"으로 맞춘다.
-/// 안 빼면 TFSD가 남은 시간을 최대 60초 과대평가해 전환 대신 대기한다 (리뷰 #53)
-fn annotate_exhausts_at(account_key: &str, usage: &mut Usage, now: i64) {
-    let Ok(map) = samples().lock() else { return };
-    for window in &mut usage.windows {
-        let key = format!("{account_key}|{}", window.key);
-        window.exhausts_in_secs = map.get(&key).and_then(|points| {
-            let secs = predict_exhaust(points)?;
-            let last_t = points.last()?.0;
-            Some((secs - (now - last_t)).max(0))
-        });
-    }
-}
-
-/// 예측 제거 — stale 응답·디스크 재기동 값은 낡은 예측을 실어선 안 된다
-fn scrub_exhausts(usage: &mut Usage) {
-    for window in &mut usage.windows {
-        window.exhausts_in_secs = None;
-    }
 }
 
 /// 새로고침 연타·재렌더마다 API를 때리지 않도록 60초 캐시를 둔다.
@@ -715,27 +576,18 @@ pub async fn fetch(
 ) -> Result<Usage, String> {
     let key = cache_key(env, provider, profile);
 
-    // 1) 메모리 캐시가 신선하면 그대로 — 예측(#45)은 캐시에 실려 있지 않고
-    //    반환 직전에 현재 시점 기준으로 계산한다 (활성 조회만 — 유령 예측 방지)
-    let annotated = |mut usage: Usage| {
-        if profile.is_none() {
-            annotate_exhausts(&key, &mut usage);
-        }
-        usage
-    };
+    // 1) 메모리 캐시가 신선하면 그대로
     if let Ok(map) = cache().lock() {
         if let Some((at, cached)) = map.get(&key) {
             if at.elapsed() < CACHE_TTL {
-                return Ok(annotated(cached.clone()));
+                return Ok(cached.clone());
             }
         }
     }
 
     // 2) 재시작 직후: 디스크의 마지막 수치가 아직 신선하면 API를 부르지 않는다
     //    (재시작 때마다 일제 호출로 요청 제한에 걸리던 원인 제거)
-    if let Some((mut fresh, _)) = disk_cache_load(env, &key, CACHE_TTL) {
-        // 재시작 직후라 샘플 이력이 없다 — 디스크에 남은 낡은 예측은 싣지 않는다
-        scrub_exhausts(&mut fresh);
+    if let Some((fresh, _)) = disk_cache_load(env, &key, CACHE_TTL) {
         if let Ok(mut map) = cache().lock() {
             map.insert(key.clone(), (std::time::Instant::now(), fresh.clone()));
         }
@@ -756,8 +608,6 @@ pub async fn fetch(
     let mark_stale = |(mut usage, age): (Usage, u64)| {
         usage.stale = true;
         usage.stale_age_secs = Some(age);
-        // 낡은 수치로는 예측하지 않는다 — TFSD의 stale 원칙과 같은 결
-        scrub_exhausts(&mut usage);
         usage
     };
 
@@ -776,15 +626,11 @@ pub async fn fetch(
     match result {
         Ok(usage) => {
             backoff_clear(&key);
-            // 예측 소진(#45): 이력만 기록한다 — 파싱 결과에는 예측이 없고,
-            // 캐시·디스크에도 그대로(예측 없이) 저장한다. 예측은 아래 annotated가
-            // 반환 직전 현재 시점 기준으로 계산해 싣는다.
-            record_samples(&key, &usage, unix_now());
             if let Ok(mut map) = cache().lock() {
                 map.insert(key.clone(), (std::time::Instant::now(), usage.clone()));
             }
             disk_cache_store(env, &key, &usage);
-            Ok(annotated(usage))
+            Ok(usage)
         }
         Err(FetchErr::Transient) => {
             // 요청 제한·서버 오류 — 재시도를 자제하고 마지막 수치로 조용히 버틴다
@@ -923,77 +769,6 @@ mod tests {
     }
 
     #[test]
-    fn predicts_exhaustion_from_slope() {
-        // 10분 간격 3개, 10분당 10%p 증가(60→70→80) → 남은 20%는 1200초 뒤 소진
-        let t0 = 1_700_000_000i64;
-        let points = vec![(t0, 60.0), (t0 + 600, 70.0), (t0 + 1200, 80.0)];
-        let secs = predict_exhaust(&points).expect("예측이 나와야 한다");
-        assert!((secs - 1200).abs() <= 2, "secs={secs}");
-        // 게이트: 샘플 부족·관측 폭 부족·하락 기울기·너무 먼 외삽은 전부 None
-        assert_eq!(predict_exhaust(&points[..2]), None);
-        let narrow = vec![(t0, 60.0), (t0 + 60, 61.0), (t0 + 120, 62.0)];
-        assert_eq!(predict_exhaust(&narrow), None);
-        let falling = vec![(t0, 80.0), (t0 + 600, 70.0), (t0 + 1200, 60.0)];
-        assert_eq!(predict_exhaust(&falling), None);
-        let crawl = vec![(t0, 10.0), (t0 + 600, 10.01), (t0 + 1200, 10.02)];
-        assert_eq!(predict_exhaust(&crawl), None);
-        // 외삽 기준은 회귀선 — 마지막 점의 노이즈에 흔들리지 않는다:
-        // (0,0)·(600,50)·(1200,40): slope=1/30%/s, 회귀선상 마지막=50 → 1500초
-        // (원시 마지막 40 기준이면 1800초로 어긋난다)
-        let noisy = vec![(t0, 0.0), (t0 + 600, 50.0), (t0 + 1200, 40.0)];
-        let secs = predict_exhaust(&noisy).expect("양의 기울기 — 예측이 나와야 한다");
-        assert!((secs - 1500).abs() <= 2, "secs={secs}");
-    }
-
-    #[test]
-    fn annotation_subtracts_elapsed_since_last_sample() {
-        let mk = |p: f64| Usage {
-            windows: vec![UsageWindow {
-                key: "session".into(),
-                label: "5 Hours".into(),
-                percent: p,
-                resets_at: None,
-                exhausts_in_secs: None,
-            }],
-            stale: false,
-            stale_age_secs: None,
-        };
-        let t0 = 1_700_000_000i64;
-        record_samples("test:acct-elapsed", &mk(60.0), t0);
-        record_samples("test:acct-elapsed", &mk(70.0), t0 + 600);
-        record_samples("test:acct-elapsed", &mk(80.0), t0 + 1200);
-        // 예측은 마지막 샘플 기준 1200초 뒤 소진 — 60초 지난 시점의 조회는
-        // 그만큼 빼서 1140초로 실려야 한다 (캐시 히트 동안 낡는 문제, 리뷰 #53)
-        let mut usage = mk(80.0);
-        annotate_exhausts_at("test:acct-elapsed", &mut usage, t0 + 1260);
-        let secs = usage.windows[0].exhausts_in_secs.expect("예측이 실려야 한다");
-        assert!((secs - 1140).abs() <= 2, "secs={secs}");
-    }
-
-    #[test]
-    fn sample_history_resets_on_drop() {
-        let mk = |p: f64| Usage {
-            windows: vec![UsageWindow {
-                key: "session".into(),
-                label: "5 Hours".into(),
-                percent: p,
-                resets_at: None,
-                exhausts_in_secs: None,
-            }],
-            stale: false,
-            stale_age_secs: None,
-        };
-        let t0 = 1_700_000_000i64;
-        record_samples("test:acct-drop", &mk(50.0), t0);
-        record_samples("test:acct-drop", &mk(70.0), t0 + 600);
-        // 창 리셋(70 → 3): 이력이 비워지고 새 점 하나만 남는다 — 기울기 오염 방지
-        record_samples("test:acct-drop", &mk(3.0), t0 + 1200);
-        let map = samples().lock().unwrap();
-        let points = map.get("test:acct-drop|session").unwrap();
-        assert_eq!(points.as_slice(), &[(t0 + 1200, 3.0)]);
-    }
-
-    #[test]
     fn disk_cache_roundtrip_and_expiry() {
         let env = test_env("disk-cache");
         fs::create_dir_all(&env.store).unwrap();
@@ -1003,7 +778,6 @@ mod tests {
                 label: "5 Hours".into(),
                 percent: 42.0,
                 resets_at: None,
-                exhausts_in_secs: None,
             }],
             stale: false,
             stale_age_secs: None,
@@ -1047,7 +821,6 @@ mod tests {
                 label: "5 Hours".into(),
                 percent: 61.0,
                 resets_at: None,
-                exhausts_in_secs: None,
             }],
             stale: false,
             stale_age_secs: None,
