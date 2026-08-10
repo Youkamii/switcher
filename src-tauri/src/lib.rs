@@ -195,9 +195,12 @@ fn demo_mode() -> bool {
 /// 블랙 모니터 활성 여부 — 최상위 재확인 감시 스레드의 수명을 제어한다
 static BLACK_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// 블랙 모니터 밝기 연동 (#49): 켤 때 전 모니터 밝기를 저장하고 0으로 낮추며,
-/// 해제하면 복원한다. 저장값은 파일로도 남겨 앱이 켜진 채 죽어도 다음 시작에
-/// 되돌린다 — 최하 밝기로 고착되는 사고 방지.
+/// 블랙 모니터 밝기 연동 (#49, **낮추기는 Windows 전용** — #51): 켤 때 전 모니터
+/// 밝기를 저장하고 0으로 낮추며, 해제하면 복원한다. 저장값은 파일로도 남겨 앱이
+/// 켜진 채 죽어도 다음 시작에 되돌린다 — 최하 밝기로 고착되는 사고 방지.
+/// 맥은 낮추지 않는다: 내장 패널 밝기 0 = 백라이트 완전 소등이라 오버레이·연기
+/// 효과·시각 반응 전부가 안 보여 흔들기 해제가 사실상 불가능했다 (사용자 실측).
+/// 복원·시작 시 구제는 맥에도 남긴다 — 이전 버전(1.7.21)이 남긴 상태 치유용.
 #[cfg(any(windows, target_os = "macos"))]
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct SavedBrightness {
@@ -215,8 +218,8 @@ fn black_brightness_path() -> Option<std::path::PathBuf> {
 }
 
 /// 저장 후 전부 0으로 — DDC 명령이 모니터당 수십~수백 ms라 스레드에서 부른다.
-/// 밝기 미지원(None) 모니터는 건드리지 않는다.
-#[cfg(any(windows, target_os = "macos"))]
+/// 밝기 미지원(None) 모니터는 건드리지 않는다. Windows 전용 (#51 — 위 참조).
+#[cfg(windows)]
 fn black_dim_all() {
     let saved: Vec<SavedBrightness> = display::list()
         .into_iter()
@@ -380,7 +383,10 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
         close_black_overlays(&app);
         return Ok(());
     }
-    // 밝기 최하 연동 (#49) — 오버레이가 이미 화면을 덮었으니 뒤에서 천천히 낮춘다
+    // 밝기 최하 연동 (#49) — 오버레이가 이미 화면을 덮었으니 뒤에서 천천히 낮춘다.
+    // Windows 전용 (#51): 맥 내장 패널은 밝기 0 = 백라이트 소등이라 아무것도
+    // 안 보이게 된다 — 맥은 오버레이(+연기 연출)만으로 충분히 검다.
+    #[cfg(windows)]
     std::thread::spawn(black_dim_all);
     // 감시 스레드: ① 80ms마다 네이티브 ESC 폴링 — 오버레이 웹뷰가 죽거나
     // 키 포커스를 못 가져와도(Windows 포그라운드 잠금으로 set_focus가 조용히
