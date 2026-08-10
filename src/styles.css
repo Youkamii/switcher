@@ -568,24 +568,35 @@ button.link:hover {
   font-size: 11px;
 }
 
-/* 바를 글자 높이만큼 키워 남은 한도 숫자를 안에 얹는다 (사용자 지시) —
-   행 높이는 글자가 지배하므로 세로 공간은 그대로다 */
 .compact-row .bar {
-  height: 12px;
-  position: relative;
+  height: 5px;
 }
 
-/* 남은 한도 숫자 — 채움색·배경 어느 쪽 위에서도 읽히게 그림자를 깐다 */
+/* 남은 한도 숫자를 바 위에 겹친다 (사용자 지시) — 바 두께는 원래 그대로.
+   바 안은 overflow:hidden이라 래퍼 기준으로 얹어 글자가 바에 걸친다 */
+.bar-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.bar-wrap .bar {
+  flex: 1;
+}
+
 .bar-num {
   position: absolute;
-  right: 4px;
+  right: 3px;
   top: 50%;
   transform: translateY(-50%);
   font-size: 8.5px;
   font-weight: 700;
   line-height: 1;
   color: var(--text);
-  text-shadow: 0 0 3px rgba(0, 0, 0, 0.9);
+  text-shadow:
+    0 0 3px rgba(0, 0, 0, 0.95),
+    0 0 2px rgba(0, 0, 0, 0.95);
   font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
@@ -630,7 +641,7 @@ button.link:hover {
 }
 
 #app.minimal .compact-row .bar {
-  height: 11px;
+  height: 4px;
 }
 
 #app.minimal .tfsd-watermark svg {
@@ -774,23 +785,37 @@ body.locked .titlebar:hover .tb-actions button#pin {
   opacity: 1;
 }
 
-/* Type3(120px): 한 줄에 다 넣기를 포기한다 (사용자 지시) — 슬라이더·버튼이
-   폭에 맞게 다음 줄로 흐른다. 넓은 이동 핸들(#43)과 #pin 52px(돌아올
-   손잡이)는 유지. locked 규칙(1px 6px)보다 뒤에 둬야 이긴다 */
+/* Type3(120px): 한 줄에 다 넣기를 포기한다 (사용자 지시) — 구도는 실측 후
+   확정: 1줄 [☰ ↔ Type3] 양끝, 2줄 [📊 🌙] 오른쪽 정렬 (첫 줄에 ☰만 덜렁
+   남고 2줄이 왼쪽으로 몰리던 꼴 수정, 사용자 보고). display:contents로
+   버튼들을 타이틀바 flex에 직접 태워 order로 줄을 나눈다. 넓은 이동 핸들
+   (#43)·#pin 52px(돌아올 손잡이) 유지. locked 규칙보다 뒤에 둬야 이긴다 */
 body.minimal .titlebar {
   flex-wrap: wrap;
-  row-gap: 2px;
+  gap: 2px;
 }
 
 body.minimal .tb-actions {
-  gap: 2px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  row-gap: 2px;
+  display: contents;
 }
 
 body.minimal .tb-actions button {
   padding: 1px 3px;
+}
+
+/* 첫 줄 오른쪽 끝 — ☰와 양끝 균형 */
+body.minimal #pin {
+  margin-left: auto;
+}
+
+/* 둘째 줄 — 남은 아이콘들을 오른쪽으로 민다 */
+body.minimal #monbtn {
+  order: 2;
+  margin-left: auto;
+}
+
+body.minimal #blackbtn {
+  order: 3;
 }
 
 /* 고정 모드: 비활성 카드는 더블클릭으로 전환.

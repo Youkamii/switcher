@@ -1004,12 +1004,17 @@ async function compactCard(
       else if (win.percent >= 60) fill.classList.add("warn");
       fill.style.width = `${Math.min(100, Math.max(0, win.percent))}%`;
       bar.appendChild(fill);
-      // 남은 한도 숫자를 바 위에 얹는다 (사용자 지시) — 컴팩트·미니멀 공통
+      // 남은 한도 숫자를 바 위에 겹친다 (사용자 지시) — 바 두께는 절대 건드리지
+      // 않는다 (바를 키웠다가 질책받음). 바 안은 overflow:hidden이라 잘리므로
+      // 래퍼에 얹어 글자가 바 위아래로 걸치게 한다
+      const wrap = document.createElement("div");
+      wrap.className = "bar-wrap";
+      wrap.appendChild(bar);
       const remain = document.createElement("span");
       remain.className = "bar-num";
       remain.textContent = String(Math.max(0, Math.round(100 - win.percent)));
-      bar.appendChild(remain);
-      row.append(label, bar);
+      wrap.appendChild(remain);
+      row.append(label, wrap);
       if (!minimal) {
         const reset = document.createElement("span");
         reset.className = "c-reset";
@@ -1346,7 +1351,8 @@ function fitHeight() {
         app.scrollTop +
         bottomPad
       : 40;
-    const total = titlebarEl.offsetHeight + content + 2; // 테두리
+    const tbHeight = titlebarEl.offsetHeight;
+    const total = tbHeight + content + 2; // 테두리
     const max = Math.floor(window.screen.availHeight * 0.9);
     const target = Math.round(Math.max(80, Math.min(total, max)));
     // 컴팩트 모드는 창 자체도 좁게, 미니멀은 더 좁게 (150→120, 사용자 지시 —
@@ -1380,6 +1386,11 @@ function fitHeight() {
         }
       }
       lastAppliedWidth = width;
+      // 폭이 바뀌며 타이틀바가 줄바꿈(미니멀 두 줄)되면 계산에 쓴 높이가
+      // 낡는다 — 실제 높이가 달라졌으면 새 높이로 다시 맞춘다 (타입3 하단
+      // NET 행이 13px 잘리던 문제, 사용자 보고). 두 번째 실행은 폭·타이틀바
+      // 높이가 안 변하므로 재귀는 한 번에서 멈춘다.
+      if (titlebarEl.offsetHeight !== tbHeight) fitHeight();
       // 히트 영역은 반드시 창 크기 변경이 "끝난 뒤" 보고해야 한다 —
       // 즉시 보고하면 옛 폭 기준 좌표가 남아 버튼 위 클릭이 투과돼 버린다
       window.setTimeout(reportHitRegions, 80);
