@@ -1489,8 +1489,8 @@ interface SysStats {
   cpu: number;
   mem_used: number;
   mem_total: number;
-  disk_used: number;
-  disk_total: number;
+  disk_read: number;
+  disk_write: number;
   net_rx: number;
   net_tx: number;
 }
@@ -1574,6 +1574,8 @@ const MON_HISTORY = 60;
 const monHistory: number[] = [];
 /// 네트워크 바의 기준 — 세션 최고 속도 (바닥 1MB/s: 유휴가 꽉 차 보이지 않게)
 let monNetPeak = 1024 * 1024;
+/// 디스크 바의 기준 — 세션 최고 I/O (바닥 32MB/s: 유휴 잔쓰기로 차 보이지 않게)
+let monDskPeak = 32 * 1024 * 1024;
 let monInflight = false;
 let monLastTick = 0;
 
@@ -1645,10 +1647,13 @@ function paintMonitor(s: SysStats) {
     (s.mem_used / Math.max(1, s.mem_total)) * 100,
     `${fmtBytes(s.mem_used)}/${fmtBytes(s.mem_total)}`,
   );
+  // 디스크는 용량이 아니라 활동량(R/W 속도)이다 — 사용자 지시. 바는 NET처럼
+  // 세션 피크 대비 비율
+  const io = s.disk_read + s.disk_write;
   monSetRow(
     "dsk",
-    (s.disk_used / Math.max(1, s.disk_total)) * 100,
-    `${fmtBytes(s.disk_used)}/${fmtBytes(s.disk_total)}`,
+    (io / Math.max(1, monDskPeak)) * 100,
+    `R${fmtRate(s.disk_read)} W${fmtRate(s.disk_write)}`,
   );
   const flow = s.net_rx + s.net_tx;
   monSetRow(
@@ -1677,6 +1682,7 @@ async function monitorTick() {
     if (monLastTick > 0 && now - monLastTick > 5000) monHistory.length = 0;
     monLastTick = now;
     monNetPeak = Math.max(monNetPeak, s.net_rx + s.net_tx);
+    monDskPeak = Math.max(monDskPeak, s.disk_read + s.disk_write);
     monLastStats = s;
     monHistory.push(s.cpu);
     if (monHistory.length > MON_HISTORY) monHistory.shift();
