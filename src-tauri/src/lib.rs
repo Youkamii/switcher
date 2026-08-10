@@ -798,7 +798,11 @@ struct Visibility {
 /// 켜짐 표시가 즉시 따라온다.
 #[tauri::command]
 fn tfsd_toggle(app: tauri::AppHandle) -> bool {
+    use tauri::Emitter;
     toggle_flag(&app, settings::KEY_TFSD, false);
+    // 트레이 토글과 같은 경로 — 이게 없으면 프론트 visibility가 낡아 활성
+    // 카드의 T 배지가 다음 갱신까지 안 뜬다 (실측: 🚗로 켜도 배지 부재)
+    let _ = app.emit("visibility-changed", ());
     Env::real()
         .map(|env| settings::load_flag(&env.store, settings::KEY_TFSD, false))
         .unwrap_or(false)

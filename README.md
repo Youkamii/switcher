@@ -95,6 +95,10 @@ switcher는 이 과정을 없앤다. 계정마다 처음 한 번만 로그인해
 - 구독 레벨: 계정 옆에 Max(5x는 노랑, 20x는 빨강) / Pro / Plus가 붙는다.
 - 모드(Type1/2/3): 전체 → 컴팩트 → 미니멀(120px) 순환. 컴팩트·미니멀에서는 클릭·드래그가 뒤 창으로 통과하고, 계정 카드를 더블클릭하면 전환된다. 사용량 바 위에 사용률 숫자가 함께 표시된다. 창 이동은 ☰ 핸들.
 - 섹션 순서 바꾸기: Type1에서 섹션 머리글(CLAUDE·CODEX·GITHUB·DISPLAY·SYSTEM)을 잡아 끌면 순서가 바뀐다.
+
+<p align="center"><img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/size-compare.png" width="560" alt="Type 3 크기 비교 — ChatGPT 데스크톱 앱 펫(최소 크기) 옆에 놓은 미니멀 위젯" /></p>
+<p align="center"><sub>Type 3 (폭 120px) — ChatGPT 데스크톱 앱의 펫(최소 크기)과 나란히</sub></p>
+
 - 창 높이는 내용에 맞춰 자동 조절된다. 투명도 슬라이더를 내리면 배경이 먼저, 골조가 나중에 옅어진다 — 최하에서는 그래프만 남는다.
 
 <p align="center"><img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/transparency.gif" width="140" alt="투명도 슬라이더 — 배경부터 골조까지 단계적으로 옅어진다" /></p>
@@ -111,9 +115,14 @@ switcher는 이 과정을 없앤다. 계정마다 처음 한 번만 로그인해
 - 자동 업데이트·부팅 시 자동 실행: 트레이 설정에서 켜고 끈다. 바탕화면 바로가기는 Windows 전용.
 - GitHub 계정 전환: gh CLI에 로그인된 계정들을 위젯에서 전환 — git push/pull(HTTPS)이 활성 계정을 따라간다. 사용량 표시는 없음.
 - 블랙 모니터: 🌙 버튼 또는 트레이 메뉴로 모든 화면을 최상위 검은 막으로 덮는다. 마우스를 움직이면 주변만 연기 걷히듯 비치고, 마우스를 1~2초 세게 흔들거나 ESC로 해제 — 마지막 커서 자리에서 빛이 퍼지며 걷힌다. macOS는 전체화면 앱 위는 덮지 못한다.
+
+<p align="center"><img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/black.gif" width="480" alt="블랙 모니터 — 커서 주변만 연기 걷히듯 비치고, ESC로 걷힌다 (실화면 녹화)" /></p>
+
 - 계정 정보 가리기: 🙈 버튼으로 카드의 이메일·GitHub 계정명을 블러 처리 — 화면 공유·스크린샷 노출 방지. 다시 누르면 해제.
 - 화면 밝기 조절: DISPLAY 섹션의 모니터별 슬라이더로 실제 백라이트를 조절한다 (Windows는 DDC/CI, macOS는 내장 디스플레이). DDC/CI가 꺼진 모니터와 맥의 외장 모니터는 미지원 안내가 뜬다.
-- TFSD (Token Full Self-Driving): 활성 계정의 사용량 창(5 Hours·Weekly·Fable 등) 중 하나라도 90%에 닿으면, 모든 창에 여유가 있는 계정 중 병목이 가장 낮은 곳으로 자동 전환. 꽉 찬 창이 30분 안에 리셋되면 전환 대신 대기. 타이틀바 🚗 버튼 또는 트레이 설정에서 켠다 (기본 꺼짐).
+- TFSD (Token Full Self-Driving): 활성 계정의 사용량 창(5 Hours·Weekly·Fable 등) 중 하나라도 90%에 닿으면, 모든 창에 여유가 있는 계정 중 병목이 가장 낮은 곳으로 자동 전환. 꽉 찬 창이 30분 안에 리셋되면 전환 대신 대기. 타이틀바 🚗 버튼 또는 트레이 설정에서 켠다 (기본 꺼짐) — 자율주행 중에는 활성 카드에 T 워터마크가 뜬다.
+
+<p align="center"><img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/tfsd.png" width="300" alt="TFSD 자율주행 중 — 활성 카드에 T 워터마크" /></p>
 
 ## 동작
 
