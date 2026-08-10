@@ -1,0 +1,101 @@
+# 릴리스 자동화 — 태그(v*)만 밀면 윈도우·맥 빌드를 둘 다 만들어 릴리스를 발행한다.
+#
+# 왜: 맥 zip은 맥에서, win zip은 윈도우에서만 빌드할 수 있어 릴리스마다
+# 반대편 기계의 수작업이 필요했고, 자산이 빠진 릴리스는 그 OS의 자동
+# 업데이트를 조용히 멈추게 했다 (실사고 2회: v1.7.11~27 맥 공백, v1.7.32
+# 맥 자산 누락 — 사용자가 '업데이트 확인'을 눌러도 ✗). 이 워크플로가
+# 그 반복 작업을 끝낸다.
+#
+# 흐름: 태그 push → win(exe zip)·mac(app zip) 병렬 빌드 → 릴리스 생성/보강
+# → 릴리스 published 이벤트가 npm-publish.yml(신뢰 게시)을 자동 트리거.
+#
+# 재실행·백필: 릴리스가 이미 있으면 자산만 채운다(--clobber). 이미 배포된
+# 태그에 대해 gh workflow run release.yml -f tag=v1.7.NN 으로 수동 실행 가능.
+#
+# 주의: 자산 이름은 update.rs(ASSET_NAME)·scripts/dist.mjs와 계약이다 —
+# switcher-win-x64.zip(루트에 switcher.exe), switcher-mac-arm64.zip(루트에
+# switcher.app, ditto -xk로 풀림). 맥 자동 업데이트는 번들 버전 == 태그
+# 버전을 검증하므로 반드시 태그 커밋에서 빌드해야 한다.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "빌드할 태그 (예: v1.7.33)"
+        required: true
+
+permissions:
+  contents: write # 릴리스 생성·자산 업로드
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      - run: npm run tauri build -- --no-bundle
+      # zip 루트에 switcher.exe — dist.mjs가 tar -xf로 풀어 그대로 실행한다
+      - name: pack
+        shell: pwsh
+        run: Compress-Archive -Path src-tauri/target/release/switcher.exe -DestinationPath switcher-win-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: switcher-win-x64
+          path: switcher-win-x64.zip
+
+  build-macos:
+    runs-on: macos-14 # Apple Silicon — 자산 이름(mac-arm64)과 일치
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: npm ci
+      # 애드혹 서명(tauri.conf.json signingIdentity "-") — 로컬 빌드와 동일
+      - run: npm run tauri build -- --bundles app
+      # zip 루트에 switcher.app — ditto가 서명·심링크를 보존한다 (dist.mjs -xk와 짝)
+      - name: pack
+        run: cd src-tauri/target/release/bundle/macos && ditto -c -k --keepParent switcher.app "$GITHUB_WORKSPACE/switcher-mac-arm64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: switcher-mac-arm64
+          path: switcher-mac-arm64.zip
+
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4 # gh가 저장소 컨텍스트를 요구한다
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      # 릴리스가 없으면 만들고(자동 노트), 있으면 자산만 채운다 — 수동 백필과 공존
+      - name: publish
+        run: |
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
+          gh release upload "$TAG" switcher-win-x64.zip switcher-mac-arm64.zip --clobber
