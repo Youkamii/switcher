@@ -1,17 +1,23 @@
-# npm 신뢰 게시 (Trusted Publishing, OIDC) — 로컬 npm 인증 완전 제거.
-# npm의 토큰 단명화 정책(2025) 때문에 PC에서 npm login을 반복해야 했다 —
-# 이 워크플로는 토큰 없이 GitHub OIDC로 게시하므로 인증 자체가 사라진다.
-# 사전 조건(1회): npmjs.com → switcher-widget → Settings → Trusted Publisher에
-# 이 저장소(Youkamii/switcher)와 워크플로 파일명(npm-publish.yml)을 등록.
+# npm 게시 — 신뢰 게시(OIDC)로 로컬 인증 제거 (#40)
+#
+# 로컬 npm login·2FA OTP가 필요 없다: npmjs.com의 Trusted Publisher 설정이
+# "이 저장소의 이 워크플로"를 신뢰하고, npm CLI가 GitHub OIDC id-token을
+# 게시 토큰으로 교환한다. 로컬 토큰은 npm의 토큰 무효화 정책으로 언제든
+# 죽을 수 있어(2026-08 실제로 겪음) 이 경로가 유일하게 반복 인증이 없다.
+#
+# 전제 (1회, npmjs.com 웹): switcher-widget 패키지 Settings → Trusted Publisher
+# → GitHub Actions → Youkamii / switcher / npm-publish.yml (environment 비움)
+#
+# 주의: 파일명(npm-publish.yml)이 위 설정과 일치해야 한다 — 바꾸면 신뢰가 깨진다.
 name: npm-publish
 
 on:
   release:
-    types: [published]
-  workflow_dispatch:
+    types: [published] # 릴리스가 나면 자동 게시 (릴리스 zip이 먼저 존재해야 하는 순서와 일치)
+  workflow_dispatch: {} # 릴리스를 이미 만든 뒤 수동 게시할 때 (gh workflow run npm-publish.yml)
 
 permissions:
-  id-token: write # OIDC 토큰 발급 — 신뢰 게시의 핵심 권한
+  id-token: write # OIDC 교환에 필수
   contents: read
 
 jobs:
@@ -21,9 +27,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 22
           registry-url: https://registry.npmjs.org
-      # OIDC 신뢰 게시는 npm 11.5.1+ 필요 — 러너 기본 npm이 낮을 수 있어 고정 업그레이드
+      # trusted publishing은 npm 11.5.1+ — 러너 기본(10.x)을 올린다
       - run: npm install -g npm@latest
-      # 패키지는 런처 스크립트만 담는다(실행 파일은 GitHub 릴리스에서 받음) — 빌드 불필요
-      - run: npm publish
+      # 패키지는 files 화이트리스트(런처 2개)라 빌드 없이 게시된다.
+      # 게시 전 버전이 레지스트리에 이미 있으면(재실행 등) 조용히 성공 처리.
+      - name: publish (skip if version exists)
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if npm view "switcher-widget@$PKG_VERSION" version > /dev/null 2>&1; then
+            echo "switcher-widget@$PKG_VERSION 이미 게시됨 — 건너뜀"
+          else
+            npm publish
+          fi
