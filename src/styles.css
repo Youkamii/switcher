@@ -286,6 +286,9 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
 #refresh { order: 8; }
 .tb-actions button:not(#pin) {
   flex: 1 1 0;
+  /* 좌우 3px: 균등 분배가 가장자리(벽)까지 붙지 않게 — 첫·끝 버튼의 바깥
+     마진이 곧 줄의 양쪽 인셋이 된다 (사용자 보고) */
+  margin: 0 3px;
 }
 
 .tb-actions button {
@@ -815,9 +818,18 @@ body.locked .titlebar:hover .tb-actions button#pin {
 }
 
 /* Type3(120px): 2줄 구도는 이제 전 타입 공통(.titlebar 참조) — 여기는
-   좁은 폭에 맞춘 밀도 조정만 남는다 */
+   좁은 폭에 맞춘 밀도 조정만 남는다. 간격·마진을 줄여야 버튼 4개가
+   한 줄에 들어간다 (3px 마진 그대로면 🌙이 셋째 줄로 밀린다, 실측) */
+body.minimal .titlebar {
+  column-gap: 2px;
+}
+
 body.minimal .tb-actions button {
   padding: 1px 3px;
+}
+
+body.minimal .tb-actions button:not(#pin) {
+  margin: 0 2px;
 }
 
 /* 고정 모드: 비활성 카드는 더블클릭으로 전환.
