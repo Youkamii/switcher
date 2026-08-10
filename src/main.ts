@@ -1880,6 +1880,11 @@ void listen<string>("update-ready", (event) => {
   toast(t("updateReady", { ver: event.payload }));
 });
 
+// 수동 "업데이트 확인"이 새 버전을 적용했다 — 잠깐 알리고 러스트가 재시작한다
+void listen<string>("update-restarting", (event) => {
+  toast(t("updateRestarting", { ver: event.payload }));
+});
+
 // 트레이(설정 → 표시 기능)에서 체크가 바뀌면 다시 그린다
 void listen("visibility-changed", () => {
   void loadVisibility().then(() => render({ immediate: true }));

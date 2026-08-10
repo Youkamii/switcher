@@ -1,9 +1,12 @@
-//! 실행 시 자동 업데이트 (Windows·macOS).
+//! 자동 업데이트 (Windows·macOS).
 //!
-//! 시작할 때 GitHub 릴리스 latest를 확인해 새 버전이면 zip을 받아 실행 파일을
-//! 제자리에서 교체한다. 떠 있는 프로세스는 건드리지 않는다 — 재시작 강제는
-//! 단일 인스턴스 가드와 경합하고 작업 중인 사용자를 방해하므로, 교체만 해 두고
-//! **다음 실행부터** 새 버전이 뜬다 (프론트에 update-ready 토스트로 알린다).
+//! GitHub 릴리스 latest를 확인해 새 버전이면 zip을 받아 실행 파일을 제자리에서
+//! 교체한다. 떠 있는 프로세스는 건드리지 않고 재실행에 쓸 경로만 돌려준다 —
+//! 이후는 호출부 몫이다:
+//! - 시작 시 자동 확인: 교체만 해 두고 **다음 실행부터** 반영 (켜자마자 재시작
+//!   루프를 돌지 않게 — update-ready 토스트로 알린다)
+//! - 트레이 "업데이트 확인": 지금 업데이트하겠다는 명시적 의사이므로 교체 후
+//!   **즉시 재시작**한다 (lib.rs restart_into — 사용자 지시 2026-08-10)
 //!
 //! 교체 원리 (양쪽 다 "느린 복사 먼저, 빠른 rename 두 번" — 어느 시점에 죽어도
 //! 원본 또는 .old가 남는다):
@@ -80,7 +83,10 @@ fn current_bundle() -> Option<PathBuf> {
 }
 
 /// 새 버전 확인 → 다운로드 → 제자리 교체. 교체했으면 새 버전 문자열을 돌려준다.
-pub async fn check_and_apply() -> Result<Option<String>, String> {
+/// 성공 시 (버전, 재실행에 쓸 실행 파일 경로). 경로는 교체를 마친 시점에 apply가
+/// 직접 계산한 것 — 교체 후 current_exe()가 rename을 따라가 .old를 가리키는
+/// 플랫폼 미묘함에 걸지 않기 위함이다.
+pub async fn check_and_apply() -> Result<Option<(String, std::path::PathBuf)>, String> {
     let current =
         parse_version(env!("CARGO_PKG_VERSION")).ok_or("현재 버전을 해석할 수 없습니다")?;
     let client = reqwest::Client::builder()
@@ -133,16 +139,17 @@ pub async fn check_and_apply() -> Result<Option<String>, String> {
     // 파일·프로세스 작업은 블로킹 풀에서
     let expected = tag.trim_start_matches('v').to_string();
     let version = expected.clone();
-    tauri::async_runtime::spawn_blocking(move || apply(&bytes, &version))
+    let relaunch = tauri::async_runtime::spawn_blocking(move || apply(&bytes, &version))
         .await
         .map_err(|e| format!("업데이트 적용 작업 실패: {e}"))??;
-    Ok(Some(expected))
+    Ok(Some((expected, relaunch)))
 }
 
-/// zip을 임시 폴더에 풀고 현재 실행 파일을 새것으로 교체한다.
+/// zip을 임시 폴더에 풀고 현재 실행 파일을 새것으로 교체한다. 반환은 교체된
+/// (= 새 버전이 들어앉은) exe 경로 — 재시작이 이걸 실행한다.
 /// (exe에는 쉽게 읽을 버전 메타데이터가 없어 자산 버전 검증은 macOS만 한다)
 #[cfg(windows)]
-fn apply(zip_bytes: &[u8], _expected_version: &str) -> Result<(), String> {
+fn apply(zip_bytes: &[u8], _expected_version: &str) -> Result<std::path::PathBuf, String> {
     let work = std::env::temp_dir().join(format!("switcher-update-{}", std::process::id()));
     let _ = fs::remove_dir_all(&work);
     fs::create_dir_all(&work).map_err(|e| format!("임시 폴더 생성 실패: {e}"))?;
@@ -174,12 +181,14 @@ fn apply(zip_bytes: &[u8], _expected_version: &str) -> Result<(), String> {
         return Err(format!("실행 파일 교체 실패: {e}"));
     }
     let _ = fs::remove_dir_all(&work);
-    Ok(())
+    Ok(current)
 }
 
-/// zip을 임시 폴더에 풀고 현재 앱 번들(.app)을 새것으로 교체한다
+/// zip을 임시 폴더에 풀고 현재 앱 번들(.app)을 새것으로 교체한다. 반환은
+/// 교체된 번들 안의 실행 바이너리 경로 — 재시작이 이걸 실행한다 (경로 문자열은
+/// 그대로, 내용물이 새 번들. 맥 실기기 미검증 — 다음 맥 세션에서 확인할 것)
 #[cfg(target_os = "macos")]
-fn apply(zip_bytes: &[u8], expected_version: &str) -> Result<(), String> {
+fn apply(zip_bytes: &[u8], expected_version: &str) -> Result<std::path::PathBuf, String> {
     let Some(bundle) = current_bundle() else {
         return Err("앱 번들 실행이 아니라 업데이트를 건너뜁니다".to_string());
     };
@@ -230,7 +239,7 @@ fn apply(zip_bytes: &[u8], expected_version: &str) -> Result<(), String> {
         return Err(format!("앱 교체 실패: {e}"));
     }
     let _ = fs::remove_dir_all(&work);
-    Ok(())
+    Ok(bundle.join("Contents").join("MacOS").join("switcher"))
 }
 
 /// 번들의 CFBundleShortVersionString — 내장 PlistBuddy로 읽는다

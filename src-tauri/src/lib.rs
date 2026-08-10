@@ -1008,8 +1008,78 @@ fn update_status_suffix() -> String {
     UPDATE_STATUS.lock().map(|s| s.clone()).unwrap_or_default()
 }
 
+/// 정리(로그인 취소·메모 플러시)를 마친 뒤 `then`을 실행한다 — 트레이 quit와
+/// 업데이트 재시작이 공유하는 종료 준비 경로. 메모 디바운스(600ms) 도중의
+/// 종료로 마지막 입력이 유실되지 않게 blur(즉시 플러시)를 지시하고, 대기와
+/// `then`은 딴 스레드에서 — 이 함수는 UI 스레드에서 불리는데 여기서 자면
+/// eval 전달도 memo_save IPC도 같은 메시지 펌프에 갇힌다 (red-review — 자기 봉쇄)
+fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'static) {
+    use tauri::Manager;
+    login::cancel();
+    let flushing = app
+        .get_webview_window("memo")
+        .map(|memo| memo.eval("window.dispatchEvent(new Event('blur'))").is_ok())
+        .unwrap_or(false);
+    std::thread::spawn(move || {
+        if flushing {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        then();
+    });
+}
+
+/// 새 버전으로 재시작 — 트레이 "업데이트 확인"이 교체를 마친 뒤 부른다 (사용자
+/// 지시 2026-08-10: 수동 확인은 즉시 재시작까지. 시작 시 자동 경로는 기존대로
+/// 다음 실행 반영 — 켜자마자 재시작 루프를 돌지 않게). 새 프로세스에 우리 pid를
+/// SWITCHER_WAIT_PID로 넘기고 종료한다 — 새 쪽은 run() 첫머리에서 우리가 완전히
+/// 죽기를 기다렸다 시작하므로 단일 인스턴스 가드와 경합하지 않는다.
+#[cfg(any(windows, target_os = "macos"))]
+fn restart_into(app: &tauri::AppHandle, relaunch: std::path::PathBuf) {
+    let handle = app.clone();
+    shutdown_after_flush(app, move || {
+        let mut cmd = std::process::Command::new(&relaunch);
+        cmd.env("SWITCHER_WAIT_PID", std::process::id().to_string());
+        if let Some(dir) = relaunch.parent() {
+            cmd.current_dir(dir);
+        }
+        match cmd.spawn() {
+            Ok(_) => handle.exit(0),
+            // 스폰 실패면 앱은 계속 산다 — 교체는 이미 됐으니 다음 실행부터 반영
+            Err(e) => eprintln!("재시작 실패 (다음 실행부터 새 버전): {e}"),
+        }
+    });
+}
+
+/// 업데이트 재시작 핸드셰이크 — 재시작으로 태어난 프로세스는 전임자가 완전히
+/// 죽은 뒤에 초기화를 시작한다 (SWITCHER_WAIT_PID, restart_into가 넘긴다).
+/// 단일 인스턴스 가드(플러그인)보다 먼저 실행돼야 뮤텍스 경합이 원천 차단된다.
+fn wait_for_predecessor() {
+    let Ok(pid_text) = std::env::var("SWITCHER_WAIT_PID") else {
+        return;
+    };
+    std::env::remove_var("SWITCHER_WAIT_PID");
+    let Ok(pid) = pid_text.parse::<u32>() else {
+        return;
+    };
+    let target = sysinfo::Pid::from_u32(pid);
+    let mut sys = sysinfo::System::new();
+    // 전임자의 exit는 보통 수십 ms — 상한 10초는 pid 재사용 등 이상 상황용
+    for _ in 0..100 {
+        sys.refresh_processes_specifics(
+            sysinfo::ProcessesToUpdate::Some(&[target]),
+            true,
+            sysinfo::ProcessRefreshKind::nothing(),
+        );
+        if sys.process(target).is_none() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 /// 트레이의 "업데이트 확인" — 자동 업데이트와 같은 경로(check_and_apply)를 즉시 돈다.
-/// 결과는 팝업 없이 메뉴 라벨 서픽스로만 알린다 (이 앱은 조용한 게 미덕, #44)
+/// 결과는 팝업 없이 메뉴 라벨 서픽스로만 알린다 (이 앱은 조용한 게 미덕, #44).
+/// 새 버전을 적용했으면 재시작 안내 토스트 후 즉시 재시작한다.
 #[cfg(any(windows, target_os = "macos"))]
 fn check_update_now(app: &tauri::AppHandle) {
     // dev 빌드는 자기 target 산출물을 덮으므로 자동 경로처럼 건너뛴다
@@ -1029,9 +1099,13 @@ fn check_update_now(app: &tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         use tauri::Emitter;
         let suffix = match update::check_and_apply().await {
-            Ok(Some(version)) => {
-                // 프론트 콘솔에도 남긴다 (updateReady — 다음 실행부터 적용)
-                let _ = handle.emit("update-ready", version.clone());
+            Ok(Some((version, relaunch))) => {
+                // 재시작 안내 토스트를 잠깐 보여주고 새 버전으로 재시작한다.
+                // 서픽스는 재시작 실패(스폰 불가) 시에만 눈에 남는다 — 그때는
+                // 원래 의미(재시작 시 적용) 그대로다.
+                let _ = handle.emit("update-restarting", version.clone());
+                tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+                restart_into(&handle, relaunch);
                 format!(" — v{version} ↻")
             }
             Ok(None) => " — ✓".to_string(),
@@ -1515,6 +1589,10 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 pub fn run() {
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
+    // 업데이트 재시작으로 태어났으면 전임자가 완전히 죽을 때까지 여기서 대기 —
+    // 아래 단일 인스턴스 가드보다 먼저여야 뮤텍스 경합이 없다 (restart_into 참조)
+    wait_for_predecessor();
+
     tauri::Builder::default()
         // 단일 인스턴스 — 이미 떠 있는데 exe를 또 실행하면 새 프로세스는 뜨지 않고
         // 기존 창이 앞으로 온다. 두 인스턴스의 토큰 재발급·전환이 경합하는 사고도
@@ -1664,7 +1742,9 @@ pub fn run() {
                         tauri::async_runtime::spawn(async move {
                             use tauri::Emitter;
                             match update::check_and_apply().await {
-                                Ok(Some(version)) => {
+                                // 자동 경로는 재시작하지 않는다(경로 무시) — 켜자마자
+                                // 재시작 루프를 돌지 않게 다음 실행 반영 유지
+                                Ok(Some((version, _))) => {
                                     let _ = handle.emit("update-ready", version);
                                 }
                                 Ok(None) => {}
@@ -1714,6 +1794,11 @@ pub fn run() {
                     #[cfg(any(windows, target_os = "macos"))]
                     if open.contains("black") {
                         let _ = black_on(handle.clone()).await;
+                    }
+                    // 검증 훅: 수동 업데이트 확인(교체+재시작) 경로를 실제로 태운다
+                    #[cfg(any(windows, target_os = "macos"))]
+                    if open.contains("update") {
+                        check_update_now(&handle);
                     }
                 });
             }
@@ -1865,27 +1950,9 @@ pub fn run() {
                         }
                     }
                     "quit" => {
-                        // 진행 중인 로그인 프로세스·토큰 임시 폴더를 정리하고 종료
-                        login::cancel();
-                        // 메모 디바운스(600ms) 도중의 종료로 마지막 입력이 유실되지
-                        // 않게 — 메모창에 즉시 플러시(blur와 같은 경로)를 지시한다.
-                        // 대기·종료는 딴 스레드에서: 이 핸들러는 UI 스레드라 여기서
-                        // 자면 eval 전달도 memo_save IPC도 같은 메시지 펌프에 갇혀
-                        // "여유"가 여유가 아니게 된다 (red-review — 자기 봉쇄)
-                        use tauri::Manager;
-                        let flushing = app
-                            .get_webview_window("memo")
-                            .map(|memo| {
-                                memo.eval("window.dispatchEvent(new Event('blur'))").is_ok()
-                            })
-                            .unwrap_or(false);
+                        // 정리(로그인 취소·메모 플러시) 후 종료 — 절차는 shutdown_after_flush 주석 참조
                         let handle = app.clone();
-                        std::thread::spawn(move || {
-                            if flushing {
-                                std::thread::sleep(std::time::Duration::from_millis(250));
-                            }
-                            handle.exit(0);
-                        });
+                        shutdown_after_flush(app, move || handle.exit(0));
                     }
                     id if id.starts_with("lang:") => {
                         apply_language(app, id.trim_start_matches("lang:"));
