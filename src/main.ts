@@ -638,6 +638,9 @@ async function loadVisibility() {
   if (!visibility.display) expanded.display = false;
   (document.getElementById("blackbtn") as HTMLElement).style.display =
     visibility.black ? "" : "none";
+  // 🚗 버튼의 켜짐 표시는 항상 설정과 동기 — 트레이에서 토글해도 다음
+  // 렌더에서 따라온다 (T 배지와 같은 원천: visibility.tfsd)
+  document.getElementById("tfsdbtn")?.classList.toggle("pinned", visibility.tfsd);
 }
 
 /// GITHUB 계정 카드 — 사용량 없음: 이름·활성 표시·전환뿐. 컴팩트는 전환 버튼 생략.
@@ -1248,10 +1251,15 @@ function reportHitRegions() {
     });
     // .display-row: 펼쳐진 밝기 슬라이더 조작용 (접힘 상태면 DOM에 없다)
     // .collapsible: 접이식 섹션 제목 — 위젯 모드에서도 클릭해 펼칠 수 있게
+    // .tb-actions는 컨테이너가 아니라 **자식을 하나씩** 보고한다 — Type3(미니멀)
+    // 타이틀바가 컨테이너를 display:contents(박스 없음 → rect 0×0)로 만들어
+    // 버튼 전체가 클릭 투과에 삼켜졌다 (사용자 보고: 타입3 버튼 무반응).
+    // 숨김(0크기) 요소는 거른다 — 좌상단 유령 히트 방지.
     document
-      .querySelectorAll<HTMLElement>(".tb-actions, #drag-handle, .display-row, .collapsible")
+      .querySelectorAll<HTMLElement>(".tb-actions > *, #drag-handle, .display-row, .collapsible")
       .forEach((el) => {
         const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return;
         regions.push({ rect: [r.left, r.top, r.width, r.height], action: null });
         hitElements.push(el);
       });
@@ -1438,6 +1446,7 @@ function applyStaticText() {
   document.getElementById("drag-handle")!.setAttribute("title", t("dragHandle"));
   document.getElementById("blackbtn")!.setAttribute("title", t("blackTooltip"));
   document.getElementById("memobtn")!.setAttribute("title", t("memoTooltip"));
+  document.getElementById("tfsdbtn")!.setAttribute("title", t("tfsdBtnTooltip"));
   document.getElementById("monbtn")!.setAttribute("title", t("monitorTooltip"));
   document.getElementById("privacybtn")!.setAttribute("title", t("privacyTooltip"));
   alphaSlider.title = t("alphaTooltip");
@@ -1452,6 +1461,17 @@ document.getElementById("blackbtn")!.addEventListener("click", () => {
 // 메모장 (Type2 전용 버튼) — 별도 창 토글. 내용·투명도는 메모창이 스스로 관리
 document.getElementById("memobtn")!.addEventListener("click", () => {
   void invoke("memo_toggle").catch((error) => toast(String(error), true));
+});
+
+// 자율주행 (🚗) — 트레이 "TFSD 자동 전환"과 같은 플래그를 토글한다.
+// 즉시 재렌더해 활성 카드의 T 배지·버튼 켜짐 표시가 바로 따라온다
+document.getElementById("tfsdbtn")!.addEventListener("click", () => {
+  invoke<boolean>("tfsd_toggle")
+    .then((on) => {
+      document.getElementById("tfsdbtn")!.classList.toggle("pinned", on);
+      void render({ immediate: true });
+    })
+    .catch((error) => toast(String(error), true));
 });
 
 // ── 시스템 모니터 (📊) — 위젯 본체 안 SYSTEM 섹션 토글 ─────────────

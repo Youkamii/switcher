@@ -81,21 +81,21 @@ input[type="range"] {
   accent-color: var(--accent);
 }
 
-/* 타이틀바 투명도 슬라이더는 짧게 — 길면 버튼들이 창 밖으로 밀린다
+/* 타이틀바 투명도 슬라이더 — 2줄 구도의 1줄 가운데를 채운다
    (디스플레이 밝기 슬라이더는 위 일반 규칙 그대로) */
 #alpha {
-  flex: 0 1 84px;
+  flex: 1 1 84px;
   min-width: 48px;
-  max-width: 84px;
+  max-width: none;
 }
 
-/* 메모 버튼은 Type2(컴팩트)에서만 — 요청 범위. Type1은 타이틀바가 이미 꽉 차
-   버튼이 밀리고(#44 실측), Type3(미니멀)은 더 덜어낸 모드라 어울리지 않는다 */
+/* 메모 버튼은 Type2·3에서 — Type1은 타이틀바가 이미 꽉 차 버튼이 밀린다
+   (#44 실측). Type3는 2줄 구도로 자리가 생겨 함께 산다 (사용자 요청) */
 #memobtn {
   display: none;
 }
 
-body.locked:not(.minimal) #memobtn {
+body.locked #memobtn {
   display: inline-block;
 }
 
@@ -251,18 +251,41 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
 }
 
 
+/* 타이틀바는 전 타입 공통 2줄 구도 (사용자 지시: 버튼이 늘어 한 줄 수용 포기) —
+   1줄 [로고·슬라이더 ↔ Type버튼], 2줄 [아이콘 버튼들 균등 분배].
+   #tb-break(폭 100%)가 줄바꿈을 강제하고, order가 줄을 배정한다 */
 .titlebar {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 3px 4px;
   padding: 10px 12px 6px 14px;
   cursor: grab;
   flex: none;
 }
 
+/* 버튼들을 타이틀바 flex에 직접 태운다 — 히트 영역은 자식 개별 보고라 무관 */
 .tb-actions {
-  display: flex;
-  gap: 5px;
+  display: contents;
+}
+
+#tb-break {
+  flex-basis: 100%;
+  height: 0;
+  order: 2;
+}
+
+/* 2줄 배정 + 균등 분배 — 남는 폭을 버튼들이 나눠 가져 어느 타입에서도
+   오른쪽에 몰리지 않는다 (사용자 보고: 타입3 우측 몰림) */
+#memobtn { order: 3; }
+#tfsdbtn { order: 4; }
+#monbtn { order: 5; }
+#privacybtn { order: 6; }
+#blackbtn { order: 7; }
+#refresh { order: 8; }
+.tb-actions button:not(#pin) {
+  flex: 1 1 0;
 }
 
 .tb-actions button {
@@ -277,13 +300,14 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
 }
 
 /* 타입 버튼은 모드가 바뀌어도 같은 크기 — ID 셀렉터라 locked의 축소 규칙
-   (padding 1px 6px, 10px)보다 우선한다. 미니멀에선 버튼 줄이 따로 흐른다 */
+   (padding 1px 6px, 10px)보다 우선한다. 1줄 오른쪽 끝 고정(auto 마진) */
 #pin {
   width: 52px;
   padding: 3px 0;
   font-size: 11px;
   text-align: center;
   flex: none;
+  margin-left: auto;
 }
 
 #logo {
@@ -649,8 +673,12 @@ button.link:hover {
   height: 24px;
 }
 
-body.minimal main {
-  padding: 0 6px 4px;
+/* .locked를 겹쳐 써야 이긴다 — body.minimal main(011)은 뒤에 오는
+   body.locked main(011)에 항상 덮여 죽은 규칙이었다 (실측: 히트 영역 로그로
+   발견). 위 3px: 둘째 줄 버튼과 첫 카드가 맞닿던 것 — 아주 살짝만 띄운다
+   (사용자 보고) */
+body.locked.minimal main {
+  padding: 3px 6px 4px;
 }
 
 /* 미니멀은 이메일을 아예 안 그리므로 블러 버튼도 무의미 — 숨긴다 */
@@ -749,7 +777,8 @@ body.locked #alpha {
 }
 
 body.locked .titlebar {
-  padding: 2px 4px 0 2px;
+  /* 아래 2px: 2줄 구도에서 버튼 줄과 본문이 맞닿지 않게 */
+  padding: 2px 4px 2px 2px;
   justify-content: space-between;
   cursor: default;
 }
@@ -785,37 +814,10 @@ body.locked .titlebar:hover .tb-actions button#pin {
   opacity: 1;
 }
 
-/* Type3(120px): 한 줄에 다 넣기를 포기한다 (사용자 지시) — 구도는 실측 후
-   확정: 1줄 [☰ ↔ Type3] 양끝, 2줄 [📊 🌙] 오른쪽 정렬 (첫 줄에 ☰만 덜렁
-   남고 2줄이 왼쪽으로 몰리던 꼴 수정, 사용자 보고). display:contents로
-   버튼들을 타이틀바 flex에 직접 태워 order로 줄을 나눈다. 넓은 이동 핸들
-   (#43)·#pin 52px(돌아올 손잡이) 유지. locked 규칙보다 뒤에 둬야 이긴다 */
-body.minimal .titlebar {
-  flex-wrap: wrap;
-  gap: 2px;
-}
-
-body.minimal .tb-actions {
-  display: contents;
-}
-
+/* Type3(120px): 2줄 구도는 이제 전 타입 공통(.titlebar 참조) — 여기는
+   좁은 폭에 맞춘 밀도 조정만 남는다 */
 body.minimal .tb-actions button {
   padding: 1px 3px;
-}
-
-/* 첫 줄 오른쪽 끝 — ☰와 양끝 균형 */
-body.minimal #pin {
-  margin-left: auto;
-}
-
-/* 둘째 줄 — 남은 아이콘들을 오른쪽으로 민다 */
-body.minimal #monbtn {
-  order: 2;
-  margin-left: auto;
-}
-
-body.minimal #blackbtn {
-  order: 3;
 }
 
 /* 고정 모드: 비활성 카드는 더블클릭으로 전환.

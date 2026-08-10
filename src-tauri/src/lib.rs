@@ -793,6 +793,17 @@ struct Visibility {
     tfsd: bool,
 }
 
+/// 타이틀바 🚗 — 트레이 "TFSD 자동 전환" 체크박스와 같은 플래그를 뒤집는다
+/// (toggle_flag가 트레이 메뉴 체크 갱신까지 처리). 새 상태를 돌려줘 버튼
+/// 켜짐 표시가 즉시 따라온다.
+#[tauri::command]
+fn tfsd_toggle(app: tauri::AppHandle) -> bool {
+    toggle_flag(&app, settings::KEY_TFSD, false);
+    Env::real()
+        .map(|env| settings::load_flag(&env.store, settings::KEY_TFSD, false))
+        .unwrap_or(false)
+}
+
 #[tauri::command]
 fn get_visibility() -> Visibility {
     let store = Env::real().map(|env| env.store).ok();
@@ -1496,6 +1507,19 @@ fn initial_open() -> String {
 /// 프론트가 렌더 후 카드·버튼의 화면 좌표를 보고한다
 #[tauri::command]
 fn set_hit_regions(regions: Vec<HitRegion>) {
+    if std::env::var("SWITCHER_DIAG").is_ok() {
+        eprintln!("[diag] hit regions: {}", regions.len());
+        for r in &regions {
+            eprintln!(
+                "[diag]   rect=({:.0},{:.0} {:.0}x{:.0}) action={}",
+                r.rect[0],
+                r.rect[1],
+                r.rect[2],
+                r.rect[3],
+                r.action.is_some()
+            );
+        }
+    }
     if let Ok(mut guard) = HIT_REGIONS.lock() {
         *guard = regions;
     }
@@ -2045,6 +2069,7 @@ pub fn run() {
             demo_mode,
             get_language,
             get_visibility,
+            tfsd_toggle,
             github_list,
             github_switch,
             github_login_start,
