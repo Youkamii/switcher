@@ -25,6 +25,8 @@ pub fn is_supported(lang: &str) -> bool {
 /// settings.json 불리언 키 (트레이 설정 토글)
 pub const KEY_AUTO_UPDATE: &str = "auto_update";
 pub const KEY_AUTO_START: &str = "auto_start";
+/// 바탕화면 바로가기는 Windows 전용 기능 — 맥 빌드의 dead_code 경고 방지
+#[cfg(windows)]
 pub const KEY_SHORTCUT_DONE: &str = "desktop_shortcut_done";
 /// 표시 기능 — 끄면 위젯에서 해당 섹션·기능이 사라진다 (기본 전부 켜짐)
 pub const KEY_SHOW_CLAUDE: &str = "show_claude";

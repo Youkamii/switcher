@@ -1059,11 +1059,51 @@ fn memo_save(data: memo::MemoData) -> Result<(), String> {
     memo::save(&env.store, data)
 }
 
+/// 부속 창 표시 — 양 플랫폼의 유일한 show 경로 (토글의 재표시·첫 생성 공용).
+/// macOS: 위젯(패널)처럼 모든 Space를 따라다녀야 하므로 표시 직전에
+/// CollectionBehavior를 정한다 — black 오버레이와 같은 실측 경로. 패널 스왑은
+/// 금지(런타임 생성 창은 닫을 때 ObjC 예외로 abort — black 창 실측)라 전체화면
+/// Space에는 못 올라가고, Space 이동 후 재-order가 필요한 한계도 같다(워치독 보완).
+/// 표시 후 앱 활성화: 위젯은 비활성 패널이라 그 버튼으로 열면 앱이 비활성
+/// 상태고, 활성화 없이는 입력칸이 키보드를 못 받는다 (black_on과 같은 실측).
+fn aux_show(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        use tauri::Manager;
+        let handle = window.clone();
+        // NSWindow 조작이라 메인 스레드에서 — show까지 한 클로저에 묶어
+        // "Space 참여를 첫 표시 전에 정한다"는 순서를 보장한다 (black_on과 동일)
+        let _ = window.app_handle().run_on_main_thread(move || {
+            let _ = handle.set_visible_on_all_workspaces(true);
+            if let Ok(ptr) = handle.ns_window() {
+                use objc2_app_kit::NSWindowCollectionBehavior;
+                let ns_window = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+                ns_window.setCollectionBehavior(
+                    ns_window.collectionBehavior()
+                        | NSWindowCollectionBehavior::CanJoinAllSpaces
+                        | NSWindowCollectionBehavior::FullScreenAuxiliary,
+                );
+            }
+            let _ = handle.show();
+            let _ = handle.set_focus();
+            if let Some(mtm) = objc2::MainThreadMarker::new() {
+                let ns_app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                #[allow(deprecated)]
+                ns_app.activateIgnoringOtherApps(true);
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 /// 부속 창(메모·모니터) 공통 토글 — 없으면 만들고, 보이면 숨기고, 숨어 있으면 앞으로.
 /// 위젯의 부속 창이라 위젯과 같은 최상위·작업표시줄 없는 창으로 띄운다.
 /// 닫기(✕·ESC)는 프론트가 hide만 하므로 창은 한 번 만들면 재사용된다.
-/// macOS: 런타임 생성 창은 패널 스왑 금지(black 창과 같은 실측 — 닫을 때 abort)
-/// — 전체화면 Space에는 못 올라가는 한계를 감수한다.
+/// macOS 특례는 전부 aux_show에 — 여기는 플랫폼 공통 흐름만 남긴다.
 fn toggle_aux_window(
     app: &tauri::AppHandle,
     label: &str,
@@ -1077,8 +1117,7 @@ fn toggle_aux_window(
             let _ = window.hide();
         } else {
             ensure_on_screen(&window);
-            let _ = window.show();
-            let _ = window.set_focus();
+            aux_show(&window);
         }
         return Ok(());
     }
@@ -1109,8 +1148,7 @@ fn toggle_aux_window(
         }
     }
     ensure_on_screen(&window);
-    let _ = window.show();
-    let _ = window.set_focus();
+    aux_show(&window);
     Ok(())
 }
 
@@ -1306,16 +1344,21 @@ pub fn run() {
                     let on_main = handle.clone();
                     let _ = handle.run_on_main_thread(move || {
                         use tauri::Manager;
-                        let Some(window) = on_main.get_webview_window("main") else {
-                            return;
-                        };
-                        if !window.is_visible().unwrap_or(false) {
-                            return;
-                        }
-                        if let Ok(ptr) = window.ns_window() {
-                            let ns_window = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
-                            if !ns_window.isOnActiveSpace() {
-                                ns_window.orderFrontRegardless();
+                        // 부속 창(메모)도 위젯을 따라다닌다 — CanJoinAllSpaces의
+                        // 같은 실측 한계라 같은 보완을 받는다 (숨김 상태는 불변)
+                        for label in ["main", "memo"] {
+                            let Some(window) = on_main.get_webview_window(label) else {
+                                continue;
+                            };
+                            if !window.is_visible().unwrap_or(false) {
+                                continue;
+                            }
+                            if let Ok(ptr) = window.ns_window() {
+                                let ns_window =
+                                    unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+                                if !ns_window.isOnActiveSpace() {
+                                    ns_window.orderFrontRegardless();
+                                }
                             }
                         }
                     });

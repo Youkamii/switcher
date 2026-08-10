@@ -85,6 +85,22 @@ pub fn sample() -> SysStats {
 mod tests {
     use super::*;
 
+    /// 로컬 전용 눈 검증 (`cargo test -- --ignored real_` 관례): 실기기 수치를
+    /// 출력해 df(디스크)·sysctl hw.memsize(메모리)와 사람이 대조한다 —
+    /// macOS APFS 루트만 세는 필터가 실물과 맞는지 확인용
+    #[test]
+    #[ignore]
+    fn real_stats_probe() {
+        let _ = sample();
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        let s = sample();
+        let gb = |b: u64| b as f64 / 1024f64.powi(3);
+        println!("cpu   = {:.1}%", s.cpu);
+        println!("mem   = {:.1}G / {:.1}G", gb(s.mem_used), gb(s.mem_total));
+        println!("disk  = {:.1}G / {:.1}G", gb(s.disk_used), gb(s.disk_total));
+        println!("net   = rx {}B/s, tx {}B/s", s.net_rx, s.net_tx);
+    }
+
     #[test]
     fn totals_are_sane() {
         let first = sample();

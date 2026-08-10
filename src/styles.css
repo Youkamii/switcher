@@ -127,7 +127,7 @@ body.locked:not(.minimal) #memobtn {
 #mon-mood {
   margin-left: auto;
   color: var(--muted);
-  font-family: Consolas, "Cascadia Mono", monospace;
+  font-family: Consolas, "Cascadia Mono", Menlo, monospace;
   font-size: 10px;
   letter-spacing: -1px;
 }
@@ -140,7 +140,7 @@ body.locked:not(.minimal) #memobtn {
 }
 
 .mon-label {
-  font-family: Consolas, "Cascadia Mono", monospace;
+  font-family: Consolas, "Cascadia Mono", Menlo, monospace;
   font-size: 10px;
   color: var(--muted);
   width: 26px;
@@ -153,7 +153,7 @@ body.locked:not(.minimal) #memobtn {
 }
 
 .mon-val {
-  font-family: Consolas, "Cascadia Mono", monospace;
+  font-family: Consolas, "Cascadia Mono", Menlo, monospace;
   font-size: 10.5px;
   color: var(--text);
   text-align: right;
