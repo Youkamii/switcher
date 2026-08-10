@@ -1007,16 +1007,17 @@ async function compactCard(
       else if (win.percent >= 60) fill.classList.add("warn");
       fill.style.width = `${Math.min(100, Math.max(0, win.percent))}%`;
       bar.appendChild(fill);
-      // 남은 한도 숫자를 바 위에 겹친다 (사용자 지시) — 바 두께는 절대 건드리지
-      // 않는다 (바를 키웠다가 질책받음). 바 안은 overflow:hidden이라 잘리므로
-      // 래퍼에 얹어 글자가 바 위아래로 걸치게 한다
+      // 사용량 % 숫자를 바 위에 겹친다 (사용자 지시 2회: 처음엔 남은 한도였으나
+      // 100% 사용이 "0"으로 보여 헷갈린다 — 사용한 양으로 정정). 바 두께는 절대
+      // 건드리지 않는다 (바를 키웠다가 질책받음). 바 안은 overflow:hidden이라
+      // 잘리므로 래퍼에 얹어 글자가 바 위아래로 걸치게 한다
       const wrap = document.createElement("div");
       wrap.className = "bar-wrap";
       wrap.appendChild(bar);
-      const remain = document.createElement("span");
-      remain.className = "bar-num";
-      remain.textContent = String(Math.max(0, Math.round(100 - win.percent)));
-      wrap.appendChild(remain);
+      const used = document.createElement("span");
+      used.className = "bar-num";
+      used.textContent = String(Math.min(100, Math.max(0, Math.round(win.percent))));
+      wrap.appendChild(used);
       row.append(label, wrap);
       if (!minimal) {
         const reset = document.createElement("span");
@@ -1483,6 +1484,8 @@ interface SysStats {
   mem_total: number;
   disk_read: number;
   disk_write: number;
+  /// Windows: 물리 디스크 활성 시간 %(작업 관리자와 동일 지표), 맥: null
+  disk_pct?: number | null;
   net_rx: number;
   net_tx: number;
 }
@@ -1637,12 +1640,13 @@ function paintMonitor(s: SysStats) {
     (s.mem_used / Math.max(1, s.mem_total)) * 100,
     `${gbInt(s.mem_used)}/${gbInt(s.mem_total)}`,
   );
-  // 디스크는 용량이 아니라 활동량(R/W 속도)이다 — 사용자 지시. 바는 NET처럼
-  // 세션 피크 대비 비율
+  // 디스크는 용량이 아니라 활동량(R/W 속도)이다 — 사용자 지시. 바는 Windows면
+  // 물리 디스크 활성 시간 %(작업 관리자와 같은 지표 — "저긴 0%인데 여긴 차
+  // 있다" 괴리 보고), 맥이면 세션 피크 대비 폴백
   const io = s.disk_read + s.disk_write;
   monSetRow(
     "dsk",
-    (io / Math.max(1, monDskPeak)) * 100,
+    s.disk_pct ?? (io / Math.max(1, monDskPeak)) * 100,
     `R${mbsInt(s.disk_read)} W${mbsInt(s.disk_write)}`,
   );
   const flow = s.net_rx + s.net_tx;
