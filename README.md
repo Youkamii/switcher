@@ -1,203 +1,274 @@
-<h1><img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/logo.svg" width="26" alt="" /> switcher</h1>
+<h1 align="center">
+  <img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/logo.svg" width="30" alt="" />
+  switcher
+</h1>
 
-**한국어** | [English](https://github.com/Youkamii/switcher/blob/main/docs/README.en.md) | [日本語](https://github.com/Youkamii/switcher/blob/main/docs/README.ja.md) | [简体中文](https://github.com/Youkamii/switcher/blob/main/docs/README.zh-CN.md) | [繁體中文](https://github.com/Youkamii/switcher/blob/main/docs/README.zh-TW.md) | [हिन्दी](https://github.com/Youkamii/switcher/blob/main/docs/README.hi.md)
+<p align="center">
+  <strong>Claude Code · Codex CLI 다중 계정 전환 위젯</strong><br />
+  다시 로그인하지 않고 계정을 바꾸고, 한도와 리셋 시간을 한눈에 확인하세요.
+</p>
 
-Claude Code와 Codex CLI 계정을 버튼 하나로 갈아타는 데스크톱 위젯 (Windows·macOS).
+<p align="center">
+  <a href="https://github.com/Youkamii/switcher/releases/latest"><img src="https://img.shields.io/github/v/release/Youkamii/switcher?style=flat-square&label=release" alt="latest release" /></a>
+  <a href="https://www.npmjs.com/package/switcher-widget"><img src="https://img.shields.io/npm/v/switcher-widget?style=flat-square" alt="npm version" /></a>
+  <img src="https://img.shields.io/badge/Windows-10%2F11-0078D4?style=flat-square&logo=windows" alt="Windows 10/11" />
+  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-000000?style=flat-square&logo=apple" alt="macOS Apple Silicon" />
+</p>
 
-<p align="center"><img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
-<p align="center"><sub>세 가지 보기 모드 — Type 1 (전체) · Type 2 (컴팩트) · Type 3 (미니멀)</sub></p>
+<p align="center">
+  <strong>한국어</strong> ·
+  <a href="docs/README.en.md">English</a> ·
+  <a href="docs/README.ja.md">日本語</a> ·
+  <a href="docs/README.zh-CN.md">简体中文</a> ·
+  <a href="docs/README.zh-TW.md">繁體中文</a> ·
+  <a href="docs/README.hi.md">हिन्दी</a>
+</p>
 
-## Windows
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/screenshot.png" alt="switcher Type 1, Type 2, Type 3" />
+</p>
 
-### 설치
+## 한 번 로그인하고, 위젯에서 바꾸세요
 
-**npm으로 설치 (권장 — 보안 경고 없음)** — Node.js 18 이상
+Claude Code와 Codex CLI는 한 번에 한 계정만 활성화합니다. 계정을 여러 개 쓰면 한도가 찰 때마다 로그아웃하고, 브라우저 인증을 다시 하고, 어느 계정에 여유가 남았는지 따로 확인해야 합니다.
+
+switcher는 계정별 로그인을 한 번만 받아 안전하게 보관합니다. 이후에는 위젯에서 계정을 바꾸고, 각 계정의 **5시간·주간·모델별 사용량과 리셋 시간**을 바로 확인할 수 있습니다.
+
+- Claude Code · Codex CLI · GitHub CLI 계정 전환
+- 계정별 사용량, 리셋 시간, 구독 등급 표시
+- 전체·컴팩트·미니멀 3가지 보기 모드
+- 한도 임박 시 자동 전환하는 TFSD 자율주행
+- 시스템 모니터, 메모장, 화면 밝기, 블랙 모니터
+- Windows · macOS 지원, 6개 UI 언어
+
+## 설치
+
+### npm으로 설치 — 권장
+
+Node.js 18 이상이 필요합니다. 처음 실행할 때 운영체제에 맞는 최신 빌드를 자동으로 받습니다.
 
 ```sh
 npm install -g switcher-widget
 switcher
 ```
 
-`switcher` 명령이 처음 실행될 때 최신 릴리스 빌드를 자동으로 받아온다(이후에는 바로 뜬다). 브라우저 다운로드가 아니라서 SmartScreen 경고가 뜨지 않는다. 업데이트는 자동이다 — 실행할 때마다 새 릴리스를 확인해 다음 실행부터 반영된다.
+브라우저에서 실행 파일을 직접 내려받는 방식이 아니므로 Windows SmartScreen이나 macOS의 다운로드 경고를 피할 수 있습니다.
 
-**직접 다운로드** — [릴리스](https://github.com/Youkamii/switcher/releases/latest)에서 `switcher-win-x64.zip`을 받아 압축을 풀고 `switcher.exe`를 실행. (Windows 10/11 64비트)
+### 직접 다운로드
 
-- 코드 서명이 없어서 처음 실행할 때 Windows SmartScreen이 "알 수 없는 게시자" 경고를 띄울 수 있다. `추가 정보` → `실행`.
-- 웹뷰는 Windows에 기본 포함된 WebView2를 사용한다.
+[최신 릴리스](https://github.com/Youkamii/switcher/releases/latest)에서 운영체제에 맞는 파일을 받으세요.
 
-### 실행
+| 운영체제 | 파일 | 참고 |
+|---|---|---|
+| Windows 10/11 64비트 | `switcher-win-x64.zip` | 압축을 풀고 `switcher.exe` 실행 |
+| macOS Apple Silicon | `switcher-mac-arm64.zip` | 압축을 풀고 `switcher.app` 실행 |
 
-- 켜져 있는 동안은 트레이(작업표시줄 오른쪽)에 W 아이콘으로 상주한다. 창을 닫아도(Alt+F4) 꺼지지 않음.
-- 창을 다시 활성화하려면 트레이의 W 아이콘을 좌클릭. 완전히 종료하려면 트레이 아이콘 우클릭 → 종료.
-- UI 언어는 트레이 아이콘 우클릭 → 설정 → 언어에서 바꾼다 (한국어·English·日本語·简体中文·繁體中文·हिन्दी).
-- 첫 실행 때 바탕화면에 `switcher` 바로가기가 자동으로 생긴다 (지우면 다시 만들지 않음).
-- 부팅 시 자동 실행은 기본으로 켜져 있다 — 트레이 설정 → 부팅 시 자동 실행에서 끌 수 있다.
-- 실행할 때마다 새 릴리스를 확인해 자동 업데이트한다 (다음 실행부터 반영) — 트레이 설정 → 자동 업데이트에서 끌 수 있다. 트레이의 **업데이트 확인**을 누르면 그 자리에서 받아 새 버전으로 재시작까지 한다.
+직접 다운로드한 빌드는 코드 서명이 없습니다. Windows에서 SmartScreen이 뜨면 **추가 정보 → 실행**, macOS에서 차단되면 **시스템 설정 → 개인정보 보호 및 보안 → 그래도 열기**를 사용하세요.
 
-## macOS
+## 핵심 기능
 
-### 설치
+### 1. 계정 전환과 사용량 확인
 
-**npm으로 설치 (권장 — 보안 경고 없음)** — Node.js 18 이상
+활성 계정은 밝게 표시됩니다. 다른 계정의 **이 계정으로 전환** 버튼을 누르면 새로 여는 터미널부터 해당 계정이 적용됩니다.
 
-```sh
-npm install -g switcher-widget
-switcher
-```
+Type 2와 Type 3에서는 계정 카드를 **더블클릭**해 전환합니다. 카드 밖의 빈 영역은 클릭과 드래그가 뒤 창으로 통과하므로, 위젯을 화면에 계속 띄워 두어도 작업을 방해하지 않습니다.
 
-`switcher` 명령이 처음 실행될 때 최신 릴리스 빌드를 자동으로 받아온다(이후에는 바로 뜬다). 브라우저 다운로드가 아니라서 "확인되지 않은 개발자" 경고가 뜨지 않는다. 업데이트는 자동이다 — 실행할 때마다 새 릴리스를 확인해 다음 실행부터 반영된다.
+사용량 막대에는 사용률 숫자가 함께 표시되고, 오른쪽에는 실제 리셋까지 남은 시간이 표시됩니다.
 
-**직접 다운로드** — [릴리스](https://github.com/Youkamii/switcher/releases/latest)에서 `switcher-mac-arm64.zip`을 받아 압축을 풀고 `switcher.app`을 실행. Apple Silicon 전용 — 인텔 맥은 아래 [직접 빌드](#직접-빌드)로 설치.
+### 2. 화면에 맞춰 바꾸는 세 가지 모드
 
-- 코드 서명이 없어서 처음 열 때 "확인되지 않은 개발자"라며 막힐 수 있다. 시스템 설정 → 개인정보 보호 및 보안 맨 아래에 나타나는 **그래도 열기**로 실행.
+오른쪽 위 Type 버튼으로 모드를 순환합니다.
 
-### 실행
+| 모드 | 용도 |
+|---|---|
+| **Type 1** | 계정 추가·삭제, GitHub, DISPLAY, SYSTEM까지 모두 조작하는 전체 화면 |
+| **Type 2** | 이메일과 구독 정보를 유지한 컴팩트 위젯 |
+| **Type 3** | 폭 120px의 미니멀 위젯. 라벨·사용률 막대만 표시 |
 
-- `switcher.app` 실행. Dock과 Cmd+Tab에는 나타나지 않고 메뉴바 오른쪽에 W 아이콘으로 상주.
-- 위젯은 모든 데스크탑(Space)과 전체화면 앱 위에서 오버뷰로 표시된다.
-- 창을 열고 숨기는 건 메뉴바 W 아이콘 좌클릭 토글, 완전히 종료하려면 우클릭 → 종료.
-- UI 언어는 메뉴바 W 아이콘 우클릭 → 설정 → 언어에서 바꾼다 (한국어·English·日本語·简体中文·繁體中文·हिन्दी).
-- 부팅 시 자동 실행은 기본으로 켜져 있다 — 트레이 설정 → 부팅 시 자동 실행에서 끌 수 있다 (시스템 설정 → 로그인 항목에도 표시된다).
-- 실행할 때마다 새 릴리스를 확인해 자동 업데이트한다 (다음 실행부터 반영) — 트레이 설정 → 자동 업데이트에서 끌 수 있다. 트레이의 **업데이트 확인**을 누르면 그 자리에서 받아 새 버전으로 재시작까지 한다.
+Type 1에서는 섹션 제목을 끌어 CLAUDE·CODEX·GITHUB·DISPLAY·SYSTEM 순서를 바꿀 수 있습니다. ☰ 핸들로 위젯을 이동합니다.
 
-## 위젯 사용법 (Windows·macOS 공통)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/size-compare.png" width="620" alt="Codex 데스크톱 앱의 최소 크기 펫 옆에 놓은 switcher Type 3" />
+  <br />
+  <sub>Type 3와 Codex 데스크톱 앱 펫의 최소 크기 비교</sub>
+</p>
 
-<table align="center">
-<tr>
-<td align="center" width="450">
-<img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/demo.gif" width="420" alt="위젯 모드 데모 — 계정 카드 더블클릭 전환, 빈 영역은 뒤 창으로 클릭 통과" />
-</td>
-<td width="430">
+### 3. TFSD 자율주행
 
-**위젯 모드 동작**
+TFSD(Token Full Self-Driving)를 켜면 활성 계정의 사용량 창 중 하나가 90%에 도달했을 때, 모든 창에 여유가 있는 계정 중 가장 넉넉한 곳으로 자동 전환합니다.
 
-- 계정 카드를 **더블클릭** → 해당 계정으로 인증 전환
-- 카드 밖 클릭·드래그는 **뒤 창으로 그대로 통과**
-- 활성화된 계정은 높은 채도로 표시 됨
-- 창 이동은 ☰ 핸들, 모드 순환은 오른쪽 위 Type 버튼
-- 맥에서는 모든 데스크탑(Space)과 전체화면 앱 위에서도 오버뷰
+- 타이틀바의 🚗 버튼 또는 트레이 설정에서 켜기
+- 자율주행 중인 활성 카드에는 **T 워터마크** 표시
+- 꽉 찬 창이 30분 안에 리셋되면 계정을 바꾸지 않고 대기
+- 수동으로 계정을 바꾸면 자율주행 자동 해제
+- 전환 기록은 `~/.switcher/tfsd-history.log`에 저장
 
-</td>
-</tr>
-</table>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/tfsd.png" width="340" alt="TFSD가 켜져 활성 카드에 T 워터마크가 표시된 화면" />
+</p>
 
-## 개요
+### 4. 투명도와 클릭 통과
 
-Claude Code든 Codex든 한 터미널에서 사용할 때, 한 계정만 로그인된다. 다계정 유저는 한도가 찰 때마다 `/login`을 다시 하고, 브라우저 인증을 다시 거치고, 지금 어느 계정을 쓰고 있는지도 헷갈린다.
+투명도 슬라이더를 내리면 배경부터 사라지고, 글자와 막대가 차례로 옅어집니다. 최하에서는 사용량 그래프만 남아 뒤 창 위에 자연스럽게 겹쳐집니다.
 
-switcher는 이 과정을 없앤다. 계정마다 처음 한 번만 로그인해 두면, 그다음부터는 위젯에서 버튼 한 번으로 전환된다. 각 계정의 사용량(5시간·주간 한도)이 막대로 보이니, 어느 계정에 여유가 있는지 보고 갈아타면 된다.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/transparency.gif" width="400" alt="코드 편집기 배경 위에서 투명도를 조절하는 switcher Type 3" />
+</p>
 
-## 기능
+### 5. 블랙 모니터
 
-- 계정 전환: 재로그인 없이 버튼 한 번. 새로 여는 터미널부터 적용된다.
-- 사용량 표시: 계정마다 5 Hours / Weekly / 모델별 한도와 리셋까지 남은 시간이 보인다.
-- 계정 추가: 위젯에 표시되는 로그인 링크에서 코드 발급 후 입력한다.
-- 구독 레벨: 계정 옆에 Max(5x는 노랑, 20x는 빨강) / Pro / Plus가 붙는다.
-- 모드(Type1/2/3): 전체 → 컴팩트 → 미니멀(120px) 순환. 컴팩트·미니멀에서는 클릭·드래그가 뒤 창으로 통과하고, 계정 카드를 더블클릭하면 전환된다. 사용량 바 위에 사용률 숫자가 함께 표시된다. 창 이동은 ☰ 핸들.
-- 섹션 순서 바꾸기: Type1에서 섹션 머리글(CLAUDE·CODEX·GITHUB·DISPLAY·SYSTEM)을 잡아 끌면 순서가 바뀐다.
+🌙 버튼을 누르면 모든 모니터를 검은 오버레이로 덮습니다. 커서를 움직이면 주변만 연기처럼 걷혀 뒤 화면이 보이고, 다시 검게 차오릅니다.
 
-<p align="center"><img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/size-compare.png" width="560" alt="Type 3 크기 비교 — ChatGPT 데스크톱 앱 펫(최소 크기) 옆에 놓은 미니멀 위젯" /></p>
-<p align="center"><sub>Type 3 (폭 120px) — ChatGPT 데스크톱 앱의 펫(최소 크기)과 나란히</sub></p>
+- 마우스를 1~2초 세게 흔들거나 `Esc`로 해제
+- 해제할 때 마지막 커서 위치에서 빛이 퍼지는 연출
+- Windows에서는 밝기 연동, macOS에서는 안전을 위해 오버레이만 사용
+- macOS에서는 전체 화면 앱 위를 덮지 못함
 
-- 창 높이는 내용에 맞춰 자동 조절된다. 투명도 슬라이더를 내리면 배경이 먼저, 골조가 나중에 옅어진다 — 최하에서는 그래프만 남는다.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/black.gif" width="648" alt="코드 편집기 화면을 덮은 블랙 모니터에서 커서 주변만 보이고 다시 해제되는 모습" />
+</p>
 
-<p align="center"><img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/transparency.gif" width="140" alt="투명도 슬라이더 — 배경부터 골조까지 단계적으로 옅어진다" /></p>
+### 6. 시스템 모니터
 
-- 시스템 모니터: 📊 버튼으로 위젯 안에 SYSTEM 섹션(CPU·메모리·디스크·네트워크)이 붙는다. CPU는 60초 스파크라인, 디스크는 작업 관리자와 같은 활성 시간 지표(Windows)다. 수치는 단위 없는 정수 — CPU는 %, MEM은 GB, DSK·NET은 MB/s.
+📊 버튼을 누르면 위젯 안에 SYSTEM 섹션이 붙습니다.
 
-<p align="center"><img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/system.png" width="440" alt="SYSTEM 섹션 — CPU 스파크라인·메모리·디스크·네트워크" /></p>
+- CPU 사용률과 60초 변화 그래프
+- 메모리 사용량
+- 디스크 읽기·쓰기. Windows에서는 실제 디스크 활성 시간으로 막대 표시
+- 네트워크 다운로드·업로드
 
-- 메모장: 📝 버튼(Type2·3)으로 탭 5개짜리 메모창이 뜬다. 입력은 자동 저장되고, 투명도는 위젯과 독립이다.
+표시는 빠르게 읽을 수 있도록 단위 없는 정수로 정리되어 있습니다. CPU는 %, 메모리는 GB, 디스크와 네트워크는 MB/s 기준입니다.
 
-<p align="center"><img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/memo.png" width="280" alt="메모장 — 탭 5개, 자동 저장" /></p>
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/system.png" width="440" alt="CPU, 메모리, 디스크, 네트워크를 표시하는 SYSTEM 섹션" />
+</p>
 
-- UI 언어: 트레이 → 설정 → 언어에서 6개 언어(한국어·영어·일본어·간체중문·번체중문·힌디) 전환.
-- 자동 업데이트·부팅 시 자동 실행: 트레이 설정에서 켜고 끈다. 바탕화면 바로가기는 Windows 전용.
-- GitHub 계정 전환: gh CLI에 로그인된 계정들을 위젯에서 전환 — git push/pull(HTTPS)이 활성 계정을 따라간다. 사용량 표시는 없음.
-- 블랙 모니터: 🌙 버튼 또는 트레이 메뉴로 모든 화면을 최상위 검은 막으로 덮는다. 마우스를 움직이면 주변만 연기 걷히듯 비치고, 마우스를 1~2초 세게 흔들거나 ESC로 해제 — 마지막 커서 자리에서 빛이 퍼지며 걷힌다. macOS는 전체화면 앱 위는 덮지 못한다.
+### 7. 메모장
 
-<p align="center"><img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/black.gif" width="480" alt="블랙 모니터 — 커서 주변만 연기 걷히듯 비치고, ESC로 걷힌다 (실화면 녹화)" /></p>
+Type 2·3의 📝 버튼을 누르면 탭 5개짜리 메모창이 열립니다. 입력 내용은 자동 저장되고, 메모창 투명도는 위젯과 따로 조절할 수 있습니다.
 
-- 계정 정보 가리기: 🙈 버튼으로 카드의 이메일·GitHub 계정명을 블러 처리 — 화면 공유·스크린샷 노출 방지. 다시 누르면 해제.
-- 화면 밝기 조절: DISPLAY 섹션의 모니터별 슬라이더로 실제 백라이트를 조절한다 (Windows는 DDC/CI, macOS는 내장 디스플레이). DDC/CI가 꺼진 모니터와 맥의 외장 모니터는 미지원 안내가 뜬다.
-- TFSD (Token Full Self-Driving): 활성 계정의 사용량 창(5 Hours·Weekly·Fable 등) 중 하나라도 90%에 닿으면, 모든 창에 여유가 있는 계정 중 병목이 가장 낮은 곳으로 자동 전환. 꽉 찬 창이 30분 안에 리셋되면 전환 대신 대기. 타이틀바 🚗 버튼 또는 트레이 설정에서 켠다 (기본 꺼짐) — 자율주행 중에는 활성 카드에 T 워터마크가 뜬다.
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/memo.png" width="300" alt="탭 5개와 투명도 조절이 있는 switcher 메모장" />
+</p>
 
-<p align="center"><img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/tfsd.png" width="300" alt="TFSD 자율주행 중 — 활성 카드에 T 워터마크" /></p>
+### 그 밖의 기능
 
-## 동작
+| 기능 | 설명 |
+|---|---|
+| 🙈 계정 정보 가리기 | 이메일과 GitHub 계정명을 흐리게 처리해 화면 공유·스크린샷 노출 방지 |
+| DISPLAY | 모니터별 실제 백라이트 조절. Windows는 DDC/CI, macOS는 내장 디스플레이 지원 |
+| GitHub 계정 전환 | `gh`에 로그인된 계정을 전환하고 HTTPS `git push/pull`에 반영 |
+| 자동 업데이트 | 실행 시 새 버전을 받아 다음 실행부터 적용. 트레이의 **업데이트 확인**은 적용 후 자동 재시작 |
+| 자동 실행 | 부팅 시 자동 실행. 트레이 설정에서 끄기 가능 |
+| Windows 바로가기 | 첫 실행 때 바탕 화면에 한 번 생성. 사용자가 지우면 다시 만들지 않음 |
+| macOS 오버뷰 | 모든 Space와 전체 화면 앱 위에서 위젯 표시 |
+| 다국어 UI | 한국어·영어·일본어·중국어 간체·중국어 번체·힌디 |
 
-두 CLI 모두 로그인 토큰을 로컬에 저장한다.
+## 처음 설정하기
 
-- Claude Code: `~/.claude/.credentials.json` (Windows) / macOS는 **키체인**의 "Claude Code-credentials" 항목
-- Codex CLI: `~/.codex/auth.json` (두 OS 동일)
+### 계정 추가
 
-맥에서 switcher는 클로드 CLI와 같은 방식(macOS 내장 `security` 도구)으로 키체인을 읽고 쓴다 — 별도 권한 팝업 없이 동작한다.
+1. Type 1에서 Claude 또는 Codex의 **+ 계정 추가**를 누릅니다.
+2. 위젯에 표시된 주소를 브라우저에서 엽니다.
+3. Claude는 브라우저에 표시된 코드를 위젯 입력칸에 붙여넣습니다.
+4. Codex는 브라우저에서 15분 유효 일회용 코드를 입력합니다.
+5. 로그인이 끝나면 계정이 카드로 추가됩니다. 현재 활성 계정은 바뀌지 않습니다.
 
-switcher는 계정별 토큰을 `~/.switcher/` 아래 프로필로 보관하고 전환할 때 두 단계로 파일을 교체한다.
+Codex 장치 코드 인증이 꺼져 있으면 로그인할 수 없습니다. 개인 계정은 ChatGPT **설정 → 보안 → Codex 장치 코드 인증**, 팀·비즈니스 계정은 관리자의 워크스페이스 권한 설정에서 켜세요.
 
-1. 지금 활성 파일을 현재 계정 프로필에 백업한다. 토큰이 수시로 자동 갱신되므로 이 순서가 먼저여야 한다.
-2. 대상 계정 프로필을 활성 위치로 복사한다.
+### GitHub 계정 추가
 
-주의: 터미널에서 CLI 세션이 돌아가는 중이라면 끝내고 전환하는 게 안전하다. 켜둔 세션이 토큰을 자동 갱신하면서 활성 파일을 다시 쓰면, 방금 전환한 계정이 이전 계정 토큰으로 덮일 수 있다.
+[GitHub CLI](https://cli.github.com)가 설치되어 있으면 GITHUB 섹션이 나타납니다. **+ 계정 추가**를 누르고 브라우저에서 장치 코드를 승인하세요.
 
-대화 기록·메모리·설정은 계정과 무관한 로컬 폴더에 있어서 계정을 바꿔도 작업 환경은 그대로다.
+GitHub 전환은 HTTPS 리모트에만 적용됩니다. SSH 리모트는 SSH 키가 계정을 결정하며, `git config user.name/email`이나 VS Code·Copilot 로그인은 바뀌지 않습니다.
 
-사용량은 각 계정의 토큰으로 CLI가 쓰는 사용량 API를 직접 조회한다. 요청 제한을 피하려고 60초 캐시를 둔다. 조회가 막히면 직전 값을 보여준다.
+## 데이터와 동작 방식
 
-클로드 액세스 토큰은 수명이 몇 시간뿐이라, 보관함 프로필의 토큰이 만료되면 위젯이 CLI와 같은 방식으로 재발급해 프로필에 되쓴다 — 앱을 켤 때 한 번 전체를, 이후엔 조회할 때 필요한 것만. 그래서 안 쓰는 계정의 사용량도 계속 실시간이다. 지금 쓰는 계정의 토큰은 CLI가 스스로 갱신하므로 위젯이 건드리지 않는다.
+switcher는 CLI가 실제로 사용하는 인증 저장소를 읽고, 계정별 복사본을 `~/.switcher/profiles/`에 보관합니다.
 
-계정 추가는 격리 로그인으로 처리한다.
+| 대상 | 활성 인증 저장소 |
+|---|---|
+| Claude Code · Windows | `~/.claude/.credentials.json` |
+| Claude Code · macOS | 키체인의 `Claude Code-credentials` |
+| Codex CLI · Windows/macOS | `~/.codex/auth.json` |
 
-## 계정 추가
+계정 전환은 반드시 다음 순서로 진행됩니다.
 
-위젯의 "＋ 계정 추가"를 누르면 로그인 주소가 나온다. 그 주소를 원하는 브라우저에 붙여넣는다.
+1. 현재 활성 인증을 현재 계정 프로필에 먼저 백업
+2. 선택한 계정 프로필을 활성 위치로 복사
 
-- **Claude**: 브라우저에서 로그인하면 화면에 코드가 나온다. 그 코드를 위젯 입력칸에 붙여넣으면 끝.
-- **Codex**: 위젯에 주소와 함께 일회용 코드(15분 유효)가 뜬다. 브라우저에서 그 코드를 입력하면 나머지는 자동이다.
+이 순서를 지켜야 CLI가 자동 갱신한 최신 토큰을 잃지 않습니다. 토큰 값은 로그나 오류 메시지에 출력하지 않습니다.
 
-**Codex를 처음 추가하기 전에**: 장치 코드 인증이 OpenAI 계정에서 기본으로 꺼져 있다. 켜지 않으면 코드를 입력해도 "장치 코드 인증을 활성화한 뒤 다시 실행하세요"라며 거부된다.
+대화 기록, 메모리, 프로젝트 설정은 인증 파일과 별개이므로 계정을 바꿔도 그대로 유지됩니다. 다만 실행 중인 Claude Code·Codex 세션은 시작할 때 읽은 인증을 계속 사용할 수 있으므로, 계정 전환 후에는 새 터미널 세션을 여는 것이 안전합니다.
 
-- 개인 계정: chatgpt.com → 프로필 → 설정 → 보안(또는 데이터 제어) → **Codex 장치 코드 인증** 켜기
-- 팀·비즈니스 계정: 관리자가 워크스페이스 설정 → 권한 및 역할에서 활성화
+## 트레이와 업데이트
 
-참고: Claude CLI는 로그인을 시작할 때 기본 브라우저를 한 번 열려고 한다. 그 창은 닫아도 되고, 위젯의 주소를 붙여넣은 브라우저에서 진행하면 된다.
+- Windows는 작업 표시줄 알림 영역, macOS는 메뉴 막대에 W 아이콘으로 상주합니다.
+- 아이콘 좌클릭으로 위젯을 열고 숨깁니다.
+- 창을 닫아도 앱은 종료되지 않습니다. 완전히 끄려면 트레이 메뉴의 **종료**를 사용하세요.
+- 언어, 자동 업데이트, 자동 실행, TFSD, 표시할 섹션을 트레이 설정에서 바꿀 수 있습니다.
+- 수동 **업데이트 확인**은 새 버전을 내려받고 위젯을 자동 재시작합니다.
 
-## GitHub 계정 전환
+## 문제 해결
 
-[GitHub CLI(gh)](https://cli.github.com)가 설치되어 있으면 위젯에 GITHUB 섹션이 나타난다. 계정 추가는 위젯의 "＋ 계정 추가" 버튼으로 한다 — 주소와 일회용 코드가 뜨고, 브라우저에서 코드를 입력하면 끝 (터미널 `gh auth login`도 그대로 동작). 추가 후에는 위젯에서 전환된다 — 내부적으로 `gh auth switch`와 같은 통로를 쓰고, 전환할 때마다 `gh auth setup-git`을 실행해 git push/pull(HTTPS)이 활성 계정을 따라가게 한다. 토큰은 gh가 keyring에 관리하며 위젯은 만지지 않는다.
+<details>
+<summary><strong>Codex 계정 추가가 승인 단계에서 거부됩니다</strong></summary>
 
-알아둘 한계:
+ChatGPT 계정에서 장치 코드 인증을 켜야 합니다. 개인 계정은 **설정 → 보안**, 팀 계정은 관리자의 워크스페이스 권한 설정을 확인하세요.
+</details>
 
-- SSH 리모트(`git@github.com:...`)는 SSH 키가 신원을 정하므로 이 전환의 영향을 받지 않는다. HTTPS 리모트만 해당.
-- 커밋 작성자(`git config user.name/email`)는 바뀌지 않는다 — 전환해도 커밋에는 기존 이름이 남는다.
-- VS Code·Copilot 등 다른 앱의 GitHub 세션은 자체 토큰이라 따라오지 않는다.
-- SAML SSO를 쓰는 조직 저장소는 계정별로 SSO 승인이 있어야 접근된다.
-- 계정 추가·전환 시 실행되는 `gh auth setup-git`은 전역 git 설정에 github.com용 credential helper(gh)를 영구 등록한다 — 기존 GCM 설정을 대체하며, 되돌리려면 `git config --global --unset-all credential.https://github.com.helper`.
+<details>
+<summary><strong>Windows에서 화면 밝기가 바뀌지 않습니다</strong></summary>
 
-## 기술
+모니터 OSD 설정에서 DDC/CI를 켜세요. 일부 모니터와 연결 방식은 DDC/CI를 지원하지 않습니다.
+</details>
 
-Tauri 2 + Rust, 프론트는 바닐라 TypeScript. 계정 전환·사용량 조회·격리 로그인은 전부 Rust에서 처리한다.
-웹뷰에는 토큰이 올라가지 않는다.
-CLI 로그인 화면은 가상 콘솔(PTY)로 읽는다.
+<details>
+<summary><strong>macOS에서 외장 모니터 밝기를 조절할 수 없습니다</strong></summary>
+
+현재 macOS 빌드는 내장 디스플레이 밝기만 지원합니다. 외장 모니터에는 미지원 안내가 표시됩니다.
+</details>
+
+<details>
+<summary><strong>계정을 전환했는데 이미 열려 있던 CLI가 그대로입니다</strong></summary>
+
+기존 CLI 세션이 시작 당시 인증을 들고 있을 수 있습니다. 새 터미널에서 Claude Code 또는 Codex를 다시 시작하세요.
+</details>
 
 ## 직접 빌드
 
-받아서 쓰는 대신 소스에서 빌드하려면 [Node.js](https://nodejs.org)와 [Rust](https://rustup.rs) 툴체인이 필요하다.
+[Node.js](https://nodejs.org) 18 이상과 [Rust](https://rustup.rs)가 필요합니다.
 
 ```sh
 git clone https://github.com/Youkamii/switcher.git
 cd switcher
-npm run setup
+npm install
+npm run tauri build -- --no-bundle
 ```
 
-`npm run setup`이 의존성 설치와 앱 빌드를 한 번에 처리한다. 장황한 로그를 쏟아내는 대신 로딩 표시와 경과 시간만 보여준다.
+| 작업 | 명령 |
+|---|---|
+| 개발 실행 | `npm run tauri dev` |
+| Rust 빠른 검사 | `cd src-tauri && cargo check` |
+| Rust 테스트 | `cd src-tauri && cargo test` |
+| Windows 포터블 빌드 | `npm run tauri build -- --no-bundle` |
+| macOS 앱 빌드 | `npm run tauri build -- --bundles app` |
 
-처음에는 Rust를 통째로 컴파일하기 때문에 **5~10분 걸릴 수 있다.** 로딩이 멈춘 게 아니니 기다리면 된다. 결과물은 Windows `src-tauri\target\release\switcher.exe`, macOS `src-tauri/target/release/bundle/macos/switcher.app` — 앱을 응용 프로그램 폴더로 옮겨도 된다.
+결과물:
 
-개발 실행은 `npm run tauri dev`.
+- Windows: `src-tauri/target/release/switcher.exe`
+- macOS: `src-tauri/target/release/bundle/macos/switcher.app`
+
+## 기술 구성
+
+- Tauri 2 + Rust
+- Vanilla TypeScript + Vite
+- Windows WebView2 / macOS WKWebView
+- PTY 기반 Claude 로그인, 장치 코드 기반 Codex 로그인
+- 인증 전환과 사용량 조회는 Rust에서 처리
 
 ---
 
-<div align="center">
-<sub>Licensed under the <a href="LICENSE">MIT License</a> — free for any use, including commercial. Keep the copyright and license notice.</sub>
-</div>
+<p align="center">
+  MIT License · 개인·상업용 모두 사용 가능
+</p>
