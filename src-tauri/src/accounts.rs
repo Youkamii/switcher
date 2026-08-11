@@ -268,6 +268,79 @@ pub struct SwitchResult {
 /// 백업과 교체가 교차해 계정이 어긋날 수 있다 — 이 잠금으로 직렬화한다.
 pub(crate) static MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// 재발급 POST가 진행 중인 프로필의 표지판 (#14 잔여 ~1초 창).
+/// POST 도중 그 프로필로 전환(switch-TO)하면 활성엔 구토큰·보관함엔 회전된
+/// 신토큰이 갈라져 재로그인으로 밀릴 수 있다 — 전환이 이 표지판을 보고
+/// 재발급이 끝날 때까지 잠깐(상한 20초) 기다린다. MUTATION_LOCK과 겹치지 않는
+/// 별도 잠금이다: 재발급의 파일 반영이 MUTATION_LOCK을 쓰므로, 전환이
+/// MUTATION_LOCK을 쥔 채 여기서 기다리면 교착이 된다 — 반드시 잠금 밖에서 기다린다.
+#[allow(clippy::type_complexity)]
+fn refresh_inflight() -> &'static (
+    std::sync::Mutex<std::collections::HashSet<String>>,
+    std::sync::Condvar,
+) {
+    static CELL: std::sync::OnceLock<(
+        std::sync::Mutex<std::collections::HashSet<String>>,
+        std::sync::Condvar,
+    )> = std::sync::OnceLock::new();
+    CELL.get_or_init(|| {
+        (
+            std::sync::Mutex::new(std::collections::HashSet::new()),
+            std::sync::Condvar::new(),
+        )
+    })
+}
+
+pub(crate) fn refresh_key(provider: Provider, name: &str) -> String {
+    format!("{}:{name}", provider.dir_name())
+}
+
+/// 재발급 시작 표시 — 반환된 가드가 떨어지면 (성공·실패 무관) 표시가 걷힌다
+pub(crate) fn refresh_begin(key: String) -> RefreshInflightGuard {
+    if let Ok(mut set) = refresh_inflight().0.lock() {
+        set.insert(key.clone());
+    }
+    RefreshInflightGuard { key }
+}
+
+pub(crate) struct RefreshInflightGuard {
+    key: String,
+}
+
+impl Drop for RefreshInflightGuard {
+    fn drop(&mut self) {
+        let (lock, cv) = refresh_inflight();
+        if let Ok(mut set) = lock.lock() {
+            set.remove(&self.key);
+        }
+        cv.notify_all();
+    }
+}
+
+/// 해당 프로필의 재발급이 끝날 때까지 기다린다 (상한 초과 시 그냥 진행 —
+/// 잔여 창은 재발급 쪽의 사후 복구가 마저 덮는다)
+pub(crate) fn wait_refresh_idle(key: &str, timeout: std::time::Duration) {
+    let (lock, cv) = refresh_inflight();
+    let deadline = std::time::Instant::now() + timeout;
+    let Ok(mut set) = lock.lock() else {
+        return;
+    };
+    while set.contains(key) {
+        let Some(remain) = deadline.checked_duration_since(std::time::Instant::now()) else {
+            return;
+        };
+        match cv.wait_timeout(set, remain) {
+            Ok((next, timed_out)) => {
+                set = next;
+                if timed_out.timed_out() {
+                    return;
+                }
+            }
+            Err(_) => return,
+        }
+    }
+}
+
 pub(crate) fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -735,16 +808,23 @@ fn claude_apply_oauth_block(env: &Env, profile_dir: &Path) -> Result<(), String>
     atomic_write(&cj, &bytes)
 }
 
-/// 현재 로그인 계정을 이름 붙여 프로필로 저장
-pub fn save_current(env: &Env, provider: Provider, name: &str) -> Result<(), String> {
+/// 현재 로그인 계정을 이름 붙여 프로필로 저장.
+/// 이름이 비어 있으면 auto_name으로 자동 작명한다 (#18 UX — 첫 저장 마찰 제거).
+/// 실제 저장된 이름을 돌려준다 (자동 작명 결과를 프론트가 안내에 쓴다).
+pub fn save_current(env: &Env, provider: Provider, name: &str) -> Result<String, String> {
     // 변이 함수가 스스로 잠근다 — 호출자가 잠금을 잊을 수 없게 (관례 단일화)
     let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
-    validate_name(name)?;
     if !live_cred_exists(env, provider) {
         return Err("로그인 정보가 없습니다 — 먼저 해당 CLI에서 로그인하세요".into());
     }
     let ident = live_identity(env, provider)?
         .ok_or("현재 로그인 계정을 식별할 수 없습니다 (로그인 직후 다시 시도)")?;
+    let name = if name.trim().is_empty() {
+        auto_name(env, provider, &ident) // 항상 validate_name을 통과하는 이름을 만든다
+    } else {
+        validate_name(name)?;
+        name.to_string()
+    };
     // 같은 계정이 이미 다른 이름으로 저장돼 있으면 중복 프로필을 막는다
     if let Some(existing) = find_profile_by_id(env, provider, &ident.id)? {
         if existing != name {
@@ -754,12 +834,20 @@ pub fn save_current(env: &Env, provider: Provider, name: &str) -> Result<(), Str
         }
     }
     // 다른 계정이 쓰는 이름을 덮어써 그 계정 토큰을 파괴하는 것을 막는다
-    ensure_name_not_owned_by_other(env, provider, name, &ident)?;
-    write_profile(env, provider, name, &ident)
+    ensure_name_not_owned_by_other(env, provider, &name, &ident)?;
+    write_profile(env, provider, &name, &ident)?;
+    Ok(name)
 }
 
 /// 계정 전환. 순서 불변: 1) 현재 활성 파일 백업 → 2) 대상 프로필 복사
 pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult, String> {
+    // 대상 프로필의 토큰 재발급 POST가 날아가는 중이면 끝날 때까지 잠깐 기다린다
+    // (#14 잔여 창) — 기다리지 않으면 회전 전 구토큰을 활성으로 복사하게 된다.
+    // 반드시 MUTATION_LOCK 밖에서: 재발급의 파일 반영이 같은 잠금을 쓴다 (교착 방지).
+    wait_refresh_idle(
+        &refresh_key(provider, name),
+        std::time::Duration::from_secs(20),
+    );
     let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     validate_name(name)?;
     let profile_dir = env.profiles_dir(provider).join(name);
@@ -857,7 +945,11 @@ pub fn delete(env: &Env, provider: Provider, name: &str) -> Result<(), String> {
     if !dir.exists() {
         return Err(format!("프로필 '{name}'이 없습니다"));
     }
-    fs::remove_dir_all(&dir).map_err(|e| format!("삭제 실패 {}: {e}", dir.display()))
+    // 삭제 전에 계정 id를 붙잡아 둔다 — 사용량 캐시 정리(잔존 항목 무기한 축적 방지)용
+    let meta_id = read_meta(&dir).map(|m| m.id);
+    fs::remove_dir_all(&dir).map_err(|e| format!("삭제 실패 {}: {e}", dir.display()))?;
+    crate::usage::purge_account_cache(env, provider, meta_id.as_deref(), name);
+    Ok(())
 }
 
 /// 형제 모듈(usage·login) 테스트와 공유하는 픽스처 헬퍼.
@@ -1095,8 +1187,22 @@ mod tests {
         login_claude(&env, "uuid-a", "alice@test.dev", "tok-a1");
         assert!(save_current(&env, Provider::Claude, "../evil").is_err());
         assert!(save_current(&env, Provider::Claude, "a b").is_err());
-        assert!(save_current(&env, Provider::Claude, "").is_err());
         assert!(switch(&env, Provider::Claude, "..").is_err());
+        // 전환의 빈 이름은 여전히 거부 (자동 작명은 저장에만 있다)
+        assert!(switch(&env, Provider::Claude, "").is_err());
+    }
+
+    /// 빈 이름 저장 = 자동 작명 (#18 UX) — 이메일 앞부분으로 짓고, 실제 이름을 돌려준다
+    #[test]
+    fn empty_name_saves_with_auto_name() {
+        let env = test_env("auto-save-name");
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a1");
+        let name = save_current(&env, Provider::Claude, "").unwrap();
+        assert_eq!(name, "alice");
+        // 공백만 있어도 자동 작명, 같은 계정은 같은 프로필로 (중복 생성 없음)
+        let again = save_current(&env, Provider::Claude, "  ").unwrap();
+        assert_eq!(again, "alice");
+        assert_eq!(list(&env, Provider::Claude).unwrap().profiles.len(), 1);
     }
 
     fn login_codex(env: &Env, account_id: &str, email: &str, token: &str) {
@@ -1214,9 +1320,65 @@ mod tests {
         let env = test_env("delete");
         login_claude(&env, "uuid-a", "alice@test.dev", "tok-a1");
         save_current(&env, Provider::Claude, "main").unwrap();
+        // 비활성 계정 프로필 하나를 직접 만들어 두고 사용량 캐시도 심는다
+        let dir = env.profiles_dir(Provider::Claude).join("other");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"tok-b"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("meta.json"),
+            r#"{"id":"uuid-b","email":null,"saved_at":0}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(&env.store).unwrap();
+        fs::write(
+            env.store.join("usage-cache.json"),
+            r#"{"claude:uuid-a":{"saved_at":1,"usage":{"windows":[]}},
+                "claude:uuid-b":{"saved_at":1,"usage":{"windows":[]}}}"#,
+        )
+        .unwrap();
+
+        delete(&env, Provider::Claude, "other").unwrap();
+        // 삭제된 비활성 계정의 캐시 항목은 정리되고, 활성 계정 항목은 남는다 (#18)
+        let cache = read_json(&env.store.join("usage-cache.json")).unwrap();
+        assert!(cache.get("claude:uuid-b").is_none(), "삭제 계정 캐시가 남았다");
+        assert!(cache.get("claude:uuid-a").is_some(), "활성 계정 캐시는 남아야 한다");
+
         delete(&env, Provider::Claude, "main").unwrap();
         assert!(list(&env, Provider::Claude).unwrap().profiles.is_empty());
         // 활성 로그인 파일은 그대로
         assert!(env.live_credential_path(Provider::Claude).exists());
+    }
+
+    /// 재발급 진행 표지판: 가드가 살아 있는 동안 wait가 기다리고, 드랍되면 즉시 풀린다
+    #[test]
+    fn refresh_inflight_wait_unblocks_on_guard_drop() {
+        let key = refresh_key(Provider::Claude, "inflight-test");
+        // 표지판이 없으면 즉시 통과
+        let t0 = std::time::Instant::now();
+        wait_refresh_idle(&key, std::time::Duration::from_secs(5));
+        assert!(t0.elapsed() < std::time::Duration::from_millis(100));
+
+        let guard = refresh_begin(key.clone());
+        let key2 = key.clone();
+        let waiter = std::thread::spawn(move || {
+            let t = std::time::Instant::now();
+            wait_refresh_idle(&key2, std::time::Duration::from_secs(5));
+            t.elapsed()
+        });
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        drop(guard);
+        let waited = waiter.join().unwrap();
+        assert!(
+            waited >= std::time::Duration::from_millis(100),
+            "가드 생존 중에는 기다려야 한다: {waited:?}"
+        );
+        assert!(
+            waited < std::time::Duration::from_secs(4),
+            "드랍 즉시 풀려야 한다 (상한 대기 아님): {waited:?}"
+        );
     }
 }

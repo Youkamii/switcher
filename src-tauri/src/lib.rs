@@ -1,4 +1,5 @@
 mod accounts;
+mod clamshell;
 mod display;
 mod github;
 mod login;
@@ -138,7 +139,8 @@ fn list_profiles(provider: String) -> Result<Snapshot, String> {
 }
 
 #[tauri::command]
-fn save_profile(provider: String, name: String) -> Result<(), String> {
+fn save_profile(provider: String, name: String) -> Result<String, String> {
+    // 빈 이름이면 백엔드가 자동 작명한다 — 실제 저장된 이름을 돌려준다
     accounts::save_current(&Env::real()?, Provider::parse(&provider)?, &name)
 }
 
@@ -174,6 +176,24 @@ fn disengage_tfsd(app: &tauri::AppHandle) {
 #[tauri::command]
 fn delete_profile(provider: String, name: String) -> Result<(), String> {
     accounts::delete(&Env::real()?, Provider::parse(&provider)?, &name)
+}
+
+/// 클램셸 슬립 방지 현재 모드 (macOS 전용): -1 미지원 · 0 꺼짐 · 1 일회성 · 2 지속
+#[tauri::command]
+fn clamshell_mode() -> i8 {
+    Env::real().map(|env| clamshell::mode(&env.store)).unwrap_or(-1)
+}
+
+/// 클램셸 버튼 클릭 — off → 일회성 → 지속 → off 순환. 켤 때만 관리자 승인 1회.
+/// 붙잡는 osascript 승인 대기가 있으므로 비동기 스레드에서 돈다.
+#[tauri::command]
+async fn clamshell_cycle(app: tauri::AppHandle) -> Result<i8, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let env = Env::real()?;
+        clamshell::cycle(&app, &env.store)
+    })
+    .await
+    .map_err(|e| format!("클램셸 전환 실패: {e}"))?
 }
 
 #[tauri::command]
@@ -1031,6 +1051,11 @@ fn update_status_suffix() -> String {
 fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'static) {
     use tauri::Manager;
     login::cancel();
+    // 클램셸 모드가 켜져 있으면 해제 깃발 — root 감시자가 SleepDisabled를 원복한다
+    // (감시자 없는 no-sleep 상태를 남기지 않는다: 가방 속 배터리 소진 방지)
+    if let Ok(env) = Env::real() {
+        clamshell::on_quit(&env.store);
+    }
     let flushing = app
         .get_webview_window("memo")
         .map(|memo| memo.eval("window.dispatchEvent(new Event('blur'))").is_ok())
@@ -1784,12 +1809,18 @@ pub fn run() {
             }
 
             // 시작 시 토큰 일괄 갱신 (무조건 1회) — 밤새 꺼져 있던 컴퓨터에서도
-            // 위젯이 뜨자마자 비활성 프로필의 사용량이 되살아난다
+            // 위젯이 뜨자마자 비활성 프로필의 사용량이 되살아난다 (클로드·코덱스)
             tauri::async_runtime::spawn(async {
                 if let Ok(env) = Env::real() {
-                    usage::refresh_all_claude_profiles(&env).await;
+                    usage::refresh_all_profiles(&env).await;
                 }
             });
+
+            // 지난 세션이 클램셸 모드를 켠 채 죽었으면 잔존 상태를 복원한다 (맥 전용,
+            // 블랙 모니터 밝기 잔존 복원과 같은 패턴)
+            if let Ok(env) = Env::real() {
+                clamshell::on_start(app.handle(), &env.store);
+            }
 
             // TFSD 자동 전환 감시 — 설정이 꺼져 있으면 틱마다 조용히 지나간다
             tfsd::spawn(app.handle().clone());
@@ -2057,6 +2088,8 @@ pub fn run() {
             save_profile,
             switch_profile,
             delete_profile,
+            clamshell_mode,
+            clamshell_cycle,
             fetch_usage,
             start_login,
             submit_login_code,

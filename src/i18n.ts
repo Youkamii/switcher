@@ -43,9 +43,8 @@ const ko = {
   cancel: "취소",
   loginUpdated: "'{profile}' 계정({who}) 로그인을 갱신했습니다",
   loginAdded: "계정 추가 완료 — '{profile}' ({who})",
-  namePlaceholder: "프로필 이름 (영문·숫자·-·_)",
+  namePlaceholder: "프로필 이름 (비우면 자동 작명)",
   saveCurrent: "현재 계정 저장",
-  nameEmpty: "프로필 이름을 입력하세요",
   saveDone: "현재 계정을 '{name}' 프로필로 저장했습니다",
   noAccounts: "저장된 계정이 없습니다 — 아래 버튼으로 추가하세요",
   liveNotSaved:
@@ -75,6 +74,9 @@ const ko = {
   memoClose: "닫기 (내용은 저장됩니다)",
   monitorTooltip: "시스템 모니터 — CPU·메모리·디스크·네트워크",
   memoAlphaTooltip: "투명도 (배경만 — 글자는 남습니다)",
+  clamOff: "클램셸 슬립 방지 (macOS) — 덮개를 닫아도 잠들지 않게. 한 번 누르면 이번 한 번만, 두 번 누르면 계속 (켤 때 관리자 암호 1회)",
+  clamOnce: "클램셸: 이번 한 번 — 덮개를 닫았다 다시 열면 자동 해제됩니다. 누르면 '계속 켬'으로",
+  clamKeep: "클램셸: 계속 켬 — 다시 누르거나 위젯을 종료하면 원래대로 복원됩니다",
 };
 
 export type MsgKey = keyof typeof ko;
@@ -117,9 +119,8 @@ const en: Messages = {
   cancel: "Cancel",
   loginUpdated: "Refreshed login for account '{profile}' ({who})",
   loginAdded: "Account added — '{profile}' ({who})",
-  namePlaceholder: "Profile name (letters·digits·-·_)",
+  namePlaceholder: "Profile name (leave empty to auto-name)",
   saveCurrent: "Save current account",
-  nameEmpty: "Enter a profile name",
   saveDone: "Saved the current account as profile '{name}'",
   noAccounts: "No saved accounts — add one with the button below",
   liveNotSaved:
@@ -149,6 +150,9 @@ const en: Messages = {
   memoClose: "Close (content is saved)",
   monitorTooltip: "System monitor — CPU · memory · disk · network",
   memoAlphaTooltip: "Opacity (background only — text stays)",
+  clamOff: "Clamshell no-sleep (macOS) — keep running with the lid closed. Click once for one time, twice to keep on (admin password once when enabling)",
+  clamOnce: "Clamshell: this once — auto-restores after the lid closes and reopens. Click for 'keep on'",
+  clamKeep: "Clamshell: keep on — click again or quit the widget to restore",
 };
 
 const ja: Messages = {
@@ -188,9 +192,8 @@ const ja: Messages = {
   cancel: "キャンセル",
   loginUpdated: "「{profile}」アカウント（{who}）のログインを更新しました",
   loginAdded: "アカウント追加完了 — 「{profile}」（{who}）",
-  namePlaceholder: "プロファイル名（英数字・-・_）",
+  namePlaceholder: "プロファイル名（空欄で自動命名）",
   saveCurrent: "現在のアカウントを保存",
-  nameEmpty: "プロファイル名を入力してください",
   saveDone: "現在のアカウントを「{name}」プロファイルとして保存しました",
   noAccounts: "保存されたアカウントがありません — 下のボタンで追加してください",
   liveNotSaved:
@@ -220,6 +223,9 @@ const ja: Messages = {
   memoClose: "閉じる（内容は保存されます）",
   monitorTooltip: "システムモニター — CPU・メモリ・ディスク・ネットワーク",
   memoAlphaTooltip: "透明度（背景のみ — 文字は残ります）",
+  clamOff: "クラムシェル・スリープ防止 (macOS) — 蓋を閉じても眠らない。1回で今回のみ、2回で継続（有効化時に管理者パスワード1回）",
+  clamOnce: "クラムシェル: 今回のみ — 蓋を閉じて再び開くと自動解除。押すと「継続」に",
+  clamKeep: "クラムシェル: 継続 — もう一度押すかウィジェット終了で元に戻ります",
 };
 
 const zhCN: Messages = {
@@ -257,9 +263,8 @@ const zhCN: Messages = {
   cancel: "取消",
   loginUpdated: "已更新账号 '{profile}'（{who}）的登录",
   loginAdded: "账号添加完成 — '{profile}'（{who}）",
-  namePlaceholder: "配置名称（字母·数字·-·_）",
+  namePlaceholder: "配置名称（留空自动命名）",
   saveCurrent: "保存当前账号",
-  nameEmpty: "请输入配置名称",
   saveDone: "已将当前账号保存为配置 '{name}'",
   noAccounts: "没有已保存的账号 — 请用下方按钮添加",
   liveNotSaved: "当前登录账号（{account}）尚未保存为配置 — 请在下方输入框保存",
@@ -288,6 +293,9 @@ const zhCN: Messages = {
   memoClose: "关闭（内容已保存）",
   monitorTooltip: "系统监视器 — CPU·内存·磁盘·网络",
   memoAlphaTooltip: "透明度（仅背景 — 文字保留）",
+  clamOff: "合盖不休眠 (macOS) — 合上盖子也继续运行。按一次仅此一次，按两次持续开启（启用时需一次管理员密码）",
+  clamOnce: "合盖不休眠：仅此一次 — 盖子合上再打开后自动恢复。再按切换为持续",
+  clamKeep: "合盖不休眠：持续开启 — 再按一次或退出小组件即恢复原状",
 };
 
 const zhTW: Messages = {
@@ -325,9 +333,8 @@ const zhTW: Messages = {
   cancel: "取消",
   loginUpdated: "已更新帳號 '{profile}'（{who}）的登入",
   loginAdded: "帳號新增完成 — '{profile}'（{who}）",
-  namePlaceholder: "設定檔名稱（英數字·-·_）",
+  namePlaceholder: "設定檔名稱（留空自動命名）",
   saveCurrent: "儲存目前帳號",
-  nameEmpty: "請輸入設定檔名稱",
   saveDone: "已將目前帳號儲存為設定檔 '{name}'",
   noAccounts: "沒有已儲存的帳號 — 請用下方按鈕新增",
   liveNotSaved: "目前登入帳號（{account}）尚未儲存為設定檔 — 請在下方輸入欄儲存",
@@ -356,6 +363,9 @@ const zhTW: Messages = {
   memoClose: "關閉（內容已儲存）",
   monitorTooltip: "系統監視器 — CPU·記憶體·磁碟·網路",
   memoAlphaTooltip: "透明度（僅背景 — 文字保留）",
+  clamOff: "闔蓋不休眠 (macOS) — 闔上螢幕也繼續運作。按一次僅此一次，按兩次持續開啟（啟用時需一次管理員密碼）",
+  clamOnce: "闔蓋不休眠：僅此一次 — 螢幕闔上再打開後自動恢復。再按切換為持續",
+  clamKeep: "闔蓋不休眠：持續開啟 — 再按一次或結束小工具即恢復原狀",
 };
 
 const hi: Messages = {
@@ -395,9 +405,8 @@ const hi: Messages = {
   cancel: "रद्द करें",
   loginUpdated: "अकाउंट '{profile}' ({who}) का लॉगिन अपडेट हो गया",
   loginAdded: "अकाउंट जुड़ गया — '{profile}' ({who})",
-  namePlaceholder: "प्रोफ़ाइल नाम (अंग्रेज़ी अक्षर·अंक·-·_)",
+  namePlaceholder: "प्रोफ़ाइल नाम (ख़ाली छोड़ें तो स्वतः नाम)",
   saveCurrent: "मौजूदा अकाउंट सहेजें",
-  nameEmpty: "प्रोफ़ाइल नाम दर्ज करें",
   saveDone: "मौजूदा अकाउंट प्रोफ़ाइल '{name}' के रूप में सहेजा गया",
   noAccounts: "कोई सहेजा हुआ अकाउंट नहीं — नीचे के बटन से जोड़ें",
   liveNotSaved:
@@ -427,6 +436,9 @@ const hi: Messages = {
   memoClose: "बंद करें (सामग्री सहेजी जाती है)",
   monitorTooltip: "सिस्टम मॉनिटर — CPU·मेमोरी·डिस्क·नेटवर्क",
   memoAlphaTooltip: "पारदर्शिता (केवल पृष्ठभूमि — टेक्स्ट बना रहेगा)",
+  clamOff: "क्लैमशेल नो-स्लीप (macOS) — ढक्कन बंद होने पर भी चलता रहे। एक बार दबाएँ = इस बार, दो बार = लगातार (चालू करते समय एक बार व्यवस्थापक पासवर्ड)",
+  clamOnce: "क्लैमशेल: इस बार — ढक्कन बंद कर फिर खोलने पर अपने आप बहाल। दबाने पर 'लगातार'",
+  clamKeep: "क्लैमशेल: लगातार — फिर दबाएँ या विजेट बंद करें तो मूल स्थिति बहाल",
 };
 
 const MESSAGES: Record<Lang, Messages> = {

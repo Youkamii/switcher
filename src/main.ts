@@ -341,9 +341,20 @@ function loginPanel(prompt: LoginPrompt, onExit: () => void): HTMLElement {
         const result = await invoke<LoginOutcome>("submit_login_code", { code });
         reportLogin(result);
       } catch (error) {
-        // 코드 제출 후의 실패는 세션이 이미 끝난 상태라 재시도가 불가능하다 —
+        const message = String(error);
+        // "코드가 거부" = CLI가 몇 초 안에 거부를 알렸고(백엔드 화면 감지, 실측)
+        // 세션은 재입력을 기다리고 있다 — 패널을 유지하고 같은 자리에서 다시 받는다
+        if (message.includes("코드가 거부")) {
+          toast(message, true);
+          okBtn.disabled = false;
+          input.disabled = false;
+          okBtn.textContent = t("ok");
+          input.select();
+          return;
+        }
+        // 그 외 실패는 세션이 이미 끝난 상태라 재시도가 불가능하다 —
         // 패널을 닫고 처음부터 다시 시작하게 안내한다
-        toast(t("retryFromStart", { error: String(error) }), true);
+        toast(t("retryFromStart", { error: message }), true);
       }
       onExit();
     };
@@ -447,13 +458,11 @@ function saveForm(provider: ProviderId, section: HTMLElement) {
   saveBtn.textContent = t("saveCurrent");
   const submit = async () => {
     const name = input.value.trim();
-    if (!name) {
-      toast(t("nameEmpty"), true);
-      return;
-    }
     try {
-      await invoke("save_profile", { provider, name });
-      toast(t("saveDone", { name }));
+      // 빈 이름이면 백엔드가 auto_name으로 자동 작명한다 (#18 UX) —
+      // 실제 저장된 이름이 돌아오므로 안내에 그대로 쓴다
+      const saved = await invoke<string>("save_profile", { provider, name });
+      toast(t("saveDone", { name: saved }));
       await render({ immediate: true });
     } catch (error) {
       toast(String(error), true);
@@ -1446,6 +1455,7 @@ function applyStaticText() {
   refreshBtn.setAttribute("title", t("refreshTooltip"));
   document.getElementById("drag-handle")!.setAttribute("title", t("dragHandle"));
   document.getElementById("blackbtn")!.setAttribute("title", t("blackTooltip"));
+  if (clamMode >= 0) applyClamshell(clamMode); // 클램셸 툴팁도 새 언어로
   document.getElementById("memobtn")!.setAttribute("title", t("memoTooltip"));
   document.getElementById("tfsdbtn")!.setAttribute("title", t("tfsdBtnTooltip"));
   document.getElementById("monbtn")!.setAttribute("title", t("monitorTooltip"));
@@ -1457,6 +1467,35 @@ function applyStaticText() {
 // 블랙 모니터 — 모든 화면을 최상위 검은 막으로 (해제는 오버레이 쪽: 흔들기·ESC)
 document.getElementById("blackbtn")!.addEventListener("click", () => {
   void invoke("black_on").catch((error) => toast(String(error), true));
+});
+
+// ── 클램셸 슬립 방지 (☕, macOS 전용) — off → 일회성 → 지속 → off ─────────
+// 덮개를 닫아도 잠들지 않게 (터미널 AI 작업 유지). 켤 때만 관리자 암호 1회,
+// 해제·복원(끄기·덮개 열림·종료·크래시)은 root 감시자가 암호 없이 처리한다.
+const clamBtn = document.getElementById("clambtn") as HTMLButtonElement;
+let clamMode = -1;
+function applyClamshell(mode: number) {
+  clamMode = mode;
+  clamBtn.hidden = mode < 0; // 미지원 플랫폼(Windows)에서는 버튼 자체가 없다
+  clamBtn.classList.toggle("pinned", mode === 2);
+  clamBtn.classList.toggle("half", mode === 1);
+  clamBtn.title = mode === 1 ? t("clamOnce") : mode === 2 ? t("clamKeep") : t("clamOff");
+}
+void invoke<number>("clamshell_mode").then(applyClamshell);
+let clamBusy = false;
+clamBtn.addEventListener("click", () => {
+  if (clamBusy) return; // 관리자 승인 대기 중 연타 방지
+  clamBusy = true;
+  invoke<number>("clamshell_cycle")
+    .then(applyClamshell)
+    .catch((error) => toast(String(error), true))
+    .finally(() => {
+      clamBusy = false;
+    });
+});
+// 일회성 모드의 자동 해제(덮개 닫힘→열림)·잔존 복원이 끝나면 버튼 표시를 따라 맞춘다
+void listen("clamshell-changed", () => {
+  void invoke<number>("clamshell_mode").then(applyClamshell);
 });
 
 // 메모장 (Type2 전용 버튼) — 별도 창 토글. 내용·투명도는 메모창이 스스로 관리

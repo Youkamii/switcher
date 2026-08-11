@@ -51,7 +51,7 @@ pub struct LoginPrompt {
     pub needs_code: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct LoginOutcome {
     pub profile: String,
     pub email: Option<String>,
@@ -421,12 +421,19 @@ fn start_impl(
         let responder = writer.clone();
 
         let sink = output_buffer();
-        {
-            // 새 세션 시작 — 이전 세션의 화면 잔재를 비운다
-            if let Ok(mut acc) = sink.lock() {
-                acc.clear();
-            }
-        }
+        // 세션 세대 표식 — 취소 직후 빠른 재시작 때 이전 세션의 reader 스레드가
+        // 마지막 조각을 새 세션 버퍼에 흘려 넣는 경합 방지 (#18 견고성). reader는
+        // 붙일 때마다 자기 세대인지 확인하고, 세대가 바뀌었으면 조용히 버리고 끝낸다.
+        // (join으로 풀 수도 있지만, 플랫폼에 따라 read가 늦게 풀리면 취소가 그만큼
+        // 매달린다 — 세대 표식은 기다림 없이 같은 효과를 낸다)
+        let my_gen = {
+            // 버퍼 잠금 안에서 세대를 올리고 비운다 — 이전 reader가 잠금을 쥔 채
+            // 붙이는 중이면 그 뒤에 비워지고, 이후 조각은 세대 불일치로 버려진다
+            let mut acc = sink.lock().map_err(|_| "내부 잠금 오류")?;
+            let next = SESSION_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            acc.clear();
+            next
+        };
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             // ESC[6n이 읽기 경계에 걸쳐도 놓치지 않게 직전 꼬리를 이어 검사한다
@@ -446,6 +453,11 @@ fn start_impl(
                 }
                 tail = probe[probe.len().saturating_sub(3)..].to_vec();
                 if let Ok(mut acc) = sink.lock() {
+                    // 세대가 바뀌었다 = 이 세션은 취소되고 새 세션이 시작됐다 —
+                    // 새 세션 버퍼를 오염시키지 않고 스레드를 접는다
+                    if SESSION_GEN.load(std::sync::atomic::Ordering::SeqCst) != my_gen {
+                        break;
+                    }
                     acc.extend_from_slice(piece);
                     // 스피너 프레임이 무한히 쌓이지 않게 앞부분을 버린다
                     if acc.len() > OUTPUT_CAP {
@@ -530,20 +542,84 @@ fn output_buffer() -> &'static Mutex<Vec<u8>> {
     &BUF
 }
 
+/// 세션 세대 — start_impl이 올리고, reader 스레드가 자기 세대인지 확인한다
+static SESSION_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// CLI가 코드 거부를 화면에 알렸는지 감지한다 (빠른 실패 표시, #18).
+/// "Invalid code. Please make sure the full code was copied."는 실측 문구다
+/// (2026-08-11, claude CLI — 거부 후에도 CLI는 종료하지 않고 재입력을 기다린다).
+/// 나머지는 문구가 바뀔 때를 대비한 보수적 변형 — 로그인 화면의 다른 텍스트
+/// (주소·state 파라미터 등)와 겹치지 않을 만큼 구체적인 구절만 쓴다.
+pub(crate) fn detect_code_rejection(screen_since_submit: &str) -> bool {
+    let lower = screen_since_submit.to_lowercase();
+    ["invalid code", "code expired", "expired code", "authentication failed"]
+        .iter()
+        .any(|marker| lower.contains(marker))
+}
+
 /// 세션의 자식 프로세스가 끝날 때까지 기다린다 (취소 가능하도록 짧게 끊어 확인)
 fn wait_for_exit(timeout: Duration) -> Result<(), String> {
     let started = Instant::now();
     loop {
-        {
+        let probe = {
             let mut guard = SESSION.lock().map_err(|_| "내부 잠금 오류")?;
             let Some(session) = guard.as_mut() else {
                 return Err("로그인을 취소했습니다".into());
             };
-            match session.child.try_wait() {
-                Ok(Some(_)) => return Ok(()),
-                Ok(None) => {}
-                Err(e) => return Err(format!("로그인 상태 확인 실패: {e}")),
+            session.child.try_wait()
+        };
+        match probe {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {}
+            Err(e) => {
+                // 상태 확인이 안 되는 세션은 살려둬 봐야 '계정 추가'만 막는다 (#18) — 정리
+                cancel();
+                return Err(format!("로그인 상태 확인 실패: {e} — 로그인을 정리했습니다"));
             }
+        }
+        if started.elapsed() > timeout {
+            cancel();
+            return Err("시간이 초과됐습니다 — 처음부터 다시 시도하세요".into());
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
+/// submit 전용 대기 — 종료(성공 경로) 또는 화면의 코드 거부 문구(빠른 실패)를 기다린다.
+/// 거부를 감지하면 세션은 살려둔다: CLI가 재입력을 기다리므로(실측) 같은 패널에서
+/// 코드를 다시 붙여넣을 수 있다.
+enum SubmitWait {
+    Exited,
+    Rejected,
+}
+
+fn wait_for_exit_or_rejection(timeout: Duration, mark: usize) -> Result<SubmitWait, String> {
+    let started = Instant::now();
+    loop {
+        let probe = {
+            let mut guard = SESSION.lock().map_err(|_| "내부 잠금 오류")?;
+            let Some(session) = guard.as_mut() else {
+                return Err("로그인을 취소했습니다".into());
+            };
+            session.child.try_wait()
+        };
+        match probe {
+            Ok(Some(_)) => return Ok(SubmitWait::Exited),
+            Ok(None) => {}
+            Err(e) => {
+                cancel();
+                return Err(format!("로그인 상태 확인 실패: {e} — 로그인을 정리했습니다"));
+            }
+        }
+        let fresh = {
+            let acc = output_buffer().lock().map_err(|_| "내부 잠금 오류")?;
+            // mark는 제출 직전의 버퍼 길이다. 그 뒤 캡 드레인으로 앞부분이 잘리면
+            // 제출 전 화면 일부가 섞일 수 있지만, 거부 문구는 제출 전 화면에
+            // 나타나지 않으므로(실측) 오탐으로 이어지지 않는다.
+            strip_ansi(&acc[mark.min(acc.len())..])
+        };
+        if detect_code_rejection(&fresh) {
+            return Ok(SubmitWait::Rejected);
         }
         if started.elapsed() > timeout {
             cancel();
@@ -647,7 +723,9 @@ fn finish_and_import(env: &Env, timeout: Duration) -> Result<LoginOutcome, Strin
     import(env, provider, &dir)
 }
 
-/// 브라우저에서 받은 코드를 CLI에 전달해 로그인을 끝낸다 (클로드)
+/// 브라우저에서 받은 코드를 CLI에 전달해 로그인을 끝낸다 (클로드).
+/// 잘못된 코드는 CLI 화면의 거부 문구를 감지해 몇 초 안에 알린다 — 세션은 살아
+/// 있으므로 프론트가 같은 패널에서 재입력을 받는다 (45초 타임아웃 대기 제거, #18).
 pub fn submit_code(env: &Env, code: &str) -> Result<LoginOutcome, String> {
     let code = code.trim();
     if code.is_empty() {
@@ -660,19 +738,38 @@ pub fn submit_code(env: &Env, code: &str) -> Result<LoginOutcome, String> {
     if code.contains(['\r', '\n']) || code.chars().any(|c| c.is_control()) {
         return Err("코드 형식이 올바르지 않습니다".into());
     }
-    {
+    // 제출 직전의 화면 길이 — 이 지점 이후의 출력에서만 거부 문구를 찾는다
+    let mark = output_buffer().lock().map_err(|_| "내부 잠금 오류")?.len();
+    let write_result = {
         let guard = SESSION.lock().map_err(|_| "내부 잠금 오류")?;
         let session = guard.as_ref().ok_or("진행 중인 로그인이 없습니다")?;
         if session.provider != Provider::Claude {
             return Err("코드 입력은 클로드 로그인에서만 사용합니다".into());
         }
         let mut writer = session.writer.lock().map_err(|_| "내부 잠금 오류")?;
-        writer
-            .write_all(format!("{code}\r").as_bytes())
-            .map_err(|e| format!("코드 전달 실패: {e}"))?;
-        writer.flush().ok();
+        writer.write_all(format!("{code}\r").as_bytes()).map(|_| {
+            writer.flush().ok();
+        })
+    };
+    if let Err(e) = write_result {
+        // 콘솔 통로가 죽은 세션을 남겨두면 앱 재시작 전까지 '계정 추가'가
+        // "이미 진행 중" 오류로 막힌다 (#18) — 즉시 정리한다.
+        // cancel()이 SESSION 잠금을 다시 잡으므로 위 블록이 끝난 뒤에 부른다.
+        cancel();
+        return Err(format!(
+            "코드 전달 실패: {e} — 로그인을 정리했습니다. '계정 추가'로 다시 시도하세요"
+        ));
     }
-    finish_and_import(env, FINISH_TIMEOUT)
+    match wait_for_exit_or_rejection(FINISH_TIMEOUT, mark)? {
+        SubmitWait::Exited => {
+            let (provider, dir) = finish_session().ok_or("로그인 세션이 사라졌습니다")?;
+            import(env, provider, &dir)
+        }
+        // 프론트는 이 문구("코드가 거부")로 재시도 가능 상태를 판별한다 (main.ts)
+        SubmitWait::Rejected => Err(
+            "코드가 거부됐습니다 — 붙여넣은 코드를 다시 확인하세요 (Invalid code)".into(),
+        ),
+    }
 }
 
 /// 브라우저에서 코드 입력까지 끝나면 CLI가 스스로 완료한다 (코덱스 device-auth)
@@ -780,6 +877,23 @@ mod tests {
         assert!(submit_code(&env, "abc\ndef").is_err());
         assert!(submit_code(&env, "   ").is_err());
         assert!(submit_code(&env, &"x".repeat(300)).is_err());
+    }
+
+    #[test]
+    fn detects_measured_rejection_but_not_login_screen() {
+        // 실측 문구 (2026-08-11, claude CLI): 거부 시 이 한 줄이 화면에 남는다
+        assert!(detect_code_rejection(
+            "Invalid code. Please make sure the full code was copied."
+        ));
+        // 대소문자 무관 + 방어적 변형
+        assert!(detect_code_rejection("ERROR: CODE EXPIRED, request a new one"));
+        assert!(detect_code_rejection("Authentication failed. Try again."));
+        // 로그인 화면 자체(안내문·주소·코드 프롬프트)에는 절대 반응하면 안 된다
+        let screen = "Opening browser to sign in…\n\
+            If the browser didn't open, visit: \
+            https://claude.com/cai/oauth/authorize?code=true&state=abc123&code_challenge=Kx9\n\
+            Paste code here if prompted > ";
+        assert!(!detect_code_rejection(screen));
     }
 
     #[test]
@@ -981,6 +1095,81 @@ mod tests {
 
         cancel();
         assert_eq!(before, fs::read(&live_cred).unwrap(), "활성 토큰이 변경됐다");
+    }
+
+    /// 진단 프로브: 잘못된 코드를 붙여넣었을 때 claude CLI가 그리는 화면을 실측한다.
+    /// 오류 문구 감지(빠른 실패 표시)의 근거 데이터 수집용 — 계정에는 영향이 없다
+    /// (격리 폴더 + 무효 코드라 토큰 교환이 거부될 뿐이다).
+    /// `cargo test -- --ignored real_probe_bad_code --nocapture --test-threads=1`
+    #[test]
+    #[ignore]
+    fn real_probe_bad_code_screen() {
+        cancel();
+        let env = Env::real().unwrap();
+        let prompt = start(&env, Provider::Claude).unwrap();
+        assert!(prompt.needs_code);
+        let mark = output_buffer().lock().unwrap().len();
+        {
+            let guard = SESSION.lock().unwrap();
+            let session = guard.as_ref().expect("세션이 있어야 한다");
+            let mut writer = session.writer.lock().unwrap();
+            writer.write_all(b"THIS-IS-A-BOGUS-CODE-1234\r").unwrap();
+            writer.flush().ok();
+        }
+        // 20초 동안 1초마다 새 출력을 찍는다 — 오류 문구가 언제 어떤 형태로 오는지 관찰
+        for second in 1..=20 {
+            std::thread::sleep(Duration::from_secs(1));
+            let raw = output_buffer().lock().unwrap().clone();
+            let fresh = strip_ansi(&raw[mark.min(raw.len())..]);
+            let trimmed: String = fresh
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            if !trimmed.is_empty() {
+                println!("[{second:2}s] {trimmed}");
+            }
+            let exited = {
+                let mut guard = SESSION.lock().unwrap();
+                guard
+                    .as_mut()
+                    .map(|s| matches!(s.child.try_wait(), Ok(Some(_))))
+                    .unwrap_or(true)
+            };
+            if exited {
+                println!("[{second:2}s] (CLI 종료)");
+                break;
+            }
+        }
+        cancel();
+    }
+
+    /// 실환경: 잘못된 코드가 45초 타임아웃이 아니라 몇 초 안에 "코드가 거부"로
+    /// 실패하는지 — submit_code 전체 경로(마크·화면 감지·세션 유지)를 검증한다.
+    /// `cargo test -- --ignored real_bad_code_fast --nocapture --test-threads=1`
+    #[test]
+    #[ignore]
+    fn real_bad_code_fast_fail_keeps_session() {
+        cancel();
+        let env = Env::real().unwrap();
+        let prompt = start(&env, Provider::Claude).unwrap();
+        assert!(prompt.needs_code);
+        let t0 = Instant::now();
+        let err = submit_code(&env, "THIS-IS-A-BOGUS-CODE-1234").unwrap_err();
+        let took = t0.elapsed();
+        println!("거부까지 {took:?}: {err}");
+        assert!(err.contains("코드가 거부"), "예상과 다른 에러: {err}");
+        assert!(
+            took < Duration::from_secs(30),
+            "빠른 실패여야 한다 (45초 타임아웃 경로 아님): {took:?}"
+        );
+        // 세션이 살아 있어야 같은 패널에서 재입력이 된다
+        assert!(
+            SESSION.lock().unwrap().is_some(),
+            "거부 후에도 세션은 유지되어야 한다"
+        );
+        cancel();
     }
 
     /// 코덱스 device-auth가 주소와 일회용 코드를 주는지 확인한다.

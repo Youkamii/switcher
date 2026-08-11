@@ -55,12 +55,12 @@ body {
 
 /* 타이틀바 요소도 골조와 함께 옅어진다 — 단 #pin·#drag-handle은 예외.
    locked에서는 아래의 0.18 곱 규칙이 대신 맡는다 */
-body:not(.locked) :is(#logo, #alpha, #refresh, #privacybtn, #blackbtn, #monbtn) {
+body:not(.locked) :is(#logo, #alpha, #refresh, #privacybtn, #clambtn, #blackbtn, #monbtn) {
   opacity: var(--fg-alpha);
 }
 
 /* 마우스를 타이틀바에 올리면 조작 요소가 되살아난다 — 투명해도 조작은 가능 */
-.titlebar:hover :is(#logo, #alpha, #refresh, #privacybtn, #blackbtn, #monbtn) {
+.titlebar:hover :is(#logo, #alpha, #refresh, #privacybtn, #clambtn, #blackbtn, #monbtn) {
   opacity: 1;
 }
 
@@ -284,8 +284,9 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
 #tfsdbtn { order: 4; }
 #monbtn { order: 5; }
 #privacybtn { order: 6; }
-#blackbtn { order: 7; }
-#refresh { order: 8; }
+#clambtn { order: 7; }
+#blackbtn { order: 8; }
+#refresh { order: 9; }
 .tb-actions button:not(#pin) {
   flex: 1 1 0;
   /* 좌우 3px: 균등 분배가 가장자리(벽)까지 붙지 않게 — 첫·끝 버튼의 바깥
@@ -302,6 +303,13 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
   border-color: var(--accent);
   color: var(--accent);
   font-weight: 700;
+}
+
+/* 클램셸 일회성(1단계) — 점선 테두리로 "이번 한 번만"을 지속(pinned)과 구분 */
+.tb-actions button.half {
+  border-color: var(--accent);
+  border-style: dashed;
+  color: var(--accent);
 }
 
 /* 타입 버튼은 모드가 바뀌어도 같은 크기 — ID 셀렉터라 locked의 축소 규칙
