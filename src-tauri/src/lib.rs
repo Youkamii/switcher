@@ -1685,6 +1685,8 @@ pub fn run() {
 
     // 업데이트 재시작으로 태어났으면 전임자가 완전히 죽을 때까지 여기서 대기 —
     // 아래 단일 인스턴스 가드보다 먼저여야 뮤텍스 경합이 없다 (restart_into 참조)
+    // 반환값은 윈도우 helper 경로만 쓰지만, 대기 자체는 맥 재시작 핸드셰이크에도 필요하다
+    #[cfg_attr(not(windows), allow(unused_variables))]
     let predecessor_gone = wait_for_predecessor();
     #[cfg(windows)]
     {

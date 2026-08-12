@@ -2,7 +2,9 @@
 //!
 //! 상태 순환: off(0) → 일회성(1) → 지속(2) → off.
 //! - 일회성: 덮개를 한 번 닫았다 열면 켜기 전 SleepDisabled 값으로 자동 복원한다.
-//! - 지속: 사용자가 버튼으로 명시적으로 끌 때까지 유지한다. 위젯 종료·재시작으로 끄지 않는다.
+//! - 지속: 사용자가 버튼으로 명시적으로 끌 때까지 유지한다. 위젯 종료·재시작은
+//!   살아 있는 감시자를 입양해 유지하지만, **재부팅(감시자 소멸)은 원상 복원 후
+//!   off로 시작한다** — 재무장 암호창을 띄우지 않는다 (사용자 결정 2026-08-12).
 //!
 //! mode·saved·revision·watcher를 상태 파일 하나에 원자적으로 쓴다. 관리자 권한의
 //! 감시자는 그 파일을 최대 512바이트·1초 제한으로 읽을 뿐 사용자 경로에 쓰거나
@@ -226,6 +228,7 @@ mod imp {
     /// 종료한다. 사용자 경로에는 어떤 쓰기·삭제도 하지 않는다.
     fn watch_body(state_path: &Path, saved: u8, watcher: &str) -> String {
         let template = r#"SWITCHER_CLAMSHELL_WATCH=1
+trap '' HUP
 STATE_FILE=__STATE__
 WATCH_ID=__WATCHER__
 SEEN=0
@@ -233,7 +236,7 @@ set -f
 read_state() {
   DATA=$(
     /usr/bin/head -c 512 "$STATE_FILE" 2>/dev/null & R=$!
-    ( /bin/sleep 1; /bin/kill "$R" 2>/dev/null ) & T=$!
+    ( /bin/sleep 1; /bin/kill "$R" 2>/dev/null ) >/dev/null 2>&1 & T=$!
     wait "$R" 2>/dev/null
     /bin/kill "$T" 2>/dev/null
     wait "$T" 2>/dev/null
@@ -288,13 +291,32 @@ done"#;
             .replace("__SAVED__", &saved.to_string())
     }
 
+    /// nohup 금지 (실측 macOS 26.5): 관리자 승인(do shell script) 컨텍스트에는 제어
+    /// 터미널이 없어 /usr/bin/nohup이 "can't detach from console"로 명령 실행 전에
+    /// 즉사한다 — 순수 백그라운드 + 본문의 `trap '' HUP`으로 대체한다 (승인 셸이
+    /// 끝나면 launchd로 재입양되어 계속 돈다, 실측 확인).
     fn arm_command(body: &str) -> String {
         format!(
             "/usr/bin/pmset -a disablesleep 1 && {{ \
-             /usr/bin/nohup /bin/sh -c {} </dev/null >/dev/null 2>&1 & P=$!; \
+             /bin/sh -c {} </dev/null >/dev/null 2>&1 & P=$!; \
              /bin/sleep 1; /bin/kill -0 \"$P\" && /bin/echo \"$P\"; \
              }}",
             sq(body)
+        )
+    }
+
+    /// 감시자 강제 종료 + 복원 (관리자 경로). pid 정체(argv 표식·토큰)를 kill 직전에
+    /// 같은 승인 명령 안에서 재확인한다 — 승인 창이 떠 있는 동안 감시자가 스스로 죽고
+    /// pid가 재사용되면 root가 무관한 프로세스를 죽이게 된다. 토큰은 내부 생성이거나
+    /// valid_token 관문을 지난 안전 문자셋이라 패턴에 그대로 넣어도 된다.
+    fn kill_watcher_command(record: &WatcherRecord, saved: u8) -> String {
+        format!(
+            "case \"$(/bin/ps -ww -p {pid} -o command= 2>/dev/null)\" in \
+             *'SWITCHER_CLAMSHELL_WATCH=1'*'{watcher}'*) /bin/kill {pid} 2>/dev/null ;; \
+             esac; /usr/bin/pmset -a disablesleep {saved}",
+            pid = record.pid,
+            watcher = record.watcher,
+            saved = saved,
         )
     }
 
@@ -393,10 +415,7 @@ done"#;
             &files.pid,
             watcher_record_text(&record).as_bytes(),
         ) {
-            let cleanup = run_admin(&format!(
-                "/bin/kill {} 2>/dev/null; /usr/bin/pmset -a disablesleep {}",
-                record.pid, state.saved
-            ));
+            let cleanup = run_admin(&kill_watcher_command(&record, state.saved));
             return Err(match cleanup {
                 Ok(_) => format!("감시자 pid 저장 실패: {error} — 감시자를 종료하고 복원했습니다"),
                 Err(cleanup_error) => format!(
@@ -505,12 +524,9 @@ done"#;
 
         if let Some(record) = record.as_ref() {
             if !wait_for_watcher_end(record, Duration::from_secs(12)) {
-                // bounded reader까지 끝나지 않는 비정상 감시자는 고정 pid와 pmset만으로
-                // 관리자 경로에서 강제 종료·복원한다.
-                run_admin(&format!(
-                    "/bin/kill {} 2>/dev/null; /usr/bin/pmset -a disablesleep {}",
-                    record.pid, stopping.saved
-                ))?;
+                // bounded reader까지 끝나지 않는 비정상 감시자는 관리자 경로에서 강제
+                // 종료·복원한다 (정체 재확인은 kill_watcher_command 안에서).
+                run_admin(&kill_watcher_command(record, stopping.saved))?;
             }
         } else {
             std::thread::sleep(Duration::from_secs(2));
@@ -537,9 +553,23 @@ done"#;
             Ok(record) => record,
             Err(error) => {
                 if sleep_disabled_now().ok() == Some(saved) {
+                    // 승인 취소 등 pmset 실행 전 실패 — 상태 파일만 걷어내면 원상이다
                     let _ = cleanup_if_restored(&files, &state);
+                    return Err(error);
                 }
-                return Err(error);
+                // 승인은 됐는데 감시자만 실패한 경우 — 감시자 없는 no-sleep을 남기지
+                // 않는다. 복원까지 실패하면 상태 파일을 남겨 재클릭·재시작 복구가
+                // 이어받게 하고, 에러에 실상을 적는다.
+                return Err(match restore_direct(saved) {
+                    Ok(()) => {
+                        let _ = cleanup_if_restored(&files, &state);
+                        error
+                    }
+                    Err(restore_error) => format!(
+                        "{error}; SleepDisabled 복원도 실패해 켜짐 상태가 남았습니다 — \
+                         버튼을 다시 눌러 복원하세요 ({restore_error})"
+                    ),
+                });
             }
         };
         spawn_state_monitor(app, store.to_path_buf(), state, record);
@@ -585,7 +615,11 @@ done"#;
                     return arm_new(app, store, 1, state.saved);
                 };
                 if sleep_disabled_now()? != 1 {
-                    return Err("클램셸 감시자는 살아 있지만 SleepDisabled가 켜져 있지 않습니다".into());
+                    // 외부에서 SleepDisabled를 끈 상태 (예: 수동 sudo pmset). 승격 대신
+                    // 안전하게 끈다 — 에러로 두면 덮개를 실제로 닫았다 열기 전까지
+                    // 어떤 클릭도 통하지 않는 막다른 길이 된다.
+                    stop_state(&files, &state)?;
+                    return Ok(0);
                 }
                 let promoted = transitioned(&state, 2);
                 write_state(&files.state, &promoted)?;
@@ -655,9 +689,11 @@ done"#;
                 .is_some_and(|command| command == "sh" || command.ends_with("/sh"))
     }
 
-    fn recover_legacy(app: &tauri::AppHandle, store: &Path) -> Result<(), String> {
+    fn recover_legacy(_app: &tauri::AppHandle, store: &Path) -> Result<(), String> {
         let files = files(store);
-        let (old_mode, saved) = legacy_saved(&files)?;
+        // 구버전 잔재는 모드와 무관하게 복원·정리만 한다 — 재무장하지 않는다
+        // (재부팅·재설치 후 지속 모드는 off로 시작, 사용자 결정 2026-08-12)
+        let (_old_mode, saved) = legacy_saved(&files)?;
         std::fs::write(&files.legacy_off, b"off")
             .map_err(|error| format!("이전 감시자 해제 요청 실패: {error}"))?;
         let deadline = std::time::Instant::now() + Duration::from_secs(12);
@@ -669,9 +705,6 @@ done"#;
         }
         cleanup_legacy(&files)?;
         remove_file(&files.pid)?;
-        if old_mode == 2 {
-            arm_new(app, store, 2, saved)?;
-        }
         Ok(())
     }
 
@@ -693,19 +726,11 @@ done"#;
                 Ok(Some(state))
                     if expected_revision.as_deref() == Some(state.revision.as_str()) =>
                 {
-                    match state.mode {
-                        2 => {
-                            // 지속 모드는 앱/OS 재시작으로 꺼지지 않는다. 감시자만 죽었으면
-                            // 같은 saved를 유지한 채 새 고유 ID로 다시 건다.
-                            let rearmed = fresh_state(2, state.saved);
-                            write_state(&files.state, &rearmed).and_then(|_| {
-                                let record = start_watcher(&files, &rearmed)?;
-                                spawn_state_monitor(&app, store.clone(), rearmed, record);
-                                Ok(())
-                            })
-                        }
-                        _ => stop_state(&files, &state),
-                    }
+                    // 감시자가 죽어 있으면 모드와 무관하게 원상 복원 후 정리한다 —
+                    // 재부팅 후에는 지속 모드도 재무장하지 않고 off로 시작한다
+                    // (사용자 결정 2026-08-12). 앱 재시작 생존은 on_start의 살아 있는
+                    // 감시자 입양이 담당하고, 여기는 감시자 소멸 = 해제 의미다.
+                    stop_state(&files, &state)
                 }
                 Ok(_) => Ok(()),
                 Err(error) => Err(error),
@@ -818,13 +843,45 @@ done"#;
             assert!(!body.contains("/bin/cat"));
             assert!(!body.contains("/bin/rm"));
             assert!(!body.contains("clamshell.pid"));
+            // 관리자 컨텍스트에는 제어 터미널이 없어 nohup이 즉사한다 (실측 macOS 26.5)
+            // — HUP 무시는 본문 trap이 맡는다
+            assert!(body.contains("trap '' HUP"));
+            assert!(
+                !arm_command(&body).contains("nohup"),
+                "nohup은 관리자 승인 컨텍스트에서 can't detach from console로 즉사한다"
+            );
+        }
+
+        /// root kill은 반드시 argv 표식·토큰 재확인을 거쳐야 한다 — 승인 대기 동안
+        /// 감시자가 죽고 pid가 재사용되면 무관한 프로세스를 죽이게 된다
+        #[test]
+        fn kill_command_verifies_watcher_identity_before_root_kill() {
+            let record = WatcherRecord {
+                pid: 4242,
+                watcher: "watch-1".into(),
+            };
+            let cmd = kill_watcher_command(&record, 0);
+            assert!(cmd.contains("/bin/ps"), "kill 전에 ps 정체 확인이 있어야 한다");
+            assert!(cmd.contains("SWITCHER_CLAMSHELL_WATCH=1"));
+            assert!(cmd.contains("watch-1"));
+            assert!(cmd.contains("pmset -a disablesleep 0"));
+            let ps_at = cmd.find("/bin/ps").unwrap();
+            let kill_at = cmd.find("/bin/kill").unwrap();
+            assert!(ps_at < kill_at, "정체 확인이 kill보다 먼저여야 한다");
         }
 
         #[test]
         fn body_and_arm_command_are_valid_sh() {
             let store = test_store("syntax");
             let body = watch_body(&files(&store).state, 0, "watch-test");
-            for cmd in [body.clone(), arm_command(&body)] {
+            let kill_cmd = kill_watcher_command(
+                &WatcherRecord {
+                    pid: 4242,
+                    watcher: "watch-test".into(),
+                },
+                1,
+            );
+            for cmd in [body.clone(), arm_command(&body), kill_cmd] {
                 let Some(mut shell) = test_shell() else { return };
                 let out = shell.args(["-n", "-c", &cmd]).output().unwrap();
                 assert!(

@@ -1506,16 +1506,35 @@ let clamBusy = false;
 clamBtn.addEventListener("click", () => {
   if (clamBusy) return; // 관리자 승인 대기 중 연타 방지
   clamBusy = true;
+  clamBtn.disabled = true; // 승인 창 대기·전환(최대 수초) 중임을 보이게 — 소리 없는 무시 방지
   invoke<number>("clamshell_cycle")
     .then(applyClamshell)
     .catch((error) => toast(String(error), true))
     .finally(() => {
       clamBusy = false;
+      clamBtn.disabled = false;
     });
 });
 // 일회성 모드의 자동 해제(덮개 닫힘→열림)·잔존 복원이 끝나면 버튼 표시를 따라 맞춘다
 void listen("clamshell-changed", () => {
   void invoke<number>("clamshell_mode").then(applyClamshell);
+});
+// 비활성 패널의 웹뷰는 위 이벤트 전달·반영이 밀릴 수 있다 (#52 계열, 실기기에서
+// 복원 후 버튼이 켜짐으로 고착돼 보인 사례) — 커서가 위젯에 들어올 때마다 실상태를
+// 당겨와 표시를 실제와 맞춘다. 상태 파일 읽기라 비용은 미미하다.
+document.documentElement.addEventListener("mouseenter", () => {
+  void invoke<number>("clamshell_mode").then(applyClamshell);
+});
+
+// 비활성 패널에서는 :active가 안 먹어 클릭 피드백이 없다 (실기기 사용자 보고)
+// — 포인터 이벤트로 누름 상태(.pressing)를 직접 단다. 클릭은 확실히 도달하므로
+// pointerdown도 도달한다.
+document.querySelectorAll<HTMLButtonElement>(".tb-actions button").forEach((btn) => {
+  btn.addEventListener("pointerdown", () => btn.classList.add("pressing"));
+  const clearPressing = () => btn.classList.remove("pressing");
+  btn.addEventListener("pointerup", clearPressing);
+  btn.addEventListener("pointerleave", clearPressing);
+  btn.addEventListener("pointercancel", clearPressing);
 });
 
 // 메모장 (Type2 전용 버튼) — 별도 창 토글. 내용·투명도는 메모창이 스스로 관리

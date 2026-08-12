@@ -60,6 +60,12 @@ jobs:
           if ($env:RELEASE_TAG -ne "v$version") {
             throw "tag ($env:RELEASE_TAG) does not match Cargo version ($version)"
           }
+          # 실제 바이너리·번들 버전의 출처는 tauri.conf.json이다 — 여기가 어긋난 채
+          # 발행되면 업데이터의 자산 버전 대조가 그 릴리스를 영구 거부한다
+          $conf = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($conf -ne $version) {
+            throw "tauri.conf.json version ($conf) does not match Cargo version ($version)"
+          }
           [System.IO.File]::WriteAllText("$PWD/switcher-version.txt", $version, [System.Text.Encoding]::ASCII)
           Compress-Archive -Path src-tauri/target/release/switcher.exe,switcher-version.txt -DestinationPath switcher-win-x64.zip
       - uses: actions/upload-artifact@v4
@@ -77,6 +83,18 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # 맥 .app의 CFBundleShortVersionString은 tauri.conf.json "version"에서 나온다 —
+      # Cargo.toml만 올리고 이걸 빠뜨리면 CI는 초록불인데 업데이터의 번들 버전
+      # 대조(update.rs)가 그 릴리스를 전 사용자에서 영구 거부한다. 빌드 전에 차단.
+      - name: version guard
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          conf=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          if [ "$RELEASE_TAG" != "v$conf" ]; then
+            echo "tag ($RELEASE_TAG) does not match tauri.conf.json version ($conf)" >&2
+            exit 1
+          fi
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

@@ -70,6 +70,8 @@ fn credential_path(
     }
 }
 
+// 실계정 e2e 테스트 전용 — 실경로는 auth_snapshot이 키·토큰을 함께 잡는다
+#[cfg(test)]
 fn claude_access_token(env: &Env, profile: Option<&str>) -> Result<String, String> {
     let root = match profile {
         Some(_) => {
@@ -679,6 +681,28 @@ fn auth_snapshot(
     })
 }
 
+/// 스냅숏이 실패했을 때 캐시 조회에만 쓰는 계정 키 — 토큰을 읽지 않고 아는 만큼만.
+/// 활성 클로드의 신원은 전환이 같은 MUTATION_LOCK 아래서 갱신하는 ~/.claude.json을
+/// 따르므로, 전환 직후에도 다른 계정의 수치를 집어 오지 않는다. 신원조차 모르면
+/// None — 어느 계정의 캐시인지 보증할 수 없으면 보여주지 않는다.
+fn snapshot_fallback_key(env: &Env, provider: Provider, profile: Option<&str>) -> Option<String> {
+    let account = match profile {
+        Some(name) => read_meta(&env.profiles_dir(provider).join(name))
+            .map(|meta| meta.id)
+            .unwrap_or_else(|| format!("<name:{name}>")),
+        None => match provider {
+            Provider::Claude => match live_identity(env, provider) {
+                Ok(Some(identity)) => identity.id,
+                Ok(None) => "<live-unknown>".to_string(),
+                Err(_) => return None,
+            },
+            // 코덱스 신원은 토큰 파일 자체에서 나온다 — 그 읽기가 실패한 상황이면 알 수 없다
+            Provider::Codex => return None,
+        },
+    };
+    Some(format!("{}:{account}", provider.dir_name()))
+}
+
 async fn request_auth(
     env: &Env,
     provider: Provider,
@@ -716,11 +740,13 @@ async fn fetch_claude_attempt(
     Ok(parse_claude_usage(&body))
 }
 
+#[cfg(test)]
 async fn fetch_claude(env: &Env, profile: Option<&str>) -> Result<Usage, FetchErr> {
     let (auth, refresh_err) = request_auth(env, Provider::Claude, profile).await?;
     fetch_claude_attempt(auth, refresh_err).await
 }
 
+#[cfg(test)]
 fn codex_token(env: &Env, profile: Option<&str>) -> Result<(String, Option<String>), String> {
     let path = credential_path(env, Provider::Codex, profile)?;
     if !path.exists() {
@@ -832,6 +858,7 @@ async fn fetch_codex_attempt(
     Ok(parse_codex_usage(&body))
 }
 
+#[cfg(test)]
 async fn fetch_codex(env: &Env, profile: Option<&str>) -> Result<Usage, FetchErr> {
     let (auth, refresh_err) = request_auth(env, Provider::Codex, profile).await?;
     fetch_codex_attempt(auth, refresh_err).await
@@ -1044,8 +1071,16 @@ pub async fn fetch(
 ) -> Result<Usage, String> {
     // 캐시 조회부터 실제 요청까지 같은 계정 스냅숏을 쓴다. 활성 전환이 중간에
     // 끼어도 A 캐시를 B 토큰으로 조회하거나 A 값을 B 카드에 붙이지 않는다.
-    let initial_auth = auth_snapshot(env, provider, profile)?;
-    let key = initial_auth.key.clone();
+    // 스냅숏 실패(키체인 잠김, CLI의 ~/.claude.json 재작성과 겹침)는 새 요청만
+    // 포기한다 — 토큰 없이 아는 계정 키로 마지막 수치를 찾아 버틴다.
+    let initial_auth = auth_snapshot(env, provider, profile);
+    let key = match &initial_auth {
+        Ok(auth) => auth.key.clone(),
+        Err(error) => match snapshot_fallback_key(env, provider, profile) {
+            Some(key) => key,
+            None => return Err(error.clone()),
+        },
+    };
 
     // 1) 메모리 캐시가 신선하면 그대로
     if let Ok(map) = cache().lock() {
@@ -1080,6 +1115,15 @@ pub async fn fetch(
         usage.stale = true;
         usage.stale_age_secs = Some(age);
         usage
+    };
+
+    // 스냅숏이 실패했다면 여기까지의 캐시 폴백이 전부다 — 새 요청은 불가능하다.
+    // stale마저 없을 때만 원래 에러(키체인·파일 문제)를 노출한다.
+    let initial_auth = match initial_auth {
+        Ok(auth) => auth,
+        Err(error) => {
+            return stale_value().map(mark_stale).ok_or(error);
+        }
     };
 
     // 3) 백오프 중이면 API를 부르지 않고 마지막 수치로 버틴다
@@ -1277,6 +1321,48 @@ mod tests {
         .unwrap();
         let err = codex_token(&env, None).unwrap_err();
         assert!(err.contains("만료"));
+    }
+
+    /// 스냅숏 실패(키체인 잠김·토큰 파일 손상)에도 마지막 수치가 있으면 그것으로
+    /// 버틴다 — 맥에서 키체인 일시 실패가 활성 카드를 에러로 바꾸던 회귀 방지.
+    /// 신원(~/.claude.json)마저 못 읽으면 어느 계정의 캐시인지 보증할 수 없으므로
+    /// 그때만 에러를 노출한다.
+    #[test]
+    fn snapshot_failure_serves_cached_value_instead_of_error() {
+        let env = test_env("snap-fallback");
+        fs::create_dir_all(&env.store).unwrap();
+        // 활성 토큰은 깨져 있고(스냅숏 실패), 신원 파일은 멀쩡하다
+        fs::write(env.live_credential_path(Provider::Claude), b"not-json").unwrap();
+        fs::write(
+            env.home.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-snapfb","emailAddress":"s@test.dev"}}"#,
+        )
+        .unwrap();
+        let usage = Usage {
+            windows: vec![UsageWindow {
+                key: "session".into(),
+                label: "5 Hours".into(),
+                percent: 7.0,
+                resets_at: None,
+            }],
+            stale: false,
+            stale_age_secs: None,
+        };
+        disk_cache_store(&env, "claude:uuid-snapfb", &usage).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let got = rt
+            .block_on(fetch(&env, Provider::Claude, None))
+            .expect("캐시가 있으면 스냅숏 실패가 에러로 새어 나오면 안 된다");
+        assert_eq!(got.windows[0].percent, 7.0);
+
+        // 신원조차 없으면 원래 에러가 그대로 나온다
+        fs::remove_file(env.home.join(".claude.json")).unwrap();
+        fs::write(env.live_credential_path(Provider::Claude), b"still-broken").unwrap();
+        assert!(rt.block_on(fetch(&env, Provider::Claude, None)).is_err());
     }
 
     #[test]

@@ -297,12 +297,43 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
 .tb-actions button {
   padding: 3px 8px;
   font-size: 11px;
+  cursor: pointer;
+  transition: transform 80ms ease-out;
+}
+
+/* 비활성 패널에서는 :hover/:active가 오지 않는다 (사용자 보고: 눌리는지 모르겠음)
+   — 누름 피드백은 JS가 pointerdown에 .pressing을 달아 직접 준다 */
+.tb-actions button.pressing {
+  transform: scale(0.85);
+  filter: brightness(1.6);
+}
+
+/* 관리자 승인 대기·승격 검증(~2초) 동안 잠김을 분명히 보이게 */
+.tb-actions button:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .tb-actions button.pinned {
   border-color: var(--accent);
   color: var(--accent);
   font-weight: 700;
+}
+
+/* 클램셸 지속(2단계)만 — 붉은 두꺼운 테두리로 "계속 안 잠듦"을 한눈에 (사용자
+   요청: 기존 강조색 1px은 못 알아봄). 두께 증가는 패딩으로 보상해 크기 변동 없음.
+   다른 pinned 버튼(잠금·모니터 등)은 기존 강조색 유지. ID 셀렉터라 아래 locked·
+   minimal 축소 규칙보다 우선하므로 각 모드의 패딩도 여기서 -1px 보상한다 */
+#clambtn.pinned {
+  border: 2px solid var(--danger);
+  padding: 2px 7px;
+  color: var(--danger);
+}
+body.locked #clambtn.pinned {
+  padding: 0 5px;
+}
+body.minimal #clambtn.pinned {
+  padding: 0 2px;
 }
 
 /* 클램셸 일회성(1단계) — 점선 테두리로 "이번 한 번만"을 지속(pinned)과 구분 */

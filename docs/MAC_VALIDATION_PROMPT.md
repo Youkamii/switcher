@@ -53,7 +53,10 @@ npm run tauri build -- --bundles app
 감시자 확인은 다음처럼 명령줄 표식과 PID 개수만 본다.
 
 ```bash
-/bin/ps -axo pid=,uid=,command= | /usr/bin/grep 'SWITCHER_CLAMSHELL_WATCH=1' | /usr/bin/grep -v grep
+# 주의: 감시자 본문 argv에 /usr/bin/grep이 들어 있어 `grep -v grep`으로 거르면
+# 감시자 자신까지 걸러진다 (실측). ppid=1(launchd 입양)로 본체만 센다 —
+# read_state 순간의 fork 자식은 부모 argv를 그대로 보이므로 ppid 필터가 필요하다.
+/bin/ps -axo pid=,ppid=,uid=,command= | /usr/bin/awk '/SWITCHER_CLAMSHELL_WATCH=1/ && !/awk/ && $2==1 {print $1, $3}'
 ```
 
 ## 3. 버튼 상태 전환 실기기 검증
@@ -87,7 +90,7 @@ npm run tauri build -- --bundles app
   - mode 1: 감시자는 남아 덮개 1회 사이클 뒤 원래 설정을 복원해야 한다.
   - mode 2: 앱 종료로 꺼지면 안 되며, 앱 재실행 시 같은 지속 상태로 붙어야 한다.
 - 감시자 종료 경계와 mode 1 → 2 전환을 겹쳐도 낡은 감시자가 새 상태를 지우거나 원래 설정으로 되돌리지 않는지 확인한다.
-- 재부팅 검증은 사용자가 허락할 때만 한다. 허락받았다면 mode 2가 재부팅 후에도 유지·복구되고 감시자가 하나만 재구성되는지 확인한다.
+- 재부팅 검증은 사용자가 허락할 때만 한다. 허락받았다면 **mode 2도 재부팅 후에는 원래 SleepDisabled로 복원되고 off로 시작하는지** 확인한다 (재무장 없음 — 사용자 결정 2026-08-12. 앱 재시작 생존은 살아 있는 감시자 입양으로만).
 
 어떤 실패가 나도 먼저 `clamshell.state`의 `saved`와 시작 전 기록을 대조하라. UI로 off 복원이 불가능할 때만 사용자 허락을 받은 뒤 `sudo /usr/bin/pmset -a disablesleep <원래값>`으로 복구한다. 광범위한 전원 설정 초기화나 preference 삭제는 하지 마라.
 
