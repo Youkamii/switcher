@@ -9,8 +9,8 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 use crate::accounts::{
-    atomic_write, jwt_payload, live_identity, now, read_json, read_live_cred, read_meta, Env,
-    Provider, MUTATION_LOCK,
+    atomic_write, atomic_write_existing_parent, identity_from_value, jwt_payload, live_cred_exists,
+    live_identity, now, read_json, read_live_cred, read_meta, Env, Provider, MUTATION_LOCK,
 };
 use serde::Deserialize;
 
@@ -83,6 +83,10 @@ fn claude_access_token(env: &Env, profile: Option<&str>) -> Result<String, Strin
         None => serde_json::from_slice(&read_live_cred(env, Provider::Claude)?)
             .map_err(|e| format!("활성 토큰 파싱 실패: {e}"))?,
     };
+    claude_access_token_from_root(&root)
+}
+
+fn claude_access_token_from_root(root: &Value) -> Result<String, String> {
     let oauth = root
         .get("claudeAiOauth")
         .ok_or("토큰 파일 형식이 다릅니다 (claudeAiOauth 없음)")?;
@@ -202,52 +206,97 @@ fn pending_path(cred_path: &Path) -> std::path::PathBuf {
     cred_path.with_extension("json.pending")
 }
 
-fn write_pending(cred_path: &Path, old_refresh: &str, resp: &Value) {
+fn write_pending(cred_path: &Path, old_refresh: &str, resp: &Value) -> Result<(), String> {
     let entry = serde_json::json!({
         "old_refresh": old_refresh,
         "response": resp,
         "saved_at": now(),
     });
-    if let Ok(bytes) = serde_json::to_vec(&entry) {
-        let _ = atomic_write(&pending_path(cred_path), &bytes);
-    }
+    let bytes = serde_json::to_vec(&entry).map_err(|e| format!("갱신 복구 파일 생성 실패: {e}"))?;
+    atomic_write_existing_parent(&pending_path(cred_path), &bytes)
+}
+
+fn live_holds_refresh(
+    env: &Env,
+    provider: Provider,
+    expected_refresh: &str,
+) -> Result<bool, String> {
+    let data = read_live_cred(env, provider)?;
+    let root: Value = serde_json::from_slice(&data)
+        .map_err(|e| format!("활성 토큰 파싱 실패: {e}"))?;
+    Ok(extract_refresh_token(provider, &root).as_deref() == Some(expected_refresh))
 }
 
 /// 잔존 pending 사이드카 복구 — 본 파일의 리프레시 토큰이 응답을 만들 때 쓴 것과
 /// 같을 때만 병합한다 (그 사이 전환 백업 등으로 파일이 더 새것이면 낡은 응답을
-/// 버린다). 어느 쪽이든 처리에 성공하면 사이드카는 지운다. MUTATION_LOCK 안에서 부를 것.
-fn apply_pending_rescue(provider: Provider, cred_path: &Path) {
+/// 버린다). 활성 위치가 회전 전 토큰을 들고 있으면 함께 고친 뒤에만 사이드카를
+/// 지운다. MUTATION_LOCK 안에서 부를 것.
+fn apply_pending_rescue(
+    env: &Env,
+    provider: Provider,
+    name: &str,
+    cred_path: &Path,
+) -> Result<(), String> {
     let side = pending_path(cred_path);
     if !side.exists() {
-        return;
+        return Ok(());
     }
-    let Ok(entry) = read_json(&side) else {
-        return; // 읽기 실패는 다음 기회에 다시 (파일은 남긴다)
-    };
+    let entry = read_json(&side)?;
     let (Some(old_refresh), Some(resp)) = (
         entry.get("old_refresh").and_then(|v| v.as_str()),
         entry.get("response"),
     ) else {
-        let _ = std::fs::remove_file(&side); // 형식 불명 — 복구 불능이므로 정리
-        return;
+        std::fs::remove_file(&side)
+            .map_err(|e| format!("깨진 갱신 복구 파일 정리 실패 {}: {e}", side.display()))?;
+        return Err("갱신 복구 파일 형식이 올바르지 않아 정리했습니다".into());
     };
-    let Ok(mut current) = read_json(cred_path) else {
-        return; // 본 파일을 못 읽으면 보류 — 사이드카가 유일본일 수 있다
-    };
+    let mut current = read_json(cred_path)?;
     if extract_refresh_token(provider, &current).as_deref() == Some(old_refresh) {
-        if merge_refreshed(provider, &mut current, resp).is_ok() {
-            let _ = std::fs::copy(cred_path, cred_path.with_extension("json.bak"));
-            if let Ok(bytes) = serde_json::to_vec_pretty(&current) {
-                if atomic_write(cred_path, &bytes).is_err() {
-                    return; // 이번에도 실패 — 사이드카를 남겨 다음 기회에
+        merge_refreshed(provider, &mut current, resp)?;
+        let _ = std::fs::copy(cred_path, cred_path.with_extension("json.bak"));
+        let bytes = serde_json::to_vec_pretty(&current)
+            .map_err(|e| format!("갱신 토큰 직렬화 실패: {e}"))?;
+        atomic_write_existing_parent(cred_path, &bytes)?;
+    }
+
+    // POST 도중 이 프로필이 활성화된 뒤 활성 위치 쓰기만 실패한 경우도 복구한다.
+    match live_identity(env, provider) {
+        Ok(Some(live)) => {
+            let profile_dir = env.profiles_dir(provider).join(name);
+            let meta = read_meta(&profile_dir)
+                .ok_or("프로필 정보가 없어 갱신 복구를 보류합니다")?;
+            if live.id == meta.id {
+                let live_holds_rotated_out = live_holds_refresh(env, provider, old_refresh)
+                    .map_err(|e| format!("활성 계정 확인 실패 — 갱신 복구를 보류합니다: {e}"))?;
+                if live_holds_rotated_out {
+                    let bytes = serde_json::to_vec_pretty(&current)
+                        .map_err(|e| format!("갱신 토큰 직렬화 실패: {e}"))?;
+                    crate::accounts::write_live_cred(env, provider, &bytes)?;
                 }
-            } else {
-                return;
             }
         }
+        Ok(None) if live_cred_exists(env, provider) => {
+            return Err("활성 계정 신원을 확인할 수 없어 갱신 복구를 보류합니다".into());
+        }
+        Ok(None) => {}
+        Err(e) => return Err(format!("활성 계정 확인 실패 — 갱신 복구를 보류합니다: {e}")),
     }
-    // 병합했거나, 파일이 이미 더 새것(다른 리프레시 토큰)이라 응답이 낡았거나 — 정리
-    let _ = std::fs::remove_file(&side);
+
+    std::fs::remove_file(&side)
+        .map_err(|e| format!("갱신 복구 파일 정리 실패 {}: {e}", side.display()))
+}
+
+/// 계정 전환 경로가 MUTATION_LOCK을 쥔 채 호출하는 pending 복구 관문.
+pub(crate) fn rescue_pending_profile_locked(
+    env: &Env,
+    provider: Provider,
+    name: &str,
+) -> Result<(), String> {
+    let cred = env
+        .profiles_dir(provider)
+        .join(name)
+        .join(provider.credential_file_name());
+    apply_pending_rescue(env, provider, name, &cred)
 }
 
 /// 재발급 응답(access_token·refresh_token·expires_in)을 기존 claudeAiOauth 블록에
@@ -294,17 +343,26 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
     if !path.exists() {
         return Ok(()); // 이후 조회 단계가 기존 방식대로 안내한다
     }
-    // 지난번 쓰기 실패가 남긴 pending 사이드카가 있으면 먼저 복구한다 (#18 견고성)
-    if pending_path(&path).exists() {
-        if let Ok(_guard) = MUTATION_LOCK.lock() {
-            apply_pending_rescue(provider, &path);
-        }
-    }
-    // 흔한 경로(만료 전)는 잠금 없이 싸게 통과
-    if !token_expiring(provider, &read_json(&path).map_err(FetchErr::Msg)?) {
+    let has_pending = pending_path(&path).exists();
+    // 흔한 경로(만료 전 + 복구 없음)는 잠금 없이 싸게 통과
+    if !has_pending && !token_expiring(provider, &read_json(&path).map_err(FetchErr::Msg)?) {
         return Ok(());
     }
     let _gate = REFRESH_LOCK.lock().await;
+    // 전환·삭제와 같은 프로필 수명 잠금에 등록한다. 이 지점부터 응답 반영이 끝날
+    // 때까지 삭제는 기다리고, 전환은 회전 전 토큰을 복사할 수 없다.
+    let _inflight =
+        crate::accounts::refresh_begin(crate::accounts::refresh_key(env, provider, name))
+            .map_err(|_| FetchErr::Transient)?;
+    if !path.exists() {
+        return Ok(());
+    }
+    if pending_path(&path).exists() {
+        let _guard = MUTATION_LOCK
+            .lock()
+            .map_err(|_| FetchErr::Msg("내부 잠금 오류".into()))?;
+        apply_pending_rescue(env, provider, name, &path).map_err(FetchErr::Msg)?;
+    }
     // 잠금을 기다리는 사이 다른 경로가 이미 갱신했으면 끝
     let root = read_json(&path).map_err(FetchErr::Msg)?;
     if !token_expiring(provider, &root) {
@@ -319,15 +377,13 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
     };
     match live_identity(env, provider) {
         Ok(Some(live)) if live.id == meta.id => return Ok(()), // 활성 계정 — CLI 소관
-        Ok(_) => {}
+        Ok(Some(_)) => {}
+        Ok(None) if live_cred_exists(env, provider) => return Ok(()),
+        Ok(None) => {}
         Err(_) => return Ok(()), // 신원 불명 — 보류 (fail-closed)
     }
     let refresh_token = extract_refresh_token(provider, &root)
         .ok_or_else(|| FetchErr::Msg("토큰 파일에 리프레시 토큰이 없습니다".into()))?;
-
-    // 전환(switch-TO)이 기다릴 수 있게 재발급 진행 표지판을 세운다 (#14 잔여 창) —
-    // 성공·실패 어느 경로로 나가든 가드 드랍으로 걷힌다
-    let _inflight = crate::accounts::refresh_begin(crate::accounts::refresh_key(provider, name));
 
     let client = reqwest::Client::builder()
         // 토큰 엔드포인트는 리다이렉트를 따라가지 않는다 — 307/308이 리프레시 토큰이
@@ -370,7 +426,7 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
 
     // 회전된 새 토큰의 유일본(응답)을 본 파일을 만지기 전에 착지시킨다 —
     // 아래 병합·쓰기가 실패해도 사이드카가 살아 다음 기회에 복구된다 (#18 견고성)
-    write_pending(&path, &refresh_token, &body);
+    let pending_error = write_pending(&path, &refresh_token, &body).err();
 
     // 파일 반영 구간만 변이 잠금 (저장·전환과 직렬화, 잠금 중 await 없음)
     let _guard = MUTATION_LOCK
@@ -379,34 +435,97 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
     let mut current = read_json(&path).map_err(FetchErr::Msg)?;
     // 그 사이 전환 백업 등으로 파일이 교체됐으면 우리 결과를 버린다 (더 새 토큰이 이미 있다)
     if extract_refresh_token(provider, &current).as_deref() != Some(refresh_token.as_str()) {
-        let _ = std::fs::remove_file(pending_path(&path));
+        // 프로필은 더 새것이어도 활성 위치가 회전 전 토큰을 들고 있을 수 있다.
+        // 공용 복구 관문이 그 경우까지 확인한 뒤에만 pending을 지운다.
+        apply_pending_rescue(env, provider, name, &path).map_err(FetchErr::Msg)?;
         return Ok(());
     }
-    merge_refreshed(provider, &mut current, &body).map_err(FetchErr::Msg)?;
+    if let Err(merge_error) = merge_refreshed(provider, &mut current, &body) {
+        return Err(FetchErr::Msg(match pending_error {
+            Some(side_error) => format!(
+                "갱신 응답 반영 실패: {merge_error}; 복구 파일 저장도 실패했습니다: {side_error}"
+            ),
+            None => merge_error,
+        }));
+    }
     // 덮어쓰기 전에 한 세대 .bak — 잘못된 갱신의 최후 안전망
     let _ = std::fs::copy(&path, path.with_extension("json.bak"));
     let bytes = serde_json::to_vec_pretty(&current).map_err(|e| FetchErr::Msg(e.to_string()))?;
-    atomic_write(&path, &bytes).map_err(FetchErr::Msg)?;
-    let _ = std::fs::remove_file(pending_path(&path));
+    if let Err(main_error) = atomic_write_existing_parent(&path, &bytes) {
+        return Err(FetchErr::Msg(match pending_error {
+            Some(side_error) => format!(
+                "새 토큰 저장 실패: {main_error}; 복구 파일 저장도 실패했습니다: {side_error}"
+            ),
+            None => main_error,
+        }));
+    }
 
     // 사후 복구 (#14 잔여 창의 반대편): POST가 나는 사이 이 프로필로 전환됐다면
     // 활성 저장소에는 방금 회전시켜 무효가 된 구토큰이 남아 있다 — 정확히 그 경우
     // (활성 계정 일치 + 활성 리프레시 토큰이 우리가 회전시킨 그 값)에만 활성도
     // 새 토큰으로 맞춘다. 같은 계정의 더 새 토큰이므로 "활성은 CLI 소관" 원칙의
-    // 예외가 아니라 우리가 고아로 만든 토큰의 원상 복구다. 실패해도 기존보다
-    // 나빠지지 않으므로 best-effort.
-    if let Ok(Some(live)) = live_identity(env, provider) {
-        if live.id == meta.id {
-            let live_holds_rotated_out = read_live_cred(env, provider)
-                .ok()
-                .and_then(|data| serde_json::from_slice::<Value>(&data).ok())
-                .and_then(|live_root| extract_refresh_token(provider, &live_root))
-                .as_deref()
-                == Some(refresh_token.as_str());
+    // 예외가 아니라 우리가 고아로 만든 토큰의 원상 복구다. 확인·쓰기 실패 시에는
+    // pending을 남기고 오류를 돌려 다음 전환/조회에서 반드시 재시도한다.
+    match live_identity(env, provider) {
+        Ok(Some(live)) if live.id == meta.id => {
+            let live_holds_rotated_out = match live_holds_refresh(env, provider, &refresh_token) {
+                Ok(holds) => holds,
+                Err(e) => {
+                    let rescue_error = (!pending_path(&path).exists())
+                        .then(|| write_pending(&path, &refresh_token, &body).err())
+                        .flatten();
+                    return Err(FetchErr::Msg(format!(
+                        "활성 계정 확인 실패 — 다음 시도에서 갱신 복구를 재시도합니다: {e}{}",
+                        rescue_error
+                            .map(|error| format!("; 복구 파일 저장 실패: {error}"))
+                            .unwrap_or_default()
+                    )));
+                }
+            };
             if live_holds_rotated_out {
-                let _ = crate::accounts::write_live_cred(env, provider, &bytes);
+                if let Err(e) = crate::accounts::write_live_cred(env, provider, &bytes) {
+                    // pending 착지가 실패했더라도 본 파일 쓰기는 성공했으므로 한 번 더
+                    // 남겨, 다음 전환/조회에서 활성 위치 복구를 재시도할 수 있게 한다.
+                    let rescue_error = (!pending_path(&path).exists())
+                        .then(|| write_pending(&path, &refresh_token, &body).err())
+                        .flatten();
+                    return Err(FetchErr::Msg(format!(
+                        "활성 계정의 갱신 토큰 반영 실패 — 다음 시도에서 복구합니다: {e}{}",
+                        rescue_error
+                            .map(|error| format!("; 복구 파일 저장 실패: {error}"))
+                            .unwrap_or_default()
+                    )));
+                }
             }
         }
+        Ok(Some(_)) => {}
+        Ok(None) if live_cred_exists(env, provider) => {
+            let rescue_error = (!pending_path(&path).exists())
+                .then(|| write_pending(&path, &refresh_token, &body).err())
+                .flatten();
+            return Err(FetchErr::Msg(format!(
+                "활성 계정 신원을 확인할 수 없어 갱신 복구를 보류합니다{}",
+                rescue_error
+                    .map(|error| format!("; 복구 파일 저장 실패: {error}"))
+                    .unwrap_or_default()
+            )));
+        }
+        Ok(None) => {}
+        Err(e) => {
+            let rescue_error = (!pending_path(&path).exists())
+                .then(|| write_pending(&path, &refresh_token, &body).err())
+                .flatten();
+            return Err(FetchErr::Msg(format!(
+                "활성 계정 확인 실패 — 다음 시도에서 갱신 복구를 재시도합니다: {e}{}",
+                rescue_error
+                    .map(|error| format!("; 복구 파일 저장 실패: {error}"))
+                    .unwrap_or_default()
+            )));
+        }
+    }
+    if pending_path(&path).exists() {
+        std::fs::remove_file(pending_path(&path))
+            .map_err(|e| FetchErr::Msg(format!("갱신 복구 파일 정리 실패: {e}")))?;
     }
     Ok(())
 }
@@ -518,21 +637,77 @@ async fn get_json(request: reqwest::RequestBuilder) -> Result<Value, FetchErr> {
         .map_err(|e| FetchErr::Msg(format!("응답 파싱 실패: {e}")))
 }
 
-async fn fetch_claude(env: &Env, profile: Option<&str>) -> Result<Usage, FetchErr> {
-    // 보관함 토큰이 만료(임박)면 조회 전에 재발급한다 — 활성 파일은 CLI 소관.
+struct AuthSnapshot {
+    key: String,
+    root: Value,
+}
+
+/// 캐시 계정 ID와 실제 요청 토큰을 같은 MUTATION_LOCK 스냅숏에서 읽는다.
+/// 전환이 둘 사이에 끼면 A 키에 B 사용량을 저장하는 사고가 난다.
+fn auth_snapshot(
+    env: &Env,
+    provider: Provider,
+    profile: Option<&str>,
+) -> Result<AuthSnapshot, String> {
+    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
+    let (account, root) = match profile {
+        Some(name) => {
+            let path = credential_path(env, provider, Some(name))?;
+            let root = read_json(&path)?;
+            let account = read_meta(&env.profiles_dir(provider).join(name))
+                .map(|meta| meta.id)
+                .unwrap_or_else(|| format!("<name:{name}>"));
+            (account, root)
+        }
+        None => {
+            let data = read_live_cred(env, provider)?;
+            let root: Value = serde_json::from_slice(&data)
+                .map_err(|e| format!("활성 토큰 파싱 실패: {e}"))?;
+            let ident = match provider {
+                Provider::Claude => live_identity(env, provider)?,
+                Provider::Codex => identity_from_value(provider, &root),
+            };
+            let account = ident
+                .map(|identity| identity.id)
+                .unwrap_or_else(|| "<live-unknown>".to_string());
+            (account, root)
+        }
+    };
+    Ok(AuthSnapshot {
+        key: format!("{}:{account}", provider.dir_name()),
+        root,
+    })
+}
+
+async fn request_auth(
+    env: &Env,
+    provider: Provider,
+    profile: Option<&str>,
+) -> Result<(AuthSnapshot, Option<FetchErr>), FetchErr> {
+    let refresh_err = match profile {
+        Some(name) => ensure_fresh_profile(env, provider, name).await.err(),
+        None => None,
+    };
+    let auth = auth_snapshot(env, provider, profile).map_err(FetchErr::Msg)?;
+    Ok((auth, refresh_err))
+}
+
+async fn fetch_claude_attempt(
+    auth: AuthSnapshot,
+    refresh_err: Option<FetchErr>,
+) -> Result<Usage, FetchErr> {
     // 재발급이 실패해도 바로 포기하지 않는다: 마진(5분) 창에서는 기존 토큰이 아직
     // 유효해 조회가 성공한다. 토큰마저 못 읽으면 그때는 재발급 실패 사유
     // (재로그인 안내·백오프)가 더 정확하므로 그쪽을 우선해 알린다.
-    let refresh_err = match profile {
-        Some(name) => ensure_fresh_profile(env, Provider::Claude, name).await.err(),
-        None => None,
-    };
-    let token = match claude_access_token(env, profile) {
+    let token = match claude_access_token_from_root(&auth.root) {
         Ok(token) => token,
         Err(message) => return Err(refresh_err.unwrap_or(FetchErr::Msg(message))),
     };
     let body = get_json(
-        reqwest::Client::new()
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()
+            .map_err(|_| FetchErr::Transient)?
             .get(CLAUDE_USAGE_URL)
             .bearer_auth(&token)
             .header("anthropic-beta", CLAUDE_OAUTH_BETA),
@@ -541,12 +716,21 @@ async fn fetch_claude(env: &Env, profile: Option<&str>) -> Result<Usage, FetchEr
     Ok(parse_claude_usage(&body))
 }
 
+async fn fetch_claude(env: &Env, profile: Option<&str>) -> Result<Usage, FetchErr> {
+    let (auth, refresh_err) = request_auth(env, Provider::Claude, profile).await?;
+    fetch_claude_attempt(auth, refresh_err).await
+}
+
 fn codex_token(env: &Env, profile: Option<&str>) -> Result<(String, Option<String>), String> {
     let path = credential_path(env, Provider::Codex, profile)?;
     if !path.exists() {
         return Err("토큰 파일이 없습니다".into());
     }
     let root = read_json(&path)?;
+    codex_token_from_root(&root)
+}
+
+fn codex_token_from_root(root: &Value) -> Result<(String, Option<String>), String> {
     let tokens = root
         .get("tokens")
         .ok_or("토큰 파일 형식이 다릅니다 (tokens 없음)")?;
@@ -627,22 +811,30 @@ fn parse_codex_usage(body: &Value) -> Usage {
     }
 }
 
-async fn fetch_codex(env: &Env, profile: Option<&str>) -> Result<Usage, FetchErr> {
-    // 클로드와 같은 재발급 선행 — 보관함 프로필만, 활성 파일은 CLI 소관
-    let refresh_err = match profile {
-        Some(name) => ensure_fresh_profile(env, Provider::Codex, name).await.err(),
-        None => None,
-    };
-    let (token, account_id) = match codex_token(env, profile) {
+async fn fetch_codex_attempt(
+    auth: AuthSnapshot,
+    refresh_err: Option<FetchErr>,
+) -> Result<Usage, FetchErr> {
+    let (token, account_id) = match codex_token_from_root(&auth.root) {
         Ok(pair) => pair,
         Err(message) => return Err(refresh_err.unwrap_or(FetchErr::Msg(message))),
     };
-    let mut req = reqwest::Client::new().get(CODEX_USAGE_URL).bearer_auth(&token);
+    let mut req = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|_| FetchErr::Transient)?
+        .get(CODEX_USAGE_URL)
+        .bearer_auth(&token);
     if let Some(id) = account_id {
         req = req.header("ChatGPT-Account-Id", id);
     }
     let body = get_json(req).await?;
     Ok(parse_codex_usage(&body))
+}
+
+async fn fetch_codex(env: &Env, profile: Option<&str>) -> Result<Usage, FetchErr> {
+    let (auth, refresh_err) = request_auth(env, Provider::Codex, profile).await?;
+    fetch_codex_attempt(auth, refresh_err).await
 }
 
 /// 새로고침 연타·재렌더마다 API를 때리지 않도록 60초 캐시를 둔다.
@@ -687,6 +879,11 @@ fn disk_cache_path(env: &Env) -> std::path::PathBuf {
     env.store.join("usage-cache.json")
 }
 
+/// usage-cache.json은 계정별 조회가 병렬로 끝나며 동시에 read-modify-write 할 수 있다.
+/// 원자 rename만으로는 두 writer의 마지막 저장이 다른 계정 값을 지우는 것을 못 막으므로
+/// 파일 한 개의 전체 RMW를 이 잠금으로 묶는다.
+static DISK_CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Serialize, Deserialize)]
 struct DiskEntry {
     saved_at: u64,
@@ -695,6 +892,7 @@ struct DiskEntry {
 
 /// 디스크의 마지막 성공 수치를 (값, 나이(초))로 읽는다. max_age보다 오래되면 None.
 fn disk_cache_load(env: &Env, key: &str, max_age: std::time::Duration) -> Option<(Usage, u64)> {
+    let _guard = DISK_CACHE_LOCK.lock().ok()?;
     let root = read_json(&disk_cache_path(env)).ok()?;
     let entry: DiskEntry = serde_json::from_value(root.get(key)?.clone()).ok()?;
     let age = now().saturating_sub(entry.saved_at);
@@ -705,21 +903,43 @@ fn disk_cache_load(env: &Env, key: &str, max_age: std::time::Duration) -> Option
     }
 }
 
-fn disk_cache_store(env: &Env, key: &str, usage: &Usage) {
+fn disk_cache_root(path: &Path) -> Result<Value, String> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Value::Object(Default::default()));
+        }
+        Err(error) => return Err(format!("읽기 실패 {}: {error}", path.display())),
+    };
+    let root: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("JSON 파싱 실패 {}: {error}", path.display()))?;
+    if root.is_object() {
+        Ok(root)
+    } else {
+        Err(format!("캐시 형식이 올바르지 않습니다: {}", path.display()))
+    }
+}
+
+fn disk_cache_store(env: &Env, key: &str, usage: &Usage) -> Result<(), String> {
+    let _guard = DISK_CACHE_LOCK
+        .lock()
+        .map_err(|_| "사용량 캐시 잠금 오류".to_string())?;
     let path = disk_cache_path(env);
-    let mut root = read_json(&path).unwrap_or_else(|_| Value::Object(Default::default()));
+    // NotFound만 새 캐시로 취급한다. 손상·권한 오류를 빈 객체로 덮어 다른 계정의
+    // 마지막 성공값까지 지우지 않는다.
+    let mut root = disk_cache_root(&path)?;
     if let Some(obj) = root.as_object_mut() {
         let entry = DiskEntry {
             saved_at: now(),
             usage: usage.clone(),
         };
-        if let Ok(value) = serde_json::to_value(&entry) {
-            obj.insert(key.to_string(), value);
-        }
-        if let Ok(bytes) = serde_json::to_vec_pretty(&root) {
-            let _ = atomic_write(&path, &bytes);
-        }
+        let value = serde_json::to_value(&entry)
+            .map_err(|error| format!("사용량 캐시 직렬화 실패: {error}"))?;
+        obj.insert(key.to_string(), value);
     }
+    let bytes = serde_json::to_vec_pretty(&root)
+        .map_err(|error| format!("사용량 캐시 직렬화 실패: {error}"))?;
+    atomic_write(&path, &bytes)
 }
 
 /// 프로필 삭제 시 그 계정의 사용량 캐시(메모리·디스크·백오프)를 정리한다 —
@@ -754,8 +974,15 @@ pub(crate) fn purge_account_cache(
         }
     }
     let path = disk_cache_path(env);
-    let Ok(mut root) = read_json(&path) else {
-        return; // 캐시 파일이 아직 없으면 정리할 것도 없다
+    let Ok(_guard) = DISK_CACHE_LOCK.lock() else {
+        return;
+    };
+    let mut root = match disk_cache_root(&path) {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("사용량 캐시 정리 보류: {error}");
+            return;
+        }
     };
     if let Some(obj) = root.as_object_mut() {
         let mut changed = false;
@@ -764,7 +991,9 @@ pub(crate) fn purge_account_cache(
         }
         if changed {
             if let Ok(bytes) = serde_json::to_vec_pretty(&root) {
-                let _ = atomic_write(&path, &bytes);
+                if let Err(error) = atomic_write(&path, &bytes) {
+                    eprintln!("사용량 캐시 정리 저장 실패: {error}");
+                }
             }
         }
     }
@@ -813,7 +1042,10 @@ pub async fn fetch(
     provider: Provider,
     profile: Option<&str>,
 ) -> Result<Usage, String> {
-    let key = cache_key(env, provider, profile);
+    // 캐시 조회부터 실제 요청까지 같은 계정 스냅숏을 쓴다. 활성 전환이 중간에
+    // 끼어도 A 캐시를 B 토큰으로 조회하거나 A 값을 B 카드에 붙이지 않는다.
+    let initial_auth = auth_snapshot(env, provider, profile)?;
+    let key = initial_auth.key.clone();
 
     // 1) 메모리 캐시가 신선하면 그대로
     if let Ok(map) = cache().lock() {
@@ -857,30 +1089,70 @@ pub async fn fetch(
             .ok_or_else(|| "사용량 조회 대기중".into());
     }
 
-    // 4) 실제 조회
-    let result = match provider {
-        Provider::Claude => fetch_claude(env, profile).await,
-        Provider::Codex => fetch_codex(env, profile).await,
+    // 4) 실제 조회. 비활성 프로필은 캐시가 없을 때만 재발급을 시도하고 새 토큰을
+    // 다시 스냅숏으로 잡는다. 활성 계정은 위에서 잡은 토큰·키를 끝까지 유지한다.
+    let prepared = match profile {
+        Some(_) => request_auth(env, provider, profile).await,
+        None => Ok((initial_auth, None)),
+    };
+    let (actual_key, result) = match prepared {
+        Ok((auth, refresh_err)) => {
+            let actual_key = auth.key.clone();
+            let result = match provider {
+                Provider::Claude => fetch_claude_attempt(auth, refresh_err).await,
+                Provider::Codex => fetch_codex_attempt(auth, refresh_err).await,
+            };
+            (actual_key, result)
+        }
+        Err(error) => (key.clone(), Err(error)),
     };
     match result {
         Ok(usage) => {
-            backoff_clear(&key);
+            backoff_clear(&actual_key);
             if let Ok(mut map) = cache().lock() {
-                map.insert(key.clone(), (std::time::Instant::now(), usage.clone()));
+                map.insert(
+                    actual_key.clone(),
+                    (std::time::Instant::now(), usage.clone()),
+                );
             }
-            disk_cache_store(env, &key, &usage);
+            if let Err(e) = disk_cache_store(env, &actual_key, &usage) {
+                eprintln!("사용량 캐시 저장 실패: {e}");
+            }
             Ok(usage)
         }
         Err(FetchErr::Transient) => {
             // 요청 제한·서버 오류 — 재시도를 자제하고 마지막 수치로 조용히 버틴다
-            backoff_bump(&key);
-            stale_value()
+            backoff_bump(&actual_key);
+            let actual_stale = || -> Option<(Usage, u64)> {
+                if let Ok(map) = cache().lock() {
+                    if let Some((at, cached)) = map.get(&actual_key) {
+                        if at.elapsed() < STALE_MAX {
+                            return Some((cached.clone(), at.elapsed().as_secs()));
+                        }
+                    }
+                }
+                disk_cache_load(env, &actual_key, STALE_MAX)
+            };
+            actual_stale()
                 .map(mark_stale)
                 .ok_or_else(|| "사용량 조회 대기중".into())
         }
         // 만료 토큰 등 — 하루 안의 마지막 수치가 있으면 나이 라벨과 함께 보여주고,
         // 그마저 없을 때만 원래 에러(전환해 갱신하라는 안내)를 노출한다
-        Err(FetchErr::Msg(message)) => stale_value().map(mark_stale).ok_or(message),
+        Err(FetchErr::Msg(message)) => {
+            let actual_stale = if actual_key == key {
+                stale_value()
+            } else if let Ok(map) = cache().lock() {
+                map.get(&actual_key).and_then(|(at, cached)| {
+                    (at.elapsed() < STALE_MAX)
+                        .then(|| (cached.clone(), at.elapsed().as_secs()))
+                })
+            } else {
+                None
+            }
+            .or_else(|| disk_cache_load(env, &actual_key, STALE_MAX));
+            actual_stale.map(mark_stale).ok_or(message)
+        }
     }
 }
 
@@ -1021,7 +1293,7 @@ mod tests {
             stale: false,
             stale_age_secs: None,
         };
-        disk_cache_store(&env, "claude:acct-1", &usage);
+        disk_cache_store(&env, "claude:acct-1", &usage).unwrap();
         let (loaded, age) = disk_cache_load(&env, "claude:acct-1", STALE_MAX)
             .expect("방금 저장한 값이 읽혀야 한다");
         assert_eq!(loaded.windows[0].percent, 42.0);
@@ -1034,6 +1306,38 @@ mod tests {
         root["claude:acct-1"]["saved_at"] = serde_json::json!(1000);
         fs::write(&path, serde_json::to_vec(&root).unwrap()).unwrap();
         assert!(disk_cache_load(&env, "claude:acct-1", STALE_MAX).is_none());
+    }
+
+    #[test]
+    fn parallel_disk_cache_writes_keep_every_account() {
+        let env = std::sync::Arc::new(test_env("disk-cache-parallel"));
+        fs::create_dir_all(&env.store).unwrap();
+        let writers = 32;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(writers));
+        let mut threads = Vec::new();
+        for i in 0..writers {
+            let env = env.clone();
+            let barrier = barrier.clone();
+            threads.push(std::thread::spawn(move || {
+                let usage = Usage {
+                    windows: vec![UsageWindow {
+                        key: "session".into(),
+                        label: "5 Hours".into(),
+                        percent: i as f64,
+                        resets_at: None,
+                    }],
+                    stale: false,
+                    stale_age_secs: None,
+                };
+                barrier.wait();
+                disk_cache_store(&env, &format!("claude:acct-{i}"), &usage).unwrap();
+            }));
+        }
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        let root = read_json(&disk_cache_path(&env)).unwrap();
+        assert_eq!(root.as_object().unwrap().len(), writers);
     }
 
     /// 핵심 시나리오: 비활성 프로필의 토큰이 만료돼도(수명 실측 3~5시간)
@@ -1064,7 +1368,7 @@ mod tests {
             stale: false,
             stale_age_secs: None,
         };
-        disk_cache_store(&env, "claude:uuid-stale", &usage);
+        disk_cache_store(&env, "claude:uuid-stale", &usage).unwrap();
         let path = disk_cache_path(&env);
         let mut root = read_json(&path).unwrap();
         root["claude:uuid-stale"]["saved_at"] = serde_json::json!(now() - 3 * 3600);
@@ -1208,10 +1512,10 @@ mod tests {
             r#"{"access_token":"new-a","refresh_token":"r-new","expires_in":28800}"#,
         )
         .unwrap();
-        write_pending(&cred, "r-old", &resp);
+        write_pending(&cred, "r-old", &resp).unwrap();
         assert!(pending_path(&cred).exists());
 
-        apply_pending_rescue(Provider::Claude, &cred);
+        apply_pending_rescue(&env, Provider::Claude, "p", &cred).unwrap();
         let root = read_json(&cred).unwrap();
         assert_eq!(root.pointer("/claudeAiOauth/accessToken").unwrap(), "new-a");
         assert_eq!(root.pointer("/claudeAiOauth/refreshToken").unwrap(), "r-new");
@@ -1221,14 +1525,61 @@ mod tests {
         // 파일이 이미 더 새것(다른 리프레시 토큰)이면 응답을 버리고 사이드카만 정리
         let stale_resp: Value =
             serde_json::from_str(r#"{"access_token":"zzz","expires_in":1}"#).unwrap();
-        write_pending(&cred, "r-departed", &stale_resp);
-        apply_pending_rescue(Provider::Claude, &cred);
+        write_pending(&cred, "r-departed", &stale_resp).unwrap();
+        apply_pending_rescue(&env, Provider::Claude, "p", &cred).unwrap();
         let root = read_json(&cred).unwrap();
         assert_eq!(
             root.pointer("/claudeAiOauth/accessToken").unwrap(),
             "new-a",
             "낡은 응답이 파일을 덮으면 안 된다"
         );
+        assert!(!pending_path(&cred).exists());
+    }
+
+    #[test]
+    fn pending_write_never_recreates_deleted_profile_directory() {
+        let env = test_env("pending-deleted");
+        let dir = env.profiles_dir(Provider::Claude).join("gone");
+        let cred = dir.join("credentials.json");
+        let resp: Value = serde_json::from_str(
+            r#"{"access_token":"new-a","refresh_token":"new-r","expires_in":28800}"#,
+        )
+        .unwrap();
+        assert!(write_pending(&cred, "old-r", &resp).is_err());
+        assert!(!dir.exists(), "pending 쓰기가 삭제된 프로필 폴더를 되살리면 안 된다");
+    }
+
+    #[test]
+    fn pending_rescue_repairs_active_copy_before_deleting_sidecar() {
+        let env = test_env("pending-active-repair");
+        let dir = env.profiles_dir(Provider::Claude).join("p");
+        fs::create_dir_all(&dir).unwrap();
+        let old = r#"{"claudeAiOauth":{"accessToken":"old-a","refreshToken":"r-old","expiresAt":1000}}"#;
+        let cred = dir.join("credentials.json");
+        fs::write(&cred, old).unwrap();
+        fs::write(env.live_credential_path(Provider::Claude), old).unwrap();
+        fs::write(
+            env.home.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-p","emailAddress":"p@test.dev"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            dir.join("meta.json"),
+            r#"{"id":"uuid-p","email":"p@test.dev","saved_at":1}"#,
+        )
+        .unwrap();
+        let resp: Value = serde_json::from_str(
+            r#"{"access_token":"new-a","refresh_token":"r-new","expires_in":28800}"#,
+        )
+        .unwrap();
+        write_pending(&cred, "r-old", &resp).unwrap();
+
+        apply_pending_rescue(&env, Provider::Claude, "p", &cred).unwrap();
+        let profile = read_json(&cred).unwrap();
+        let live: Value = serde_json::from_slice(&read_live_cred(&env, Provider::Claude).unwrap())
+            .unwrap();
+        assert_eq!(profile.pointer("/claudeAiOauth/refreshToken").unwrap(), "r-new");
+        assert_eq!(live.pointer("/claudeAiOauth/refreshToken").unwrap(), "r-new");
         assert!(!pending_path(&cred).exists());
     }
 
@@ -1289,9 +1640,9 @@ mod tests {
             stale: false,
             stale_age_secs: None,
         };
-        disk_cache_store(&env, "claude:uuid-live", &usage);
-        disk_cache_store(&env, "claude:uuid-gone", &usage);
-        disk_cache_store(&env, "claude:<name:ghost>", &usage);
+        disk_cache_store(&env, "claude:uuid-live", &usage).unwrap();
+        disk_cache_store(&env, "claude:uuid-gone", &usage).unwrap();
+        disk_cache_store(&env, "claude:<name:ghost>", &usage).unwrap();
 
         // 비활성 계정 삭제 → 키 제거
         purge_account_cache(&env, Provider::Claude, Some("uuid-gone"), "gone");

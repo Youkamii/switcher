@@ -20,8 +20,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::accounts::{
-    auto_name, ensure_name_not_owned_by_other, find_profile_by_id, identity_from_value, now,
-    read_json, write_profile_parts, Env, LiveIdentity, Provider, MUTATION_LOCK,
+    auto_name, claude_apply_oauth_block, deletion_identity_key, deletion_snapshot,
+    ensure_name_not_owned_by_other, find_profile_by_id, identity_from_value, live_identity, now,
+    profile_deleted_after, read_json, refresh_key, write_live_cred, write_profile_parts, Env,
+    LiveIdentity, Provider, MUTATION_LOCK,
 };
 
 /// 로그인 링크가 화면에 뜰 때까지 기다리는 시간
@@ -43,6 +45,8 @@ const SWEEP_MIN_AGE: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Serialize, Debug)]
 pub struct LoginPrompt {
+    /// 뒤늦게 도착한 이전 패널의 요청이 새 세션을 건드리지 못하게 하는 ID.
+    pub session_id: String,
     /// 사용자가 원하는 브라우저에 붙여넣을 로그인 주소
     pub url: String,
     /// 코덱스처럼 웹페이지에 입력해야 하는 일회용 코드 (없으면 None)
@@ -60,6 +64,8 @@ pub struct LoginOutcome {
 }
 
 struct Session {
+    generation: u64,
+    delete_epoch: u64,
     provider: Provider,
     config_dir: PathBuf,
     child: Box<dyn Child + Send + Sync>,
@@ -70,6 +76,44 @@ struct Session {
 }
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+
+#[derive(Default)]
+struct OutputBuffer {
+    bytes: Vec<u8>,
+    /// 버퍼 상한 때문에 앞에서 버린 누적 바이트 수. 제출 표식은 이 절대 위치를 쓴다.
+    dropped: u64,
+}
+
+impl OutputBuffer {
+    fn reset(&mut self) {
+        self.bytes.clear();
+        self.dropped = 0;
+    }
+
+    fn append(&mut self, piece: &[u8]) {
+        self.bytes.extend_from_slice(piece);
+        if self.bytes.len() > OUTPUT_CAP {
+            let cut = self.bytes.len() - OUTPUT_CAP;
+            self.bytes.drain(..cut);
+            self.dropped = self.dropped.saturating_add(cut as u64);
+        }
+    }
+
+    fn snapshot(&self) -> Vec<u8> {
+        self.bytes.clone()
+    }
+
+    fn position(&self) -> u64 {
+        self.dropped.saturating_add(self.bytes.len() as u64)
+    }
+
+    fn since(&self, mark: u64) -> Vec<u8> {
+        let offset = mark
+            .saturating_sub(self.dropped)
+            .min(self.bytes.len() as u64) as usize;
+        self.bytes[offset..].to_vec()
+    }
+}
 
 /// ANSI 이스케이프 시퀀스를 걷어내 사람이 읽는 글자만 남긴다.
 /// 색상(SGR, 최종 바이트 m)은 글자 중간에도 끼므로 조용히 버리고,
@@ -361,6 +405,10 @@ fn start_impl(
     provider: Provider,
     (program, args, env_key): (&str, &[&str], &str),
 ) -> Result<LoginPrompt, String> {
+    let my_gen;
+    // CLI/PTY 준비가 길어지는 동안 일어난 삭제도 "로그인 시작 뒤 삭제"로 잡아야 한다.
+    // 세션 등록 직전에 찍으면 그 사이 삭제가 tombstone보다 먼저가 되어 되살아난다.
+    let delete_epoch = deletion_snapshot();
     // 세션 검사부터 등록까지 잠금을 쥔 채 진행한다 —
     // 연타로 두 로그인이 동시에 시작해 폴더·세션이 꼬이는 것을 막는다 (red-review 2라운드)
     {
@@ -371,18 +419,30 @@ fn start_impl(
         sweep_stale(env);
 
         let config_dir = temp_config_dir(env);
-        fs::create_dir_all(&config_dir)
+        let mut config_builder = fs::DirBuilder::new();
+        config_builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            config_builder.mode(0o700);
+        }
+        config_builder
+            .create(&config_dir)
             .map_err(|e| format!("임시 폴더 생성 실패 {}: {e}", config_dir.display()))?;
 
-        let pair = native_pty_system()
-            .openpty(PtySize {
+        let pair = match native_pty_system().openpty(PtySize {
                 rows: 40,
                 // 긴 OAuth 주소가 줄바꿈으로 잘리지 않게 넉넉히
                 cols: 500,
                 pixel_width: 0,
                 pixel_height: 0,
-            })
-            .map_err(|e| format!("가상 콘솔 생성 실패: {e}"))?;
+            }) {
+            Ok(pair) => pair,
+            Err(error) => {
+                cleanup_isolated(&config_dir);
+                return Err(format!("가상 콘솔 생성 실패: {error}"));
+            }
+        };
 
         // npm 전역 설치본은 .cmd 셔임이라 cmd 경유로 실행한다
         #[cfg(windows)]
@@ -400,7 +460,7 @@ fn start_impl(
         }
         cmd.env(env_key, &config_dir);
 
-        let child = pair.slave.spawn_command(cmd).map_err(|e| {
+        let mut child = pair.slave.spawn_command(cmd).map_err(|e| {
             cleanup_isolated(&config_dir);
             format!(
                 "{program} 실행에 실패했습니다: {e} — 설치·업데이트: {}",
@@ -409,15 +469,23 @@ fn start_impl(
         })?;
         drop(pair.slave);
 
-        let mut reader = pair
-            .master
-            .try_clone_reader()
-            .map_err(|e| format!("콘솔 읽기 실패: {e}"))?;
-        let writer = Arc::new(Mutex::new(
-            pair.master
-                .take_writer()
-                .map_err(|e| format!("콘솔 쓰기 실패: {e}"))?,
-        ));
+        let mut reader = match pair.master.try_clone_reader() {
+            Ok(reader) => reader,
+            Err(error) => {
+                terminate_child(child.as_mut());
+                cleanup_isolated(&config_dir);
+                return Err(format!("콘솔 읽기 실패: {error}"));
+            }
+        };
+        let raw_writer = match pair.master.take_writer() {
+            Ok(writer) => writer,
+            Err(error) => {
+                terminate_child(child.as_mut());
+                cleanup_isolated(&config_dir);
+                return Err(format!("콘솔 쓰기 실패: {error}"));
+            }
+        };
+        let writer = Arc::new(Mutex::new(raw_writer));
         let responder = writer.clone();
 
         let sink = output_buffer();
@@ -426,12 +494,19 @@ fn start_impl(
         // 붙일 때마다 자기 세대인지 확인하고, 세대가 바뀌었으면 조용히 버리고 끝낸다.
         // (join으로 풀 수도 있지만, 플랫폼에 따라 read가 늦게 풀리면 취소가 그만큼
         // 매달린다 — 세대 표식은 기다림 없이 같은 효과를 낸다)
-        let my_gen = {
+        my_gen = {
             // 버퍼 잠금 안에서 세대를 올리고 비운다 — 이전 reader가 잠금을 쥔 채
             // 붙이는 중이면 그 뒤에 비워지고, 이후 조각은 세대 불일치로 버려진다
-            let mut acc = sink.lock().map_err(|_| "내부 잠금 오류")?;
+            let mut acc = match sink.lock() {
+                Ok(acc) => acc,
+                Err(_) => {
+                    terminate_child(child.as_mut());
+                    cleanup_isolated(&config_dir);
+                    return Err("내부 잠금 오류".into());
+                }
+            };
             let next = SESSION_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            acc.clear();
+            acc.reset();
             next
         };
         std::thread::spawn(move || {
@@ -458,17 +533,14 @@ fn start_impl(
                     if SESSION_GEN.load(std::sync::atomic::Ordering::SeqCst) != my_gen {
                         break;
                     }
-                    acc.extend_from_slice(piece);
-                    // 스피너 프레임이 무한히 쌓이지 않게 앞부분을 버린다
-                    if acc.len() > OUTPUT_CAP {
-                        let cut = acc.len() - OUTPUT_CAP;
-                        acc.drain(..cut);
-                    }
+                    acc.append(piece);
                 }
             }
         });
 
         *guard = Some(Session {
+            generation: my_gen,
+            delete_epoch,
             provider,
             config_dir,
             child,
@@ -489,6 +561,9 @@ fn start_impl(
             let Some(session) = guard.as_mut() else {
                 return Err("로그인을 취소했습니다".into());
             };
+            if session.generation != my_gen {
+                return Err("로그인을 취소했습니다".into());
+            }
             if exited_at.is_none() {
                 if let Ok(Some(_)) = session.child.try_wait() {
                     exited_at = Some(Instant::now());
@@ -497,7 +572,7 @@ fn start_impl(
         }
         let raw = {
             let acc = output_buffer().lock().map_err(|_| "내부 잠금 오류")?;
-            acc.clone()
+            acc.snapshot()
         };
         // 하이퍼링크 대상(항상 완전한 주소)을 우선, 가시 텍스트는 폴백
         let url = pick_login_url(extract_osc8_urls(&raw))
@@ -506,6 +581,7 @@ fn start_impl(
             match provider {
                 Provider::Claude => {
                     return Ok(LoginPrompt {
+                        session_id: my_gen.to_string(),
                         url,
                         device_code: None,
                         needs_code: true,
@@ -515,6 +591,7 @@ fn start_impl(
                     // 코덱스는 일회용 코드까지 화면에 떠야 완성이다 — 둘 다 기다린다
                     if let Some(code) = extract_device_code(&strip_ansi(&raw)) {
                         return Ok(LoginPrompt {
+                            session_id: my_gen.to_string(),
                             url,
                             device_code: Some(code),
                             needs_code: false,
@@ -525,11 +602,11 @@ fn start_impl(
         }
         // 자식이 종료했고 플러시 유예도 지났는데 주소가 없다 — 재시도로 해결될 문제가 아니다
         if exited_at.is_some_and(|t| t.elapsed() > EXIT_FLUSH) {
-            cancel();
+            cancel_generation(my_gen);
             return Err(early_exit_error(provider));
         }
         if Instant::now() > deadline {
-            cancel();
+            cancel_generation(my_gen);
             return Err("로그인 주소를 받지 못했습니다 — 잠시 후 다시 시도하세요".into());
         }
         std::thread::sleep(POLL);
@@ -537,8 +614,11 @@ fn start_impl(
 }
 
 /// 화면 누적 버퍼 (세션 하나만 존재하므로 전역 하나로 충분)
-fn output_buffer() -> &'static Mutex<Vec<u8>> {
-    static BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+fn output_buffer() -> &'static Mutex<OutputBuffer> {
+    static BUF: Mutex<OutputBuffer> = Mutex::new(OutputBuffer {
+        bytes: Vec::new(),
+        dropped: 0,
+    });
     &BUF
 }
 
@@ -558,7 +638,7 @@ pub(crate) fn detect_code_rejection(screen_since_submit: &str) -> bool {
 }
 
 /// 세션의 자식 프로세스가 끝날 때까지 기다린다 (취소 가능하도록 짧게 끊어 확인)
-fn wait_for_exit(timeout: Duration) -> Result<(), String> {
+fn wait_for_exit(timeout: Duration, generation: u64) -> Result<(), String> {
     let started = Instant::now();
     loop {
         let probe = {
@@ -566,6 +646,9 @@ fn wait_for_exit(timeout: Duration) -> Result<(), String> {
             let Some(session) = guard.as_mut() else {
                 return Err("로그인을 취소했습니다".into());
             };
+            if session.generation != generation {
+                return Err("로그인을 취소했습니다".into());
+            }
             session.child.try_wait()
         };
         match probe {
@@ -573,12 +656,12 @@ fn wait_for_exit(timeout: Duration) -> Result<(), String> {
             Ok(None) => {}
             Err(e) => {
                 // 상태 확인이 안 되는 세션은 살려둬 봐야 '계정 추가'만 막는다 (#18) — 정리
-                cancel();
+                cancel_generation(generation);
                 return Err(format!("로그인 상태 확인 실패: {e} — 로그인을 정리했습니다"));
             }
         }
         if started.elapsed() > timeout {
-            cancel();
+            cancel_generation(generation);
             return Err("시간이 초과됐습니다 — 처음부터 다시 시도하세요".into());
         }
         std::thread::sleep(POLL);
@@ -593,7 +676,11 @@ enum SubmitWait {
     Rejected,
 }
 
-fn wait_for_exit_or_rejection(timeout: Duration, mark: usize) -> Result<SubmitWait, String> {
+fn wait_for_exit_or_rejection(
+    timeout: Duration,
+    mark: u64,
+    generation: u64,
+) -> Result<SubmitWait, String> {
     let started = Instant::now();
     loop {
         let probe = {
@@ -601,28 +688,28 @@ fn wait_for_exit_or_rejection(timeout: Duration, mark: usize) -> Result<SubmitWa
             let Some(session) = guard.as_mut() else {
                 return Err("로그인을 취소했습니다".into());
             };
+            if session.generation != generation {
+                return Err("로그인을 취소했습니다".into());
+            }
             session.child.try_wait()
         };
         match probe {
             Ok(Some(_)) => return Ok(SubmitWait::Exited),
             Ok(None) => {}
             Err(e) => {
-                cancel();
+                cancel_generation(generation);
                 return Err(format!("로그인 상태 확인 실패: {e} — 로그인을 정리했습니다"));
             }
         }
         let fresh = {
             let acc = output_buffer().lock().map_err(|_| "내부 잠금 오류")?;
-            // mark는 제출 직전의 버퍼 길이다. 그 뒤 캡 드레인으로 앞부분이 잘리면
-            // 제출 전 화면 일부가 섞일 수 있지만, 거부 문구는 제출 전 화면에
-            // 나타나지 않으므로(실측) 오탐으로 이어지지 않는다.
-            strip_ansi(&acc[mark.min(acc.len())..])
+            strip_ansi(&acc.since(mark))
         };
         if detect_code_rejection(&fresh) {
             return Ok(SubmitWait::Rejected);
         }
         if started.elapsed() > timeout {
-            cancel();
+            cancel_generation(generation);
             return Err("시간이 초과됐습니다 — 처음부터 다시 시도하세요".into());
         }
         std::thread::sleep(POLL);
@@ -683,22 +770,41 @@ fn read_login_result(
     }
 }
 
-/// 세션을 정리하고 (provider, 임시 폴더)를 돌려준다
-fn finish_session() -> Option<(Provider, PathBuf)> {
+/// 지정한 세션을 정리하고 (provider, 임시 폴더)를 돌려준다.
+/// 취소 직후 새 로그인이 시작됐으면 이전 waiter가 새 세션을 가져가지 않는다.
+fn finish_session(generation: u64) -> Option<(Provider, PathBuf, u64)> {
     let mut guard = SESSION.lock().ok()?;
+    if guard.as_ref()?.generation != generation {
+        return None;
+    }
     let session = guard.take()?;
-    Some((session.provider, session.config_dir))
+    Some((session.provider, session.config_dir, session.delete_epoch))
 }
 
 /// 임시 폴더의 로그인 결과를 프로필로 들여온다.
 /// 어떤 경로로 끝나든 폴더와 키체인 잔재(맥)는 지운다.
+#[cfg(test)]
 fn import(env: &Env, provider: Provider, config_dir: &Path) -> Result<LoginOutcome, String> {
-    let result = import_inner(env, provider, config_dir);
+    import_started(env, provider, config_dir, deletion_snapshot())
+}
+
+fn import_started(
+    env: &Env,
+    provider: Provider,
+    config_dir: &Path,
+    delete_epoch: u64,
+) -> Result<LoginOutcome, String> {
+    let result = import_inner(env, provider, config_dir, delete_epoch);
     cleanup_isolated(config_dir);
     result
 }
 
-fn import_inner(env: &Env, provider: Provider, config_dir: &Path) -> Result<LoginOutcome, String> {
+fn import_inner(
+    env: &Env,
+    provider: Provider,
+    config_dir: &Path,
+    delete_epoch: u64,
+) -> Result<LoginOutcome, String> {
     let (ident, cred, block) = read_login_result(provider, config_dir)?;
 
     // 프로필을 실제로 건드리는 구간에서만 잠근다
@@ -706,9 +812,30 @@ fn import_inner(env: &Env, provider: Provider, config_dir: &Path) -> Result<Logi
     let existing = find_profile_by_id(env, provider, &ident.id)?;
     let updated_existing = existing.is_some();
     let name = existing.unwrap_or_else(|| auto_name(env, provider, &ident));
+    let key = refresh_key(env, provider, &name);
+    if profile_deleted_after(&key, delete_epoch)
+        || profile_deleted_after(
+            &deletion_identity_key(env, provider, &ident.id),
+            delete_epoch,
+        )
+    {
+        return Err(format!(
+            "로그인 중 프로필 '{name}'이 삭제되어 결과를 다시 만들지 않았습니다 — 계정 추가를 다시 시도하세요"
+        ));
+    }
     // auto_name이 빈 이름을 보장하지만, 불변("다른 계정 토큰을 덮어쓰지 않는다")은 여기서도 지킨다
     ensure_name_not_owned_by_other(env, provider, &name, &ident)?;
+    let updates_active = live_identity(env, provider)?
+        .is_some_and(|live| live.id == ident.id);
+    if updates_active {
+        // 같은 활성 계정의 재로그인 결과를 프로필에만 쓰면 다음 전환의 활성 백업이
+        // 폐기된 옛 토큰으로 새 토큰을 덮는다. 같은 계정일 때만 활성도 먼저 갱신한다.
+        write_live_cred(env, provider, &cred)?;
+    }
     write_profile_parts(env, provider, &name, &ident, &cred, block.as_ref())?;
+    if updates_active && provider == Provider::Claude {
+        claude_apply_oauth_block(env, &env.profiles_dir(provider).join(&name))?;
+    }
     Ok(LoginOutcome {
         profile: name,
         email: ident.email,
@@ -717,16 +844,21 @@ fn import_inner(env: &Env, provider: Provider, config_dir: &Path) -> Result<Logi
 }
 
 /// 로그인 종료를 기다렸다가 결과를 프로필로 들여온다 (submit/wait 공용 꼬리)
-fn finish_and_import(env: &Env, timeout: Duration) -> Result<LoginOutcome, String> {
-    wait_for_exit(timeout)?;
-    let (provider, dir) = finish_session().ok_or("로그인 세션이 사라졌습니다")?;
-    import(env, provider, &dir)
+fn finish_and_import(
+    env: &Env,
+    timeout: Duration,
+    generation: u64,
+) -> Result<LoginOutcome, String> {
+    wait_for_exit(timeout, generation)?;
+    let (provider, dir, delete_epoch) =
+        finish_session(generation).ok_or("로그인 세션이 사라졌습니다")?;
+    import_started(env, provider, &dir, delete_epoch)
 }
 
 /// 브라우저에서 받은 코드를 CLI에 전달해 로그인을 끝낸다 (클로드).
 /// 잘못된 코드는 CLI 화면의 거부 문구를 감지해 몇 초 안에 알린다 — 세션은 살아
 /// 있으므로 프론트가 같은 패널에서 재입력을 받는다 (45초 타임아웃 대기 제거, #18).
-pub fn submit_code(env: &Env, code: &str) -> Result<LoginOutcome, String> {
+pub fn submit_code(env: &Env, code: &str, generation: u64) -> Result<LoginOutcome, String> {
     let code = code.trim();
     if code.is_empty() {
         return Err("코드를 입력하세요".into());
@@ -738,32 +870,41 @@ pub fn submit_code(env: &Env, code: &str) -> Result<LoginOutcome, String> {
     if code.contains(['\r', '\n']) || code.chars().any(|c| c.is_control()) {
         return Err("코드 형식이 올바르지 않습니다".into());
     }
-    // 제출 직전의 화면 길이 — 이 지점 이후의 출력에서만 거부 문구를 찾는다
-    let mark = output_buffer().lock().map_err(|_| "내부 잠금 오류")?.len();
-    let write_result = {
+    // 세션 세대와 제출 직전의 절대 화면 위치를 함께 붙잡는다. 이후 취소→새 로그인
+    // 경합이 나도 이 waiter는 새 세션을 관찰하거나 취소하지 않는다.
+    let (mark, write_result) = {
         let guard = SESSION.lock().map_err(|_| "내부 잠금 오류")?;
         let session = guard.as_ref().ok_or("진행 중인 로그인이 없습니다")?;
+        if session.generation != generation {
+            return Err("이전 로그인 패널의 요청이라 무시했습니다".into());
+        }
         if session.provider != Provider::Claude {
             return Err("코드 입력은 클로드 로그인에서만 사용합니다".into());
         }
+        let mark = output_buffer()
+            .lock()
+            .map_err(|_| "내부 잠금 오류")?
+            .position();
         let mut writer = session.writer.lock().map_err(|_| "내부 잠금 오류")?;
-        writer.write_all(format!("{code}\r").as_bytes()).map(|_| {
+        let result = writer.write_all(format!("{code}\r").as_bytes()).map(|_| {
             writer.flush().ok();
-        })
+        });
+        (mark, result)
     };
     if let Err(e) = write_result {
         // 콘솔 통로가 죽은 세션을 남겨두면 앱 재시작 전까지 '계정 추가'가
         // "이미 진행 중" 오류로 막힌다 (#18) — 즉시 정리한다.
         // cancel()이 SESSION 잠금을 다시 잡으므로 위 블록이 끝난 뒤에 부른다.
-        cancel();
+        cancel_generation(generation);
         return Err(format!(
             "코드 전달 실패: {e} — 로그인을 정리했습니다. '계정 추가'로 다시 시도하세요"
         ));
     }
-    match wait_for_exit_or_rejection(FINISH_TIMEOUT, mark)? {
+    match wait_for_exit_or_rejection(FINISH_TIMEOUT, mark, generation)? {
         SubmitWait::Exited => {
-            let (provider, dir) = finish_session().ok_or("로그인 세션이 사라졌습니다")?;
-            import(env, provider, &dir)
+            let (provider, dir, delete_epoch) =
+                finish_session(generation).ok_or("로그인 세션이 사라졌습니다")?;
+            import_started(env, provider, &dir, delete_epoch)
         }
         // 프론트는 이 문구("코드가 거부")로 재시도 가능 상태를 판별한다 (main.ts)
         SubmitWait::Rejected => Err(
@@ -773,41 +914,83 @@ pub fn submit_code(env: &Env, code: &str) -> Result<LoginOutcome, String> {
 }
 
 /// 브라우저에서 코드 입력까지 끝나면 CLI가 스스로 완료한다 (코덱스 device-auth)
-pub fn wait_device(env: &Env) -> Result<LoginOutcome, String> {
-    finish_and_import(env, DEVICE_TIMEOUT)
+pub fn wait_device(env: &Env, generation: u64) -> Result<LoginOutcome, String> {
+    finish_and_import(env, DEVICE_TIMEOUT, generation)
 }
 
 /// 진행 중인 로그인을 중단하고 임시 폴더를 지운다.
 /// Windows에서는 cmd 셔임을 거치므로 트리째 종료해야 CLI가 살아남지 않는다.
+fn take_session(generation: Option<u64>) -> Option<Session> {
+    let mut guard = SESSION.lock().ok()?;
+    if generation.is_some_and(|expected| {
+        guard
+            .as_ref()
+            .is_none_or(|session| session.generation != expected)
+    }) {
+        return None;
+    }
+    let session = guard.take();
+    if session.is_some() {
+        // SESSION 잠금 안에서 세대를 끊어야 취소 직후 시작되는 다음 세션보다
+        // 나중에 값을 올려 새 reader까지 죽이는 역전이 생기지 않는다.
+        SESSION_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    session
+}
+
+fn terminate_child(child: &mut (dyn Child + Send + Sync)) {
+    #[cfg(windows)]
+    if let Some(pid) = child.process_id() {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    // PTY 자식은 세션 리더(setsid)다 — 그룹째 보내야 CLI 자손이 살아남지 않는다
+    #[cfg(unix)]
+    if let Some(pid) = child.process_id() {
+        unsafe {
+            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+fn terminate_session(mut session: Session) {
+    terminate_child(session.child.as_mut());
+    cleanup_isolated(&session.config_dir);
+}
+
+fn cancel_generation(generation: u64) {
+    if let Some(session) = take_session(Some(generation)) {
+        terminate_session(session);
+    }
+}
+
 pub fn cancel() {
-    let taken = {
-        match SESSION.lock() {
-            Ok(mut guard) => guard.take(),
-            Err(_) => None,
+    if let Some(session) = take_session(None) {
+        terminate_session(session);
+    }
+}
+
+pub fn cancel_session(generation: u64) -> Result<(), String> {
+    let current = SESSION
+        .lock()
+        .map_err(|_| "내부 잠금 오류")?
+        .as_ref()
+        .map(|session| session.generation);
+    match current {
+        Some(active) if active == generation => {
+            cancel_generation(generation);
+            Ok(())
         }
-    };
-    if let Some(mut session) = taken {
-        #[cfg(windows)]
-        if let Some(pid) = session.child.process_id() {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            let _ = std::process::Command::new("taskkill")
-                .args(["/T", "/F", "/PID", &pid.to_string()])
-                .creation_flags(CREATE_NO_WINDOW)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status();
-        }
-        // PTY 자식은 세션 리더(setsid)다 — 그룹째 보내야 CLI 자손이 살아남지 않는다
-        #[cfg(unix)]
-        if let Some(pid) = session.child.process_id() {
-            unsafe {
-                libc::killpg(pid as libc::pid_t, libc::SIGKILL);
-            }
-        }
-        let _ = session.child.kill();
-        let _ = session.child.wait();
-        cleanup_isolated(&session.config_dir);
+        Some(_) => Err("이전 로그인 패널의 취소 요청이라 무시했습니다".into()),
+        None => Ok(()),
     }
 }
 
@@ -874,9 +1057,9 @@ mod tests {
     #[test]
     fn rejects_bad_codes_before_touching_session() {
         let env = test_env("badcode");
-        assert!(submit_code(&env, "abc\ndef").is_err());
-        assert!(submit_code(&env, "   ").is_err());
-        assert!(submit_code(&env, &"x".repeat(300)).is_err());
+        assert!(submit_code(&env, "abc\ndef", 0).is_err());
+        assert!(submit_code(&env, "   ", 0).is_err());
+        assert!(submit_code(&env, &"x".repeat(300), 0).is_err());
     }
 
     #[test]
@@ -894,6 +1077,18 @@ mod tests {
             https://claude.com/cai/oauth/authorize?code=true&state=abc123&code_challenge=Kx9\n\
             Paste code here if prompted > ";
         assert!(!detect_code_rejection(screen));
+    }
+
+    #[test]
+    fn output_mark_survives_front_drain() {
+        let mut buffer = OutputBuffer::default();
+        buffer.append(&vec![b'x'; OUTPUT_CAP]);
+        let mark = buffer.position();
+        buffer.append(b"\r\nInvalid code. Please try again.");
+
+        let fresh = strip_ansi(&buffer.since(mark));
+        assert!(detect_code_rejection(&fresh));
+        assert!(buffer.bytes.len() <= OUTPUT_CAP);
     }
 
     #[test]
@@ -944,6 +1139,50 @@ mod tests {
         let outcome = import(&env, Provider::Codex, &cfg).unwrap();
         assert_eq!(outcome.profile, "cx");
         assert_eq!(outcome.email.as_deref(), Some("cx@test.dev"));
+    }
+
+    #[test]
+    fn login_started_before_delete_cannot_recreate_account_under_new_name() {
+        let env = test_env("import-delete-tombstone");
+        let existing = LiveIdentity {
+            id: "uuid-deleted".into(),
+            email: Some("old-name@test.dev".into()),
+        };
+        write_profile_parts(
+            &env,
+            Provider::Claude,
+            "old-name",
+            &existing,
+            br#"{"claudeAiOauth":{"accessToken":"old-token"}}"#,
+            Some(&serde_json::json!({
+                "accountUuid": "uuid-deleted",
+                "emailAddress": "old-name@test.dev"
+            })),
+        )
+        .unwrap();
+        let started_at = deletion_snapshot();
+        crate::accounts::delete(&env, Provider::Claude, "old-name").unwrap();
+
+        let cfg = env.store.join("_login").join("deleted-late-result");
+        fs::create_dir_all(&cfg).unwrap();
+        fs::write(
+            cfg.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"new-token"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            cfg.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-deleted","emailAddress":"changed-name@test.dev"}}"#,
+        )
+        .unwrap();
+
+        let error = import_started(&env, Provider::Claude, &cfg, started_at).unwrap_err();
+        assert!(error.contains("삭제"));
+        assert!(!cfg.exists(), "실패한 격리 로그인 폴더도 정리돼야 한다");
+        assert!(crate::accounts::list(&env, Provider::Claude)
+            .unwrap()
+            .profiles
+            .is_empty());
     }
 
     #[test]
@@ -1108,7 +1347,7 @@ mod tests {
         let env = Env::real().unwrap();
         let prompt = start(&env, Provider::Claude).unwrap();
         assert!(prompt.needs_code);
-        let mark = output_buffer().lock().unwrap().len();
+        let mark = output_buffer().lock().unwrap().position();
         {
             let guard = SESSION.lock().unwrap();
             let session = guard.as_ref().expect("세션이 있어야 한다");
@@ -1119,8 +1358,8 @@ mod tests {
         // 20초 동안 1초마다 새 출력을 찍는다 — 오류 문구가 언제 어떤 형태로 오는지 관찰
         for second in 1..=20 {
             std::thread::sleep(Duration::from_secs(1));
-            let raw = output_buffer().lock().unwrap().clone();
-            let fresh = strip_ansi(&raw[mark.min(raw.len())..]);
+            let raw = output_buffer().lock().unwrap().since(mark);
+            let fresh = strip_ansi(&raw);
             let trimmed: String = fresh
                 .lines()
                 .map(str::trim)
@@ -1156,7 +1395,8 @@ mod tests {
         let prompt = start(&env, Provider::Claude).unwrap();
         assert!(prompt.needs_code);
         let t0 = Instant::now();
-        let err = submit_code(&env, "THIS-IS-A-BOGUS-CODE-1234").unwrap_err();
+        let generation = prompt.session_id.parse().unwrap();
+        let err = submit_code(&env, "THIS-IS-A-BOGUS-CODE-1234", generation).unwrap_err();
         let took = t0.elapsed();
         println!("거부까지 {took:?}: {err}");
         assert!(err.contains("코드가 거부"), "예상과 다른 에러: {err}");

@@ -202,7 +202,8 @@ async fn fetch_usage(provider: String, profile: Option<String>) -> Result<usage:
 }
 
 /// 로그인을 시작하고 사용자가 원하는 브라우저에 붙여넣을 주소를 돌려준다.
-/// 활성 계정은 어느 단계에서도 건드리지 않는다.
+/// 다른 활성 계정은 건드리지 않는다. 같은 활성 계정을 재로그인한 경우에만 새 토큰을
+/// 활성 위치에도 반영해 다음 전환 백업이 폐기된 옛 토큰을 되살리지 않게 한다.
 #[tauri::command]
 async fn start_login(provider: String) -> Result<login::LoginPrompt, String> {
     let provider = Provider::parse(&provider)?;
@@ -213,23 +214,37 @@ async fn start_login(provider: String) -> Result<login::LoginPrompt, String> {
 
 /// 브라우저에서 받은 코드를 넘겨 로그인을 끝낸다 (클로드)
 #[tauri::command]
-async fn submit_login_code(code: String) -> Result<login::LoginOutcome, String> {
-    tauri::async_runtime::spawn_blocking(move || login::submit_code(&Env::real()?, &code))
+async fn submit_login_code(
+    code: String,
+    session_id: String,
+) -> Result<login::LoginOutcome, String> {
+    let generation = session_id
+        .parse::<u64>()
+        .map_err(|_| "로그인 세션 ID가 올바르지 않습니다")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        login::submit_code(&Env::real()?, &code, generation)
+    })
         .await
         .map_err(|e| format!("로그인 완료 실패: {e}"))?
 }
 
 /// 브라우저 쪽에서 로그인이 끝나기를 기다린다 (코덱스)
 #[tauri::command]
-async fn await_device_login() -> Result<login::LoginOutcome, String> {
-    tauri::async_runtime::spawn_blocking(move || login::wait_device(&Env::real()?))
+async fn await_device_login(session_id: String) -> Result<login::LoginOutcome, String> {
+    let generation = session_id
+        .parse::<u64>()
+        .map_err(|_| "로그인 세션 ID가 올바르지 않습니다")?;
+    tauri::async_runtime::spawn_blocking(move || login::wait_device(&Env::real()?, generation))
         .await
         .map_err(|e| format!("로그인 대기 실패: {e}"))?
 }
 
 #[tauri::command]
-fn cancel_login() {
-    login::cancel();
+fn cancel_login(session_id: String) -> Result<(), String> {
+    let generation = session_id
+        .parse::<u64>()
+        .map_err(|_| "로그인 세션 ID가 올바르지 않습니다")?;
+    login::cancel_session(generation)
 }
 
 /// 데모·스크린샷용: SWITCHER_VIEW=normal|locked|compact 로 초기 보기 모드를 강제한다
@@ -1051,8 +1066,8 @@ fn update_status_suffix() -> String {
 fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'static) {
     use tauri::Manager;
     login::cancel();
-    // 클램셸 모드가 켜져 있으면 해제 깃발 — root 감시자가 SleepDisabled를 원복한다
-    // (감시자 없는 no-sleep 상태를 남기지 않는다: 가방 속 배터리 소진 방지)
+    // 클램셸 종료 훅. 지속 모드는 사용자가 다시 누를 때까지 유지하는 설정이라
+    // 앱 종료·업데이트 재시작으로 해제하지 않는다.
     if let Ok(env) = Env::real() {
         clamshell::on_quit(&env.store);
     }
@@ -1074,9 +1089,30 @@ fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'st
 /// SWITCHER_WAIT_PID로 넘기고 종료한다 — 새 쪽은 run() 첫머리에서 우리가 완전히
 /// 죽기를 기다렸다 시작하므로 단일 인스턴스 가드와 경합하지 않는다.
 #[cfg(any(windows, target_os = "macos"))]
-fn restart_into(app: &tauri::AppHandle, relaunch: std::path::PathBuf) {
+fn restart_into(
+    app: &tauri::AppHandle,
+    relaunch: std::path::PathBuf,
+    replace_target: Option<std::path::PathBuf>,
+) {
     let handle = app.clone();
     shutdown_after_flush(app, move || {
+        #[cfg(windows)]
+        if let Some(target) = replace_target.as_ref() {
+            match update::spawn_windows_update_helper(
+                &relaunch,
+                target,
+                std::process::id(),
+            ) {
+                Ok(()) => handle.exit(0),
+                Err(error) => eprintln!(
+                    "업데이트 helper 시작 실패 (앱을 유지합니다): {error}"
+                ),
+            }
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        let _ = replace_target;
+
         let mut cmd = std::process::Command::new(&relaunch);
         cmd.env("SWITCHER_WAIT_PID", std::process::id().to_string());
         if let Some(dir) = relaunch.parent() {
@@ -1093,13 +1129,13 @@ fn restart_into(app: &tauri::AppHandle, relaunch: std::path::PathBuf) {
 /// 업데이트 재시작 핸드셰이크 — 재시작으로 태어난 프로세스는 전임자가 완전히
 /// 죽은 뒤에 초기화를 시작한다 (SWITCHER_WAIT_PID, restart_into가 넘긴다).
 /// 단일 인스턴스 가드(플러그인)보다 먼저 실행돼야 뮤텍스 경합이 원천 차단된다.
-fn wait_for_predecessor() {
+fn wait_for_predecessor() -> bool {
     let Ok(pid_text) = std::env::var("SWITCHER_WAIT_PID") else {
-        return;
+        return true;
     };
     std::env::remove_var("SWITCHER_WAIT_PID");
     let Ok(pid) = pid_text.parse::<u32>() else {
-        return;
+        return false;
     };
     let target = sysinfo::Pid::from_u32(pid);
     let mut sys = sysinfo::System::new();
@@ -1111,10 +1147,11 @@ fn wait_for_predecessor() {
             sysinfo::ProcessRefreshKind::nothing(),
         );
         if sys.process(target).is_none() {
-            return;
+            return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+    false
 }
 
 /// 트레이의 "업데이트 확인" — 자동 업데이트와 같은 경로(check_and_apply)를 즉시 돈다.
@@ -1139,16 +1176,20 @@ fn check_update_now(app: &tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         use tauri::Emitter;
         let suffix = match update::check_and_apply().await {
-            Ok(Some((version, relaunch))) => {
+            Ok(update::UpdateOutcome::Applied {
+                version,
+                relaunch,
+                replace_target,
+            }) => {
                 // 재시작 안내 토스트를 잠깐 보여주고 새 버전으로 재시작한다.
                 // 서픽스는 재시작 실패(스폰 불가) 시에만 눈에 남는다 — 그때는
                 // 원래 의미(재시작 시 적용) 그대로다.
                 let _ = handle.emit("update-restarting", version.clone());
                 tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-                restart_into(&handle, relaunch);
+                restart_into(&handle, relaunch, replace_target);
                 format!(" — v{version} ↻")
             }
-            Ok(None) => " — ✓".to_string(),
+            Ok(update::UpdateOutcome::Current { version }) => format!(" — ✓ v{version}"),
             Err(e) => {
                 eprintln!("업데이트 확인 실패: {e}");
                 " — ✗".to_string()
@@ -1644,7 +1685,18 @@ pub fn run() {
 
     // 업데이트 재시작으로 태어났으면 전임자가 완전히 죽을 때까지 여기서 대기 —
     // 아래 단일 인스턴스 가드보다 먼저여야 뮤텍스 경합이 없다 (restart_into 참조)
-    wait_for_predecessor();
+    let predecessor_gone = wait_for_predecessor();
+    #[cfg(windows)]
+    {
+        if update::run_windows_update_helper(predecessor_gone) {
+            return;
+        }
+        // 자동 확인이 준비해 둔 .new는 다음 앱 실행에서, UI 초기화 전에 helper로
+        // 넘긴다. 현재 run()이 즉시 끝나야 helper가 기존 exe를 교체할 수 있다.
+        if update::launch_pending_windows_update() {
+            return;
+        }
+    }
 
     tauri::Builder::default()
         // 단일 인스턴스 — 이미 떠 있는데 exe를 또 실행하면 새 프로세스는 뜨지 않고
@@ -1797,10 +1849,10 @@ pub fn run() {
                             match update::check_and_apply().await {
                                 // 자동 경로는 재시작하지 않는다(경로 무시) — 켜자마자
                                 // 재시작 루프를 돌지 않게 다음 실행 반영 유지
-                                Ok(Some((version, _))) => {
+                                Ok(update::UpdateOutcome::Applied { version, .. }) => {
                                     let _ = handle.emit("update-ready", version);
                                 }
-                                Ok(None) => {}
+                                Ok(update::UpdateOutcome::Current { .. }) => {}
                                 Err(e) => eprintln!("자동 업데이트 실패: {e}"),
                             }
                         });
@@ -1816,8 +1868,8 @@ pub fn run() {
                 }
             });
 
-            // 지난 세션이 클램셸 모드를 켠 채 죽었으면 잔존 상태를 복원한다 (맥 전용,
-            // 블랙 모니터 밝기 잔존 복원과 같은 패턴)
+            // 살아 있는 클램셸 감시자는 재시작 뒤에도 이어받고, 감시자 없이 상태만
+            // 남았을 때에만 원래 SleepDisabled 값으로 복구한다 (맥 전용).
             if let Ok(env) = Env::real() {
                 clamshell::on_start(app.handle(), &env.store);
             }

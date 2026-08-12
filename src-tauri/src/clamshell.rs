@@ -1,35 +1,19 @@
-//! 클램셸 슬립 방지 (macOS 전용) — 덮개를 닫아도 잠들지 않게 해 내부 터미널의
-//! AI 작업이 계속 돌게 한다 (사용자 요청 2026-08-11, #55).
+//! 클램셸 슬립 방지 (macOS 전용) — 덮개를 닫아도 내부 작업이 계속 돌게 한다.
 //!
-//! 뼈대: `pmset disablesleep 1/0` (root 필요 — 덮개 닫힘 슬립은 caffeinate류
-//! 어서션으로 못 막는다는 것이 통설이며, 실기기 덮개 사이클은 사용자 실측 항목).
-//! 관리자 암호 프롬프트는 **켤 때 한 번만** — 그 승인으로 root 감시자를 함께 띄워,
-//! 이후의 복원(끄기 클릭·일회성 덮개 열림·위젯 종료·크래시)은 전부 감시자가
-//! 암호 없이 수행한다.
+//! 상태 순환: off(0) → 일회성(1) → 지속(2) → off.
+//! - 일회성: 덮개를 한 번 닫았다 열면 켜기 전 SleepDisabled 값으로 자동 복원한다.
+//! - 지속: 사용자가 버튼으로 명시적으로 끌 때까지 유지한다. 위젯 종료·재시작으로 끄지 않는다.
 //!
-//! 보안 (적대 리뷰 2026-08-11): 감시자 본문은 디스크 스크립트가 아니라 승인 명령
-//! 문자열에 **인라인**한다 — root가 사용자 소유 파일을 실행하면 같은 사용자 권한의
-//! 다른 프로세스가 승인 전후·실행 중에 내용을 바꿔 root로 코드를 심을 수 있다
-//! (sh는 스크립트 파일을 실행 중에도 이어 읽는다). 인라인이면 승인 순간의 문자열이
-//! 전부이고, 이후 바꿀 파일 자체가 없다.
-//!
-//! 상태 순환: off(0) → 일회성(1) → 지속(2) → off. 일회성은 덮개가 닫혔다 열리는
-//! 사이클 하나가 끝나면 자동 복원, 지속은 끄거나 위젯이 종료될 때까지.
-//! 켜기 전 SleepDisabled 값을 저장해 복원 시 그대로 되돌린다 (블랙 모니터 밝기와
-//! 같은 "저장 → 변경 → 복원 + 잔존 복원" 패턴).
-//!
-//! 파일 (모두 ~/.switcher — 스크립트 파일은 없다):
-//! - clamshell.json : {"mode":1|2,"saved":0|1} — 위젯이 쓰고 감시자가 정리
-//! - clamshell.mode : "1"/"2" — 감시자가 매 루프 읽는 현재 모드
-//! - clamshell.off  : 존재 = 위젯의 해제 요청 (끄기·종료·시작 시 잔존 정리)
-//! - clamshell.pid  : 감시자(root sh)의 pid — 위젯이 감시자 생존을 확인하는 용도
+//! mode·saved·revision·watcher를 상태 파일 하나에 원자적으로 쓴다. 관리자 권한의
+//! 감시자는 그 파일을 최대 512바이트·1초 제한으로 읽을 뿐 사용자 경로에 쓰거나
+//! 지우지 않는다. pid 기록과 상태 정리는 위젯이 자기 권한으로 수행한다.
 
 #[cfg(target_os = "macos")]
 pub use imp::{cycle, mode, on_quit, on_start};
 
 #[cfg(not(target_os = "macos"))]
 pub fn mode(_store: &std::path::Path) -> i8 {
-    -1 // 미지원 플랫폼 — 프론트는 버튼을 그리지 않는다
+    -1
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -43,287 +27,737 @@ pub fn on_quit(_store: &std::path::Path) {}
 #[cfg(not(target_os = "macos"))]
 pub fn on_start(_app: &tauri::AppHandle, _store: &std::path::Path) {}
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
+#[cfg_attr(all(test, not(target_os = "macos")), allow(dead_code))]
 mod imp {
     use std::path::{Path, PathBuf};
     use std::process::Command;
-    use std::time::Duration;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     use tauri::Emitter;
 
+    static OPERATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static STARTUP_RECOVERY: AtomicBool = AtomicBool::new(false);
+    static TOKEN_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct State {
+        mode: u8,
+        saved: u8,
+        revision: String,
+        watcher: String,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct WatcherRecord {
+        pid: i32,
+        watcher: String,
+    }
+
     struct Files {
-        json: PathBuf,
-        mode: PathBuf,
-        off: PathBuf,
-        wpid: PathBuf,
-        /// v1.7.34가 잠깐 쓰던 스크립트 파일 — 잔재가 있으면 정리만 한다
+        state: PathBuf,
+        pid: PathBuf,
+        legacy_json: PathBuf,
+        legacy_mode: PathBuf,
+        legacy_off: PathBuf,
         legacy_script: PathBuf,
     }
 
     fn files(store: &Path) -> Files {
         Files {
-            json: store.join("clamshell.json"),
-            mode: store.join("clamshell.mode"),
-            off: store.join("clamshell.off"),
-            wpid: store.join("clamshell.pid"),
+            state: store.join("clamshell.state"),
+            pid: store.join("clamshell.pid"),
+            legacy_json: store.join("clamshell.json"),
+            legacy_mode: store.join("clamshell.mode"),
+            legacy_off: store.join("clamshell.off"),
             legacy_script: store.join("clamshell-watch.sh"),
         }
     }
 
-    /// 현재 모드 — 진실의 원천은 상태 파일이다 (감시자가 복원하며 지우면 0으로 돌아온다)
-    pub fn mode(store: &Path) -> i8 {
-        let f = files(store);
-        let Ok(text) = std::fs::read_to_string(&f.json) else {
+    fn token(prefix: &str) -> String {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        let seq = TOKEN_SEQ.fetch_add(1, Ordering::Relaxed);
+        format!("{prefix}-{}-{nanos}-{seq}", std::process::id())
+    }
+
+    fn valid_token(value: &str) -> bool {
+        !value.is_empty()
+            && value.len() <= 128
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    }
+
+    fn state_text(state: &State) -> String {
+        format!(
+            "mode={}\nsaved={}\nrevision={}\nwatcher={}\n",
+            state.mode, state.saved, state.revision, state.watcher
+        )
+    }
+
+    fn parse_state(text: &str) -> Result<State, String> {
+        let mut mode = None;
+        let mut saved = None;
+        let mut revision = None;
+        let mut watcher = None;
+        for line in text.lines() {
+            let Some((key, value)) = line.split_once('=') else {
+                return Err("클램셸 상태 파일 형식이 올바르지 않습니다".into());
+            };
+            match key {
+                "mode" if mode.is_none() => mode = value.parse::<u8>().ok(),
+                "saved" if saved.is_none() => saved = value.parse::<u8>().ok(),
+                "revision" if revision.is_none() => revision = Some(value.to_string()),
+                "watcher" if watcher.is_none() => watcher = Some(value.to_string()),
+                _ => return Err("클램셸 상태 파일 형식이 올바르지 않습니다".into()),
+            }
+        }
+        let state = State {
+            mode: mode.ok_or("클램셸 상태에 mode가 없습니다")?,
+            saved: saved.ok_or("클램셸 상태에 원래 설정이 없습니다")?,
+            revision: revision.ok_or("클램셸 상태에 revision이 없습니다")?,
+            watcher: watcher.ok_or("클램셸 상태에 watcher가 없습니다")?,
+        };
+        if state.mode > 2
+            || state.saved > 1
+            || !valid_token(&state.revision)
+            || !valid_token(&state.watcher)
+        {
+            return Err("클램셸 상태 값이 올바르지 않습니다".into());
+        }
+        Ok(state)
+    }
+
+    fn read_state(path: &Path) -> Result<Option<State>, String> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(format!("클램셸 상태 읽기 실패 {}: {error}", path.display()));
+            }
+        };
+        parse_state(&text).map(Some)
+    }
+
+    fn write_state(path: &Path, state: &State) -> Result<(), String> {
+        crate::accounts::atomic_write_existing_parent(path, state_text(state).as_bytes())
+            .map_err(|error| format!("클램셸 상태 저장 실패: {error}"))
+    }
+
+    fn transitioned(state: &State, mode: u8) -> State {
+        State {
+            mode,
+            saved: state.saved,
+            revision: token("rev"),
+            watcher: state.watcher.clone(),
+        }
+    }
+
+    fn fresh_state(mode: u8, saved: u8) -> State {
+        State {
+            mode,
+            saved,
+            revision: token("rev"),
+            watcher: token("watch"),
+        }
+    }
+
+    fn legacy_mode(store: &Path) -> i8 {
+        let Ok(text) = std::fs::read_to_string(files(store).legacy_json) else {
             return 0;
         };
         serde_json::from_str::<serde_json::Value>(&text)
             .ok()
-            .and_then(|v| v.get("mode").and_then(|m| m.as_i64()))
-            .map(|m| m.clamp(0, 2) as i8)
+            .and_then(|value| value.get("mode").and_then(|mode| mode.as_i64()))
+            .filter(|mode| (1..=2).contains(mode))
+            .map(|mode| mode as i8)
             .unwrap_or(0)
     }
 
-    /// pmset -g의 SleepDisabled 현재 값 (root 불필요). 못 읽으면 0으로 간주 —
-    /// 복원 시 "잠들 수 있는 보통 상태"로 돌리는 것이 안전한 기본값이다.
-    fn sleep_disabled_now() -> u8 {
-        let Ok(out) = Command::new("/usr/bin/pmset").arg("-g").output() else {
-            return 0;
-        };
-        let text = String::from_utf8_lossy(&out.stdout);
-        for line in text.lines() {
-            let line = line.trim();
-            if let Some(rest) = line.strip_prefix("SleepDisabled") {
-                if rest.trim() == "1" {
-                    return 1;
-                }
-            }
+    pub fn mode(store: &Path) -> i8 {
+        match read_state(&files(store).state) {
+            Ok(Some(state)) if (1..=2).contains(&state.mode) => state.mode as i8,
+            Ok(Some(_)) => 0,
+            Ok(None) => legacy_mode(store),
+            Err(_) => 0,
         }
-        0
     }
 
-    /// 셸 단일 인용 — 어떤 문자가 있어도 한 토큰으로 안전하게 전달된다
-    fn sq(s: &str) -> String {
-        format!("'{}'", s.replace('\'', r"'\''"))
+    /// SleepDisabled가 한 번도 설정되지 않은 정상 Mac은 이 줄 자체가 없다. 그 경우는
+    /// 기능상 0이다. 줄이 있는데 값이 깨진 경우만 오류로 구분한다.
+    fn parse_sleep_disabled(text: &str) -> Result<u8, String> {
+        for line in text.lines() {
+            let mut fields = line.split_whitespace();
+            if fields.next() != Some("SleepDisabled") {
+                continue;
+            }
+            return match (fields.next(), fields.next()) {
+                (Some("0"), None) => Ok(0),
+                (Some("1"), None) => Ok(1),
+                _ => Err("pmset의 SleepDisabled 값이 올바르지 않습니다".into()),
+            };
+        }
+        Ok(0)
     }
 
-    /// root 감시자 본문 (한 줄 POSIX sh — osascript 승인 명령에 인라인된다).
-    /// 값(복원치·위젯 pid·파일 경로)은 생성 시점에 굽는다. 감시자는 어떤 종료
-    /// 경로로든 pmset을 원래 값으로 되돌리고 상태 파일을 정리한다.
-    /// - 위젯 생존은 pid의 "정체"(ps comm=에 switcher 포함)로 본다 — 맨 kill -0은
-    ///   pid 재사용에 속아 no-sleep이 고착될 수 있다 (적대 리뷰)
-    /// - 자기 pid를 PIDF에 남긴다 — 위젯이 감시자 생존을 확인하는 근거
-    fn watch_body(store: &Path, saved: u8, widget_pid: u32) -> String {
-        let f = files(store);
-        let q = |p: &PathBuf| sq(&p.to_string_lossy());
-        format!(
-            "PIDF={pidf}; MODE_FILE={mode}; OFF_FLAG={off}; STATE_JSON={json}; \
-             echo $$ > \"$PIDF\"; SEEN=0; \
-             while :; do \
-             [ -f \"$OFF_FLAG\" ] && break; \
-             [ -f \"$MODE_FILE\" ] || break; \
-             case \"$(/bin/ps -p {pid} -o comm= 2>/dev/null)\" in *switcher*) : ;; *) break ;; esac; \
-             M=$(cat \"$MODE_FILE\" 2>/dev/null); \
-             if /usr/sbin/ioreg -r -k AppleClamshellState -d 1 | /usr/bin/grep -q '\"AppleClamshellState\" = Yes'; then SEEN=1; \
-             elif [ \"$SEEN\" = 1 ] && [ \"$M\" = 1 ]; then break; fi; \
-             /bin/sleep 3; \
-             done; \
-             /usr/bin/pmset disablesleep {saved}; \
-             /bin/rm -f \"$MODE_FILE\" \"$OFF_FLAG\" \"$STATE_JSON\" \"$PIDF\"",
-            pidf = q(&f.wpid),
-            mode = q(&f.mode),
-            off = q(&f.off),
-            json = q(&f.json),
-            pid = widget_pid,
-            saved = saved,
-        )
+    fn sleep_disabled_now() -> Result<u8, String> {
+        let out = Command::new("/usr/bin/pmset")
+            .arg("-g")
+            .output()
+            .map_err(|error| format!("SleepDisabled 확인 실패: {error}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "SleepDisabled 확인 실패: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        parse_sleep_disabled(&String::from_utf8_lossy(&out.stdout))
     }
 
-    /// 관리자 승인 한 번에 실행되는 전체 명령: pmset 켜기 + 감시자(백그라운드) 기동.
-    /// 감시자 본문은 sh -c 인자로 인라인 — 디스크에 root가 실행할 파일을 남기지 않는다.
+    fn sq(text: &str) -> String {
+        format!("'{}'", text.replace('\'', r"'\''"))
+    }
+
+    /// root 감시자는 사용자 상태를 최대 512바이트만 읽고, FIFO·장치 파일로 바뀌어도
+    /// 1초 뒤 reader를 죽인다. watcher ID가 다르면 새 세대가 주인이므로 복원도 하지 않고
+    /// 종료한다. 사용자 경로에는 어떤 쓰기·삭제도 하지 않는다.
+    fn watch_body(state_path: &Path, saved: u8, watcher: &str) -> String {
+        let template = r#"SWITCHER_CLAMSHELL_WATCH=1
+STATE_FILE=__STATE__
+WATCH_ID=__WATCHER__
+SEEN=0
+set -f
+read_state() {
+  DATA=$(
+    /usr/bin/head -c 512 "$STATE_FILE" 2>/dev/null & R=$!
+    ( /bin/sleep 1; /bin/kill "$R" 2>/dev/null ) & T=$!
+    wait "$R" 2>/dev/null
+    /bin/kill "$T" 2>/dev/null
+    wait "$T" 2>/dev/null
+  )
+  M=
+  W=
+  for F in $DATA; do
+    case "$F" in
+      mode=0|mode=1|mode=2) M=${F#mode=} ;;
+      watcher=*) W=${F#watcher=} ;;
+    esac
+  done
+}
+while :; do
+  read_state
+  if [ -n "$W" ] && [ "$W" != "$WATCH_ID" ]; then exit 0; fi
+  WANT_RESTORE=0
+  if [ "$W" != "$WATCH_ID" ] || [ "$M" = 0 ]; then
+    WANT_RESTORE=1
+  elif /usr/sbin/ioreg -r -k AppleClamshellState -d 1 | /usr/bin/grep -q '"AppleClamshellState" = Yes'; then
+    SEEN=1
+  elif [ "$SEEN" = 1 ] && [ "$M" = 1 ]; then
+    /bin/sleep 2
+    read_state
+    if [ -n "$W" ] && [ "$W" != "$WATCH_ID" ]; then exit 0; fi
+    if [ "$W" = "$WATCH_ID" ] && [ "$M" = 2 ]; then
+      SEEN=0
+    else
+      WANT_RESTORE=1
+    fi
+  fi
+  if [ "$WANT_RESTORE" = 1 ]; then
+    read_state
+    if [ -n "$W" ] && [ "$W" != "$WATCH_ID" ]; then exit 0; fi
+    if [ "$W" = "$WATCH_ID" ] && [ "$M" = 2 ]; then
+      SEEN=0
+    elif /usr/bin/pmset -a disablesleep __SAVED__; then
+      read_state
+      if [ "$W" = "$WATCH_ID" ] && [ "$M" = 2 ]; then
+        /usr/bin/pmset -a disablesleep 1
+        SEEN=0
+      else
+        exit 0
+      fi
+    fi
+  fi
+  /bin/sleep 1
+done"#;
+        template
+            .replace("__STATE__", &sq(&state_path.to_string_lossy()))
+            .replace("__WATCHER__", watcher)
+            .replace("__SAVED__", &saved.to_string())
+    }
+
     fn arm_command(body: &str) -> String {
         format!(
-            "/usr/bin/pmset disablesleep 1 && ( /usr/bin/nohup /bin/sh -c {} >/dev/null 2>&1 & )",
+            "/usr/bin/pmset -a disablesleep 1 && {{ \
+             /usr/bin/nohup /bin/sh -c {} </dev/null >/dev/null 2>&1 & P=$!; \
+             /bin/sleep 1; /bin/kill -0 \"$P\" && /bin/echo \"$P\"; \
+             }}",
             sq(body)
         )
     }
 
-    fn run_admin(shell_cmd: &str) -> Result<(), String> {
-        // AppleScript 문자열 이스케이프 (역슬래시 → 따옴표 순서)
-        let escaped = shell_cmd.replace('\\', "\\\\").replace('"', "\\\"");
-        let script = format!(
-            "do shell script \"{escaped}\" with prompt \"switcher 클램셸 슬립 방지\" with administrator privileges"
-        );
+    fn run_admin(shell_cmd: &str) -> Result<String, String> {
+        // 명령을 AppleScript 문자열에 보간하지 않고 argv로 넘긴다. HOME 경로에 따옴표나
+        // 줄바꿈이 있어도 AppleScript 소스가 바뀌지 않는다.
+        let script = "on run argv\n  do shell script (item 1 of argv) with prompt \"switcher 클램셸 슬립 방지\" with administrator privileges\nend run";
         let out = Command::new("/usr/bin/osascript")
-            .args(["-e", &script])
+            .arg("-e")
+            .arg(script)
+            .arg(shell_cmd)
             .output()
-            .map_err(|e| format!("osascript 실행 실패: {e}"))?;
+            .map_err(|error| format!("osascript 실행 실패: {error}"))?;
         if out.status.success() {
-            Ok(())
+            Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
         } else {
-            let err = String::from_utf8_lossy(&out.stderr);
-            if err.contains("-128") {
-                // User canceled
-                Err("관리자 승인이 취소됐습니다 — 클램셸 모드를 켜지 않았습니다".into())
+            let error = String::from_utf8_lossy(&out.stderr);
+            if error.contains("-128") {
+                Err("관리자 승인이 취소됐습니다 — 클램셸 상태를 변경하지 않았습니다".into())
             } else {
-                Err(format!("관리자 명령 실패: {}", err.trim()))
+                Err(format!("관리자 명령 실패: {}", error.trim()))
             }
         }
     }
 
-    /// 감시자(root sh) 생존 확인 — clamshell.pid의 pid에 신호 0을 보내 본다.
-    /// root 프로세스라 EPERM이 돌아오면 그것이 곧 "살아 있다"는 뜻이다.
-    fn watcher_alive(store: &Path) -> bool {
-        let f = files(store);
-        let Some(pid) = std::fs::read_to_string(&f.wpid)
-            .ok()
-            .and_then(|t| t.trim().parse::<i32>().ok())
-            .filter(|p| *p > 0)
-        else {
-            return false;
-        };
-        let ret = unsafe { libc::kill(pid, 0) };
-        ret == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    fn parse_watcher_pid(text: &str) -> Option<i32> {
+        text.lines()
+            .rev()
+            .find_map(|line| line.trim().parse::<i32>().ok())
+            .filter(|pid| *pid > 1)
     }
 
-    /// 상태 파일이 사라질 때까지(감시자의 복원 완료) 지켜보다가 프론트에 알린다 —
-    /// 일회성의 "덮개 열림 → 자동 꺼짐"이 버튼 표시에 반영된다. 켤 때마다 하나씩
-    /// 띄운다 — 중복 스레드는 무해(같은 파일을 보다 같이 끝난다)하고, 재사용
-    /// 가드를 두면 빠른 끄기→켜기에서 새 감시가 안 붙는 경합이 생긴다 (적대 리뷰).
-    fn spawn_state_monitor(app: &tauri::AppHandle, store: PathBuf) {
+    fn watcher_record_text(record: &WatcherRecord) -> String {
+        format!("pid={}\nwatcher={}\n", record.pid, record.watcher)
+    }
+
+    fn parse_watcher_record(text: &str) -> Option<WatcherRecord> {
+        let mut pid = None;
+        let mut watcher = None;
+        for line in text.lines() {
+            let (key, value) = line.split_once('=')?;
+            match key {
+                "pid" if pid.is_none() => pid = value.parse::<i32>().ok(),
+                "watcher" if watcher.is_none() => watcher = Some(value.to_string()),
+                _ => return None,
+            }
+        }
+        let record = WatcherRecord {
+            pid: pid.filter(|pid| *pid > 1)?,
+            watcher: watcher?,
+        };
+        valid_token(&record.watcher).then_some(record)
+    }
+
+    fn read_watcher_record(path: &Path) -> Option<WatcherRecord> {
+        parse_watcher_record(&std::fs::read_to_string(path).ok()?)
+    }
+
+    fn watcher_alive_record(record: &WatcherRecord) -> bool {
+        let out = Command::new("/bin/ps")
+            .args(["-ww", "-p", &record.pid.to_string(), "-o", "uid=", "-o", "command="])
+            .output();
+        let Ok(out) = out else { return false };
+        if !out.status.success() {
+            return false;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let trimmed = text.trim();
+        let Some(split_at) = trimmed.find(char::is_whitespace) else {
+            return false;
+        };
+        let uid = &trimmed[..split_at];
+        let command = trimmed[split_at..].trim();
+        uid == "0"
+            && command.contains("SWITCHER_CLAMSHELL_WATCH=1")
+            && command.contains(&record.watcher)
+    }
+
+    fn active_watcher(files: &Files) -> Option<WatcherRecord> {
+        let record = read_watcher_record(&files.pid)?;
+        let state = read_state(&files.state).ok().flatten()?;
+        (record.watcher == state.watcher && watcher_alive_record(&record)).then_some(record)
+    }
+
+    fn start_watcher(files: &Files, state: &State) -> Result<WatcherRecord, String> {
+        let _ = remove_file(&files.pid);
+        let body = watch_body(&files.state, state.saved, &state.watcher);
+        let output = run_admin(&arm_command(&body))?;
+        let pid = parse_watcher_pid(&output)
+            .ok_or_else(|| "관리자 감시자의 pid를 받지 못했습니다".to_string())?;
+        let record = WatcherRecord {
+            pid,
+            watcher: state.watcher.clone(),
+        };
+        if let Err(error) = crate::accounts::atomic_write_existing_parent(
+            &files.pid,
+            watcher_record_text(&record).as_bytes(),
+        ) {
+            let cleanup = run_admin(&format!(
+                "/bin/kill {} 2>/dev/null; /usr/bin/pmset -a disablesleep {}",
+                record.pid, state.saved
+            ));
+            return Err(match cleanup {
+                Ok(_) => format!("감시자 pid 저장 실패: {error} — 감시자를 종료하고 복원했습니다"),
+                Err(cleanup_error) => format!(
+                    "감시자 pid 저장 실패: {error}; 감시자 정리도 실패했습니다: {cleanup_error}"
+                ),
+            });
+        }
+        Ok(record)
+    }
+
+    fn wait_for_watcher_end(record: &WatcherRecord, timeout: Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if !watcher_alive_record(record) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        !watcher_alive_record(record)
+    }
+
+    fn restore_direct(saved: u8) -> Result<(), String> {
+        run_admin(&format!("/usr/bin/pmset -a disablesleep {saved}"))?;
+        let current = sleep_disabled_now()?;
+        if current == saved {
+            Ok(())
+        } else {
+            Err(format!(
+                "SleepDisabled 복원 확인 실패 (현재 {current}, 원래 {saved})"
+            ))
+        }
+    }
+
+    fn remove_file(path: &Path) -> Result<(), String> {
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("파일 정리 실패 {}: {error}", path.display())),
+        }
+    }
+
+    fn cleanup_legacy(files: &Files) -> Result<(), String> {
+        remove_file(&files.legacy_json)?;
+        remove_file(&files.legacy_mode)?;
+        remove_file(&files.legacy_off)?;
+        remove_file(&files.legacy_script)
+    }
+
+    fn cleanup_if_restored(files: &Files, expected: &State) -> Result<bool, String> {
+        let current = sleep_disabled_now()?;
+        if current != expected.saved {
+            return Err(format!(
+                "SleepDisabled 복원이 끝나지 않았습니다 (현재 {current}, 원래 {})",
+                expected.saved
+            ));
+        }
+        let Some(latest) = read_state(&files.state)? else {
+            return Ok(false);
+        };
+        if latest.revision != expected.revision || latest.watcher != expected.watcher {
+            return Ok(false);
+        }
+        // OPERATION_LOCK 아래에서 한 번 더 비교한 뒤 정리한다. 이전 monitor가 새 세대
+        // 상태를 지우는 check-then-delete 경합을 막는다.
+        let Some(latest) = read_state(&files.state)? else {
+            return Ok(false);
+        };
+        if latest.revision != expected.revision || latest.watcher != expected.watcher {
+            return Ok(false);
+        }
+        remove_file(&files.pid)?;
+        remove_file(&files.state)?;
+        cleanup_legacy(files)?;
+        Ok(true)
+    }
+
+    fn spawn_state_monitor(
+        app: &tauri::AppHandle,
+        store: PathBuf,
+        expected: State,
+        record: WatcherRecord,
+    ) {
         let app = app.clone();
         std::thread::spawn(move || {
-            let f = files(&store);
-            while f.json.exists() {
-                std::thread::sleep(Duration::from_secs(2));
+            while watcher_alive_record(&record) {
+                std::thread::sleep(Duration::from_secs(1));
             }
-            let _ = app.emit("clamshell-changed", ());
+            let Ok(_guard) = OPERATION_LOCK.lock() else {
+                return;
+            };
+            let files = files(&store);
+            match cleanup_if_restored(&files, &expected) {
+                Ok(true) => {
+                    let _ = app.emit("clamshell-changed", ());
+                }
+                Ok(false) => {}
+                Err(error) => eprintln!("클램셸 복구 상태를 남겨 둡니다: {error}"),
+            }
         });
     }
 
-    fn cleanup_files(f: &Files) {
-        let _ = std::fs::remove_file(&f.json);
-        let _ = std::fs::remove_file(&f.mode);
-        let _ = std::fs::remove_file(&f.off);
-        let _ = std::fs::remove_file(&f.wpid);
-        let _ = std::fs::remove_file(&f.legacy_script);
+    fn stop_state(files: &Files, state: &State) -> Result<(), String> {
+        let stopping = transitioned(state, 0);
+        let record = active_watcher(files);
+        write_state(&files.state, &stopping)?;
+
+        if let Some(record) = record.as_ref() {
+            if !wait_for_watcher_end(record, Duration::from_secs(12)) {
+                // bounded reader까지 끝나지 않는 비정상 감시자는 고정 pid와 pmset만으로
+                // 관리자 경로에서 강제 종료·복원한다.
+                run_admin(&format!(
+                    "/bin/kill {} 2>/dev/null; /usr/bin/pmset -a disablesleep {}",
+                    record.pid, stopping.saved
+                ))?;
+            }
+        } else {
+            std::thread::sleep(Duration::from_secs(2));
+        }
+        if sleep_disabled_now()? != stopping.saved {
+            restore_direct(stopping.saved)?;
+        }
+        if !cleanup_if_restored(files, &stopping)? {
+            return Err("클램셸 상태가 바뀌어 이전 해제 작업의 정리를 중단했습니다".into());
+        }
+        Ok(())
     }
 
-    /// 버튼 클릭: off → 일회성 → 지속 → off 순환. 새 모드를 돌려준다.
+    fn arm_new(
+        app: &tauri::AppHandle,
+        store: &Path,
+        mode: u8,
+        saved: u8,
+    ) -> Result<i8, String> {
+        let files = files(store);
+        let state = fresh_state(mode, saved);
+        write_state(&files.state, &state)?;
+        let record = match start_watcher(&files, &state) {
+            Ok(record) => record,
+            Err(error) => {
+                if sleep_disabled_now().ok() == Some(saved) {
+                    let _ = cleanup_if_restored(&files, &state);
+                }
+                return Err(error);
+            }
+        };
+        spawn_state_monitor(app, store.to_path_buf(), state, record);
+        Ok(mode as i8)
+    }
+
     pub fn cycle(app: &tauri::AppHandle, store: &Path) -> Result<i8, String> {
-        let f = files(store);
-        match mode(store) {
-            0 => {
-                std::fs::create_dir_all(store).map_err(|e| format!("폴더 생성 실패: {e}"))?;
-                let saved = sleep_disabled_now();
-                std::fs::write(&f.mode, "1").map_err(|e| e.to_string())?;
-                std::fs::write(
-                    &f.json,
-                    serde_json::json!({"mode": 1, "saved": saved}).to_string(),
-                )
-                .map_err(|e| e.to_string())?;
-                // 이전 세션 잔재가 새 감시자를 즉사시키거나 생존 판정을 속이지 않게
-                let _ = std::fs::remove_file(&f.off);
-                let _ = std::fs::remove_file(&f.wpid);
-                let _ = std::fs::remove_file(&f.legacy_script);
-                let body = watch_body(store, saved, std::process::id());
-                if let Err(e) = run_admin(&arm_command(&body)) {
-                    // 승인 실패 — 상태 파일을 남기면 켜진 것처럼 보인다. 전부 원상 복구.
-                    let _ = std::fs::remove_file(&f.json);
-                    let _ = std::fs::remove_file(&f.mode);
-                    return Err(e);
-                }
-                spawn_state_monitor(app, store.to_path_buf());
-                Ok(1)
+        // 시작 복구가 관리자 승인 창을 기다리는 동안 잠금 뒤에 줄 서지 않는다.
+        // 먼저 빠르게 거절하고, 잠금 취득 사이에 복구가 시작되는 경우를 아래에서 재확인한다.
+        if STARTUP_RECOVERY.load(Ordering::SeqCst) {
+            return Err("이전 클램셸 상태를 복구하는 중입니다 — 잠시 후 다시 누르세요".into());
+        }
+        let _guard = OPERATION_LOCK.lock().map_err(|_| "클램셸 내부 잠금 오류")?;
+        if STARTUP_RECOVERY.load(Ordering::SeqCst) {
+            return Err("이전 클램셸 상태를 복구하는 중입니다 — 잠시 후 다시 누르세요".into());
+        }
+        std::fs::create_dir_all(store)
+            .map_err(|error| format!("클램셸 상태 폴더 생성 실패: {error}"))?;
+        let files = files(store);
+        if files.legacy_json.exists() && !files.state.exists() {
+            return Err("이전 클램셸 상태 복구가 필요합니다 — 위젯을 다시 실행하세요".into());
+        }
+        let state = read_state(&files.state)?;
+        match state {
+            None => {
+                cleanup_legacy(&files)?;
+                let saved = sleep_disabled_now()?;
+                arm_new(app, store, 1, saved)
             }
-            1 => {
-                // 일회성 → 지속. 그 사이 감시자가 사라졌다면(덮개 사이클 완료 직후의
-                // 겹침 등) "켜짐 표시인데 실제는 꺼짐"이 되므로 생존부터 확인한다 (적대 리뷰)
-                if !watcher_alive(store) {
-                    let saved = saved_value(&f.json);
-                    // 감시자 없이 남은 no-sleep 가능성을 관리자 승인으로 직접 복원
-                    run_admin(&format!("/usr/bin/pmset disablesleep {saved}"))?;
-                    cleanup_files(&f);
-                    let _ = app.emit("clamshell-changed", ());
-                    return Err(
-                        "클램셸 감시자가 이미 종료돼 있어 안전하게 껐습니다 — 필요하면 다시 켜세요".into(),
-                    );
-                }
-                std::fs::write(&f.mode, "2").map_err(|e| e.to_string())?;
-                let saved = saved_value(&f.json);
-                std::fs::write(
-                    &f.json,
-                    serde_json::json!({"mode": 2, "saved": saved}).to_string(),
-                )
-                .map_err(|e| e.to_string())?;
-                Ok(2)
+            Some(state) if state.mode == 0 => {
+                stop_state(&files, &state)?;
+                let saved = sleep_disabled_now()?;
+                arm_new(app, store, 1, saved)
             }
-            _ => {
-                // 끄기: 해제 깃발을 세우면 root 감시자가 3초 안에 복원·정리한다 (암호 없음)
-                std::fs::write(&f.off, b"off").map_err(|e| e.to_string())?;
-                for _ in 0..16 {
-                    std::thread::sleep(Duration::from_millis(500));
-                    if !f.json.exists() {
-                        return Ok(0);
+            Some(state) if state.mode == 1 => {
+                let Some(record) = active_watcher(&files) else {
+                    // 일회성 감시가 이미 끝났는데 monitor 정리 전에 클릭된 경우 현재는
+                    // 사실상 off다. 복원을 확정한 뒤 새 일회성을 시작한다.
+                    if sleep_disabled_now()? != state.saved {
+                        restore_direct(state.saved)?;
                     }
+                    cleanup_if_restored(&files, &state)?;
+                    return arm_new(app, store, 1, state.saved);
+                };
+                if sleep_disabled_now()? != 1 {
+                    return Err("클램셸 감시자는 살아 있지만 SleepDisabled가 켜져 있지 않습니다".into());
                 }
-                // 감시자가 없다 (승인 후 죽었거나 재부팅으로 소멸) — 마지막 수단으로
-                // 관리자 승인을 다시 받아 직접 복원한다
-                let saved = saved_value(&f.json);
-                run_admin(&format!("/usr/bin/pmset disablesleep {saved}"))?;
-                cleanup_files(&f);
+                let promoted = transitioned(&state, 2);
+                write_state(&files.state, &promoted)?;
+                std::thread::sleep(Duration::from_secs(2));
+                if watcher_alive_record(&record) && sleep_disabled_now()? == 1 {
+                    spawn_state_monitor(app, store.to_path_buf(), promoted, record);
+                    return Ok(2);
+                }
+
+                // 덮개가 열리는 경계와 승격이 정확히 겹쳐 옛 감시자가 끝났다면 원래
+                // 설정을 확인한 뒤 지속 감시자를 새 ID로 다시 건다.
+                stop_state(&files, &promoted)?;
+                arm_new(app, store, 2, state.saved)
+            }
+            Some(state) => {
+                stop_state(&files, &state)?;
                 Ok(0)
             }
         }
     }
 
-    fn saved_value(json: &Path) -> u8 {
-        std::fs::read_to_string(json)
-            .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .and_then(|v| v.get("saved").and_then(|s| s.as_u64()))
-            .map(|s| (s.min(1)) as u8)
-            .unwrap_or(0)
-    }
+    pub fn on_quit(_store: &Path) {}
 
-    /// 위젯 종료 준비 — 해제 깃발만 세운다 (감시자가 뒤처리, 우리는 기다리지 않는다).
-    /// 지속 모드도 여기서 끝난다: 감시자 없는 no-sleep 상태를 남기지 않는 것이
-    /// 배터리 안전상 우선이다 (재시작 후 계속 원하면 버튼을 다시 누른다).
-    pub fn on_quit(store: &Path) {
-        let f = files(store);
-        if f.json.exists() {
-            let _ = std::fs::write(&f.off, b"off");
+    struct RecoveryFlag;
+
+    impl Drop for RecoveryFlag {
+        fn drop(&mut self) {
+            STARTUP_RECOVERY.store(false, Ordering::SeqCst);
         }
     }
 
-    /// 앱 시작 시 잔존 상태 복원 — 지난 세션이 클램셸 모드를 켠 채 죽었어도
-    /// 감시자(정체 감시)가 이미 복원했거나, 이 깃발로 곧 복원된다. 15초가 지나도
-    /// 정리가 안 되면 감시자가 소멸한 것 — 파일만 걷어내고 경고를 남긴다
-    /// (재부팅이면 SleepDisabled도 이미 초기화돼 있어 실해는 없다).
+    fn legacy_saved(files: &Files) -> Result<(u8, u8), String> {
+        let text = std::fs::read_to_string(&files.legacy_json)
+            .map_err(|error| format!("이전 클램셸 상태 읽기 실패: {error}"))?;
+        let value: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|error| format!("이전 클램셸 상태가 손상됐습니다: {error}"))?;
+        let mode = value
+            .get("mode")
+            .and_then(|value| value.as_u64())
+            .filter(|mode| (1..=2).contains(mode))
+            .ok_or("이전 클램셸 mode가 없습니다")? as u8;
+        let saved = value
+            .get("saved")
+            .and_then(|value| value.as_u64())
+            .filter(|saved| *saved <= 1)
+            .ok_or("이전 클램셸 원래 설정이 없습니다")? as u8;
+        Ok((mode, saved))
+    }
+
+    fn legacy_watcher_alive(files: &Files) -> bool {
+        let Some(pid) = std::fs::read_to_string(&files.pid)
+            .ok()
+            .and_then(|text| text.trim().parse::<i32>().ok())
+            .filter(|pid| *pid > 1)
+        else {
+            return false;
+        };
+        let out = Command::new("/bin/ps")
+            .args(["-p", &pid.to_string(), "-o", "uid=", "-o", "comm="])
+            .output();
+        let Ok(out) = out else { return false };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut fields = text.split_whitespace();
+        fields.next() == Some("0")
+            && fields
+                .next()
+                .is_some_and(|command| command == "sh" || command.ends_with("/sh"))
+    }
+
+    fn recover_legacy(app: &tauri::AppHandle, store: &Path) -> Result<(), String> {
+        let files = files(store);
+        let (old_mode, saved) = legacy_saved(&files)?;
+        std::fs::write(&files.legacy_off, b"off")
+            .map_err(|error| format!("이전 감시자 해제 요청 실패: {error}"))?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(12);
+        while legacy_watcher_alive(&files) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        if sleep_disabled_now()? != saved {
+            restore_direct(saved)?;
+        }
+        cleanup_legacy(&files)?;
+        remove_file(&files.pid)?;
+        if old_mode == 2 {
+            arm_new(app, store, 2, saved)?;
+        }
+        Ok(())
+    }
+
+    fn recover_startup(
+        app: tauri::AppHandle,
+        store: PathBuf,
+        expected_revision: Option<String>,
+        has_legacy: bool,
+    ) {
+        let _recovery = RecoveryFlag;
+        let Ok(_guard) = OPERATION_LOCK.lock() else {
+            return;
+        };
+        let result = if has_legacy {
+            recover_legacy(&app, &store)
+        } else {
+            let files = files(&store);
+            match read_state(&files.state) {
+                Ok(Some(state))
+                    if expected_revision.as_deref() == Some(state.revision.as_str()) =>
+                {
+                    match state.mode {
+                        2 => {
+                            // 지속 모드는 앱/OS 재시작으로 꺼지지 않는다. 감시자만 죽었으면
+                            // 같은 saved를 유지한 채 새 고유 ID로 다시 건다.
+                            let rearmed = fresh_state(2, state.saved);
+                            write_state(&files.state, &rearmed).and_then(|_| {
+                                let record = start_watcher(&files, &rearmed)?;
+                                spawn_state_monitor(&app, store.clone(), rearmed, record);
+                                Ok(())
+                            })
+                        }
+                        _ => stop_state(&files, &state),
+                    }
+                }
+                Ok(_) => Ok(()),
+                Err(error) => Err(error),
+            }
+        };
+        match result {
+            Ok(()) => {
+                let _ = app.emit("clamshell-changed", ());
+            }
+            Err(error) => eprintln!(
+                "클램셸 시작 상태 복구 실패 — 상태를 보존합니다: {error}"
+            ),
+        }
+    }
+
     pub fn on_start(app: &tauri::AppHandle, store: &Path) {
-        let f = files(store);
-        // 스크립트 파일을 쓰던 구버전(v1.7.34) 잔재는 상태와 무관하게 정리
-        let _ = std::fs::remove_file(&f.legacy_script);
-        if !f.json.exists() {
+        let files = files(store);
+        let _ = remove_file(&files.legacy_script);
+        let has_legacy = files.legacy_json.exists() && !files.state.exists();
+        if has_legacy {
+            if STARTUP_RECOVERY.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            let app = app.clone();
+            let store = store.to_path_buf();
+            std::thread::spawn(move || recover_startup(app, store, None, true));
             return;
         }
-        let _ = std::fs::write(&f.off, b"off");
+
+        let state = match read_state(&files.state) {
+            Ok(Some(state)) => state,
+            Ok(None) => {
+                let _ = remove_file(&files.pid);
+                let _ = cleanup_legacy(&files);
+                return;
+            }
+            Err(error) => {
+                eprintln!("클램셸 잔존 상태를 읽지 못했습니다: {error}");
+                return;
+            }
+        };
+        if let Some(record) = active_watcher(&files) {
+            spawn_state_monitor(app, store.to_path_buf(), state, record);
+            return;
+        }
+        if STARTUP_RECOVERY.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let revision = state.revision.clone();
         let app = app.clone();
         let store = store.to_path_buf();
-        std::thread::spawn(move || {
-            let f = files(&store);
-            for _ in 0..30 {
-                std::thread::sleep(Duration::from_millis(500));
-                if !f.json.exists() {
-                    let _ = app.emit("clamshell-changed", ());
-                    return;
-                }
-            }
-            eprintln!(
-                "클램셸 잔존 상태를 감시자가 정리하지 않음 — 파일만 정리합니다 \
-                 (SleepDisabled가 남았다면 재부팅 또는 `sudo pmset disablesleep 0`)"
-            );
-            cleanup_files(&f);
-            let _ = app.emit("clamshell-changed", ());
-        });
+        std::thread::spawn(move || recover_startup(app, store, Some(revision), false));
     }
 
     #[cfg(test)]
@@ -340,27 +774,59 @@ mod imp {
             dir
         }
 
-        #[test]
-        fn body_bakes_paths_pid_and_restore_value() {
-            let store = test_store("body");
-            let body = watch_body(&store, 1, 4242);
-            assert!(body.contains("pmset disablesleep 1"));
-            assert!(body.contains("/bin/ps -p 4242 -o comm="));
-            assert!(body.contains("*switcher*"), "pid 재사용 방어(정체 확인)가 있어야 한다");
-            assert!(body.contains(&*store.join("clamshell.mode").to_string_lossy()));
-            assert!(body.contains("clamshell.pid"), "감시자 pid 기록이 있어야 한다");
-            assert!(!body.contains('\n'), "인라인 본문은 한 줄이어야 한다 (AppleScript 문자열)");
-            // 복원값 0도 그대로 박힌다
-            assert!(watch_body(&store, 0, 1).contains("pmset disablesleep 0"));
+        fn test_shell() -> Option<Command> {
+            #[cfg(windows)]
+            {
+                let base = std::env::var_os("ProgramFiles")?;
+                let path = PathBuf::from(base).join("Git").join("bin").join("sh.exe");
+                return path.is_file().then(|| Command::new(path));
+            }
+            #[cfg(not(windows))]
+            {
+                Some(Command::new("/bin/sh"))
+            }
         }
 
-        /// 본문·승인 명령이 실제 /bin/sh 문법으로 유효한지 — 실행 없이 파싱만 (sh -n)
+        #[test]
+        fn state_is_one_strict_roundtrippable_record() {
+            let state = State {
+                mode: 2,
+                saved: 0,
+                revision: "rev-1".into(),
+                watcher: "watch-1".into(),
+            };
+            assert_eq!(parse_state(&state_text(&state)).unwrap(), state);
+            assert!(parse_state("mode=2\nsaved=0\n").is_err());
+            assert!(parse_state("mode=9\nsaved=0\nrevision=r\nwatcher=w\n").is_err());
+        }
+
+        #[test]
+        fn absent_sleep_disabled_is_normal_zero_but_broken_line_is_error() {
+            assert_eq!(parse_sleep_disabled("System-wide power settings:\n").unwrap(), 0);
+            assert_eq!(parse_sleep_disabled(" SleepDisabled 0\n").unwrap(), 0);
+            assert_eq!(parse_sleep_disabled("SleepDisabled 1\n").unwrap(), 1);
+            assert!(parse_sleep_disabled("SleepDisabled x\n").is_err());
+        }
+
+        #[test]
+        fn root_watcher_has_bounded_reads_and_no_user_path_writes() {
+            let store = test_store("body");
+            let body = watch_body(&files(&store).state, 0, "watch-test");
+            assert!(body.contains("head -c 512"));
+            assert!(body.contains("SWITCHER_CLAMSHELL_WATCH=1"));
+            assert!(body.contains("pmset -a disablesleep 0"));
+            assert!(!body.contains("/bin/cat"));
+            assert!(!body.contains("/bin/rm"));
+            assert!(!body.contains("clamshell.pid"));
+        }
+
         #[test]
         fn body_and_arm_command_are_valid_sh() {
             let store = test_store("syntax");
-            let body = watch_body(&store, 0, std::process::id());
+            let body = watch_body(&files(&store).state, 0, "watch-test");
             for cmd in [body.clone(), arm_command(&body)] {
-                let out = Command::new("/bin/sh").args(["-n", "-c", &cmd]).output().unwrap();
+                let Some(mut shell) = test_shell() else { return };
+                let out = shell.args(["-n", "-c", &cmd]).output().unwrap();
                 assert!(
                     out.status.success(),
                     "sh 문법 오류: {}",
@@ -370,128 +836,20 @@ mod imp {
         }
 
         #[test]
-        fn mode_reads_state_file_and_defaults_to_off() {
-            let store = test_store("mode");
-            assert_eq!(mode(&store), 0);
-            std::fs::write(store.join("clamshell.json"), r#"{"mode":2,"saved":0}"#).unwrap();
-            assert_eq!(mode(&store), 2);
-            std::fs::write(store.join("clamshell.json"), "broken").unwrap();
-            assert_eq!(mode(&store), 0, "깨진 상태 파일은 off로 취급");
-        }
-
-        #[test]
-        fn sleep_disabled_parse_runs_on_real_pmset() {
-            // 실제 pmset -g 출력 파싱 — root 불필요. 보통 환경에선 0이다.
-            let v = sleep_disabled_now();
-            assert!(v == 0 || v == 1);
+        fn watcher_record_rejects_partial_or_invalid_values() {
+            let record = WatcherRecord {
+                pid: 1234,
+                watcher: "watch-1".into(),
+            };
+            assert_eq!(parse_watcher_record(&watcher_record_text(&record)), Some(record));
+            assert!(parse_watcher_record("pid=1\nwatcher=watch-1\n").is_none());
+            assert!(parse_watcher_record("pid=1234\nwatcher=bad value\n").is_none());
         }
 
         #[test]
         fn shell_single_quote_wraps_and_escapes() {
             assert_eq!(sq("/a b/c"), "'/a b/c'");
             assert_eq!(sq("/a'b"), r"'/a'\''b'");
-            // 본문 인라인 이중 인용도 왕복 가능해야 한다: sh가 그대로 되돌려주는지
-            let tricky = r#"x 'y' "z" $HOME"#;
-            let out = Command::new("/bin/sh")
-                .args(["-c", &format!("printf %s {}", sq(tricky))])
-                .output()
-                .unwrap();
-            assert_eq!(String::from_utf8_lossy(&out.stdout), tricky);
-        }
-
-        #[test]
-        fn watcher_alive_reflects_pid_file() {
-            let store = test_store("alive");
-            let f = files(&store);
-            assert!(!watcher_alive(&store), "pid 파일이 없으면 죽은 것");
-            // 자기 자신 = 살아 있는 사용자 프로세스 (kill 0 == 0)
-            std::fs::write(&f.wpid, std::process::id().to_string()).unwrap();
-            assert!(watcher_alive(&store));
-            // pid 1(launchd, root) = EPERM이 곧 생존 신호 — 감시자(root)의 실제 경로
-            std::fs::write(&f.wpid, "1").unwrap();
-            assert!(watcher_alive(&store), "root 프로세스는 EPERM으로 생존 판정");
-            // macOS pid 상한(99999) 위 = 존재 불가
-            std::fs::write(&f.wpid, "4194304").unwrap();
-            assert!(!watcher_alive(&store));
-            std::fs::write(&f.wpid, "garbage").unwrap();
-            assert!(!watcher_alive(&store));
-        }
-
-        /// 감시자 본문 실동작 검증 (pmset 효과 제외 — root 없이 실행하므로
-        /// pmset 줄만 실패하고 루프·깃발·정리 로직은 그대로 돈다).
-        /// 몇 초짜리 폴링이라 평시 스위트에서는 제외: `cargo test -- --ignored slow_watcher`
-        #[test]
-        #[ignore]
-        fn slow_watcher_cleans_up_on_off_flag() {
-            let store = test_store("watch");
-            let f = files(&store);
-            std::fs::write(&f.mode, "2").unwrap();
-            std::fs::write(&f.json, r#"{"mode":2,"saved":0}"#).unwrap();
-            // 테스트 바이너리 이름에 "switcher"가 들어가 정체 확인을 통과한다
-            let body = watch_body(&store, 0, std::process::id());
-            let mut child = Command::new("/bin/sh").args(["-c", &body]).spawn().unwrap();
-            std::thread::sleep(Duration::from_millis(700));
-            assert!(f.wpid.exists(), "감시자가 자기 pid를 남겨야 한다");
-            assert!(watcher_alive(&store));
-            std::fs::write(&f.off, b"off").unwrap();
-            let mut cleaned = false;
-            for _ in 0..20 {
-                std::thread::sleep(Duration::from_millis(500));
-                if !f.json.exists() && !f.mode.exists() && !f.wpid.exists() {
-                    cleaned = true;
-                    break;
-                }
-            }
-            let _ = child.kill();
-            assert!(cleaned, "해제 깃발 후 감시자가 상태 파일을 정리해야 한다");
-        }
-
-        /// 위젯 죽음(pid 소멸·정체 불일치) 감지 — 존재하지 않는 pid로 돌리면
-        /// 첫 루프에서 빠져나와 정리해야 한다 (크래시 안전망 + pid 재사용 방어)
-        #[test]
-        #[ignore]
-        fn slow_watcher_exits_when_widget_pid_dead() {
-            let store = test_store("watch-pid");
-            let f = files(&store);
-            std::fs::write(&f.mode, "2").unwrap();
-            std::fs::write(&f.json, r#"{"mode":2,"saved":0}"#).unwrap();
-            // pid 4194304는 macOS pid_max(99999) 위 — 존재할 수 없다
-            let body = watch_body(&store, 0, 4_194_304);
-            let mut child = Command::new("/bin/sh").args(["-c", &body]).spawn().unwrap();
-            let mut cleaned = false;
-            for _ in 0..20 {
-                std::thread::sleep(Duration::from_millis(500));
-                if !f.json.exists() {
-                    cleaned = true;
-                    break;
-                }
-            }
-            let _ = child.kill();
-            assert!(cleaned, "위젯 pid가 죽어 있으면 감시자는 즉시 복원·정리해야 한다");
-        }
-
-        /// pid 재사용 시나리오: 살아 있지만 switcher가 아닌 프로세스의 pid를 주면
-        /// 정체 불일치로 즉시 끝나야 한다 (맨 kill -0이면 영구 고착되는 케이스)
-        #[test]
-        #[ignore]
-        fn slow_watcher_exits_on_pid_identity_mismatch() {
-            let store = test_store("watch-ident");
-            let f = files(&store);
-            std::fs::write(&f.mode, "2").unwrap();
-            std::fs::write(&f.json, r#"{"mode":2,"saved":0}"#).unwrap();
-            // pid 1 = launchd: 살아 있(고 kill -0은 통과했)지만 switcher가 아니다
-            let body = watch_body(&store, 0, 1);
-            let mut child = Command::new("/bin/sh").args(["-c", &body]).spawn().unwrap();
-            let mut cleaned = false;
-            for _ in 0..20 {
-                std::thread::sleep(Duration::from_millis(500));
-                if !f.json.exists() {
-                    cleaned = true;
-                    break;
-                }
-            }
-            let _ = child.kill();
-            assert!(cleaned, "pid가 딴 프로세스로 재사용됐으면 감시자는 끝나야 한다");
         }
     }
 }

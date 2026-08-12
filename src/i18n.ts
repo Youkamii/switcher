@@ -76,7 +76,7 @@ const ko = {
   memoAlphaTooltip: "투명도 (배경만 — 글자는 남습니다)",
   clamOff: "클램셸 슬립 방지 (macOS) — 덮개를 닫아도 잠들지 않게. 한 번 누르면 이번 한 번만, 두 번 누르면 계속 (켤 때 관리자 암호 1회)",
   clamOnce: "클램셸: 이번 한 번 — 덮개를 닫았다 다시 열면 자동 해제됩니다. 누르면 '계속 켬'으로",
-  clamKeep: "클램셸: 계속 켬 — 다시 누르거나 위젯을 종료하면 원래대로 복원됩니다",
+  clamKeep: "클램셸: 계속 켬 — 다시 누를 때까지 유지되고, 누르면 원래대로 복원됩니다",
 };
 
 export type MsgKey = keyof typeof ko;
@@ -152,7 +152,7 @@ const en: Messages = {
   memoAlphaTooltip: "Opacity (background only — text stays)",
   clamOff: "Clamshell no-sleep (macOS) — keep running with the lid closed. Click once for one time, twice to keep on (admin password once when enabling)",
   clamOnce: "Clamshell: this once — auto-restores after the lid closes and reopens. Click for 'keep on'",
-  clamKeep: "Clamshell: keep on — click again or quit the widget to restore",
+  clamKeep: "Clamshell: keep on — stays on until you click again to restore",
 };
 
 const ja: Messages = {
@@ -225,7 +225,7 @@ const ja: Messages = {
   memoAlphaTooltip: "透明度（背景のみ — 文字は残ります）",
   clamOff: "クラムシェル・スリープ防止 (macOS) — 蓋を閉じても眠らない。1回で今回のみ、2回で継続（有効化時に管理者パスワード1回）",
   clamOnce: "クラムシェル: 今回のみ — 蓋を閉じて再び開くと自動解除。押すと「継続」に",
-  clamKeep: "クラムシェル: 継続 — もう一度押すかウィジェット終了で元に戻ります",
+  clamKeep: "クラムシェル: 継続 — もう一度押して解除するまで維持します",
 };
 
 const zhCN: Messages = {
@@ -295,7 +295,7 @@ const zhCN: Messages = {
   memoAlphaTooltip: "透明度（仅背景 — 文字保留）",
   clamOff: "合盖不休眠 (macOS) — 合上盖子也继续运行。按一次仅此一次，按两次持续开启（启用时需一次管理员密码）",
   clamOnce: "合盖不休眠：仅此一次 — 盖子合上再打开后自动恢复。再按切换为持续",
-  clamKeep: "合盖不休眠：持续开启 — 再按一次或退出小组件即恢复原状",
+  clamKeep: "合盖不休眠：持续开启 — 保持到再次按下并恢复原状",
 };
 
 const zhTW: Messages = {
@@ -365,7 +365,7 @@ const zhTW: Messages = {
   memoAlphaTooltip: "透明度（僅背景 — 文字保留）",
   clamOff: "闔蓋不休眠 (macOS) — 闔上螢幕也繼續運作。按一次僅此一次，按兩次持續開啟（啟用時需一次管理員密碼）",
   clamOnce: "闔蓋不休眠：僅此一次 — 螢幕闔上再打開後自動恢復。再按切換為持續",
-  clamKeep: "闔蓋不休眠：持續開啟 — 再按一次或結束小工具即恢復原狀",
+  clamKeep: "闔蓋不休眠：持續開啟 — 保持到再次按下並恢復原狀",
 };
 
 const hi: Messages = {
@@ -438,7 +438,7 @@ const hi: Messages = {
   memoAlphaTooltip: "पारदर्शिता (केवल पृष्ठभूमि — टेक्स्ट बना रहेगा)",
   clamOff: "क्लैमशेल नो-स्लीप (macOS) — ढक्कन बंद होने पर भी चलता रहे। एक बार दबाएँ = इस बार, दो बार = लगातार (चालू करते समय एक बार व्यवस्थापक पासवर्ड)",
   clamOnce: "क्लैमशेल: इस बार — ढक्कन बंद कर फिर खोलने पर अपने आप बहाल। दबाने पर 'लगातार'",
-  clamKeep: "क्लैमशेल: लगातार — फिर दबाएँ या विजेट बंद करें तो मूल स्थिति बहाल",
+  clamKeep: "क्लैमशेल: लगातार — दोबारा दबाकर बहाल करने तक चालू रहता है",
 };
 
 const MESSAGES: Record<Lang, Messages> = {

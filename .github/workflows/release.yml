@@ -13,9 +13,9 @@
 # 태그에 대해 gh workflow run release.yml -f tag=v1.7.NN 으로 수동 실행 가능.
 #
 # 주의: 자산 이름은 update.rs(ASSET_NAME)·scripts/dist.mjs와 계약이다 —
-# switcher-win-x64.zip(루트에 switcher.exe), switcher-mac-arm64.zip(루트에
-# switcher.app, ditto -xk로 풀림). 맥 자동 업데이트는 번들 버전 == 태그
-# 버전을 검증하므로 반드시 태그 커밋에서 빌드해야 한다.
+# switcher-win-x64.zip(루트에 switcher.exe·switcher-version.txt),
+# switcher-mac-arm64.zip(루트에 switcher.app, ditto -xk로 풀림). 자동
+# 업데이트는 자산 안 버전 == 태그 버전을 검증하므로 반드시 태그 커밋에서 빌드한다.
 name: release
 
 on:
@@ -47,10 +47,21 @@ jobs:
           workspaces: src-tauri
       - run: npm ci
       - run: npm run tauri build -- --no-bundle
-      # zip 루트에 switcher.exe — dist.mjs가 tar -xf로 풀어 그대로 실행한다
+      # zip 루트에 exe와 버전 표식 — 앱 업데이터가 태그와 실제 자산 버전을 대조한다.
+      # dist.mjs는 extra 파일을 무시하고 switcher.exe만 설치한다.
       - name: pack
         shell: pwsh
-        run: Compress-Archive -Path src-tauri/target/release/switcher.exe -DestinationPath switcher-win-x64.zip
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          $line = Select-String -Path src-tauri/Cargo.toml -Pattern '^version = "([^"]+)"$' | Select-Object -First 1
+          if (-not $line) { throw 'Cargo.toml version not found' }
+          $version = $line.Matches[0].Groups[1].Value
+          if ($env:RELEASE_TAG -ne "v$version") {
+            throw "tag ($env:RELEASE_TAG) does not match Cargo version ($version)"
+          }
+          [System.IO.File]::WriteAllText("$PWD/switcher-version.txt", $version, [System.Text.Encoding]::ASCII)
+          Compress-Archive -Path src-tauri/target/release/switcher.exe,switcher-version.txt -DestinationPath switcher-win-x64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: switcher-win-x64

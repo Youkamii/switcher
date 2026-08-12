@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -268,39 +269,83 @@ pub struct SwitchResult {
 /// 백업과 교체가 교차해 계정이 어긋날 수 있다 — 이 잠금으로 직렬화한다.
 pub(crate) static MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// 재발급 POST가 진행 중인 프로필의 표지판 (#14 잔여 ~1초 창).
-/// POST 도중 그 프로필로 전환(switch-TO)하면 활성엔 구토큰·보관함엔 회전된
-/// 신토큰이 갈라져 재로그인으로 밀릴 수 있다 — 전환이 이 표지판을 보고
-/// 재발급이 끝날 때까지 잠깐(상한 20초) 기다린다. MUTATION_LOCK과 겹치지 않는
-/// 별도 잠금이다: 재발급의 파일 반영이 MUTATION_LOCK을 쓰므로, 전환이
-/// MUTATION_LOCK을 쥔 채 여기서 기다리면 교착이 된다 — 반드시 잠금 밖에서 기다린다.
+/// 프로필 단위 수명 잠금. 토큰 재발급은 공유 상태(refreshes), 전환·삭제는 배타 상태로
+/// 등록한다. "재발급이 없음을 확인 → 전환/삭제 시작" 사이의 틈까지 같은 잠금 안에서
+/// 닫아, POST 응답이 삭제된 폴더를 되살리거나 전환 직후 활성 토큰을 무효화하지 못한다.
+#[derive(Default)]
+struct ProfileOperation {
+    refreshes: usize,
+    exclusive: bool,
+}
+
 #[allow(clippy::type_complexity)]
-fn refresh_inflight() -> &'static (
-    std::sync::Mutex<std::collections::HashSet<String>>,
+fn profile_operations() -> &'static (
+    std::sync::Mutex<std::collections::HashMap<String, ProfileOperation>>,
     std::sync::Condvar,
 ) {
     static CELL: std::sync::OnceLock<(
-        std::sync::Mutex<std::collections::HashSet<String>>,
+        std::sync::Mutex<std::collections::HashMap<String, ProfileOperation>>,
         std::sync::Condvar,
     )> = std::sync::OnceLock::new();
     CELL.get_or_init(|| {
         (
-            std::sync::Mutex::new(std::collections::HashSet::new()),
+            std::sync::Mutex::new(std::collections::HashMap::new()),
             std::sync::Condvar::new(),
         )
     })
 }
 
-pub(crate) fn refresh_key(provider: Provider, name: &str) -> String {
-    format!("{}:{name}", provider.dir_name())
+pub(crate) fn refresh_key(env: &Env, provider: Provider, name: &str) -> String {
+    format!("{}:{}:{name}", env.store.display(), provider.dir_name())
 }
 
-/// 재발급 시작 표시 — 반환된 가드가 떨어지면 (성공·실패 무관) 표시가 걷힌다
-pub(crate) fn refresh_begin(key: String) -> RefreshInflightGuard {
-    if let Ok(mut set) = refresh_inflight().0.lock() {
-        set.insert(key.clone());
+pub(crate) fn deletion_identity_key(env: &Env, provider: Provider, id: &str) -> String {
+    format!("{}:{}:<id:{id}>", env.store.display(), provider.dir_name())
+}
+
+/// 로그인 시작 뒤 같은 이름의 프로필이 삭제됐는지 판별하는 tombstone 세대.
+/// 늦게 끝난 로그인 임포트가 사용자의 삭제를 되돌려 폴더를 되살리지 않게 한다.
+static DELETE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn profile_deletions() -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
+    static CELL: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, u64>>,
+    > = std::sync::OnceLock::new();
+    CELL.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+pub(crate) fn deletion_snapshot() -> u64 {
+    DELETE_SEQ.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub(crate) fn profile_deleted_after(key: &str, snapshot: u64) -> bool {
+    profile_deletions()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(key)
+        .is_some_and(|deleted_at| *deleted_at > snapshot)
+}
+
+fn mark_profile_deleted(key: String) {
+    let deleted_at = DELETE_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    profile_deletions()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(key, deleted_at);
+}
+
+/// 재발급 시작 표시 — 전환·삭제가 이미 시작됐으면 이번 갱신은 건너뛴다.
+pub(crate) fn refresh_begin(key: String) -> Result<RefreshInflightGuard, String> {
+    let mut states = profile_operations()
+        .0
+        .lock()
+        .map_err(|_| "내부 잠금 오류".to_string())?;
+    let state = states.entry(key.clone()).or_default();
+    if state.exclusive {
+        return Err("프로필이 변경 중입니다".into());
     }
-    RefreshInflightGuard { key }
+    state.refreshes += 1;
+    Ok(RefreshInflightGuard { key })
 }
 
 pub(crate) struct RefreshInflightGuard {
@@ -309,34 +354,72 @@ pub(crate) struct RefreshInflightGuard {
 
 impl Drop for RefreshInflightGuard {
     fn drop(&mut self) {
-        let (lock, cv) = refresh_inflight();
-        if let Ok(mut set) = lock.lock() {
-            set.remove(&self.key);
+        let (lock, cv) = profile_operations();
+        if let Ok(mut states) = lock.lock() {
+            let remove = if let Some(state) = states.get_mut(&self.key) {
+                state.refreshes = state.refreshes.saturating_sub(1);
+                state.refreshes == 0 && !state.exclusive
+            } else {
+                false
+            };
+            if remove {
+                states.remove(&self.key);
+            }
         }
         cv.notify_all();
     }
 }
 
-/// 해당 프로필의 재발급이 끝날 때까지 기다린다 (상한 초과 시 그냥 진행 —
-/// 잔여 창은 재발급 쪽의 사후 복구가 마저 덮는다)
-pub(crate) fn wait_refresh_idle(key: &str, timeout: std::time::Duration) {
-    let (lock, cv) = refresh_inflight();
+struct ProfileExclusiveGuard {
+    key: String,
+}
+
+impl Drop for ProfileExclusiveGuard {
+    fn drop(&mut self) {
+        let (lock, cv) = profile_operations();
+        if let Ok(mut states) = lock.lock() {
+            let remove = if let Some(state) = states.get_mut(&self.key) {
+                state.exclusive = false;
+                state.refreshes == 0
+            } else {
+                false
+            };
+            if remove {
+                states.remove(&self.key);
+            }
+        }
+        cv.notify_all();
+    }
+}
+
+/// 기존 재발급이 끝날 때까지 기다린 뒤 전환·삭제 권한을 원자적으로 차지한다.
+/// MUTATION_LOCK보다 먼저 얻어야 재발급의 파일 반영과 교착하지 않는다.
+fn profile_exclusive_begin(
+    key: String,
+    timeout: std::time::Duration,
+) -> Result<ProfileExclusiveGuard, String> {
+    let (lock, cv) = profile_operations();
     let deadline = std::time::Instant::now() + timeout;
-    let Ok(mut set) = lock.lock() else {
-        return;
-    };
-    while set.contains(key) {
+    let mut states = lock.lock().map_err(|_| "내부 잠금 오류".to_string())?;
+    loop {
+        let busy = states
+            .get(&key)
+            .is_some_and(|state| state.refreshes > 0 || state.exclusive);
+        if !busy {
+            states.entry(key.clone()).or_default().exclusive = true;
+            return Ok(ProfileExclusiveGuard { key });
+        }
         let Some(remain) = deadline.checked_duration_since(std::time::Instant::now()) else {
-            return;
+            return Err("프로필 토큰 갱신이 끝나지 않아 작업을 중단했습니다".into());
         };
-        match cv.wait_timeout(set, remain) {
+        match cv.wait_timeout(states, remain) {
             Ok((next, timed_out)) => {
-                set = next;
+                states = next;
                 if timed_out.timed_out() {
-                    return;
+                    return Err("프로필 토큰 갱신이 끝나지 않아 작업을 중단했습니다".into());
                 }
             }
-            Err(_) => return,
+            Err(_) => return Err("내부 잠금 오류".into()),
         }
     }
 }
@@ -368,6 +451,22 @@ pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
         .parent()
         .ok_or_else(|| format!("경로 오류: {}", path.display()))?;
     fs::create_dir_all(parent).map_err(|e| format!("폴더 생성 실패 {}: {e}", parent.display()))?;
+    atomic_replace_in_parent(path, data, parent)
+}
+
+/// 이미 존재하는 프로필 폴더 안에만 쓴다. 삭제와 경합했을 때 `create_dir_all`로
+/// 지워진 계정 폴더를 토큰 사이드카 하나만 든 채 되살리지 않기 위한 변형이다.
+pub(crate) fn atomic_write_existing_parent(path: &Path, data: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("경로 오류: {}", path.display()))?;
+    if !parent.is_dir() {
+        return Err(format!("대상 폴더가 없습니다: {}", parent.display()));
+    }
+    atomic_replace_in_parent(path, data, parent)
+}
+
+fn atomic_replace_in_parent(path: &Path, data: &[u8], parent: &Path) -> Result<(), String> {
     let file_name = path
         .file_name()
         .ok_or_else(|| format!("경로 오류: {}", path.display()))?
@@ -376,13 +475,30 @@ pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
     // 동시 쓰기 경합 시 임시 파일이 겹치지 않게 일련번호를 붙인다
     static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tmp = parent.join(format!("{file_name}.switcher-tmp{seq}"));
-    fs::write(&tmp, data).map_err(|e| format!("쓰기 실패 {}: {e}", tmp.display()))?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let tmp = parent.join(format!(
+        ".{file_name}.switcher-tmp-{}-{nonce}-{seq}",
+        std::process::id()
+    ));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600));
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
+    let mut file = options
+        .open(&tmp)
+        .map_err(|e| format!("임시 파일 생성 실패 {}: {e}", tmp.display()))?;
+    if let Err(e) = file.write_all(data).and_then(|_| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(&tmp);
+        return Err(format!("쓰기 실패 {}: {e}", tmp.display()));
+    }
+    drop(file);
     fs::rename(&tmp, path).map_err(|e| {
         // 실패 시 평문 토큰이 담긴 임시 파일을 남기지 않는다
         let _ = fs::remove_file(&tmp);
@@ -792,7 +908,7 @@ pub(crate) fn auto_name(env: &Env, provider: Provider, ident: &LiveIdentity) -> 
 
 /// 대상 프로필의 oauth_account.json을 ~/.claude.json에 반영한다.
 /// 실행 중인 클로드 세션과의 쓰기 경합 창을 줄이기 위해 반영 직전에 새로 읽는다.
-fn claude_apply_oauth_block(env: &Env, profile_dir: &Path) -> Result<(), String> {
+pub(crate) fn claude_apply_oauth_block(env: &Env, profile_dir: &Path) -> Result<(), String> {
     let block_path = profile_dir.join("oauth_account.json");
     let cj = env.claude_json_path();
     if !block_path.exists() || !cj.exists() {
@@ -841,17 +957,19 @@ pub fn save_current(env: &Env, provider: Provider, name: &str) -> Result<String,
 
 /// 계정 전환. 순서 불변: 1) 현재 활성 파일 백업 → 2) 대상 프로필 복사
 pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult, String> {
-    // 대상 프로필의 토큰 재발급 POST가 날아가는 중이면 끝날 때까지 잠깐 기다린다
-    // (#14 잔여 창) — 기다리지 않으면 회전 전 구토큰을 활성으로 복사하게 된다.
-    // 반드시 MUTATION_LOCK 밖에서: 재발급의 파일 반영이 같은 잠금을 쓴다 (교착 방지).
-    wait_refresh_idle(
-        &refresh_key(provider, name),
-        std::time::Duration::from_secs(20),
-    );
-    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     validate_name(name)?;
+    // 기존 재발급을 기다리는 동시에 새 재발급의 시작도 막는다. 반드시
+    // MUTATION_LOCK 밖에서 먼저 얻어야 재발급 파일 반영과 교착하지 않는다.
+    let _profile_guard = profile_exclusive_begin(
+        refresh_key(env, provider, name),
+        std::time::Duration::from_secs(20),
+    )?;
+    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     let profile_dir = env.profiles_dir(provider).join(name);
     let target_cred = profile_dir.join(provider.credential_file_name());
+    // 직전 갱신의 본 파일 쓰기/활성 복구가 실패해 pending이 남았으면, 구토큰을
+    // 활성 위치로 복사하기 전에 반드시 복구한다.
+    crate::usage::rescue_pending_profile_locked(env, provider, name)?;
     if !target_cred.exists() {
         return Err(format!("프로필 '{name}'에 저장된 토큰이 없습니다"));
     }
@@ -939,8 +1057,12 @@ pub fn list(env: &Env, provider: Provider) -> Result<Snapshot, String> {
 
 /// 프로필 삭제 (보관함에서만 지운다 — 활성 로그인은 건드리지 않음)
 pub fn delete(env: &Env, provider: Provider, name: &str) -> Result<(), String> {
-    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     validate_name(name)?;
+    let _profile_guard = profile_exclusive_begin(
+        refresh_key(env, provider, name),
+        std::time::Duration::from_secs(20),
+    )?;
+    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     let dir = env.profiles_dir(provider).join(name);
     if !dir.exists() {
         return Err(format!("프로필 '{name}'이 없습니다"));
@@ -948,6 +1070,12 @@ pub fn delete(env: &Env, provider: Provider, name: &str) -> Result<(), String> {
     // 삭제 전에 계정 id를 붙잡아 둔다 — 사용량 캐시 정리(잔존 항목 무기한 축적 방지)용
     let meta_id = read_meta(&dir).map(|m| m.id);
     fs::remove_dir_all(&dir).map_err(|e| format!("삭제 실패 {}: {e}", dir.display()))?;
+    mark_profile_deleted(refresh_key(env, provider, name));
+    if let Some(id) = meta_id.as_deref() {
+        // 로그인 도중 삭제된 계정이 이메일·자동 이름이 달라져도 다른 이름으로
+        // 되살아나지 않게 계정 ID tombstone도 함께 남긴다.
+        mark_profile_deleted(deletion_identity_key(env, provider, id));
+    }
     crate::usage::purge_account_cache(env, provider, meta_id.as_deref(), name);
     Ok(())
 }
@@ -1066,6 +1194,32 @@ mod tests {
         let active: Vec<_> = snap.profiles.iter().filter(|p| p.active).collect();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].name, "second");
+    }
+
+    #[test]
+    fn switch_applies_pending_refresh_before_activating_profile() {
+        let env = test_env("switch-pending");
+        login_claude(&env, "uuid-b", "bob@test.dev", "tok-b");
+        save_current(&env, Provider::Claude, "second").unwrap();
+        let dir = env.profiles_dir(Provider::Claude).join("second");
+        let cred = dir.join("credentials.json");
+        fs::write(
+            &cred,
+            r#"{"claudeAiOauth":{"accessToken":"old-a","refreshToken":"r-old","expiresAt":1000}}"#,
+        )
+        .unwrap();
+        fs::write(
+            cred.with_extension("json.pending"),
+            r#"{"old_refresh":"r-old","response":{"access_token":"new-a","refresh_token":"r-new","expires_in":28800},"saved_at":1}"#,
+        )
+        .unwrap();
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a");
+
+        switch(&env, Provider::Claude, "second").unwrap();
+        let live: Value = serde_json::from_str(&live_token(&env)).unwrap();
+        assert_eq!(live.pointer("/claudeAiOauth/accessToken").unwrap(), "new-a");
+        assert_eq!(live.pointer("/claudeAiOauth/refreshToken").unwrap(), "r-new");
+        assert!(!cred.with_extension("json.pending").exists());
     }
 
     #[test]
@@ -1353,32 +1507,59 @@ mod tests {
         assert!(env.live_credential_path(Provider::Claude).exists());
     }
 
-    /// 재발급 진행 표지판: 가드가 살아 있는 동안 wait가 기다리고, 드랍되면 즉시 풀린다
+    /// 재발급 가드가 살아 있는 동안 전환·삭제 권한이 기다리고, 드랍되면 즉시 풀린다.
     #[test]
-    fn refresh_inflight_wait_unblocks_on_guard_drop() {
-        let key = refresh_key(Provider::Claude, "inflight-test");
-        // 표지판이 없으면 즉시 통과
+    fn profile_lifecycle_exclusive_waits_and_blocks_new_refresh() {
+        let env = test_env("profile-lifecycle");
+        let key = refresh_key(&env, Provider::Claude, "inflight-test");
+        // 재발급이 없으면 배타 권한은 즉시 잡힌다.
         let t0 = std::time::Instant::now();
-        wait_refresh_idle(&key, std::time::Duration::from_secs(5));
+        let exclusive =
+            profile_exclusive_begin(key.clone(), std::time::Duration::from_secs(5)).unwrap();
         assert!(t0.elapsed() < std::time::Duration::from_millis(100));
+        assert!(refresh_begin(key.clone()).is_err(), "배타 작업 중 새 재발급 금지");
+        drop(exclusive);
 
-        let guard = refresh_begin(key.clone());
+        let refresh = refresh_begin(key.clone()).unwrap();
         let key2 = key.clone();
         let waiter = std::thread::spawn(move || {
             let t = std::time::Instant::now();
-            wait_refresh_idle(&key2, std::time::Duration::from_secs(5));
-            t.elapsed()
+            let guard =
+                profile_exclusive_begin(key2, std::time::Duration::from_secs(5)).unwrap();
+            (t.elapsed(), guard)
         });
         std::thread::sleep(std::time::Duration::from_millis(150));
-        drop(guard);
-        let waited = waiter.join().unwrap();
+        drop(refresh);
+        let (waited, exclusive) = waiter.join().unwrap();
         assert!(
             waited >= std::time::Duration::from_millis(100),
-            "가드 생존 중에는 기다려야 한다: {waited:?}"
+            "재발급 가드 생존 중에는 기다려야 한다: {waited:?}"
         );
         assert!(
             waited < std::time::Duration::from_secs(4),
             "드랍 즉시 풀려야 한다 (상한 대기 아님): {waited:?}"
         );
+        assert!(refresh_begin(key.clone()).is_err());
+        drop(exclusive);
+        assert!(refresh_begin(key).is_ok());
+    }
+
+    #[test]
+    fn delete_waits_for_refresh_and_deleted_parent_stays_gone() {
+        let env = test_env("delete-refresh-race");
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a");
+        save_current(&env, Provider::Claude, "main").unwrap();
+        let dir = env.profiles_dir(Provider::Claude).join("main");
+        let refresh = refresh_begin(refresh_key(&env, Provider::Claude, "main")).unwrap();
+        let observed_dir = dir.clone();
+        let deleter = std::thread::spawn(move || delete(&env, Provider::Claude, "main"));
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(observed_dir.exists(), "재발급 중에는 삭제가 기다려야 한다");
+        drop(refresh);
+        deleter.join().unwrap().unwrap();
+        assert!(!observed_dir.exists());
+        let pending = observed_dir.join("credentials.json.pending");
+        assert!(atomic_write_existing_parent(&pending, b"secret").is_err());
+        assert!(!observed_dir.exists());
     }
 }

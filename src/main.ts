@@ -41,6 +41,7 @@ const titlebarEl = document.querySelector(".titlebar") as HTMLElement;
 let rendering = false;
 /// 로그인 패널이 열려 있으면 자동 새로고침이 화면을 갈아엎지 않게 한다
 let loginOpen = false;
+let loginSessionId: string | null = null;
 
 /// 화면 알림(토스트)은 제거됐다 — 의미 없는 메시지가 위젯 폭에도 안 맞게
 /// 떠서 없앰 (사용자 결정, 2026-08-07). 원인 추적을 위해 콘솔에만 남긴다.
@@ -264,6 +265,7 @@ type LoginOutcome = {
 };
 
 type LoginPrompt = {
+  session_id: string;
   url: string;
   device_code: string | null;
   needs_code: boolean;
@@ -338,7 +340,10 @@ function loginPanel(prompt: LoginPrompt, onExit: () => void): HTMLElement {
       input.disabled = true;
       okBtn.textContent = t("okWorking");
       try {
-        const result = await invoke<LoginOutcome>("submit_login_code", { code });
+        const result = await invoke<LoginOutcome>("submit_login_code", {
+          code,
+          sessionId: prompt.session_id,
+        });
         reportLogin(result);
       } catch (error) {
         const message = String(error);
@@ -377,7 +382,9 @@ function loginPanel(prompt: LoginPrompt, onExit: () => void): HTMLElement {
     panel.appendChild(prereq);
     void (async () => {
       try {
-        const result = await invoke<LoginOutcome>("await_device_login");
+        const result = await invoke<LoginOutcome>("await_device_login", {
+          sessionId: prompt.session_id,
+        });
         reportLogin(result);
       } catch (error) {
         toast(String(error), true);
@@ -390,7 +397,7 @@ function loginPanel(prompt: LoginPrompt, onExit: () => void): HTMLElement {
   cancelBtn.className = "link";
   cancelBtn.textContent = t("cancel");
   cancelBtn.addEventListener("click", () => {
-    void invoke("cancel_login");
+    void invoke("cancel_login", { sessionId: prompt.session_id });
     onExit();
   });
   panel.appendChild(cancelBtn);
@@ -430,16 +437,27 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
     // 주소를 받는 수 초 동안 주기 렌더가 DOM을 갈아엎으면 패널이 분리된 노드에
     // 붙어 영영 안 보인다 — 시작 전에 loginOpen을 올려 렌더를 막는다 (red-review)
     loginOpen = true;
+    loginSessionId = null;
     try {
       const prompt = await invoke<LoginPrompt>("start_login", { provider });
+      if (!loginOpen) {
+        void invoke("cancel_login", { sessionId: prompt.session_id });
+        return;
+      }
+      loginSessionId = prompt.session_id;
       addBtn.hidden = true;
       slot.appendChild(
         loginPanel(prompt, () => {
+          // 취소된 이전 waiter가 늦게 끝나도 그 사이 시작한 새 로그인 패널을
+          // 닫거나 재렌더로 지우지 못하게 현재 세션 콜백만 받는다.
+          if (loginSessionId !== prompt.session_id) return;
+          loginSessionId = null;
           loginOpen = false;
           void render({ immediate: true });
         }),
       );
     } catch (error) {
+      loginSessionId = null;
       loginOpen = false;
       toast(String(error), true);
       addBtn.disabled = false;
@@ -1107,7 +1125,9 @@ async function render(opts?: { immediate?: boolean }) {
       // 간주하고 백엔드 세션까지 정리한다 (red-review 2라운드)
       if (loginOpen) {
         loginOpen = false;
-        void invoke("cancel_login");
+        const sessionId = loginSessionId;
+        loginSessionId = null;
+        if (sessionId) void invoke("cancel_login", { sessionId });
         // gh 로그인 세션도 같은 정책 — 안 열려 있으면 무해한 no-op
         void invoke("github_login_cancel");
       }
