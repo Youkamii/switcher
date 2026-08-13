@@ -11,14 +11,14 @@
 
 ### 安裝
 
-**以 npm 安裝(建議 — 無安全性警告)** — 需 Node.js 18 以上
+**以 npm 安裝(建議)** — 需 Node.js 18 以上
 
 ```sh
 npm install -g switcher-widget
 switcher
 ```
 
-第一次執行 `switcher` 指令時,會自動下載最新發行版本的建置檔(之後就會直接啟動)。因為不是透過瀏覽器下載,所以不會出現 SmartScreen 警告。更新是自動的 — 每次啟動都會檢查新版本,下次啟動生效。
+第一次執行 `switcher` 指令時,會下載與已安裝 npm 套件版本相同的官方發行建置檔(之後就會直接啟動)。因為程式沒有程式碼簽章,透過 npm 安裝時仍可能出現 SmartScreen 警告。更新是自動的 — 每次啟動都會檢查新版本,下次啟動生效。
 
 **直接下載** — 從[發行版本](https://github.com/Youkamii/switcher/releases/latest)下載 `switcher-win-x64.zip`,解壓縮後執行 `switcher.exe`。(Windows 10/11 64 位元)
 
@@ -38,14 +38,14 @@ switcher
 
 ### 安裝
 
-**以 npm 安裝(建議 — 無安全性警告)** — 需 Node.js 18 以上
+**以 npm 安裝(建議)** — 需 Node.js 18 以上
 
 ```sh
 npm install -g switcher-widget
 switcher
 ```
 
-第一次執行 `switcher` 指令時,會自動下載最新發行版本的建置檔(之後就會直接啟動)。因為不是透過瀏覽器下載,所以不會出現「未識別的開發者」警告。更新是自動的 — 每次啟動都會檢查新版本,下次啟動生效。
+第一次執行 `switcher` 指令時,會下載與已安裝 npm 套件版本相同的官方發行建置檔(之後就會直接啟動)。因為 App 沒有簽章與公證,透過 npm 安裝時仍可能出現「未識別的開發者」警告。更新是自動的 — 每次啟動都會檢查新版本,下次啟動生效。
 
 **直接下載** — 從[發行版本](https://github.com/Youkamii/switcher/releases/latest)下載 `switcher-mac-arm64.zip`,解壓縮後執行 `switcher.app`。僅支援 Apple Silicon — Intel Mac 請改用下方的[從原始碼建置](#從原始碼建置)安裝。
 

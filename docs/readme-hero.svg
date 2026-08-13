@@ -1,0 +1,104 @@
+<svg width="1200" height="360" viewBox="0 0 1200 360" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>switcher</title>
+  <desc>One widget for switching Claude Code, Codex CLI, and GitHub CLI accounts.</desc>
+
+  <defs>
+    <linearGradient id="bg" x1="48" y1="18" x2="1160" y2="342" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1A1630" />
+      <stop offset="0.55" stop-color="#0F0D18" />
+      <stop offset="1" stop-color="#09080E" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#C4B5FD" />
+      <stop offset="1" stop-color="#8B5CF6" />
+    </linearGradient>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(248 86) rotate(32) scale(420 260)">
+      <stop stop-color="#8B5CF6" stop-opacity="0.30" />
+      <stop offset="1" stop-color="#8B5CF6" stop-opacity="0" />
+    </radialGradient>
+    <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse">
+      <path d="M28 0H0V28" stroke="#FFFFFF" stroke-opacity="0.035" />
+    </pattern>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="170%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#000000" flood-opacity="0.42" />
+    </filter>
+  </defs>
+
+  <rect x="1" y="1" width="1198" height="358" rx="28" fill="url(#bg)" stroke="#A78BFA" stroke-opacity="0.28" stroke-width="2" />
+  <rect x="1" y="1" width="1198" height="358" rx="28" fill="url(#glow)" />
+  <rect x="1" y="1" width="1198" height="358" rx="28" fill="url(#grid)" />
+
+  <g transform="translate(72 62)">
+    <rect width="68" height="68" rx="19" fill="#A78BFA" fill-opacity="0.10" stroke="#A78BFA" stroke-opacity="0.38" />
+    <path d="M14 17L27 52L34 26L42 52L55 17" stroke="url(#accent)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+
+  <text x="72" y="185" fill="#F7F5FF" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="64" font-weight="760" letter-spacing="-2.5">switcher</text>
+  <text x="74" y="226" fill="#CFC9E4" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="23" font-weight="520">Claude. Codex. GitHub. One switcher.</text>
+  <text x="74" y="262" fill="#8F89A3" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="16">Claude Code  ·  Codex CLI  ·  GitHub CLI</text>
+
+  <g transform="translate(74 292)" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="13" font-weight="650">
+    <rect width="118" height="31" rx="15.5" fill="#A78BFA" fill-opacity="0.13" stroke="#A78BFA" stroke-opacity="0.46" />
+    <circle cx="18" cy="15.5" r="4" fill="#A78BFA" />
+    <text x="31" y="20" fill="#DED7FF">Windows x64</text>
+    <g transform="translate(130 0)">
+      <rect width="126" height="31" rx="15.5" fill="#A78BFA" fill-opacity="0.13" stroke="#A78BFA" stroke-opacity="0.46" />
+      <circle cx="18" cy="15.5" r="4" fill="#A78BFA" />
+      <text x="31" y="20" fill="#DED7FF">macOS arm64</text>
+    </g>
+    <g transform="translate(268 0)">
+      <rect width="111" height="31" rx="15.5" fill="#34D399" fill-opacity="0.10" stroke="#34D399" stroke-opacity="0.38" />
+      <circle cx="18" cy="15.5" r="4" fill="#34D399" />
+      <text x="31" y="20" fill="#B7F7DE">MIT Open</text>
+    </g>
+  </g>
+
+  <g transform="translate(689 48)" filter="url(#shadow)">
+    <rect x="0" y="22" width="260" height="270" rx="20" fill="#171520" stroke="#A78BFA" stroke-opacity="0.52" />
+    <rect x="19" y="43" width="88" height="9" rx="4.5" fill="#A78BFA" />
+    <circle cx="224" cy="48" r="8" fill="#34D399" />
+
+    <rect x="19" y="72" width="222" height="74" rx="13" fill="#201D2B" stroke="#A78BFA" stroke-opacity="0.32" />
+    <rect x="34" y="88" width="90" height="8" rx="4" fill="#F7F5FF" fill-opacity="0.88" />
+    <rect x="34" y="111" width="154" height="7" rx="3.5" fill="#393349" />
+    <rect x="34" y="111" width="96" height="7" rx="3.5" fill="#A78BFA" />
+    <rect x="34" y="126" width="154" height="7" rx="3.5" fill="#393349" />
+    <rect x="34" y="126" width="54" height="7" rx="3.5" fill="#A78BFA" />
+
+    <rect x="19" y="158" width="222" height="74" rx="13" fill="#201D2B" stroke="#A78BFA" />
+    <rect x="34" y="174" width="104" height="8" rx="4" fill="#F7F5FF" />
+    <rect x="34" y="197" width="154" height="7" rx="3.5" fill="#393349" />
+    <rect x="34" y="197" width="121" height="7" rx="3.5" fill="#A78BFA" />
+    <rect x="34" y="212" width="154" height="7" rx="3.5" fill="#393349" />
+    <rect x="34" y="212" width="137" height="7" rx="3.5" fill="#FACC15" />
+
+    <rect x="19" y="246" width="222" height="27" rx="8" fill="#A78BFA" />
+    <text x="92" y="264" fill="#171520" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="760">SWITCH ACCOUNT</text>
+  </g>
+
+  <g transform="translate(921 88)" filter="url(#shadow)">
+    <rect width="174" height="222" rx="18" fill="#171520" stroke="#A78BFA" stroke-opacity="0.46" />
+    <rect x="17" y="19" width="61" height="8" rx="4" fill="#7C6AA5" />
+    <rect x="17" y="46" width="140" height="61" rx="12" fill="#211E2D" stroke="#A78BFA" stroke-opacity="0.45" />
+    <rect x="29" y="62" width="93" height="6" rx="3" fill="#3B354C" />
+    <rect x="29" y="62" width="63" height="6" rx="3" fill="#A78BFA" />
+    <rect x="29" y="78" width="93" height="6" rx="3" fill="#3B354C" />
+    <rect x="29" y="78" width="35" height="6" rx="3" fill="#A78BFA" />
+    <rect x="29" y="94" width="93" height="6" rx="3" fill="#3B354C" />
+    <rect x="29" y="94" width="81" height="6" rx="3" fill="#FACC15" />
+    <rect x="17" y="119" width="140" height="61" rx="12" fill="#211E2D" stroke="#34D399" stroke-opacity="0.7" />
+    <rect x="29" y="135" width="93" height="6" rx="3" fill="#3B354C" />
+    <rect x="29" y="135" width="47" height="6" rx="3" fill="#A78BFA" />
+    <rect x="29" y="151" width="93" height="6" rx="3" fill="#3B354C" />
+    <rect x="29" y="151" width="72" height="6" rx="3" fill="#A78BFA" />
+    <rect x="29" y="167" width="93" height="6" rx="3" fill="#3B354C" />
+    <rect x="29" y="167" width="23" height="6" rx="3" fill="#A78BFA" />
+    <rect x="17" y="194" width="96" height="6" rx="3" fill="#3B354C" />
+    <rect x="17" y="194" width="42" height="6" rx="3" fill="#A78BFA" />
+    <path d="M119 202L127 190L135 197L143 184L151 191" stroke="#A78BFA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+  </g>
+
+  <circle cx="1138" cy="50" r="3" fill="#A78BFA" />
+  <circle cx="1160" cy="74" r="2" fill="#34D399" />
+  <circle cx="1118" cy="310" r="2.5" fill="#FACC15" />
+</svg>

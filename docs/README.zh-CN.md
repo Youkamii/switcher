@@ -11,14 +11,14 @@
 
 ### 安装
 
-**通过 npm 安装（推荐 — 无安全警告）** — 需要 Node.js 18 及以上
+**通过 npm 安装（推荐）** — 需要 Node.js 18 及以上
 
 ```sh
 npm install -g switcher-widget
 switcher
 ```
 
-`switcher` 命令首次运行时会自动下载最新的发布版构建（之后会直接启动）。由于不是通过浏览器下载，不会触发 SmartScreen 警告。更新是自动的 — 每次启动都会检查新版本，下次启动生效。
+`switcher` 命令首次运行时会下载与已安装 npm 包版本相同的官方发布版构建（之后会直接启动）。由于程序没有代码签名，通过 npm 安装时仍可能触发 SmartScreen 警告。更新是自动的 — 每次启动都会检查新版本，下次启动生效。
 
 **直接下载** — 从[发布页](https://github.com/Youkamii/switcher/releases/latest)下载 `switcher-win-x64.zip`，解压后运行 `switcher.exe`。（Windows 10/11 64 位）
 
@@ -38,14 +38,14 @@ switcher
 
 ### 安装
 
-**通过 npm 安装（推荐 — 无安全警告）** — 需要 Node.js 18 及以上
+**通过 npm 安装（推荐）** — 需要 Node.js 18 及以上
 
 ```sh
 npm install -g switcher-widget
 switcher
 ```
 
-`switcher` 命令首次运行时会自动下载最新的发布版构建（之后会直接启动）。由于不是通过浏览器下载，不会触发“无法验证开发者”警告。更新是自动的 — 每次启动都会检查新版本，下次启动生效。
+`switcher` 命令首次运行时会下载与已安装 npm 包版本相同的官方发布版构建（之后会直接启动）。由于应用没有签名和公证，通过 npm 安装时仍可能出现“无法验证开发者”警告。更新是自动的 — 每次启动都会检查新版本，下次启动生效。
 
 **直接下载** — 从[发布页](https://github.com/Youkamii/switcher/releases/latest)下载 `switcher-mac-arm64.zip`，解压后运行 `switcher.app`。仅支持 Apple Silicon — Intel Mac 请通过下方的[从源码构建](#从源码构建)安装。
 

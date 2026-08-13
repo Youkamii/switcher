@@ -11,14 +11,14 @@ A desktop widget that switches between multiple Claude Code / Codex CLI accounts
 
 ### Install
 
-**Install via npm (recommended — no security warnings)** — requires Node.js 18+
+**Install via npm (recommended)** — requires Node.js 18+
 
 ```sh
 npm install -g switcher-widget
 switcher
 ```
 
-The first run of the `switcher` command automatically downloads the latest release build (subsequent runs start instantly). Since it isn't a browser download, no SmartScreen warning appears. Updates are automatic — every launch checks for a new release and applies it on the next launch.
+The first run of the `switcher` command downloads the official release build that matches the installed npm package version (subsequent runs start instantly). The binary is unsigned, so SmartScreen may still appear when installed through npm. Updates are automatic — every launch checks for a new release and applies it on the next launch.
 
 **Direct download** — grab `switcher-win-x64.zip` from the [releases page](https://github.com/Youkamii/switcher/releases/latest), extract it, and run `switcher.exe`. (Windows 10/11, 64-bit)
 
@@ -38,14 +38,14 @@ The first run of the `switcher` command automatically downloads the latest relea
 
 ### Install
 
-**Install via npm (recommended — no security warnings)** — requires Node.js 18+
+**Install via npm (recommended)** — requires Node.js 18+
 
 ```sh
 npm install -g switcher-widget
 switcher
 ```
 
-The first run of the `switcher` command automatically downloads the latest release build (subsequent runs start instantly). Since it isn't a browser download, no "unidentified developer" warning appears. Updates are automatic — every launch checks for a new release and applies it on the next launch.
+The first run of the `switcher` command downloads the official release build that matches the installed npm package version (subsequent runs start instantly). The app is unsigned and not notarized, so macOS may still show an unidentified-developer warning when installed through npm. Updates are automatic — every launch checks for a new release and applies it on the next launch.
 
 **Direct download** — grab `switcher-mac-arm64.zip` from the [releases page](https://github.com/Youkamii/switcher/releases/latest), extract it, and run `switcher.app`. Apple Silicon only — on Intel Macs, install via [Build from source](#build-from-source) below.
 
