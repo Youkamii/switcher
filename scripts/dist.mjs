@@ -70,22 +70,15 @@ export async function ensureDist() {
   const version = JSON.parse(
     fs.readFileSync(path.join(ROOT, "package.json"), "utf8"),
   ).version;
-  // 패키지 버전과 같은 릴리스를 먼저, 없으면(방금 버전만 올린 사이) 최신 릴리스를 받는다
-  const urls = [
-    `https://github.com/Youkamii/switcher/releases/download/v${version}/${asset.zip}`,
-    `https://github.com/Youkamii/switcher/releases/latest/download/${asset.zip}`,
-  ];
+  // npm 패키지와 정확히 같은 버전만 받는다. latest로 후퇴하면 새 패키지가
+  // 구버전 실행 파일을 설치해 버전·업데이터 계약이 깨진다.
+  const url = `https://github.com/Youkamii/switcher/releases/download/v${version}/${asset.zip}`;
   fs.mkdirSync(DIST, { recursive: true });
   const tmp = path.join(os.tmpdir(), `switcher-${process.pid}-${asset.zip}`);
   try {
-    let got = false;
-    for (const url of urls) {
-      if (await download(url, tmp)) {
-        got = true;
-        break;
-      }
+    if (!(await download(url, tmp))) {
+      throw new Error(`v${version} 릴리스 다운로드에 실패했습니다 — 릴리스 자산과 네트워크를 확인하세요`);
     }
-    if (!got) throw new Error("릴리스 다운로드에 실패했습니다 — 네트워크를 확인하세요");
     if (!extract(tmp, DIST)) throw new Error("압축 해제에 실패했습니다");
   } finally {
     fs.rmSync(tmp, { force: true });

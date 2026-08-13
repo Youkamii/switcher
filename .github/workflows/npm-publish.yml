@@ -14,7 +14,11 @@ name: npm-publish
 on:
   release:
     types: [published] # 릴리스가 나면 자동 게시 (릴리스 zip이 먼저 존재해야 하는 순서와 일치)
-  workflow_dispatch: {} # 릴리스를 이미 만든 뒤 수동 게시할 때 (gh workflow run npm-publish.yml)
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "게시할 릴리스 태그 (예: v1.8.0)"
+        required: true
 
 permissions:
   id-token: write # OIDC 교환에 필수
@@ -23,19 +27,45 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.inputs.tag && format('refs/tags/{0}', github.event.inputs.tag) || github.ref }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-      # trusted publishing은 npm 11.5.1+ — 러너 기본(10.x)을 올린다
-      - run: npm install -g npm@latest
+      # trusted publishing은 npm 11.5.1+ — 검증한 버전으로 고정한다
+      - run: npm install -g npm@11.13.0
       # 패키지는 files 화이트리스트(런처 2개)라 빌드 없이 게시된다.
       # 게시 전 버전이 레지스트리에 이미 있으면(재실행 등) 조용히 성공 처리.
       - name: publish (skip if version exists)
+        env:
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
         run: |
           PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ -z "$RELEASE_TAG" ]; then
+            echo "release tag is required" >&2
+            exit 1
+          fi
+          if [ "$RELEASE_TAG" != "v$PKG_VERSION" ]; then
+            echo "release tag ($RELEASE_TAG) does not match package version ($PKG_VERSION)" >&2
+            exit 1
+          fi
+          RELEASE_JSON=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+          if [ "$(printf '%s' "$RELEASE_JSON" | jq -r .draft)" != "false" ]; then
+            echo "release $RELEASE_TAG is not published" >&2
+            exit 1
+          fi
+          for ASSET in switcher-win-x64.zip switcher-mac-arm64.zip; do
+            if ! printf '%s' "$RELEASE_JSON" | jq -e --arg asset "$ASSET" \
+              'any(.assets[]; .name == $asset)' > /dev/null; then
+              echo "release $RELEASE_TAG is missing $ASSET" >&2
+              exit 1
+            fi
+          done
           if npm view "switcher-widget@$PKG_VERSION" version > /dev/null 2>&1; then
             echo "switcher-widget@$PKG_VERSION 이미 게시됨 — 건너뜀"
           else

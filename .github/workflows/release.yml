@@ -6,8 +6,8 @@
 # 맥 자산 누락 — 사용자가 '업데이트 확인'을 눌러도 ✗). 이 워크플로가
 # 그 반복 작업을 끝낸다.
 #
-# 흐름: 태그 push → win(exe zip)·mac(app zip) 병렬 빌드 → 릴리스 생성/보강
-# → 릴리스 published 이벤트가 npm-publish.yml(신뢰 게시)을 자동 트리거.
+# 흐름: 태그 push → win(exe zip)·mac(app zip) 병렬 빌드 → 자산이 붙은 릴리스 공개
+# → npm-publish.yml을 명시적으로 실행(신뢰 게시).
 #
 # 재실행·백필: 릴리스가 이미 있으면 자산만 채운다(--clobber). 이미 배포된
 # 태그에 대해 gh workflow run release.yml -f tag=v1.7.NN 으로 수동 실행 가능.
@@ -28,24 +28,27 @@ on:
         required: true
 
 permissions:
-  contents: write # 릴리스 생성·자산 업로드
+  contents: read
 
 jobs:
   build-windows:
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref_name }}
-      - uses: actions/setup-node@v4
+          ref: refs/tags/${{ github.event.inputs.tag || github.ref_name }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri
       - run: npm ci
+      - run: cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1
       - run: npm run tauri build -- --no-bundle
       # zip 루트에 exe와 버전 표식 — 앱 업데이터가 태그와 실제 자산 버전을 대조한다.
       # dist.mjs는 extra 파일을 무시하고 switcher.exe만 설치한다.
@@ -66,20 +69,30 @@ jobs:
           if ($conf -ne $version) {
             throw "tauri.conf.json version ($conf) does not match Cargo version ($version)"
           }
+          $package = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($package -ne $version) {
+            throw "package.json version ($package) does not match Cargo version ($version)"
+          }
+          $lock = node -p "require('./package-lock.json').packages[''].version"
+          if ($lock -ne $version) {
+            throw "package-lock.json version ($lock) does not match Cargo version ($version)"
+          }
           [System.IO.File]::WriteAllText("$PWD/switcher-version.txt", $version, [System.Text.Encoding]::ASCII)
           Compress-Archive -Path src-tauri/target/release/switcher.exe,switcher-version.txt -DestinationPath switcher-win-x64.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: switcher-win-x64
           path: switcher-win-x64.zip
 
   build-macos:
-    runs-on: macos-14 # Apple Silicon — 자산 이름(mac-arm64)과 일치
+    runs-on: macos-15 # Apple Silicon — 자산 이름(mac-arm64)과 일치
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.inputs.tag || github.ref_name }}
-      - uses: actions/setup-node@v4
+          ref: refs/tags/${{ github.event.inputs.tag || github.ref_name }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -91,21 +104,37 @@ jobs:
           RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           conf=$(node -p "require('./src-tauri/tauri.conf.json').version")
-          if [ "$RELEASE_TAG" != "v$conf" ]; then
-            echo "tag ($RELEASE_TAG) does not match tauri.conf.json version ($conf)" >&2
+          cargo=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' src-tauri/Cargo.toml | head -1)
+          package=$(node -p "require('./package.json').version")
+          lock=$(node -p "require('./package-lock.json').packages[''].version")
+          if [ "$RELEASE_TAG" != "v$cargo" ]; then
+            echo "tag ($RELEASE_TAG) does not match Cargo version ($cargo)" >&2
             exit 1
           fi
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+          if [ "$conf" != "$cargo" ]; then
+            echo "tauri.conf.json version ($conf) does not match Cargo version ($cargo)" >&2
+            exit 1
+          fi
+          if [ "$package" != "$cargo" ]; then
+            echo "package.json version ($package) does not match Cargo version ($cargo)" >&2
+            exit 1
+          fi
+          if [ "$lock" != "$cargo" ]; then
+            echo "package-lock.json version ($lock) does not match Cargo version ($cargo)" >&2
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: src-tauri
       - run: npm ci
+      - run: cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1
       # 애드혹 서명(tauri.conf.json signingIdentity "-") — 로컬 빌드와 동일
       - run: npm run tauri build -- --bundles app
       # zip 루트에 switcher.app — ditto가 서명·심링크를 보존한다 (dist.mjs -xk와 짝)
       - name: pack
         run: cd src-tauri/target/release/bundle/macos && ditto -c -k --keepParent switcher.app "$GITHUB_WORKSPACE/switcher-mac-arm64.zip"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: switcher-mac-arm64
           path: switcher-mac-arm64.zip
@@ -113,18 +142,30 @@ jobs:
   release:
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
+    permissions:
+      actions: write # npm-publish.yml workflow_dispatch
+      contents: write # 릴리스 생성·자산 업로드
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4 # gh가 저장소 컨텍스트를 요구한다
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: refs/tags/${{ github.event.inputs.tag || github.ref_name }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           merge-multiple: true
-      # 릴리스가 없으면 만들고(자동 노트), 있으면 자산만 채운다 — 수동 백필과 공존
+      # 신규 릴리스는 draft에서 두 자산을 모두 붙인 뒤 공개한다. 업로드가 중단돼도
+      # latest를 오염시키지 않고, 재실행은 남은 draft를 완성해 공개한다.
       - name: publish
         run: |
           if ! gh release view "$TAG" > /dev/null 2>&1; then
-            gh release create "$TAG" --title "$TAG" --generate-notes
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
           fi
           gh release upload "$TAG" switcher-win-x64.zip switcher-mac-arm64.zip --clobber
+          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = "true" ]; then
+            gh release edit "$TAG" --draft=false
+          fi
+      # GITHUB_TOKEN으로 만든 release 이벤트는 다른 워크플로를 깨우지 않는다.
+      - name: publish npm
+        run: gh workflow run npm-publish.yml --ref "$TAG" -f tag="$TAG"
