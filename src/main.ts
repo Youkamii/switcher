@@ -1,8 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { LogicalSize, PhysicalPosition } from "@tauri-apps/api/dpi";
 import { listen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
 import { currentLang, setLang, t } from "./i18n";
+import {
+  clampWindowToWorkArea,
+  logicalWorkAreaHeight,
+  monitorGeometryKey,
+  type PhysicalRect,
+} from "./windowGeometry";
 
 type ProfileInfo = {
   name: string;
@@ -1422,6 +1428,58 @@ let fitQueued = false;
 let fitRunning = false;
 // 마지막으로 적용한 목표 폭 — 폭 전환 감지는 실측이 아니라 이 값으로 한다
 let lastAppliedWidth = 0;
+let currentWorkArea: PhysicalRect | null = null;
+let currentWorkAreaHeight: number | null = null;
+let currentMonitorKey = "";
+let monitorSyncRevision = 0;
+let monitorMoveTimer: number | undefined;
+let monitorMoveForce = false;
+
+function scheduleMonitorSync(force = false) {
+  monitorMoveForce ||= force;
+  window.clearTimeout(monitorMoveTimer);
+  monitorMoveTimer = window.setTimeout(() => {
+    monitorMoveTimer = undefined;
+    const forceSync = monitorMoveForce;
+    monitorMoveForce = false;
+    void syncCurrentMonitor(forceSync);
+  }, 180);
+}
+
+async function syncCurrentMonitor(force = false) {
+  const revision = ++monitorSyncRevision;
+  try {
+    const monitor = await currentMonitor();
+    if (!monitor || revision !== monitorSyncRevision) return;
+    const area: PhysicalRect = {
+      position: { x: monitor.workArea.position.x, y: monitor.workArea.position.y },
+      size: { width: monitor.workArea.size.width, height: monitor.workArea.size.height },
+    };
+    const key = monitorGeometryKey(area, monitor.scaleFactor);
+    currentWorkArea = area;
+    currentWorkAreaHeight = logicalWorkAreaHeight(area, monitor.scaleFactor);
+    if (force || key !== currentMonitorKey) {
+      currentMonitorKey = key;
+      fitHeight();
+      reportHitRegions();
+    }
+  } catch {
+    // 모니터 조회 실패는 다음 이동·배율 이벤트에서 다시 시도한다.
+  }
+}
+
+async function keepWindowInsideCurrentWorkArea() {
+  // 이동이 끝나기 전에는 이전 모니터 작업영역으로 창을 끌어당기지 않는다.
+  if (!currentWorkArea || monitorMoveTimer !== undefined) return;
+  const [pos, size] = await Promise.all([appWindow.outerPosition(), appWindow.outerSize()]);
+  const target = clampWindowToWorkArea(
+    { x: pos.x, y: pos.y, width: size.width, height: size.height },
+    currentWorkArea,
+  );
+  if (target.x !== pos.x || target.y !== pos.y) {
+    await appWindow.setPosition(new PhysicalPosition(target.x, target.y));
+  }
+}
 
 function fitHeight() {
   fitRevision += 1;
@@ -1452,9 +1510,10 @@ async function fitWindowToContent() {
         : 40;
       const tbHeight = titlebarEl.offsetHeight;
       const total = tbHeight + content + 2; // 테두리
-      const max = Math.floor(window.screen.availHeight * 0.9);
+      const max = Math.floor((currentWorkAreaHeight ?? window.screen.availHeight) * 0.9);
       // 배율이 소수인 화면에서 round가 1px을 깎아 하단을 자르지 않게 올림한다.
-      const target = Math.ceil(Math.max(80, Math.min(total, max)));
+      // 논리→물리 변환의 최근접 반올림까지 버티도록 콘텐츠보다 1px 여유를 둔다.
+      const target = Math.ceil(Math.max(80, Math.min(total + 1, max)));
       // 컴팩트 모드는 창 자체도 좁게, 미니멀은 더 좁게 (150→120, 사용자 지시 —
       // 타이틀바 버튼은 한 줄을 포기하고 다음 줄로 흐른다)
       const width = viewMode === "minimal" ? 120 : viewMode === "compact" ? 240 : 360;
@@ -1497,6 +1556,11 @@ async function fitWindowToContent() {
           // 위치 보정 실패는 치명적이지 않다
         }
       }
+      try {
+        await keepWindowInsideCurrentWorkArea();
+      } catch {
+        // 창이 이동 중이면 좌표 읽기·보정이 잠시 실패할 수 있다. 다음 이벤트가 재시도한다.
+      }
       // 폭이 바뀌며 타이틀바가 줄바꿈(미니멀 두 줄)되면 계산에 쓴 높이가
       // 낡는다 — 실제 높이가 달라졌으면 새 높이로 다시 맞춘다 (타입3 하단
       // NET 행이 13px 잘리던 문제, 사용자 보고). 외부 요청이 들어왔거나 높이가
@@ -1527,6 +1591,12 @@ async function fitWindowToContent() {
 void appWindow.onResized(() => {
   queueMicrotask(reportHitRegions);
 });
+void appWindow.onMoved(() => {
+  // 드래그 도중 모니터 경계를 넘는 순간 창을 당겨 오지 않고, 이동이 끝난 뒤 맞춘다.
+  scheduleMonitorSync();
+});
+void appWindow.onScaleChanged(() => scheduleMonitorSync(true));
+void syncCurrentMonitor(true);
 
 // 내용 높이가 바뀌는 지점(렌더 완료·사용량 로딩·고정 토글)에서 fitHeight()를 직접 부른다
 // — app 요소 자체는 창 크기에 묶여 있어 관찰자로는 콘텐츠 변화를 못 잡는다
