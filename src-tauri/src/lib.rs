@@ -23,6 +23,52 @@ static CLICK_THROUGH_MODE: AtomicBool = AtomicBool::new(false);
 static HIT_REGIONS: Mutex<Vec<HitRegion>> = Mutex::new(Vec::new());
 static ACCOUNT_SWITCHING: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_os = "macos")]
+fn cursor_position_in_window(window: &tauri::WebviewWindow) -> Option<tauri::LogicalPosition<f64>> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let window_for_task = window.clone();
+    window
+        .run_on_main_thread(move || {
+            let result = (|| {
+                let ptr = window_for_task.ns_window().ok()?;
+                let ns_window = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+                let point = ns_window.mouseLocationOutsideOfEventStream();
+                let frame = ns_window.frame();
+                Some(tauri::LogicalPosition::new(
+                    point.x,
+                    frame.size.height - point.y,
+                ))
+            })();
+            let _ = sender.send(result);
+        })
+        .ok()?;
+    receiver.recv().ok()?
+}
+
+#[cfg(not(target_os = "macos"))]
+fn cursor_position_in_window(
+    window: &tauri::WebviewWindow,
+) -> Option<tauri::LogicalPosition<f64>> {
+    let cursor = window.cursor_position().ok()?;
+    let pos = window.inner_position().ok()?;
+    let scale = window.scale_factor().ok()?;
+    physical_cursor_to_logical(cursor, pos, scale)
+}
+
+fn physical_cursor_to_logical(
+    cursor: tauri::PhysicalPosition<f64>,
+    inner_position: tauri::PhysicalPosition<i32>,
+    scale_factor: f64,
+) -> Option<tauri::LogicalPosition<f64>> {
+    if !scale_factor.is_finite() || scale_factor <= 0.0 {
+        return None;
+    }
+    Some(tauri::LogicalPosition::new(
+        (cursor.x - inner_position.x as f64) / scale_factor,
+        (cursor.y - inner_position.y as f64) / scale_factor,
+    ))
+}
+
 struct AccountSwitchGuard;
 
 impl Drop for AccountSwitchGuard {
@@ -46,6 +92,71 @@ struct HitRegion {
     /// Some((provider, name))이면 더블클릭으로 이 프로필로 전환하는 카드.
     /// None이면 마우스를 실제로 받아야 하는 UI(버튼·핸들).
     action: Option<(String, String)>,
+}
+
+fn hit_region_at(
+    regions: &[HitRegion],
+    cursor: tauri::LogicalPosition<f64>,
+) -> Option<usize> {
+    let mut card_hit = None;
+    for (index, region) in regions.iter().enumerate() {
+        let [x, y, width, height] = region.rect;
+        if cursor.x < x
+            || cursor.x > x + width
+            || cursor.y < y
+            || cursor.y > y + height
+        {
+            continue;
+        }
+        // 오래된 카드 좌표가 버튼이나 이동 핸들의 클릭을 가로채면 안 된다.
+        if region.action.is_none() {
+            return Some(index);
+        }
+        card_hit.get_or_insert(index);
+    }
+    card_hit
+}
+
+#[cfg(test)]
+mod hit_region_tests {
+    use super::*;
+
+    #[test]
+    fn cursor_uses_webview_client_origin_instead_of_outer_shadow() {
+        let cursor = tauri::PhysicalPosition::new(1646.0, 492.0);
+        let inner = tauri::PhysicalPosition::new(1536, 468);
+        let logical = physical_cursor_to_logical(cursor, inner, 1.0).unwrap();
+
+        assert_eq!(logical, tauri::LogicalPosition::new(110.0, 24.0));
+    }
+
+    #[test]
+    fn cursor_converts_physical_pixels_with_destination_scale() {
+        let cursor = tauri::PhysicalPosition::new(1125.0, 750.0);
+        let inner = tauri::PhysicalPosition::new(1000, 500);
+        let logical = physical_cursor_to_logical(cursor, inner, 1.25).unwrap();
+
+        assert_eq!(logical, tauri::LogicalPosition::new(100.0, 200.0));
+    }
+
+    #[test]
+    fn interactive_ui_wins_when_a_stale_card_rectangle_overlaps() {
+        let regions = vec![
+            HitRegion {
+                rect: [0.0, 0.0, 120.0, 48.0],
+                action: Some(("claude".into(), "profile".into())),
+            },
+            HitRegion {
+                rect: [90.0, 0.0, 30.0, 30.0],
+                action: None,
+            },
+        ];
+
+        assert_eq!(
+            hit_region_at(&regions, tauri::LogicalPosition::new(110.0, 24.0)),
+            Some(1)
+        );
+    }
 }
 
 #[cfg(windows)]
@@ -1976,25 +2087,14 @@ pub fn run() {
                         if !window.is_visible().unwrap_or(false) {
                             continue;
                         }
-                        let (Ok(cursor), Ok(pos)) =
-                            (handle.cursor_position(), window.outer_position())
-                        else {
+                        let Some(cursor) = cursor_position_in_window(&window) else {
                             continue;
                         };
-                        let scale = window.scale_factor().unwrap_or(1.0);
-                        let rel_x = (cursor.x - pos.x as f64) / scale;
-                        let rel_y = (cursor.y - pos.y as f64) / scale;
                         let regions: Vec<HitRegion> = HIT_REGIONS
                             .lock()
                             .map(|guard| guard.clone())
                             .unwrap_or_default();
-                        let over = regions.iter().position(|region| {
-                            let r = region.rect;
-                            rel_x >= r[0]
-                                && rel_x <= r[0] + r[2]
-                                && rel_y >= r[1]
-                                && rel_y <= r[1] + r[3]
-                        });
+                        let over = hit_region_at(&regions, cursor);
 
                         // 마우스를 실제로 받는 곳은 action 없는 UI 영역뿐
                         let over_ui = over

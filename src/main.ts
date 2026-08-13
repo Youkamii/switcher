@@ -1304,7 +1304,7 @@ function applyViewMode() {
   }
   // 위젯 모드에서는 카드·버튼 위가 아니면 마우스가 뒤 창으로 통과한다
   void invoke("set_click_through", { enabled: locked });
-  reportHitRegions();
+  refreshHitRegionsAfterLayout();
 }
 
 /// 고정 모드의 히트 영역 보고.
@@ -1312,6 +1312,7 @@ function applyViewMode() {
 /// action이 없는 항목 = 실제로 눌러야 하는 UI (버튼·이동 핸들).
 /// Rust의 호버 신호(card-hover)가 이 배열의 인덱스로 오므로 요소 순서를 함께 보관한다.
 let hitElements: HTMLElement[] = [];
+let hitRegionRetryTimer: number | undefined;
 
 function reportHitRegions() {
   hitElements = [];
@@ -1341,6 +1342,14 @@ function reportHitRegions() {
       });
   }
   void invoke("set_hit_regions", { regions });
+}
+
+// 창 크기·배율 변경 직후에는 WebView 레이아웃이 한 박자 늦을 수 있다. 즉시값으로
+// 클릭을 먼저 살리고, 실제 레이아웃이 끝난 뒤 한 번 더 보고해 오래된 좌표를 없앤다.
+function refreshHitRegionsAfterLayout() {
+  reportHitRegions();
+  window.clearTimeout(hitRegionRetryTimer);
+  hitRegionRetryTimer = window.setTimeout(reportHitRegions, 120);
 }
 
 // Rust 폴링이 보내는 호버 신호 — 투과 중엔 웹뷰가 자체 hover를 못 받는다
@@ -1461,7 +1470,7 @@ async function syncCurrentMonitor(force = false) {
     if (force || key !== currentMonitorKey) {
       currentMonitorKey = key;
       fitHeight();
-      reportHitRegions();
+      refreshHitRegionsAfterLayout();
     }
   } catch {
     // 모니터 조회 실패는 다음 이동·배율 이벤트에서 다시 시도한다.
@@ -1567,7 +1576,7 @@ async function fitWindowToContent() {
       // 달라졌으면 최신 DOM을 다시 재서 마지막 크기가 반드시 최신값이 되게 한다.
       // 히트 영역은 반드시 창 크기 변경이 "끝난 뒤" 보고해야 한다 —
       // 즉시 보고하면 옛 폭 기준 좌표가 남아 버튼 위 클릭이 투과돼 버린다
-      reportHitRegions();
+      refreshHitRegionsAfterLayout();
       if (revision !== fitRevision) continue;
       if (titlebarEl.offsetHeight !== tbHeight) {
         fitRevision += 1;
@@ -1589,7 +1598,7 @@ async function fitWindowToContent() {
 
 // 크기 변경(모드 전환 등) 완료 시점의 백업 갱신 — 어떤 경로로 리사이즈되든 좌표를 다시 잡는다
 void appWindow.onResized(() => {
-  queueMicrotask(reportHitRegions);
+  queueMicrotask(refreshHitRegionsAfterLayout);
 });
 void appWindow.onMoved(() => {
   // 드래그 도중 모니터 경계를 넘는 순간 창을 당겨 오지 않고, 이동이 끝난 뒤 맞춘다.
@@ -1650,11 +1659,14 @@ document.getElementById("blackbtn")!.addEventListener("click", () => {
 const clamBtn = document.getElementById("clambtn") as HTMLButtonElement;
 let clamMode = -1;
 function applyClamshell(mode: number) {
+  const wasHidden = clamBtn.hidden;
   clamMode = mode;
   clamBtn.hidden = mode < 0; // 미지원 플랫폼(Windows)에서는 버튼 자체가 없다
   clamBtn.classList.toggle("pinned", mode === 2);
   clamBtn.classList.toggle("half", mode === 1);
   clamBtn.title = mode === 1 ? t("clamOnce") : mode === 2 ? t("clamKeep") : t("clamOff");
+  if (wasHidden !== clamBtn.hidden) fitHeight();
+  refreshHitRegionsAfterLayout();
 }
 void invoke<number>("clamshell_mode").then(applyClamshell);
 let clamBusy = false;
