@@ -681,6 +681,25 @@ fn auth_snapshot(
     })
 }
 
+/// 토큰을 읽지 않고 캐시 계정 키만 MUTATION_LOCK 아래서 잡는다. 특히 macOS의
+/// 활성 Claude 캐시 적중 때마다 `/usr/bin/security`를 실행하는 비용을 피한다.
+fn auth_key_snapshot(
+    env: &Env,
+    provider: Provider,
+    profile: Option<&str>,
+) -> Result<String, String> {
+    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
+    let account = match profile {
+        Some(name) => read_meta(&env.profiles_dir(provider).join(name))
+            .map(|meta| meta.id)
+            .unwrap_or_else(|| format!("<name:{name}>")),
+        None => live_identity(env, provider)?
+            .map(|identity| identity.id)
+            .unwrap_or_else(|| "<live-unknown>".to_string()),
+    };
+    Ok(format!("{}:{account}", provider.dir_name()))
+}
+
 /// 스냅숏이 실패했을 때 캐시 조회에만 쓰는 계정 키 — 토큰을 읽지 않고 아는 만큼만.
 /// 활성 클로드의 신원은 전환이 같은 MUTATION_LOCK 아래서 갱신하는 ~/.claude.json을
 /// 따르므로, 전환 직후에도 다른 계정의 수치를 집어 오지 않는다. 신원조차 모르면
@@ -881,6 +900,41 @@ const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 /// 여유가 있나"를 판단할 근거를 남긴다. 이보다 오래되면 에러(만료 안내)를 그대로 보여준다.
 const STALE_MAX: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 
+fn fresh_memory_cache(key: &str) -> Option<Usage> {
+    cache().lock().ok().and_then(|map| {
+        map.get(key)
+            .filter(|(at, _)| at.elapsed() < CACHE_TTL)
+            .map(|(_, cached)| cached.clone())
+    })
+}
+
+fn fresh_cache(env: &Env, key: &str) -> Option<Usage> {
+    if let Some(cached) = fresh_memory_cache(key) {
+        return Some(cached);
+    }
+    let (fresh, _) = disk_cache_load(env, key, CACHE_TTL)?;
+    if let Ok(mut map) = cache().lock() {
+        map.insert(key.to_string(), (std::time::Instant::now(), fresh.clone()));
+    }
+    Some(fresh)
+}
+
+/// 같은 계정의 실제 조회는 한 번만 진행한다. 웹뷰 새로고침과 TFSD 평가가
+/// 겹쳐도 뒤 요청은 앞 요청이 채운 캐시·백오프를 다시 확인한다.
+fn fetch_gate(key: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    static GATES: std::sync::OnceLock<
+        std::sync::Mutex<
+            std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>,
+        >,
+    > = std::sync::OnceLock::new();
+    let gates = GATES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut gates = gates.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    gates
+        .entry(key.to_string())
+        .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
 /// 캐시 키는 "누구의 사용량인가"(계정 id) 기준이다.
 /// 전환 직후 활성 파일의 계정이 바뀌면 키도 바뀌어 이전 계정 수치가 새 계정 카드에
 /// 붙는 일이 없다 (red-review 2라운드 지적).
@@ -1069,38 +1123,42 @@ pub async fn fetch(
     provider: Provider,
     profile: Option<&str>,
 ) -> Result<Usage, String> {
-    // 캐시 조회부터 실제 요청까지 같은 계정 스냅숏을 쓴다. 활성 전환이 중간에
-    // 끼어도 A 캐시를 B 토큰으로 조회하거나 A 값을 B 카드에 붙이지 않는다.
-    // 스냅숏 실패(키체인 잠김, CLI의 ~/.claude.json 재작성과 겹침)는 새 요청만
-    // 포기한다 — 토큰 없이 아는 계정 키로 마지막 수치를 찾아 버틴다.
+    // 1) 토큰을 열기 전에 계정 키만 잡아 신선한 메모리/디스크 캐시를 확인한다.
+    // macOS 활성 Claude는 이 경로가 `/usr/bin/security`를 전혀 띄우지 않는다.
+    let preliminary_key = auth_key_snapshot(env, provider, profile)
+        .ok()
+        .or_else(|| snapshot_fallback_key(env, provider, profile));
+    if let Some(key) = preliminary_key.as_deref() {
+        if let Some(fresh) = fresh_cache(env, key) {
+            return Ok(fresh);
+        }
+    }
+
+    // 캐시 miss에서만 요청 토큰과 계정 키를 같은 잠금 스냅숏으로 읽는다. 전환이
+    // 끼어도 A 키에 B 사용량을 저장하지 않는다. 실패하면 아는 계정 키의 stale로 버틴다.
     let initial_auth = auth_snapshot(env, provider, profile);
     let key = match &initial_auth {
         Ok(auth) => auth.key.clone(),
-        Err(error) => match snapshot_fallback_key(env, provider, profile) {
-            Some(key) => key,
-            None => return Err(error.clone()),
-        },
+        Err(error) => preliminary_key
+            .clone()
+            .ok_or_else(|| error.clone())?,
     };
-
-    // 1) 메모리 캐시가 신선하면 그대로
-    if let Ok(map) = cache().lock() {
-        if let Some((at, cached)) = map.get(&key) {
-            if at.elapsed() < CACHE_TTL {
-                return Ok(cached.clone());
-            }
+    // 키만 읽은 뒤 실제 토큰 스냅숏 사이에 계정이 바뀌었으면 새 키 캐시를 다시 본다.
+    if preliminary_key.as_deref() != Some(key.as_str()) {
+        if let Some(fresh) = fresh_cache(env, &key) {
+            return Ok(fresh);
         }
     }
 
-    // 2) 재시작 직후: 디스크의 마지막 수치가 아직 신선하면 API를 부르지 않는다
-    //    (재시작 때마다 일제 호출로 요청 제한에 걸리던 원인 제거)
-    if let Some((fresh, _)) = disk_cache_load(env, &key, CACHE_TTL) {
-        if let Ok(mut map) = cache().lock() {
-            map.insert(key.clone(), (std::time::Instant::now(), fresh.clone()));
-        }
+    // 계정별 단일 실행 문. 기다린 뒤 캐시를 다시 봐 앞 요청이 성공했으면 네트워크와
+    // 토큰 재발급을 반복하지 않는다. 실패했어도 아래 백오프를 다시 읽게 된다.
+    let gate = fetch_gate(&key);
+    let _request = gate.lock().await;
+    if let Some(fresh) = fresh_cache(env, &key) {
         return Ok(fresh);
     }
 
-    // 실패 시 대신 내보낼 마지막 수치와 그 나이 (메모리 → 디스크 순, STALE_MAX 상한)
+    // 2) 실패 시 대신 내보낼 마지막 수치와 그 나이 (메모리 → 디스크 순, STALE_MAX 상한)
     let stale_value = || -> Option<(Usage, u64)> {
         if let Ok(map) = cache().lock() {
             if let Some((at, cached)) = map.get(&key) {

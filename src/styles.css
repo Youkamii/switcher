@@ -858,9 +858,15 @@ body.locked .titlebar:hover .tb-actions button#pin {
   opacity: 1;
 }
 
+body.locked .tb-actions button:disabled,
+body.locked .titlebar:hover .tb-actions button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
 /* Type3(120px): 2줄 구도는 이제 전 타입 공통(.titlebar 참조) — 여기는
-   좁은 폭에 맞춘 밀도 조정만 남는다. 간격·마진을 줄여야 버튼 4개가
-   한 줄에 들어간다 (3px 마진 그대로면 🌙이 셋째 줄로 밀린다, 실측) */
+   좁은 폭에 맞춘 밀도 조정만 남는다. macOS의 ☕까지 다섯 버튼이
+   같은 줄에 들어가도록 버튼 사이 여백을 없앤다. */
 body.minimal .titlebar {
   column-gap: 2px;
 }
@@ -870,7 +876,7 @@ body.minimal .tb-actions button {
 }
 
 body.minimal .tb-actions button:not(#pin) {
-  margin: 0 2px;
+  margin: 0;
 }
 
 /* 고정 모드: 비활성 카드는 더블클릭으로 전환.

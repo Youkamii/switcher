@@ -281,8 +281,13 @@ pub fn spawn(app: tauri::AppHandle) {
                         target,
                         to,
                     } => {
-                        // 평가하는 사이(네트워크 대기 최대 90초) 사용자가 TFSD를
-                        // 껐으면 전환을 강행하지 않는다 (red-review #37)
+                        // 수동 전환과 같은 전역 문을 먼저 잡는다. 사람이 전환을 끝낸
+                        // 직후 TFSD가 옛 평가 결과로 다시 덮는 경합을 막는다.
+                        let Ok(_busy) = crate::begin_account_switch() else {
+                            continue;
+                        };
+                        // 평가·대기 사이 사용자가 TFSD를 껐으면 전환하지 않는다.
+                        // 문을 잡은 뒤 다시 읽어 수동 전환의 해제와 순서를 확정한다.
                         if !settings::load_flag(&env.store, settings::KEY_TFSD, false) {
                             break;
                         }

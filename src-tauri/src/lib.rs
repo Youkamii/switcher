@@ -21,6 +21,23 @@ use std::sync::Mutex;
 /// 타이틀바 버튼·이동 핸들(action 없는 영역)만 예외로 마우스를 받는다.
 static CLICK_THROUGH_MODE: AtomicBool = AtomicBool::new(false);
 static HIT_REGIONS: Mutex<Vec<HitRegion>> = Mutex::new(Vec::new());
+static ACCOUNT_SWITCHING: AtomicBool = AtomicBool::new(false);
+
+struct AccountSwitchGuard;
+
+impl Drop for AccountSwitchGuard {
+    fn drop(&mut self) {
+        ACCOUNT_SWITCHING.store(false, Ordering::SeqCst);
+    }
+}
+
+fn begin_account_switch() -> Result<AccountSwitchGuard, String> {
+    if ACCOUNT_SWITCHING.swap(true, Ordering::SeqCst) {
+        Err("다른 계정으로 전환 중입니다".into())
+    } else {
+        Ok(AccountSwitchGuard)
+    }
+}
 
 #[derive(serde::Deserialize, Clone)]
 struct HitRegion {
@@ -145,12 +162,17 @@ fn save_profile(provider: String, name: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn switch_profile(
+async fn switch_profile(
     app: tauri::AppHandle,
     provider: String,
     name: String,
 ) -> Result<SwitchResult, String> {
-    let result = accounts::switch(&Env::real()?, Provider::parse(&provider)?, &name)?;
+    let _busy = begin_account_switch()?;
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        accounts::switch(&Env::real()?, Provider::parse(&provider)?, &name)
+    })
+    .await
+    .map_err(|e| format!("계정 전환 실패: {e}"))??;
     // 수동 전환 = 운전대를 잡은 것 — TFSD 자율주행을 해제한다 (#36 후속)
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || disengage_tfsd(&handle));
@@ -790,6 +812,7 @@ async fn github_list() -> github::GithubSnapshot {
 /// GitHub 활성 계정 전환 (gh auth switch + setup-git)
 #[tauri::command]
 async fn github_switch(name: String) -> Result<(), String> {
+    let _busy = begin_account_switch()?;
     tauri::async_runtime::spawn_blocking(move || github::switch(&name))
         .await
         .map_err(|e| format!("GitHub 전환 작업 실패: {e}"))?
@@ -1065,7 +1088,6 @@ fn update_status_suffix() -> String {
 /// eval 전달도 memo_save IPC도 같은 메시지 펌프에 갇힌다 (red-review — 자기 봉쇄)
 fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'static) {
     use tauri::Manager;
-    login::cancel();
     // 클램셸 종료 훅. 지속 모드는 사용자가 다시 누를 때까지 유지하는 설정이라
     // 앱 종료·업데이트 재시작으로 해제하지 않는다.
     if let Ok(env) = Env::real() {
@@ -1076,6 +1098,8 @@ fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'st
         .map(|memo| memo.eval("window.dispatchEvent(new Event('blur'))").is_ok())
         .unwrap_or(false);
     std::thread::spawn(move || {
+        // 프로세스 트리 종료·임시 폴더 정리는 느릴 수 있으므로 UI 스레드 밖에서 한다.
+        login::cancel();
         if flushing {
             std::thread::sleep(std::time::Duration::from_millis(250));
         }
@@ -1837,6 +1861,13 @@ pub fn run() {
             #[cfg(any(windows, target_os = "macos"))]
             {
                 update::sweep_old_exe();
+                #[cfg(windows)]
+                if let Some(error) = update::take_pending_error() {
+                    eprintln!("이전 업데이트 적용 실패: {error}");
+                    if let Ok(mut status) = UPDATE_STATUS.lock() {
+                        *status = " — ✗".to_string();
+                    }
+                }
                 #[cfg(not(debug_assertions))]
                 {
                     let auto_update_on = Env::real()
@@ -2012,35 +2043,40 @@ pub fn run() {
                         let Some((provider, name)) = regions[idx].action.clone() else {
                             continue;
                         };
-                        // GitHub 카드는 gh 통로로 — 프로세스 2회(switch+setup-git)라 수 초
-                        // 걸릴 수 있어 폴링 스레드를 막지 않게 별도 스레드에서 돌린다
-                        if provider == "github" {
-                            let emit_handle = handle.clone();
-                            std::thread::spawn(move || {
+                        // 전환은 프로필 갱신·CLI 작업을 기다릴 수 있으므로 모두 별도
+                        // 스레드에서 실행한다. 폴링 스레드는 클릭 투과를 계속 갱신한다.
+                        let Ok(busy) = begin_account_switch() else {
+                            continue;
+                        };
+                        let emit_handle = handle.clone();
+                        std::thread::spawn(move || {
+                            let _busy = busy;
+                            if provider == "github" {
                                 let payload = match github::switch(&name) {
                                     Ok(()) => serde_json::json!({ "ok": true, "provider": provider, "name": name }),
                                     Err(e) => serde_json::json!({ "ok": false, "error": e }),
                                 };
                                 let _ = emit_handle.emit("account-switched", payload);
-                            });
-                            continue;
-                        }
-                        let result: Result<(), String> = (|| {
-                            let env = Env::real()?;
-                            accounts::switch(&env, Provider::parse(&provider)?, &name).map(|_| ())
-                        })();
-                        // 더블클릭 수동 전환도 운전대 잡기 — TFSD 해제 (메인 스레드에서)
-                        if result.is_ok() {
-                            let disengage_handle = handle.clone();
-                            let _ = handle.run_on_main_thread(move || {
-                                disengage_tfsd(&disengage_handle);
-                            });
-                        }
-                        let payload = match result {
-                            Ok(_) => serde_json::json!({ "ok": true, "provider": provider, "name": name }),
-                            Err(e) => serde_json::json!({ "ok": false, "error": e }),
-                        };
-                        let _ = handle.emit("account-switched", payload);
+                                return;
+                            }
+                            let result: Result<(), String> = (|| {
+                                let env = Env::real()?;
+                                accounts::switch(&env, Provider::parse(&provider)?, &name)
+                                    .map(|_| ())
+                            })();
+                            // 더블클릭 수동 전환도 운전대 잡기 — TFSD 해제 (메인 스레드에서)
+                            if result.is_ok() {
+                                let disengage_handle = emit_handle.clone();
+                                let _ = emit_handle.run_on_main_thread(move || {
+                                    disengage_tfsd(&disengage_handle);
+                                });
+                            }
+                            let payload = match result {
+                                Ok(_) => serde_json::json!({ "ok": true, "provider": provider, "name": name }),
+                                Err(e) => serde_json::json!({ "ok": false, "error": e }),
+                            };
+                            let _ = emit_handle.emit("account-switched", payload);
+                        });
                     }
                 });
             }

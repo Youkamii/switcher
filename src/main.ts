@@ -29,6 +29,33 @@ type UsageWindow = {
 
 type Usage = { windows: UsageWindow[]; stale?: boolean; stale_age_secs?: number | null };
 
+// 빠른 모드 전환이 같은 계정 조회를 겹쳐 시작하지 않게 진행 중 요청을 공유한다.
+// 완료되면 바로 비워 다음 수동 새로고침은 백엔드 캐시/정책에 따라 새로 판정한다.
+const usageInflight = new Map<string, Promise<Usage>>();
+
+function fetchUsageShared(
+  provider: ProviderId,
+  profile: string | null,
+  accountId: string,
+): Promise<Usage> {
+  // 활성 조회의 profile은 항상 null이므로 계정 ID까지 키에 넣어야 전환 직후
+  // 새 활성 카드가 이전 계정의 진행 중 요청을 이어받지 않는다.
+  const key = JSON.stringify([provider, accountId]);
+  const existing = usageInflight.get(key);
+  if (existing) return existing;
+  const request = invoke<Usage>("fetch_usage", { provider, profile });
+  usageInflight.set(key, request);
+  void request.then(
+    () => {
+      if (usageInflight.get(key) === request) usageInflight.delete(key);
+    },
+    () => {
+      if (usageInflight.get(key) === request) usageInflight.delete(key);
+    },
+  );
+  return request;
+}
+
 const PROVIDERS = [
   { id: "claude", title: "CLAUDE" },
   { id: "codex", title: "CODEX" },
@@ -113,7 +140,12 @@ function usageRow(win: UsageWindow): HTMLElement {
   return row;
 }
 
-async function loadUsage(provider: ProviderId, card: HTMLElement, profile: string | null) {
+async function loadUsage(
+  provider: ProviderId,
+  card: HTMLElement,
+  profile: string | null,
+  accountId: string,
+) {
   const box = document.createElement("div");
   box.className = "usage-box";
   const loading = document.createElement("div");
@@ -123,7 +155,7 @@ async function loadUsage(provider: ProviderId, card: HTMLElement, profile: strin
   card.appendChild(box);
 
   try {
-    const usage = await invoke<Usage>("fetch_usage", { provider, profile });
+    const usage = await fetchUsageShared(provider, profile, accountId);
     box.textContent = "";
     if (usage.windows.length === 0) {
       const empty = document.createElement("div");
@@ -193,7 +225,7 @@ function profileCard(
 
   // 활성 프로필은 활성 파일(항상 최신 토큰), 비활성은 보관함 토큰으로 조회.
   // 프라미스는 렌더러가 모은다 — 새로고침 때 다 받아진 뒤 한 번에 교체하기 위해
-  pending.push(loadUsage(provider, card, profile.active ? null : profile.name));
+  pending.push(loadUsage(provider, card, profile.active ? null : profile.name, profile.id));
 
   let switching = false;
   const doSwitch = async (disable?: HTMLButtonElement) => {
@@ -961,11 +993,12 @@ function minimalLabel(win: UsageWindow): string {
 /// 컴팩트 카드 하나 — 이메일·구독 배지·사용량 요약. Type 1과 같은 카드 규칙
 /// (.card/.active/.switchable)을 쓰므로 활성 색·채도·더블클릭 전환이 그대로 동작한다.
 /// minimal(Type 3)이면 머리(이메일·플랜·나이)와 리셋 시각을 빼고 라벨+바만 남긴다.
-async function compactCard(
+function compactCard(
   provider: ProviderId,
   profile: ProfileInfo,
   minimal: boolean,
-): Promise<HTMLElement> {
+  pending: Promise<unknown>[],
+): HTMLElement {
   const card = document.createElement("div");
   card.className = "card compact-card" + (profile.active ? " active" : "");
   // 미니멀의 프로바이더 구분은 왼쪽 색 스트라이프가 맡는다 (#41 후속)
@@ -1003,61 +1036,69 @@ async function compactCard(
     card.title = t("tfsdTooltip");
   }
 
-  try {
-    const usage = await invoke<Usage>("fetch_usage", {
-      provider,
-      profile: profile.active ? null : profile.name,
-    });
-    if (usage.stale) {
-      // 컴팩트에서도 이전 수치임을 숨기지 않는다 — 줄을 흐리고 머리에 나이를 붙인다
-      // (미니멀은 붙일 머리가 없으니 줄 흐림만 남는다)
-      card.classList.add("stale");
-      if (!minimal) {
-        const age = document.createElement("span");
-        age.className = "c-stale";
-        age.textContent = compactStaleAge(usage.stale_age_secs);
-        head.appendChild(age);
+  const load = (async () => {
+    try {
+      const usage = await fetchUsageShared(
+        provider,
+        profile.active ? null : profile.name,
+        profile.id,
+      );
+      if (usage.stale) {
+        // 컴팩트에서도 이전 수치임을 숨기지 않는다 — 줄을 흐리고 머리에 나이를 붙인다
+        // (미니멀은 붙일 머리가 없으니 줄 흐림만 남는다)
+        card.classList.add("stale");
+        if (!minimal) {
+          const age = document.createElement("span");
+          age.className = "c-stale";
+          age.textContent = compactStaleAge(usage.stale_age_secs);
+          head.appendChild(age);
+        }
       }
-    }
-    for (const win of usage.windows) {
-      const row = document.createElement("div");
-      row.className = "compact-row";
-      const label = document.createElement("span");
-      label.className = "c-label";
-      label.textContent = minimal ? minimalLabel(win) : compactLabel(win);
-      label.title = win.label;
-      const bar = document.createElement("div");
-      bar.className = "bar";
-      const fill = document.createElement("div");
-      fill.className = "bar-fill";
-      if (win.percent >= 85) fill.classList.add("danger");
-      else if (win.percent >= 60) fill.classList.add("warn");
-      fill.style.width = `${Math.min(100, Math.max(0, win.percent))}%`;
-      bar.appendChild(fill);
-      // 사용량 % 숫자를 바 위에 겹친다 (사용자 지시 2회: 처음엔 남은 한도였으나
-      // 100% 사용이 "0"으로 보여 헷갈린다 — 사용한 양으로 정정). 바 두께는 절대
-      // 건드리지 않는다 (바를 키웠다가 질책받음). 바 안은 overflow:hidden이라
-      // 잘리므로 래퍼에 얹어 글자가 바 위아래로 걸치게 한다
-      const wrap = document.createElement("div");
-      wrap.className = "bar-wrap";
-      wrap.appendChild(bar);
-      const used = document.createElement("span");
-      used.className = "bar-num";
-      used.textContent = String(Math.min(100, Math.max(0, Math.round(win.percent))));
-      wrap.appendChild(used);
-      row.append(label, wrap);
-      if (!minimal) {
-        const reset = document.createElement("span");
-        reset.className = "c-reset";
-        reset.textContent = compactReset(win.resets_at);
-        reset.title = t("resetTooltip");
-        row.appendChild(reset);
+      for (const win of usage.windows) {
+        const row = document.createElement("div");
+        row.className = "compact-row";
+        const label = document.createElement("span");
+        label.className = "c-label";
+        label.textContent = minimal ? minimalLabel(win) : compactLabel(win);
+        label.title = win.label;
+        const bar = document.createElement("div");
+        bar.className = "bar";
+        const fill = document.createElement("div");
+        fill.className = "bar-fill";
+        if (win.percent >= 85) fill.classList.add("danger");
+        else if (win.percent >= 60) fill.classList.add("warn");
+        fill.style.width = `${Math.min(100, Math.max(0, win.percent))}%`;
+        bar.appendChild(fill);
+        // 사용량 % 숫자를 바 위에 겹친다 (사용자 지시 2회: 처음엔 남은 한도였으나
+        // 100% 사용이 "0"으로 보여 헷갈린다 — 사용한 양으로 정정). 바 두께는 절대
+        // 건드리지 않는다 (바를 키웠다가 질책받음). 바 안은 overflow:hidden이라
+        // 잘리므로 래퍼에 얹어 글자가 바 위아래로 걸치게 한다
+        const wrap = document.createElement("div");
+        wrap.className = "bar-wrap";
+        wrap.appendChild(bar);
+        const used = document.createElement("span");
+        used.className = "bar-num";
+        used.textContent = String(Math.min(100, Math.max(0, Math.round(win.percent))));
+        wrap.appendChild(used);
+        row.append(label, wrap);
+        if (!minimal) {
+          const reset = document.createElement("span");
+          reset.className = "c-reset";
+          reset.textContent = compactReset(win.resets_at);
+          reset.title = t("resetTooltip");
+          row.appendChild(reset);
+        }
+        card.appendChild(row);
       }
-      card.appendChild(row);
+    } catch {
+      // 컴팩트 모드에서는 조회 실패를 조용히 넘긴다 — 다음 주기에 다시 시도
+    } finally {
+      // 즉시 모드에서는 카드 골격을 먼저 붙인다. 사용량이 나중에 늘린 실제 높이를
+      // 다시 맞추되, 이미 폐기된 렌더 버퍼는 창 크기에 영향을 주지 않게 한다.
+      if (card.isConnected) fitHeight();
     }
-  } catch {
-    // 컴팩트 모드에서는 조회 실패를 조용히 넘긴다 — 다음 주기에 다시 시도
-  }
+  })();
+  pending.push(load);
   return card;
 }
 
@@ -1067,6 +1108,7 @@ async function renderProviderCompact(
   title: string,
   target: DocumentFragment,
   minimal: boolean,
+  pending: Promise<unknown>[],
 ) {
   try {
     const snap = await invoke<Snapshot>("list_profiles", { provider });
@@ -1083,10 +1125,9 @@ async function renderProviderCompact(
       section.appendChild(head);
     }
 
-    // 카드를 병렬로 준비해 순서대로 붙인다 — 하나씩 기다리며 주루룩 생기지 않게
-    const cards = await Promise.all(
-      snap.profiles.map((profile) => compactCard(provider, profile, minimal)),
-    );
+    // 카드 골격은 즉시 붙이고 사용량만 뒤에서 병렬로 채운다. 모드 전환이 네트워크
+    // 조회를 기다리며 멎지 않게 하면서, 일반 새로고침은 pending을 기다려 한 번에 바뀐다.
+    const cards = snap.profiles.map((profile) => compactCard(provider, profile, minimal, pending));
     for (const card of cards) section.appendChild(card);
     target.appendChild(section);
   } catch {
@@ -1148,7 +1189,7 @@ async function render(opts?: { immediate?: boolean }) {
           if (!visibility[key]) continue;
           const title = PROVIDERS.find((p) => p.id === key)!.title;
           if (mode !== "normal") {
-            await renderProviderCompact(key, title, buffer, mode === "minimal");
+            await renderProviderCompact(key, title, buffer, mode === "minimal", pending);
           } else {
             await renderProvider(key, title, buffer, pending);
           }
@@ -1178,8 +1219,7 @@ async function render(opts?: { immediate?: boolean }) {
         // 스무스 새로고침: 기존 화면을 그대로 둔 채 사용량까지 받아진 뒤 교체한다.
         // 일반 모드의 사용량 채움에는 10초 상한 — 조회 하나가 매달려도 여기서 안
         // 굳고, 상한에 걸쳐 교체돼도 남은 조회는 같은 카드(동일 노드)를 이어서
-        // 채운다. (컴팩트는 카드를 빌드 단계에서 만들므로 이 상한 밖 — 조회는
-        // 캐시로 대부분 즉시다)
+        // 채운다. 컴팩트 사용량도 같은 pending 경로를 써서 캐시 적중 여부와 무관하다.
         await Promise.race([
           Promise.allSettled(pending),
           new Promise<void>((resolve) => window.setTimeout(resolve, 10_000)),
@@ -1336,6 +1376,9 @@ lockBtn.addEventListener("click", () => {
   viewMode = viewMode === "normal" ? "compact" : viewMode === "compact" ? "minimal" : "normal";
   localStorage.setItem("switcher.viewmode", viewMode);
   applyViewMode();
+  // 새 모드 CSS가 줄인 현재 내용만으로도 창을 먼저 따라붙인다. 새 카드 목록은
+  // 바로 뒤의 즉시 렌더가 교체하고, 완성 높이는 그 렌더가 한 번 더 맞춘다.
+  fitHeight();
   // 모드가 바뀌면 화면 구성이 달라진다 — 다시 그린다 (열려 있던 로그인 패널도 정리됨)
   void render({ immediate: true });
 });
@@ -1374,29 +1417,47 @@ alphaSlider.addEventListener("input", () => {
 
 // 세로 크기 — 창 높이를 콘텐츠에 맞춰 자동 조절한다.
 // 계정이 없으면 그만큼 짧아지고, 늘어나면 화면 높이 90%까지 따라 늘어난다.
-let fitTimer: number | undefined;
+let fitRevision = 0;
+let fitQueued = false;
+let fitRunning = false;
 // 마지막으로 적용한 목표 폭 — 폭 전환 감지는 실측이 아니라 이 값으로 한다
 let lastAppliedWidth = 0;
 
 function fitHeight() {
-  window.clearTimeout(fitTimer);
-  fitTimer = window.setTimeout(() => {
-    const last = app.lastElementChild as HTMLElement | null;
-    const bottomPad = parseFloat(getComputedStyle(app).paddingBottom) || 14;
-    const content = last
-      ? last.getBoundingClientRect().bottom -
-        app.getBoundingClientRect().top +
-        app.scrollTop +
-        bottomPad
-      : 40;
-    const tbHeight = titlebarEl.offsetHeight;
-    const total = tbHeight + content + 2; // 테두리
-    const max = Math.floor(window.screen.availHeight * 0.9);
-    const target = Math.round(Math.max(80, Math.min(total, max)));
-    // 컴팩트 모드는 창 자체도 좁게, 미니멀은 더 좁게 (150→120, 사용자 지시 —
-    // 타이틀바 버튼은 한 줄을 포기하고 다음 줄로 흐른다)
-    const width = viewMode === "minimal" ? 120 : viewMode === "compact" ? 240 : 360;
-    void (async () => {
+  fitRevision += 1;
+  if (fitQueued || fitRunning) return;
+  fitQueued = true;
+  // 비활성 WKWebView에서는 짧은 setTimeout도 크게 늦어질 수 있다. 같은 JS 작업에서
+  // 몰린 요청만 microtask로 합치고, 실제 창 변경은 아래 단일 루프가 순서대로 맡는다.
+  queueMicrotask(() => {
+    fitQueued = false;
+    void fitWindowToContent();
+  });
+}
+
+async function fitWindowToContent() {
+  if (fitRunning) return;
+  fitRunning = true;
+  let retryLatest = false;
+  try {
+    while (true) {
+      const revision = fitRevision;
+      const last = app.lastElementChild as HTMLElement | null;
+      const bottomPad = parseFloat(getComputedStyle(app).paddingBottom) || 14;
+      const content = last
+        ? last.getBoundingClientRect().bottom -
+          app.getBoundingClientRect().top +
+          app.scrollTop +
+          bottomPad
+        : 40;
+      const tbHeight = titlebarEl.offsetHeight;
+      const total = tbHeight + content + 2; // 테두리
+      const max = Math.floor(window.screen.availHeight * 0.9);
+      // 배율이 소수인 화면에서 round가 1px을 깎아 하단을 자르지 않게 올림한다.
+      const target = Math.ceil(Math.max(80, Math.min(total, max)));
+      // 컴팩트 모드는 창 자체도 좁게, 미니멀은 더 좁게 (150→120, 사용자 지시 —
+      // 타이틀바 버튼은 한 줄을 포기하고 다음 줄로 흐른다)
+      const width = viewMode === "minimal" ? 120 : viewMode === "compact" ? 240 : 360;
       // 크기 조절 기준은 "오른쪽 상단" — 목표 폭이 실제로 바뀌는 전환에서만
       // 우측 가장자리를 고정한다. (바깥 크기에는 그림자가 포함되므로 실측 폭과
       // 목표 폭을 비교하면 매번 어긋나 창이 조금씩 밀리는 버그가 있었다)
@@ -1405,15 +1466,28 @@ function fitHeight() {
       let topY = 0;
       if (widthChanging) {
         try {
-          const pos = await appWindow.outerPosition();
-          const size = await appWindow.outerSize();
+          const [pos, size] = await Promise.all([
+            appWindow.outerPosition(),
+            appWindow.outerSize(),
+          ]);
           rightEdge = pos.x + size.width;
           topY = pos.y;
         } catch {
           rightEdge = 0;
         }
       }
-      await appWindow.setSize(new LogicalSize(width, target));
+      // 위치를 읽는 동안 더 최신 내용·모드가 들어왔으면 낡은 크기는 적용하지 않는다.
+      if (revision !== fitRevision) continue;
+      try {
+        await appWindow.setSize(new LogicalSize(width, target));
+      } catch {
+        // setSize 대기 중 더 최신 요청이 들어왔으면 실패한 옛 요청만 버리고 최신값은 재시도한다.
+        retryLatest = revision !== fitRevision;
+        break;
+      }
+      // setSize가 시작된 뒤 새 요청이 와도 이 트랜잭션의 실제 폭부터 기록한다.
+      // 루프가 곧 최신 요청을 다시 적용하므로 오래된 크기가 최종값으로 남지 않는다.
+      lastAppliedWidth = width;
       if (widthChanging && rightEdge !== 0) {
         try {
           // 새 폭의 실제 바깥 크기(그림자 포함)로 우측 가장자리를 되살린다
@@ -1423,24 +1497,35 @@ function fitHeight() {
           // 위치 보정 실패는 치명적이지 않다
         }
       }
-      lastAppliedWidth = width;
       // 폭이 바뀌며 타이틀바가 줄바꿈(미니멀 두 줄)되면 계산에 쓴 높이가
       // 낡는다 — 실제 높이가 달라졌으면 새 높이로 다시 맞춘다 (타입3 하단
-      // NET 행이 13px 잘리던 문제, 사용자 보고). 두 번째 실행은 폭·타이틀바
-      // 높이가 안 변하므로 재귀는 한 번에서 멈춘다.
-      if (titlebarEl.offsetHeight !== tbHeight) fitHeight();
+      // NET 행이 13px 잘리던 문제, 사용자 보고). 외부 요청이 들어왔거나 높이가
+      // 달라졌으면 최신 DOM을 다시 재서 마지막 크기가 반드시 최신값이 되게 한다.
       // 히트 영역은 반드시 창 크기 변경이 "끝난 뒤" 보고해야 한다 —
       // 즉시 보고하면 옛 폭 기준 좌표가 남아 버튼 위 클릭이 투과돼 버린다
-      window.setTimeout(reportHitRegions, 80);
-    })();
-  }, 120);
+      reportHitRegions();
+      if (revision !== fitRevision) continue;
+      if (titlebarEl.offsetHeight !== tbHeight) {
+        fitRevision += 1;
+        continue;
+      }
+      break;
+    }
+  } finally {
+    fitRunning = false;
+    if (retryLatest && !fitQueued) {
+      fitQueued = true;
+      queueMicrotask(() => {
+        fitQueued = false;
+        void fitWindowToContent();
+      });
+    }
+  }
 }
 
 // 크기 변경(모드 전환 등) 완료 시점의 백업 갱신 — 어떤 경로로 리사이즈되든 좌표를 다시 잡는다
-let resizeReportTimer: number | undefined;
 void appWindow.onResized(() => {
-  window.clearTimeout(resizeReportTimer);
-  resizeReportTimer = window.setTimeout(reportHitRegions, 100);
+  queueMicrotask(reportHitRegions);
 });
 
 // 내용 높이가 바뀌는 지점(렌더 완료·사용량 로딩·고정 토글)에서 fitHeight()를 직접 부른다
@@ -1509,7 +1594,10 @@ clamBtn.addEventListener("click", () => {
   clamBtn.disabled = true; // 승인 창 대기·전환(최대 수초) 중임을 보이게 — 소리 없는 무시 방지
   invoke<number>("clamshell_cycle")
     .then(applyClamshell)
-    .catch((error) => toast(String(error), true))
+    .catch((error) => {
+      toast(String(error), true);
+      return invoke<number>("clamshell_mode").then(applyClamshell).catch(() => undefined);
+    })
     .finally(() => {
       clamBusy = false;
       clamBtn.disabled = false;

@@ -268,10 +268,15 @@ fn cli_args(provider: Provider) -> (&'static str, &'static [&'static str], &'sta
 /// GUI 앱(Finder·Dock 실행)은 셸 PATH를 모른다 — 로그인 셸에 묻고, 실패하면
 /// CLI가 흔히 설치되는 경로를 직접 짚는다. 끝내 못 찾으면 이름 그대로 돌려줘
 /// spawn이 명확한 미설치 에러를 내게 둔다.
-/// 주의: program은 반드시 상수 이름("claude"·"codex"·"gh")만 — 셸 명령 문자열에
-/// 그대로 보간되므로 비상수 입력을 넘기면 셸 인젝션이 된다.
+/// 로그인 셸에는 허용한 상수 이름("claude"·"codex"·"gh")만 넘긴다. 다른 값은
+/// 셸을 거치지 않고 그대로 반환해 테스트·향후 호출자가 명령 문자열을 주입하지 못한다.
 #[cfg(not(windows))]
 pub(crate) fn resolve_program(program: &str) -> String {
+    // 로그인 셸에는 고정된 CLI 이름만 넘긴다. 테스트용·향후 호출자가 다른 값을
+    // 주면 셸 해석 없이 그대로 실행을 시도해 명령 문자열 주입 여지를 만들지 않는다.
+    if !matches!(program, "claude" | "codex" | "gh") {
+        return program.to_string();
+    }
     let shell = std::process::Command::new("/bin/zsh")
         .args(["-lc", &format!("command -v {program}")])
         .output();
@@ -943,12 +948,23 @@ fn terminate_child(child: &mut (dyn Child + Send + Sync)) {
     if let Some(pid) = child.process_id() {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let _ = std::process::Command::new("taskkill")
+        let taskkill = std::process::Command::new("taskkill")
             .args(["/T", "/F", "/PID", &pid.to_string()])
             .creation_flags(CREATE_NO_WINDOW)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
-            .status();
+            .spawn();
+        if let Ok(mut taskkill) = taskkill {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while std::time::Instant::now() < deadline {
+                match taskkill.try_wait() {
+                    Ok(Some(_)) | Err(_) => break,
+                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                }
+            }
+            let _ = taskkill.kill();
+            let _ = taskkill.try_wait();
+        }
     }
     // PTY 자식은 세션 리더(setsid)다 — 그룹째 보내야 CLI 자손이 살아남지 않는다
     #[cfg(unix)]
@@ -958,7 +974,15 @@ fn terminate_child(child: &mut (dyn Child + Send + Sync)) {
         }
     }
     let _ = child.kill();
-    let _ = child.wait();
+    // 종료·업데이트 재시작을 무기한 붙잡지 않는다. 정상적인 SIGKILL/taskkill 뒤에는
+    // 보통 첫 틱에 끝나며, 비정상 자식이어도 2초 뒤 정리를 다음 시작에 맡긴다.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => break,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    }
 }
 
 fn terminate_session(mut session: Session) {
@@ -1270,6 +1294,13 @@ mod tests {
             .map(|entries| entries.count())
             .unwrap_or(0);
         assert_eq!(leftover, 0, "임시 로그인 폴더가 정리돼야 한다");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn program_resolution_never_sends_unknown_input_to_shell() {
+        let value = "unknown; touch /tmp/should-not-run";
+        assert_eq!(resolve_program(value), value);
     }
 
     /// 격리 로그인 키체인 항목의 이름 규칙(sha256(경로)[:8] 접미사) 회귀 테스트.

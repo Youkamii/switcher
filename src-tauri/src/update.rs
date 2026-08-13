@@ -440,6 +440,33 @@ fn pending_version_path(staged: &Path) -> PathBuf {
 }
 
 #[cfg(windows)]
+fn pending_error_path() -> Option<PathBuf> {
+    crate::accounts::Env::real()
+        .ok()
+        .map(|env| env.store.join("update-error.txt"))
+}
+
+#[cfg(windows)]
+fn record_pending_error(error: &str) {
+    let Some(path) = pending_error_path() else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let _ = crate::accounts::atomic_write_existing_parent(&path, error.as_bytes());
+}
+
+/// 분리 helper가 남긴 실패를 다음 정상 실행의 트레이 상태로 한 번 전달한다.
+#[cfg(windows)]
+pub fn take_pending_error() -> Option<String> {
+    let path = pending_error_path()?;
+    let error = fs::read_to_string(&path).ok()?;
+    let _ = fs::remove_file(path);
+    Some(error)
+}
+
+#[cfg(windows)]
 fn read_pending_version(staged: &Path) -> Result<String, String> {
     let path = pending_version_path(staged);
     let version = fs::read_to_string(&path)
@@ -459,6 +486,9 @@ fn pending_windows_update(current: &Path) -> Option<(PathBuf, String)> {
     let version = read_pending_version(&staged).ok()?;
     let pending = parse_version(&version)?;
     let running = parse_version(env!("CARGO_PKG_VERSION"))?;
+    if windows_binary_version(&staged).ok()? != pending {
+        return None;
+    }
     (pending > running).then_some((staged, version))
 }
 
@@ -553,6 +583,10 @@ pub fn spawn_windows_update_helper(
     if parse_version(&pending).is_none_or(|version| version <= running) {
         return Err("pending 업데이트가 현재 버전보다 새 버전이 아닙니다".into());
     }
+    let expected = parse_version(&pending).ok_or("pending 업데이트 버전을 해석할 수 없습니다")?;
+    if windows_binary_version(staged)? != expected {
+        return Err("pending 실행 파일 버전이 표식과 다릅니다".into());
+    }
 
     let helper = helper_path();
     let _ = fs::remove_file(&helper);
@@ -623,9 +657,13 @@ pub fn run_windows_update_helper(predecessor_gone: bool) -> bool {
         Err("이전 앱이 제한 시간 안에 종료되지 않아 교체를 보류했습니다".into())
     };
     if let Err(error) = &result {
-        // 같은 실패를 시작 때마다 무한 반복하지 않는다. staged는 다음 sweep이 치운다.
+        // 표식을 지워 재실행 즉시 helper가 다시 뜨는 루프를 막고, 실패는 사용자
+        // 저장소에 남겨 정상 앱의 트레이에 ✗로 보여준다. 다음 수동 확인은 다시 받는다.
         let _ = fs::remove_file(pending_version_path(&staged));
+        record_pending_error(error);
         eprintln!("업데이트 helper 교체 실패: {error}");
+    } else if let Some(path) = pending_error_path() {
+        let _ = fs::remove_file(path);
     }
     if current.is_file() {
         let mut command = std::process::Command::new(&current);
@@ -715,6 +753,9 @@ fn apply_windows_to_with_version(
     ) {
         let _ = fs::remove_file(&staged);
         return Err(format!("pending 업데이트 표식 저장 실패: {error}"));
+    }
+    if let Some(path) = pending_error_path() {
+        let _ = fs::remove_file(path);
     }
     let _ = fs::remove_dir_all(work);
     Ok(staged)

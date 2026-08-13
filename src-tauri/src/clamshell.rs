@@ -41,6 +41,7 @@ mod imp {
     static OPERATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     static STARTUP_RECOVERY: AtomicBool = AtomicBool::new(false);
     static TOKEN_SEQ: AtomicU64 = AtomicU64::new(0);
+    static MONITOR_SEQ: AtomicU64 = AtomicU64::new(0);
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct State {
@@ -283,7 +284,7 @@ while :; do
       fi
     fi
   fi
-  /bin/sleep 1
+  /bin/sleep 2
 done"#;
         template
             .replace("__STATE__", &sq(&state_path.to_string_lossy()))
@@ -498,10 +499,21 @@ done"#;
         expected: State,
         record: WatcherRecord,
     ) {
+        let generation = MONITOR_SEQ.fetch_add(1, Ordering::SeqCst) + 1;
         let app = app.clone();
         std::thread::spawn(move || {
-            while watcher_alive_record(&record) {
-                std::thread::sleep(Duration::from_secs(1));
+            loop {
+                if MONITOR_SEQ.load(Ordering::SeqCst) != generation {
+                    return;
+                }
+                if !watcher_alive_record(&record) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_secs(2));
+            }
+            // 같은 감시자를 승격하며 새 monitor가 인계받았으면 옛 monitor는 정리하지 않는다.
+            if MONITOR_SEQ.load(Ordering::SeqCst) != generation {
+                return;
             }
             let Ok(_guard) = OPERATION_LOCK.lock() else {
                 return;
@@ -512,7 +524,16 @@ done"#;
                     let _ = app.emit("clamshell-changed", ());
                 }
                 Ok(false) => {}
-                Err(error) => eprintln!("클램셸 복구 상태를 남겨 둡니다: {error}"),
+                Err(error) => {
+                    // root 감시자가 복원 전에 비정상 종료됐으면 no-sleep을 그대로
+                    // 남기지 않는다. 관리자 복원을 한 번 시도하고 성공하면 off로 정리한다.
+                    eprintln!("클램셸 감시자 비정상 종료 — 원상 복원을 시도합니다: {error}");
+                    if restore_direct(expected.saved).is_ok()
+                        && cleanup_if_restored(&files, &expected).unwrap_or(false)
+                    {
+                        let _ = app.emit("clamshell-changed", ());
+                    }
+                }
             }
         });
     }
@@ -606,13 +627,13 @@ done"#;
             }
             Some(state) if state.mode == 1 => {
                 let Some(record) = active_watcher(&files) else {
-                    // 일회성 감시가 이미 끝났는데 monitor 정리 전에 클릭된 경우 현재는
-                    // 사실상 off다. 복원을 확정한 뒤 새 일회성을 시작한다.
+                    // 감시자가 없는 상태는 완료 직후 정리 전이거나, 켜기 실패 뒤 복구가
+                    // 남은 경우다. 어느 쪽이든 이 클릭은 복원·해제만 하고 다시 켜지 않는다.
                     if sleep_disabled_now()? != state.saved {
                         restore_direct(state.saved)?;
                     }
                     cleanup_if_restored(&files, &state)?;
-                    return arm_new(app, store, 1, state.saved);
+                    return Ok(0);
                 };
                 if sleep_disabled_now()? != 1 {
                     // 외부에서 SleepDisabled를 끈 상태 (예: 수동 sudo pmset). 승격 대신

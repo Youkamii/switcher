@@ -48,6 +48,7 @@
 - **claude CLI 버전별 자격증명 저장 변천 (실측 2026-08-07)**: ~2.1.220은 키체인 raw JSON. 2.1.221~222는 키체인에 **hex 문자열**로 쓰기도 함(읽기는 양쪽 관용) — 위젯 읽기 관문(accounts.rs `normalize_cred`)이 순수 hex→JSON일 때만 투명 디코드. **2.1.223+는 네이티브 키체인 API로 전환** — 위젯이 security 도구로 쓴 항목을 ACL 불일치로 읽지 못해 "Not logged in"이 된다. 대신 `~/.claude/.credentials.json` 파일이 있으면 읽어 자기 소유로 키체인에 이관하고 파일을 지운다. → **위젯 전환은 키체인(raw JSON)과 파일을 둘 다 쓴다** (구형 CLI는 키체인, 신형 CLI는 파일 경유로 각자 동작).
 - 미확인: 2.1.223의 격리 로그인(CLAUDE_CONFIG_DIR)이 키체인 접미사 항목 대신 임시 폴더 파일을 남기는지 — 다음 "계정 추가" 검증 때 확인할 것 (login.rs 임포트 경로에 영향).
 
+- **관리자 승인(do shell script) 컨텍스트에서 `/usr/bin/nohup` 즉사** (실측 2026-08-12, macOS 26.5): 제어 터미널이 없어 `nohup: can't detach from console: Inappropriate ioctl for device`로 명령 실행 전에 죽는다. root 백그라운드는 순수 `&` + 본문 `trap '' HUP`으로 띄울 것 — 승인 셸 종료 후 launchd 재입양으로 계속 도는 것 실측 확인 (clamshell.rs arm_command). 이 때문에 v1.7.35까지는 클램셸 감시자가 이 맥에서 한 번도 뜬 적이 없었다 (구버전은 생존 검증이 없어 성공처럼 보였음).
 - 키체인 접근은 claude CLI와 같은 통로인 `/usr/bin/security`를 쓴다 — 같은 통로여야 항목 ACL이 일치해 허용 팝업이 없다. 쓰기는 `security -i`(stdin) + `-X`(hex)로 — 토큰이 프로세스 인자에 노출되지 않는다.
 - 격리 로그인(`CLAUDE_CONFIG_DIR`)은 맥에서 파일 대신 키체인 항목 `Claude Code-credentials-<sha256(경로 문자열)[:8]>`을 만든다. 청소는 **키체인 먼저, 폴더 나중** — 폴더가 사라지면 항목 이름(경로 해시)을 복원할 수 없다.
 - 일반 NSWindow는 `CanJoinAllSpaces`·`FullScreenAuxiliary`를 줘도 다른 Space(특히 전체화면)에 올라가지 못한다 — **비활성 NSPanel로 클래스를 갈아끼워야** 한다 (lib.rs `SwitcherPanel`). 이때 tao가 덮어쓰던 `canBecomeKeyWindow`가 사라지므로 서브클래스에서 복원해야 입력칸이 포커스를 받는다.
