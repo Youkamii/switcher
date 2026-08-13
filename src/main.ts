@@ -1653,15 +1653,14 @@ document.getElementById("blackbtn")!.addEventListener("click", () => {
   void invoke("black_on").catch((error) => toast(String(error), true));
 });
 
-// ── 클램셸 슬립 방지 (☕, macOS 전용) — off → 일회성 → 지속 → off ─────────
-// 덮개를 닫아도 잠들지 않게 (터미널 AI 작업 유지). 켤 때만 관리자 암호 1회,
-// 해제·복원(끄기·덮개 열림·종료·크래시)은 root 감시자가 암호 없이 처리한다.
+// ── 클램셸 슬립 방지 (☕, Windows·macOS) — off → 일회성 → 지속 → off ─────
+// 플랫폼별 native 감시자가 덮개 닫힘에도 작업을 유지하고 원래 전원 설정을 복원한다.
 const clamBtn = document.getElementById("clambtn") as HTMLButtonElement;
 let clamMode = -1;
 function applyClamshell(mode: number) {
   const wasHidden = clamBtn.hidden;
   clamMode = mode;
-  clamBtn.hidden = mode < 0; // 미지원 플랫폼(Windows)에서는 버튼 자체가 없다
+  clamBtn.hidden = mode < 0; // 덮개 센서가 없거나 미지원인 플랫폼에서는 숨긴다
   clamBtn.classList.toggle("pinned", mode === 2);
   clamBtn.classList.toggle("half", mode === 1);
   clamBtn.title = mode === 1 ? t("clamOnce") : mode === 2 ? t("clamKeep") : t("clamOff");
@@ -1671,7 +1670,7 @@ function applyClamshell(mode: number) {
 void invoke<number>("clamshell_mode").then(applyClamshell);
 let clamBusy = false;
 clamBtn.addEventListener("click", () => {
-  if (clamBusy) return; // 관리자 승인 대기 중 연타 방지
+  if (clamBusy) return; // 전원 설정 전환 중 연타 방지
   clamBusy = true;
   clamBtn.disabled = true; // 승인 창 대기·전환(최대 수초) 중임을 보이게 — 소리 없는 무시 방지
   invoke<number>("clamshell_cycle")

@@ -74,7 +74,7 @@ const ko = {
   memoClose: "닫기 (내용은 저장됩니다)",
   monitorTooltip: "시스템 모니터 — CPU·메모리·디스크·네트워크",
   memoAlphaTooltip: "투명도 (배경만 — 글자는 남습니다)",
-  clamOff: "클램셸 슬립 방지 (macOS) — 덮개를 닫아도 잠들지 않게. 한 번 누르면 이번 한 번만, 두 번 누르면 계속 (켤 때 관리자 암호 1회)",
+  clamOff: "클램셸 슬립 방지 — 덮개를 닫아도 잠들지 않게. 한 번 누르면 이번 한 번만, 두 번 누르면 계속 (macOS는 켤 때 관리자 승인 1회)",
   clamOnce: "클램셸: 이번 한 번 — 덮개를 닫았다 다시 열면 자동 해제됩니다. 누르면 '계속 켬'으로",
   clamKeep: "클램셸: 계속 켬 — 다시 누를 때까지 유지되고, 누르면 원래대로 복원됩니다",
 };
@@ -150,7 +150,7 @@ const en: Messages = {
   memoClose: "Close (content is saved)",
   monitorTooltip: "System monitor — CPU · memory · disk · network",
   memoAlphaTooltip: "Opacity (background only — text stays)",
-  clamOff: "Clamshell no-sleep (macOS) — keep running with the lid closed. Click once for one time, twice to keep on (admin password once when enabling)",
+  clamOff: "Clamshell no-sleep — keep running with the lid closed. Click once for one time, twice to keep on (macOS asks for admin approval when enabling)",
   clamOnce: "Clamshell: this once — auto-restores after the lid closes and reopens. Click for 'keep on'",
   clamKeep: "Clamshell: keep on — stays on until you click again to restore",
 };
@@ -223,7 +223,7 @@ const ja: Messages = {
   memoClose: "閉じる（内容は保存されます）",
   monitorTooltip: "システムモニター — CPU・メモリ・ディスク・ネットワーク",
   memoAlphaTooltip: "透明度（背景のみ — 文字は残ります）",
-  clamOff: "クラムシェル・スリープ防止 (macOS) — 蓋を閉じても眠らない。1回で今回のみ、2回で継続（有効化時に管理者パスワード1回）",
+  clamOff: "クラムシェル・スリープ防止 — 蓋を閉じても眠らない。1回で今回のみ、2回で継続（macOS は有効化時に管理者承認が1回必要）",
   clamOnce: "クラムシェル: 今回のみ — 蓋を閉じて再び開くと自動解除。押すと「継続」に",
   clamKeep: "クラムシェル: 継続 — もう一度押して解除するまで維持します",
 };
@@ -293,7 +293,7 @@ const zhCN: Messages = {
   memoClose: "关闭（内容已保存）",
   monitorTooltip: "系统监视器 — CPU·内存·磁盘·网络",
   memoAlphaTooltip: "透明度（仅背景 — 文字保留）",
-  clamOff: "合盖不休眠 (macOS) — 合上盖子也继续运行。按一次仅此一次，按两次持续开启（启用时需一次管理员密码）",
+  clamOff: "合盖不休眠 — 合上盖子也继续运行。按一次仅此一次，按两次持续开启（macOS 启用时需一次管理员授权）",
   clamOnce: "合盖不休眠：仅此一次 — 盖子合上再打开后自动恢复。再按切换为持续",
   clamKeep: "合盖不休眠：持续开启 — 保持到再次按下并恢复原状",
 };
@@ -363,7 +363,7 @@ const zhTW: Messages = {
   memoClose: "關閉（內容已儲存）",
   monitorTooltip: "系統監視器 — CPU·記憶體·磁碟·網路",
   memoAlphaTooltip: "透明度（僅背景 — 文字保留）",
-  clamOff: "闔蓋不休眠 (macOS) — 闔上螢幕也繼續運作。按一次僅此一次，按兩次持續開啟（啟用時需一次管理員密碼）",
+  clamOff: "闔蓋不休眠 — 闔上螢幕也繼續運作。按一次僅此一次，按兩次持續開啟（macOS 啟用時需一次管理員授權）",
   clamOnce: "闔蓋不休眠：僅此一次 — 螢幕闔上再打開後自動恢復。再按切換為持續",
   clamKeep: "闔蓋不休眠：持續開啟 — 保持到再次按下並恢復原狀",
 };
@@ -436,7 +436,7 @@ const hi: Messages = {
   memoClose: "बंद करें (सामग्री सहेजी जाती है)",
   monitorTooltip: "सिस्टम मॉनिटर — CPU·मेमोरी·डिस्क·नेटवर्क",
   memoAlphaTooltip: "पारदर्शिता (केवल पृष्ठभूमि — टेक्स्ट बना रहेगा)",
-  clamOff: "क्लैमशेल नो-स्लीप (macOS) — ढक्कन बंद होने पर भी चलता रहे। एक बार दबाएँ = इस बार, दो बार = लगातार (चालू करते समय एक बार व्यवस्थापक पासवर्ड)",
+  clamOff: "क्लैमशेल नो-स्लीप — ढक्कन बंद होने पर भी चलता रहे। एक बार दबाएँ = इस बार, दो बार = लगातार (macOS पर चालू करते समय एक बार व्यवस्थापक अनुमति)",
   clamOnce: "क्लैमशेल: इस बार — ढक्कन बंद कर फिर खोलने पर अपने आप बहाल। दबाने पर 'लगातार'",
   clamKeep: "क्लैमशेल: लगातार — दोबारा दबाकर बहाल करने तक चालू रहता है",
 };

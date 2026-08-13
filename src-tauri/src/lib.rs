@@ -1,4 +1,8 @@
 mod accounts;
+#[cfg(not(windows))]
+mod clamshell;
+#[cfg(windows)]
+#[path = "clamshell_windows.rs"]
 mod clamshell;
 mod display;
 mod github;
@@ -311,14 +315,14 @@ fn delete_profile(provider: String, name: String) -> Result<(), String> {
     accounts::delete(&Env::real()?, Provider::parse(&provider)?, &name)
 }
 
-/// 클램셸 슬립 방지 현재 모드 (macOS 전용): -1 미지원 · 0 꺼짐 · 1 일회성 · 2 지속
+/// 클램셸 슬립 방지 현재 모드: -1 미지원 · 0 꺼짐 · 1 일회성 · 2 지속
 #[tauri::command]
 fn clamshell_mode() -> i8 {
     Env::real().map(|env| clamshell::mode(&env.store)).unwrap_or(-1)
 }
 
-/// 클램셸 버튼 클릭 — off → 일회성 → 지속 → off 순환. 켤 때만 관리자 승인 1회.
-/// 붙잡는 osascript 승인 대기가 있으므로 비동기 스레드에서 돈다.
+/// 클램셸 버튼 클릭 — off → 일회성 → 지속 → off 순환.
+/// macOS 승인 대기와 Windows 전원 설정 작업을 UI 스레드 밖에서 처리한다.
 #[tauri::command]
 async fn clamshell_cycle(app: tauri::AppHandle) -> Result<i8, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1818,6 +1822,11 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 pub fn run() {
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
+    #[cfg(windows)]
+    if clamshell::run_helper_if_requested() {
+        return;
+    }
+
     // 업데이트 재시작으로 태어났으면 전임자가 완전히 죽을 때까지 여기서 대기 —
     // 아래 단일 인스턴스 가드보다 먼저여야 뮤텍스 경합이 없다 (restart_into 참조)
     // 반환값은 윈도우 helper 경로만 쓰지만, 대기 자체는 맥 재시작 핸드셰이크에도 필요하다
@@ -2013,7 +2022,7 @@ pub fn run() {
             });
 
             // 살아 있는 클램셸 감시자는 재시작 뒤에도 이어받고, 감시자 없이 상태만
-            // 남았을 때에만 원래 SleepDisabled 값으로 복구한다 (맥 전용).
+            // 남았을 때에는 플랫폼별로 보관한 원래 전원 설정을 복구한다.
             if let Ok(env) = Env::real() {
                 clamshell::on_start(app.handle(), &env.store);
             }
