@@ -1225,32 +1225,203 @@ fn update_status_suffix() -> String {
     UPDATE_STATUS.lock().map(|s| s.clone()).unwrap_or_default()
 }
 
+fn run_shutdown_cleanup<CancelGithub, CancelLogin, Warn, Then>(
+    mut cancel_github: CancelGithub,
+    mut cancel_login: CancelLogin,
+    mut warn: Warn,
+    then: Then,
+) -> Result<(), String>
+where
+    CancelGithub: FnMut() -> Result<bool, String>,
+    CancelLogin: FnMut() -> Result<login::CancelOutcome, String>,
+    Warn: FnMut(String),
+    Then: FnOnce(),
+{
+    // 한쪽이 실패해도 다른 로그인 프로세스의 종료 기회까지 잃지 않게 둘 다 호출한다.
+    let github_result = cancel_github();
+    let login_result = cancel_login();
+    let mut errors = Vec::new();
+
+    if let Err(error) = github_result {
+        errors.push(format!("GitHub 로그인 종료 실패: {error}"));
+    }
+    match login_result {
+        Ok(outcome) => {
+            // cleanup_error는 #75 계약상 프로세스 종료 확인 뒤의 임시 파일 정리 경고다.
+            // 종료를 막지 않되 사용자가 다음 시작에서 재시도된다는 사실은 로그에 남긴다.
+            if let Some(error) = outcome.cleanup_error {
+                warn(format!("Claude/Codex 로그인 임시 파일 정리 경고: {error}"));
+            }
+        }
+        Err(error) => errors.push(format!("Claude/Codex 로그인 종료 실패: {error}")),
+    }
+
+    if !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+    then();
+    Ok(())
+}
+
+#[cfg(test)]
+mod shutdown_cleanup_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    fn cancelled(cleanup_error: Option<&str>) -> login::CancelOutcome {
+        login::CancelOutcome {
+            cancelled: true,
+            cleanup_error: cleanup_error.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn both_success_runs_then_once() {
+        let then_calls = Cell::new(0);
+
+        let result = run_shutdown_cleanup(
+            || Ok(false),
+            || Ok(cancelled(None)),
+            |_| panic!("successful cleanup must not warn"),
+            || then_calls.set(then_calls.get() + 1),
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(then_calls.get(), 1);
+    }
+
+    #[test]
+    fn github_failure_still_calls_generic_cancel_and_blocks_then() {
+        let login_calls = Cell::new(0);
+        let then_calls = Cell::new(0);
+
+        let error = run_shutdown_cleanup(
+            || Err("gh child still running".into()),
+            || {
+                login_calls.set(login_calls.get() + 1);
+                Ok(cancelled(None))
+            },
+            |_| {},
+            || then_calls.set(then_calls.get() + 1),
+        )
+        .unwrap_err();
+
+        assert_eq!(login_calls.get(), 1);
+        assert_eq!(then_calls.get(), 0);
+        assert!(error.contains("GitHub 로그인 종료 실패: gh child still running"));
+    }
+
+    #[test]
+    fn generic_failure_blocks_then() {
+        let then_calls = Cell::new(0);
+
+        let error = run_shutdown_cleanup(
+            || Ok(true),
+            || Err("generic child still running".into()),
+            |_| {},
+            || then_calls.set(then_calls.get() + 1),
+        )
+        .unwrap_err();
+
+        assert_eq!(then_calls.get(), 0);
+        assert!(error.contains("Claude/Codex 로그인 종료 실패: generic child still running"));
+    }
+
+    #[test]
+    fn both_failures_are_combined_after_both_attempts() {
+        let github_calls = Cell::new(0);
+        let login_calls = Cell::new(0);
+
+        let error = run_shutdown_cleanup(
+            || {
+                github_calls.set(github_calls.get() + 1);
+                Err("gh lock".into())
+            },
+            || {
+                login_calls.set(login_calls.get() + 1);
+                Err("generic lock".into())
+            },
+            |_| {},
+            || panic!("shutdown must remain blocked"),
+        )
+        .unwrap_err();
+
+        assert_eq!(github_calls.get(), 1);
+        assert_eq!(login_calls.get(), 1);
+        assert_eq!(
+            error,
+            "GitHub 로그인 종료 실패: gh lock; Claude/Codex 로그인 종료 실패: generic lock"
+        );
+    }
+
+    #[test]
+    fn cleanup_warning_is_reported_and_allows_then_once() {
+        let warning_calls = Cell::new(0);
+        let then_calls = Cell::new(0);
+
+        let result = run_shutdown_cleanup(
+            || Ok(false),
+            || Ok(cancelled(Some("remove later"))),
+            |warning| {
+                warning_calls.set(warning_calls.get() + 1);
+                assert!(warning.contains("remove later"));
+            },
+            || then_calls.set(then_calls.get() + 1),
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(warning_calls.get(), 1);
+        assert_eq!(then_calls.get(), 1);
+    }
+}
+
 /// 정리(로그인 취소·메모 플러시)를 마친 뒤 `then`을 실행한다 — 트레이 quit와
 /// 업데이트 재시작이 공유하는 종료 준비 경로. 메모 디바운스(600ms) 도중의
 /// 종료로 마지막 입력이 유실되지 않게 blur(즉시 플러시)를 지시하고, 대기와
 /// `then`은 딴 스레드에서 — 이 함수는 UI 스레드에서 불리는데 여기서 자면
 /// eval 전달도 memo_save IPC도 같은 메시지 펌프에 갇힌다 (red-review — 자기 봉쇄)
 fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'static) {
-    use tauri::Manager;
-    // 클램셸 종료 훅. 지속 모드는 사용자가 다시 누를 때까지 유지하는 설정이라
-    // 앱 종료·업데이트 재시작으로 해제하지 않는다.
-    if let Ok(env) = Env::real() {
-        clamshell::on_quit(&env.store);
-    }
+    use tauri::{Emitter, Manager};
     let flushing = app
         .get_webview_window("memo")
         .map(|memo| memo.eval("window.dispatchEvent(new Event('blur'))").is_ok())
         .unwrap_or(false);
+    let handle = app.clone();
     std::thread::spawn(move || {
         // 프로세스 트리 종료·임시 폴더 정리는 느릴 수 있으므로 UI 스레드 밖에서 한다.
-        if let Err(error) = github::cancel_on_shutdown() {
-            eprintln!("GitHub 로그인 종료 정리 실패: {error}");
+        let result = run_shutdown_cleanup(
+            github::cancel_on_shutdown,
+            login::cancel,
+            |warning| eprintln!("{warning}"),
+            || {
+                // 클램셸 종료 훅. 지속 모드는 사용자가 다시 누를 때까지 유지하는 설정이라
+                // 앱 종료·업데이트 재시작으로 해제하지 않는다. 종료 차단 시에는 호출하지 않는다.
+                if let Ok(env) = Env::real() {
+                    clamshell::on_quit(&env.store);
+                }
+                if flushing {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+                then();
+            },
+        );
+        let Err(error) = result else {
+            return;
+        };
+
+        let message = format!(
+            "로그인 프로세스를 끝내지 못해 종료/재시작을 중단했습니다. 열린 로그인 패널에서 취소를 다시 누른 뒤 재시도하세요. {error}"
+        );
+        eprintln!("{message}");
+        let ui_handle = handle.clone();
+        if let Err(dispatch_error) = handle.run_on_main_thread(move || {
+            show_main_window(&ui_handle);
+            if let Err(emit_error) = ui_handle.emit("shutdown-blocked", message) {
+                eprintln!("종료 차단 오류 표시 실패: {emit_error}");
+            }
+        }) {
+            eprintln!("종료 차단 뒤 메인 창 표시 실패: {dispatch_error}");
         }
-        let _ = login::cancel();
-        if flushing {
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-        then();
     });
 }
 

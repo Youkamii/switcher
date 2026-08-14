@@ -225,3 +225,26 @@ test("blocks account switches while an account login is active", () => {
     "click-through account cards must not expose native switch actions during login",
   );
 });
+
+test("keeps a blocked shutdown visible and above a pending restart notice", () => {
+  assert.match(
+    mainSource,
+    /function showShutdownStatus[\s\S]*?if \(shutdownState === "blocked" && state !== "blocked"\) return;[\s\S]*?shutdownStatus\.classList\.toggle\("shutdown-blocked", state === "blocked"\);/,
+    "a process-termination failure must remain the dominant shutdown state",
+  );
+  assert.match(
+    mainSource,
+    /if \(shutdownState !== "idle"\) buffer\.prepend\(shutdownStatus\);[\s\S]*?app\.replaceChildren\(buffer\);/,
+    "normal rerenders must retain the persistent shutdown status",
+  );
+  assert.match(
+    mainSource,
+    /listen<string>\("update-restarting"[\s\S]*?showShutdownStatus\("restarting"[\s\S]*?listen<string>\("shutdown-blocked"[\s\S]*?showShutdownStatus\("blocked", event\.payload\);/,
+    "the backend termination failure must replace the earlier restart notice",
+  );
+  assert.match(
+    stylesSource,
+    /\.shutdown-status\.shutdown-blocked \{[\s\S]*?background: rgba\(127, 29, 29, 0\.96\);[\s\S]*?font-weight: 700;/,
+    "the blocked state must be visibly distinct even when the widget background is transparent",
+  );
+});

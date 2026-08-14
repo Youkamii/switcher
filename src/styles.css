@@ -73,6 +73,26 @@ main::-webkit-scrollbar {
   display: none;
 }
 
+.shutdown-status {
+  flex: none;
+  margin: 6px 0 8px;
+  padding: 7px 9px;
+  border: 1px solid rgba(167, 139, 250, 0.8);
+  border-radius: 7px;
+  background: rgba(46, 39, 69, 0.96);
+  color: #f5f3ff;
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.shutdown-status.shutdown-blocked {
+  border-color: #f87171;
+  background: rgba(127, 29, 29, 0.96);
+  color: #fff;
+  font-weight: 700;
+}
+
 /* 공간이 모자라면 슬라이더가 먼저 줄어든다 — 버튼 글자가 줄바꿈되지 않게 */
 input[type="range"] {
   flex: 1 1 128px;

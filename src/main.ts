@@ -72,6 +72,12 @@ type LoginProvider = ProviderId | "github";
 
 const app = document.getElementById("app")!;
 const titlebarEl = document.querySelector(".titlebar") as HTMLElement;
+const shutdownStatus = document.createElement("div");
+shutdownStatus.className = "shutdown-status";
+shutdownStatus.setAttribute("role", "alert");
+shutdownStatus.setAttribute("aria-live", "assertive");
+shutdownStatus.hidden = true;
+let shutdownState: "idle" | "restarting" | "blocked" = "idle";
 let rendering = false;
 let loginOpen = false;
 let loginSessionId: string | null = null;
@@ -86,6 +92,18 @@ let activeAccountWait: Promise<LoginOutcome> | null = null;
 let activeGithubWait: Promise<string> | null = null;
 const loginHost = document.createElement("section");
 loginHost.id = "login-host";
+
+function showShutdownStatus(state: "restarting" | "blocked", message: string) {
+  // 프로세스 종료 실패는 재시작 안내보다 우선하며, 다음 종료 시도 전까지 지우지 않는다.
+  if (shutdownState === "blocked" && state !== "blocked") return;
+  shutdownState = state;
+  shutdownStatus.hidden = false;
+  shutdownStatus.classList.toggle("shutdown-blocked", state === "blocked");
+  shutdownStatus.textContent = state === "blocked" ? `⚠ ${message}` : message;
+  if (!shutdownStatus.isConnected) app.prepend(shutdownStatus);
+  fitHeight();
+  refreshHitRegionsAfterLayout();
+}
 
 /// 화면 알림(토스트)은 제거됐다 — 의미 없는 메시지가 위젯 폭에도 안 맞게
 /// 떠서 없앰 (사용자 결정, 2026-08-07). 원인 추적을 위해 콘솔에만 남긴다.
@@ -1472,6 +1490,7 @@ async function render(opts?: { immediate?: boolean }) {
       // 접는다. 큐가 있으면 새 상태로 다시 그리고, 없으면 다음 주기에 맡긴다.
       if (renderQueued || userIsBusy()) continue;
       // 첫 화면은 뼈대를 먼저 보여주고 사용량은 채워지는 대로 붙는다
+      if (shutdownState !== "idle") buffer.prepend(shutdownStatus);
       // 진행 중 로그인은 버퍼에서 새로 만들지 않고 같은 노드를 옮겨 입력값·세션을 보존한다.
       if (loginOpen) buffer.appendChild(loginHost);
       app.replaceChildren(buffer);
@@ -2399,6 +2418,13 @@ void listen<string>("update-ready", (event) => {
 // 수동 "업데이트 확인"이 새 버전을 적용했다 — 잠깐 알리고 러스트가 재시작한다
 void listen<string>("update-restarting", (event) => {
   toast(t("updateRestarting", { ver: event.payload }));
+  showShutdownStatus("restarting", t("updateRestarting", { ver: event.payload }));
+});
+
+// 로그인 CLI의 프로세스 트리 종료를 확인하지 못하면 앱은 살아 있어야 한다.
+// 토스트는 콘솔 전용이므로 메인 창에 오류를 계속 남기며, 앞선 재시작 안내를 덮는다.
+void listen<string>("shutdown-blocked", (event) => {
+  showShutdownStatus("blocked", event.payload);
 });
 
 // 트레이(설정 → 표시 기능)에서 체크가 바뀌면 다시 그린다
