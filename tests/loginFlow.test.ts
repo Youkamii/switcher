@@ -94,7 +94,7 @@ test("keeps the full scroll viewport interactive only while login is open", () =
   assert.match(stylesSource, /main \{[\s\S]*?min-height: 0;[\s\S]*?overflow-y: auto;/);
 });
 
-test("guards login completion and serializes GitHub cancellation", () => {
+test("guards login completion and keeps rejected cancellation retryable", () => {
   assert.match(
     mainSource,
     /function finishLogin\(attempt: number\)[\s\S]*?if \(!isCurrentLogin\(attempt\)\) return;/,
@@ -102,8 +102,8 @@ test("guards login completion and serializes GitHub cancellation", () => {
   );
   assert.match(
     mainSource,
-    /loginCancelingAttempt = attempt;[\s\S]*?invoke<boolean>\("github_login_cancel", \{ sessionId \}\)[\s\S]*?finishLogin\(attempt\);/,
-    "GitHub cancellation must finish before another login can start",
+    /async function cancelActiveLogin[\s\S]*?loginCancelingAttempt = attempt;[\s\S]*?try \{[\s\S]*?cancelExactSession[\s\S]*?catch \(error\) \{[\s\S]*?loginCancelingAttempt = null;[\s\S]*?button\.disabled = false;/,
+    "an exact cancellation failure must leave the current panel retryable",
   );
 });
 
@@ -130,7 +130,7 @@ test("routes GitHub wait and post-prompt cancel through the exact backend sessio
   );
   assert.match(
     mainSource,
-    /invoke<boolean>\("github_login_cancel_start", \{\s*requestId: githubRequestId,/,
+    /cancelGithubBeforePrompt\(\{\s*requestId: githubRequestId,[\s\S]*?invoke<boolean>\("github_login_cancel_start", \{ requestId \}\)/,
     "the pending-prompt cancel path must carry that frontend request ID",
   );
 });
@@ -161,49 +161,31 @@ test("reserves every login request before start and releases it in finally", () 
   );
 });
 
-test("treats an already completed exact login cancellation as idempotent", () => {
+test("uses the executable lifecycle helpers for cancellation decisions", () => {
   assert.match(
     mainSource,
-    /invoke<CancelOutcome>\("cancel_login", \{ sessionId \}\)[\s\S]*?completionWon = !cancelledWithCleanupWarning\(outcome\)[\s\S]*?if \(completionWon\)[\s\S]*?Promise\.allSettled\(\[accountWait\]\)[\s\S]*?reportLogin\(finished\.value\)/,
-    "when completion wins, the completed account result must be reported instead of pretending cancellation won",
+    /cancelExactSession,[\s\S]*?cancelGithubBeforePrompt,[\s\S]*?cancelledWithCleanupWarning as cancelOutcomeCloses,[\s\S]*?decideFailedLogin,/,
+    "the UI owner must import the runtime-tested lifecycle helpers",
   );
   assert.match(
     mainSource,
-    /completionWon = !\(await invoke<boolean>\("github_login_cancel", \{ sessionId \}\)\)[\s\S]*?if \(completionWon\)[\s\S]*?Promise\.allSettled\(\[githubWait\]\)[\s\S]*?ghAdded/,
-    "GitHub completion must likewise be reported when it wins the cancellation race",
+    /cancelGithubBeforePrompt\(\{[\s\S]*?githubCompletion = result\.completion;[\s\S]*?if \(completionWon\)[\s\S]*?ghAdded/,
+    "the UI must report the exact completion drained by the helper",
   );
 });
 
-test("shows isolated-cleanup warnings after verified cancellation and still closes once", () => {
+test("connects generic cleanup warnings to the runtime-tested cancellation result", () => {
   assert.match(
     mainSource,
-    /function cancelledWithCleanupWarning\(outcome: CancelOutcome\): boolean \{\s*if \(outcome\.cleanup_error\) toast\(outcome\.cleanup_error, true\);\s*return outcome\.cancelled;\s*\}/,
+    /function cancelledWithCleanupWarning\(outcome: CancelOutcome\): boolean \{\s*return cancelOutcomeCloses\(outcome, \(message\) => toast\(message, true\)\);\s*\}/,
     "cleanup-only failures must be rendered as warnings without rejecting cancellation",
-  );
-  assert.match(
-    mainSource,
-    /async function cancelActiveLogin[\s\S]*?invoke<CancelOutcome>\("cancel_login_start"[\s\S]*?cancelledWithCleanupWarning\(outcome\)[\s\S]*?finishLogin\(attempt\);/,
-    "the pre-prompt path must report cleanup warnings and then close the login panel",
-  );
-  assert.match(
-    mainSource,
-    /invoke<CancelOutcome>\("cancel_login", \{ sessionId \}\)[\s\S]*?cancelledWithCleanupWarning\(outcome\)[\s\S]*?finishLogin\(attempt\);/,
-    "the post-prompt path must report cleanup warnings and then close the login panel",
-  );
-});
-
-test("finishes GitHub login when completion beats a pre-prompt cancel", () => {
-  assert.match(
-    mainSource,
-    /github_login_cancel_start[\s\S]*?github_login_cancel[\s\S]*?if \(!cancelled\) \{\s*completionWon = true;\s*githubWait = invoke<string>\("github_login_wait", \{\s*sessionId: started\.value\.session_id,[\s\S]*?activeGithubWait = githubWait;/,
-    "a completed pre-prompt GitHub session must be consumed instead of being left behind",
   );
 });
 
 test("retains exact cancel controls when a Claude or Codex start leaves a live session", () => {
   assert.match(
     mainSource,
-    /invoke<string \| null>\("login_session_for_request", \{\s*requestId,\s*\}\)[\s\S]*?if \(sessionId\) \{\s*retainFailedLoginForCancel\(message, sessionId, attempt\);\s*return;\s*\}[\s\S]*?toast\(message, true\);\s*finishLogin\(attempt\);/,
+    /function addAccountButton[\s\S]*?decideFailedLogin\(\{[\s\S]*?login_session_for_request[\s\S]*?decision\.action === "retain"[\s\S]*?retainFailedLoginForCancel\(message, decision\.sessionId, attempt\);/,
     "a matching preserved session must keep the panel while an ordinary cleaned failure closes it",
   );
   assert.match(
@@ -216,7 +198,7 @@ test("retains exact cancel controls when a Claude or Codex start leaves a live s
 test("retains GitHub prompt failures and drains completion through the exact recovered waiter", () => {
   assert.match(
     mainSource,
-    /invoke<string \| null>\("github_login_session_for_request", \{\s*requestId,\s*\}\)[\s\S]*?retainFailedLoginForCancel\(message, sessionId, attempt\);\s*watchGithubLogin\(sessionId, attempt\);\s*return;/,
+    /function githubAddButton[\s\S]*?decideFailedLogin\(\{[\s\S]*?github_login_session_for_request[\s\S]*?decision\.action === "retain"[\s\S]*?retainFailedLoginForCancel\(message, decision\.sessionId, attempt\);\s*watchGithubLogin\(decision\.sessionId, attempt\);/,
     "GitHub start failures with a surviving process must keep cancel controls and start an exact waiter",
   );
   assert.match(

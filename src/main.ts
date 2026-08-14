@@ -4,6 +4,13 @@ import { listen } from "@tauri-apps/api/event";
 import { currentMonitor, getCurrentWindow } from "@tauri-apps/api/window";
 import { currentLang, setLang, t } from "./i18n";
 import {
+  cancelExactSession,
+  cancelGithubBeforePrompt,
+  cancelledWithCleanupWarning as cancelOutcomeCloses,
+  decideFailedLogin,
+  type CancelOutcome,
+} from "./loginLifecycle";
+import {
   clampWindowToWorkArea,
   logicalWorkAreaHeight,
   monitorGeometryKey,
@@ -335,11 +342,6 @@ type LoginOutcome = {
   updated_existing: boolean;
 };
 
-type CancelOutcome = {
-  cancelled: boolean;
-  cleanup_error: string | null;
-};
-
 type LoginPrompt = {
   session_id: string;
   url: string;
@@ -415,8 +417,7 @@ function finishLogin(attempt: number) {
 }
 
 function cancelledWithCleanupWarning(outcome: CancelOutcome): boolean {
-  if (outcome.cleanup_error) toast(outcome.cleanup_error, true);
-  return outcome.cancelled;
+  return cancelOutcomeCloses(outcome, (message) => toast(message, true));
 }
 
 function retainFailedLoginForCancel(error: string, sessionId: string, attempt: number) {
@@ -452,37 +453,49 @@ async function cancelActiveLogin(attempt: number) {
   const start = activeLoginStart;
   const accountWait = activeAccountWait;
   let githubWait = activeGithubWait;
+  let githubCompletion: PromiseSettledResult<string> | null = null;
   let completionWon = false;
   try {
     if (provider === "github") {
       if (sessionId) {
-        completionWon = !(await invoke<boolean>("github_login_cancel", { sessionId }));
+        completionWon =
+          (await cancelExactSession(
+            sessionId,
+            (exactSessionId) =>
+              invoke<boolean>("github_login_cancel", { sessionId: exactSessionId }),
+            Boolean,
+          )) === "completed";
       } else {
         // 프롬프트가 아직 없을 때만 현재 세션 취소를 쓴다. start 등록보다 먼저
         // 도착했으면 start 결과의 세대값으로 한 번 더 정확히 취소한다.
         if (!githubRequestId) throw new Error("GitHub 로그인 요청 ID가 없습니다");
-        let cancelled = await invoke<boolean>("github_login_cancel_start", {
+        const result = await cancelGithubBeforePrompt({
           requestId: githubRequestId,
+          start,
+          cancelStart: (requestId) =>
+            invoke<boolean>("github_login_cancel_start", { requestId }),
+          cancelSession: (exactSessionId) =>
+            invoke<boolean>("github_login_cancel", { sessionId: exactSessionId }),
+          waitForSession: (exactSessionId) =>
+            invoke<string>("github_login_wait", { sessionId: exactSessionId }),
+          onWait: (wait) => {
+            githubWait = wait;
+            activeGithubWait = wait;
+          },
         });
-        if (!cancelled) {
-          const [started] = await Promise.allSettled([start]);
-          if (started.status === "fulfilled" && started.value && "session_id" in started.value) {
-            cancelled = await invoke<boolean>("github_login_cancel", {
-              sessionId: started.value.session_id,
-            });
-            if (!cancelled) {
-              completionWon = true;
-              githubWait = invoke<string>("github_login_wait", {
-                sessionId: started.value.session_id,
-              });
-              activeGithubWait = githubWait;
-            }
-          }
+        if (result.state === "completed") {
+          completionWon = true;
+          githubCompletion = result.completion;
         }
       }
     } else if (sessionId) {
-      const outcome = await invoke<CancelOutcome>("cancel_login", { sessionId });
-      completionWon = !cancelledWithCleanupWarning(outcome);
+      completionWon =
+        (await cancelExactSession(
+          sessionId,
+          (exactSessionId) =>
+            invoke<CancelOutcome>("cancel_login", { sessionId: exactSessionId }),
+          cancelledWithCleanupWarning,
+        )) === "completed";
     } else {
       if (!accountRequestId) throw new Error("로그인 요청 ID가 없습니다");
       const outcome = await invoke<CancelOutcome>("cancel_login_start", {
@@ -504,8 +517,9 @@ async function cancelActiveLogin(attempt: number) {
     // 완료 처리가 먼저 세션을 가져갔다면 취소로 위장하지 않는다. 먼저 시작된
     // 완료 Promise의 실제 결과를 보고한 뒤 새 계정이 보이도록 다시 그린다.
     if (completionWon) {
-      if (provider === "github" && githubWait) {
-        const [finished] = await Promise.allSettled([githubWait]);
+      if (provider === "github" && (githubCompletion || githubWait)) {
+        const finished =
+          githubCompletion ?? (await Promise.allSettled([githubWait!]))[0];
         if (finished.status === "fulfilled") toast(t("ghAdded", { login: finished.value }));
         else toast(String(finished.reason), true);
       } else if (accountWait) {
@@ -733,18 +747,18 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
     } catch (error) {
       if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
       const message = String(error);
-      if (!reserved) {
-        toast(message, true);
-        finishLogin(attempt);
-        return;
-      }
       try {
-        const sessionId = await invoke<string | null>("login_session_for_request", {
+        const decision = await decideFailedLogin({
+          reserved,
           requestId,
+          findSession: (failedRequestId) =>
+            invoke<string | null>("login_session_for_request", {
+              requestId: failedRequestId,
+            }),
         });
         if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
-        if (sessionId) {
-          retainFailedLoginForCancel(message, sessionId, attempt);
+        if (decision.action === "retain") {
+          retainFailedLoginForCancel(message, decision.sessionId, attempt);
           return;
         }
       } catch (lookupError) {
@@ -1108,19 +1122,19 @@ function githubAddButton(section: HTMLElement) {
     } catch (error) {
       if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
       const message = String(error);
-      if (!reserved) {
-        toast(message, true);
-        finishLogin(attempt);
-        return;
-      }
       try {
-        const sessionId = await invoke<string | null>("github_login_session_for_request", {
+        const decision = await decideFailedLogin({
+          reserved,
           requestId,
+          findSession: (failedRequestId) =>
+            invoke<string | null>("github_login_session_for_request", {
+              requestId: failedRequestId,
+            }),
         });
         if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
-        if (sessionId) {
-          retainFailedLoginForCancel(message, sessionId, attempt);
-          watchGithubLogin(sessionId, attempt);
+        if (decision.action === "retain") {
+          retainFailedLoginForCancel(message, decision.sessionId, attempt);
+          watchGithubLogin(decision.sessionId, attempt);
           return;
         }
       } catch (lookupError) {
