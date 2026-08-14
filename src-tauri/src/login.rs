@@ -31,7 +31,7 @@ const PROMPT_TIMEOUT: Duration = Duration::from_secs(60);
 /// 코드 입력 후 로그인이 끝날 때까지 기다리는 시간
 const FINISH_TIMEOUT: Duration = Duration::from_secs(45);
 /// 코덱스처럼 브라우저에서 코드를 넣고 CLI가 알아서 끝내는 방식의 대기 시간
-const DEVICE_TIMEOUT: Duration = Duration::from_secs(600);
+const DEVICE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const POLL: Duration = Duration::from_millis(300);
 /// 자식 프로세스가 종료한 뒤 남은 출력이 버퍼에 도착하기를 기다리는 유예
 const EXIT_FLUSH: Duration = Duration::from_millis(700);
@@ -41,7 +41,7 @@ const OUTPUT_CAP: usize = 256 * 1024;
 const CODE_MAX_LEN: usize = 256;
 /// 이보다 오래된 임시 로그인 폴더만 청소한다 — 다른 인스턴스의 진행 중 로그인을 지우지 않기 위함
 /// (DEVICE_TIMEOUT보다 길게 잡아, 살아 있는 세션의 폴더일 가능성을 배제)
-const SWEEP_MIN_AGE: Duration = Duration::from_secs(15 * 60);
+const SWEEP_MIN_AGE: Duration = Duration::from_secs(20 * 60);
 
 #[derive(Serialize, Debug)]
 pub struct LoginPrompt {
@@ -1072,6 +1072,12 @@ mod tests {
     fn finds_codex_device_code_without_digits() {
         let text = "Enter this one-time code\nABCD-EFGH\n";
         assert_eq!(extract_device_code(text).as_deref(), Some("ABCD-EFGH"));
+    }
+
+    #[test]
+    fn codex_device_timeout_matches_code_validity() {
+        assert_eq!(DEVICE_TIMEOUT, Duration::from_secs(15 * 60));
+        assert!(SWEEP_MIN_AGE > DEVICE_TIMEOUT);
     }
 
     #[test]
