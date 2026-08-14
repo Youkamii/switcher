@@ -517,6 +517,11 @@ async function cancelActiveLogin(attempt: number) {
     // 완료 처리가 먼저 세션을 가져갔다면 취소로 위장하지 않는다. 먼저 시작된
     // 완료 Promise의 실제 결과를 보고한 뒤 새 계정이 보이도록 다시 그린다.
     if (completionWon) {
+      if (provider === "github" && !githubCompletion && !githubWait && sessionId) {
+        const wait = invoke<string>("github_login_wait", { sessionId });
+        githubWait = wait;
+        activeGithubWait = wait;
+      }
       if (provider === "github" && (githubCompletion || githubWait)) {
         const finished =
           githubCompletion ?? (await Promise.allSettled([githubWait!]))[0];
@@ -688,7 +693,11 @@ function reportLogin(result: LoginOutcome) {
   );
 }
 
-function watchGithubLogin(sessionId: string, attempt: number): Promise<string> {
+function watchGithubLogin(
+  sessionId: string,
+  requestId: string,
+  attempt: number,
+): Promise<string> {
   const wait = invoke<string>("github_login_wait", { sessionId });
   activeGithubWait = wait;
   void (async () => {
@@ -700,7 +709,28 @@ function watchGithubLogin(sessionId: string, attempt: number): Promise<string> {
     } catch (error) {
       if (activeGithubWait === wait) activeGithubWait = null;
       if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
-      toast(String(error), true);
+      const message = String(error);
+      try {
+        const decision = await decideFailedLogin({
+          reserved: true,
+          requestId,
+          findSession: (failedRequestId) =>
+            invoke<string | null>("github_login_session_for_request", {
+              requestId: failedRequestId,
+            }),
+        });
+        if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+        if (decision.action === "retain" && decision.sessionId === sessionId) {
+          retainFailedLoginForCancel(message, sessionId, attempt);
+          return;
+        }
+      } catch (lookupError) {
+        if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+        toast(`${message}; ${String(lookupError)}`, true);
+        finishLogin(attempt);
+        return;
+      }
+      toast(message, true);
     }
     if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
     finishLogin(attempt);
@@ -1112,7 +1142,7 @@ function githubAddButton(section: HTMLElement) {
       waiting.className = "usage-note";
       waiting.textContent = t("waitingBrowser");
       panel.appendChild(waiting);
-      watchGithubLogin(prompt.session_id, attempt);
+      watchGithubLogin(prompt.session_id, requestId, attempt);
       const cancelBtn = document.createElement("button");
       cancelBtn.className = "link";
       cancelBtn.textContent = t("cancel");
@@ -1134,7 +1164,7 @@ function githubAddButton(section: HTMLElement) {
         if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
         if (decision.action === "retain") {
           retainFailedLoginForCancel(message, decision.sessionId, attempt);
-          watchGithubLogin(decision.sessionId, attempt);
+          watchGithubLogin(decision.sessionId, requestId, attempt);
           return;
         }
       } catch (lookupError) {

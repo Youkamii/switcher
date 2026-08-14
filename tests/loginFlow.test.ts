@@ -115,7 +115,7 @@ test("routes GitHub wait and post-prompt cancel through the exact backend sessio
   );
   assert.match(
     mainSource,
-    /watchGithubLogin\(prompt\.session_id, attempt\)/,
+    /watchGithubLogin\(prompt\.session_id, requestId, attempt\)/,
     "the GitHub waiter must identify the session it belongs to",
   );
   assert.match(
@@ -198,13 +198,23 @@ test("retains exact cancel controls when a Claude or Codex start leaves a live s
 test("retains GitHub prompt failures and drains completion through the exact recovered waiter", () => {
   assert.match(
     mainSource,
-    /function githubAddButton[\s\S]*?decideFailedLogin\(\{[\s\S]*?github_login_session_for_request[\s\S]*?decision\.action === "retain"[\s\S]*?retainFailedLoginForCancel\(message, decision\.sessionId, attempt\);\s*watchGithubLogin\(decision\.sessionId, attempt\);/,
+    /function githubAddButton[\s\S]*?decideFailedLogin\(\{[\s\S]*?github_login_session_for_request[\s\S]*?decision\.action === "retain"[\s\S]*?retainFailedLoginForCancel\(message, decision\.sessionId, attempt\);\s*watchGithubLogin\(decision\.sessionId, requestId, attempt\);/,
     "GitHub start failures with a surviving process must keep cancel controls and start an exact waiter",
   );
   assert.match(
     mainSource,
-    /function watchGithubLogin\(sessionId: string, attempt: number\): Promise<string> \{\s*const wait = invoke<string>\("github_login_wait", \{ sessionId \}\);[\s\S]*?toast\(t\("ghAdded", \{ login \}\)\)[\s\S]*?finishLogin\(attempt\);/,
+    /function watchGithubLogin\(\s*sessionId: string,\s*requestId: string,\s*attempt: number,\s*\): Promise<string> \{\s*const wait = invoke<string>\("github_login_wait", \{ sessionId \}\);[\s\S]*?toast\(t\("ghAdded", \{ login \}\)\)[\s\S]*?finishLogin\(attempt\);/,
     "a completion that wins after prompt failure must still be consumed and reported",
+  );
+  assert.match(
+    mainSource,
+    /function watchGithubLogin[\s\S]*?catch \(error\)[\s\S]*?decideFailedLogin\(\{[\s\S]*?github_login_session_for_request[\s\S]*?decision\.sessionId === sessionId[\s\S]*?retainFailedLoginForCancel\(message, sessionId, attempt\);/,
+    "a waiter termination failure must preserve the exact session and retry-cancel controls",
+  );
+  assert.match(
+    mainSource,
+    /if \(completionWon\) \{\s*if \(provider === "github" && !githubCompletion && !githubWait && sessionId\) \{\s*const wait = invoke<string>\("github_login_wait", \{ sessionId \}\);/,
+    "a retry after a retained waiter failure must start a fresh exact waiter to drain completion",
   );
 });
 

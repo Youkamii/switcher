@@ -440,19 +440,61 @@ fn session_login(session: &GhLoginSession) -> Result<Option<String>, String> {
     Ok(extract_gh_login(&crate::login::strip_ansi(&raw)))
 }
 
-/// 성공 마커 재확인과 세션 제거를 취소와 같은 완료 잠금 안에서 처리한다.
-fn finish_login_if_ready(generation: u64) -> Result<Option<String>, String> {
+#[derive(Debug, PartialEq, Eq)]
+enum LoginPoll {
+    Pending,
+    SuccessRunning,
+    ExitedAwaitingOutput,
+    ExitedWithoutSuccess,
+    Complete(String),
+}
+
+/// 성공 출력, reader 종료, 자식 종료를 취소와 같은 완료 잠금 안에서 함께 판정한다.
+fn poll_login(
+    generation: u64,
+    terminate_running: bool,
+    cleanup_failed_exit: bool,
+) -> Result<LoginPoll, String> {
     let _completion = GH_COMPLETION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
     let session = guard
-        .as_ref()
+        .as_mut()
         .ok_or_else(|| "로그인을 취소했습니다".to_string())?;
     ensure_generation(session.generation, generation)?;
+    // Release로 기록된 reader_done을 먼저 읽어야 마지막 buffer write가 이 뒤의
+    // session_login 읽기에 보인다. 순서를 바꾸면 성공 출력을 놓치고 지울 수 있다.
+    let reader_done = session.reader_done.load(Ordering::Acquire);
     let login = session_login(session)?;
-    if login.is_some() {
+    let exited = child_has_exited(session.child.as_mut())?;
+    if let Some(login) = login {
+        if !exited {
+            if !terminate_running {
+                return Ok(LoginPoll::SuccessRunning);
+            }
+            terminate_child_verified(session.child.as_mut())?;
+        }
         *guard = None;
+        return Ok(LoginPoll::Complete(login));
     }
-    Ok(login)
+    if !exited {
+        return Ok(LoginPoll::Pending);
+    }
+    if !cleanup_failed_exit || !reader_done {
+        return Ok(LoginPoll::ExitedAwaitingOutput);
+    }
+    *guard = None;
+    Ok(LoginPoll::ExitedWithoutSuccess)
+}
+
+#[cfg(test)]
+fn finish_login_if_ready(
+    generation: u64,
+    terminate_running: bool,
+) -> Result<Option<String>, String> {
+    match poll_login(generation, terminate_running, false)? {
+        LoginPoll::Complete(login) => Ok(Some(login)),
+        _ => Ok(None),
+    }
 }
 
 /// gh auth login을 PTY로 시작해 주소와 일회용 코드를 돌려준다
@@ -631,20 +673,9 @@ pub fn login_wait(generation: u64) -> Result<String, String> {
     // 종료 감지 후에도 GH_EXIT_FLUSH 동안은 성공 마커를 계속 찾는다 —
     // "Logged in as"를 찍자마자 종료하는 gh와의 경합 방어 (login.rs와 동일)
     let mut exited_at: Option<Instant> = None;
+    let mut completed_at: Option<Instant> = None;
     let mut answered_git_prompt = false;
     loop {
-        {
-            let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
-            let Some(session) = guard.as_mut() else {
-                return Err("로그인을 취소했습니다".to_string());
-            };
-            ensure_generation(session.generation, generation)?;
-            if exited_at.is_none() {
-                if let Ok(Some(_)) = session.child.try_wait() {
-                    exited_at = Some(Instant::now());
-                }
-            }
-        }
         let text = crate::login::strip_ansi(&gh_login_take_buffer(generation)?);
         // gh 버전에 따라 git 인증 질문이 코드 표시 뒤에 올 수도 있다 — 여기서도 방어
         if !answered_git_prompt && text.contains("Authenticate Git with your GitHub credentials?")
@@ -652,25 +683,35 @@ pub fn login_wait(generation: u64) -> Result<String, String> {
             answered_git_prompt = true;
             gh_send(generation, b"y\r")?;
         }
-        // 성공 마커: "✓ Logged in as <login>" (gh 실측 출력).
-        // 판정과 정리를 취소와 같은 완료 잠금 안에서 한 번에 처리한다.
-        if let Some(login) = finish_login_if_ready(generation)? {
-            return Ok(login);
-        }
-        if let Some(at) = exited_at {
-            if at.elapsed() >= GH_EXIT_FLUSH {
+        let terminate_running =
+            completed_at.is_some_and(|completed| completed.elapsed() >= GH_EXIT_FLUSH);
+        let cleanup_failed_exit = exited_at.is_some_and(|exited| exited.elapsed() >= GH_EXIT_FLUSH);
+        match poll_login(generation, terminate_running, cleanup_failed_exit)? {
+            LoginPoll::Pending => {
+                completed_at = None;
+                exited_at = None;
+                if Instant::now() > deadline {
+                    return Err(wait_timeout_error(generation));
+                }
+            }
+            LoginPoll::SuccessRunning => {
+                completed_at.get_or_insert_with(Instant::now);
+                exited_at = None;
+            }
+            LoginPoll::ExitedAwaitingOutput => {
+                exited_at.get_or_insert_with(Instant::now);
+                completed_at = None;
+            }
+            LoginPoll::ExitedWithoutSuccess => {
                 let last = text
                     .lines()
                     .rev()
                     .find(|l| !l.trim().is_empty())
                     .unwrap_or("")
                     .to_string();
-                login_cleanup(generation)?;
                 return Err(format!("GitHub 로그인이 완료되지 않았습니다: {last}"));
             }
-        }
-        if Instant::now() > deadline {
-            return Err(wait_timeout_error(generation));
+            LoginPoll::Complete(login) => return Ok(login),
         }
         std::thread::sleep(GH_POLL);
     }
@@ -849,9 +890,6 @@ pub fn login_cancel(generation: u64) -> Result<bool, String> {
         return Ok(false);
     };
     ensure_generation(current.generation, generation)?;
-    if session_login(current)?.is_some() {
-        return Ok(false);
-    }
     terminate_active_session(&mut guard)
 }
 
@@ -864,9 +902,6 @@ pub fn login_cancel_start(request_id: &str) -> Result<bool, String> {
         return Ok(GH_START_REQUESTS.cancel(request_id));
     };
     ensure_request_id(&current.request_id, request_id)?;
-    if session_login(current)?.is_some() {
-        return Ok(false);
-    }
     terminate_active_session(&mut guard)
 }
 
@@ -1086,10 +1121,11 @@ mod tests {
         let _test = GH_TEST_LOCK.lock().unwrap();
         let generation = 7_178;
         let request_id = "00000000-0000-4000-8000-000000007178";
-        install_test_login(
+        install_test_login_with_child(
             generation,
             request_id,
             b"\x1b[32mLogged in as recoverable-octocat\x1b[0m\r\n",
+            test_child(Arc::new(AtomicBool::new(false)), true, false),
         );
 
         assert_eq!(
@@ -1101,14 +1137,14 @@ mod tests {
             None
         );
         assert_eq!(
-            finish_login_if_ready(generation).unwrap().as_deref(),
+            finish_login_if_ready(generation, false).unwrap().as_deref(),
             Some("recoverable-octocat")
         );
         assert!(GH_LOGIN.lock().unwrap().is_none());
     }
 
     #[test]
-    fn completed_github_login_wins_over_both_cancel_paths() {
+    fn completed_github_login_stays_tracked_until_child_stops() {
         let _test = GH_TEST_LOCK.lock().unwrap();
         let generation = 7_101;
         let request_id = "00000000-0000-4000-8000-000000007101";
@@ -1118,17 +1154,104 @@ mod tests {
             b"\x1b[32mLogged in as octocat\x1b[0m\r\n",
         );
 
-        assert_eq!(login_cancel_start(request_id).unwrap(), false);
-        assert_eq!(login_cancel(generation).unwrap(), false);
+        assert_eq!(finish_login_if_ready(generation, false).unwrap(), None);
         assert!(GH_LOGIN.lock().unwrap().is_some());
         assert!(!killed.load(Ordering::SeqCst));
 
+        assert_eq!(login_cancel_start(request_id).unwrap(), false);
+        assert_eq!(login_cancel(generation).unwrap(), false);
+        assert!(GH_LOGIN.lock().unwrap().is_some());
+        assert!(killed.load(Ordering::SeqCst));
+
         assert_eq!(
-            finish_login_if_ready(generation).unwrap(),
+            finish_login_if_ready(generation, false).unwrap(),
             Some("octocat".to_string())
         );
         assert!(GH_LOGIN.lock().unwrap().is_none());
-        assert!(!killed.load(Ordering::SeqCst));
+        assert!(killed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn completed_github_login_retains_session_when_termination_fails() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let generation = 7_110;
+        let request_id = "00000000-0000-4000-8000-000000007110";
+        let fail_kill = Arc::new(AtomicBool::new(true));
+        let child = test_child(fail_kill.clone(), false, false);
+        let killed = child.killed.clone();
+        install_test_login_with_child(
+            generation,
+            request_id,
+            b"\x1b[32mLogged in as retry-octocat\x1b[0m\r\n",
+            child,
+        );
+
+        let error = finish_login_if_ready(generation, true).unwrap_err();
+
+        assert!(error.contains("종료 요청 실패: injected kill failure"));
+        assert!(GH_LOGIN.lock().unwrap().is_some());
+
+        fail_kill.store(false, Ordering::SeqCst);
+        assert_eq!(login_cancel(generation).unwrap(), false);
+        assert!(killed.load(Ordering::SeqCst));
+        assert!(GH_LOGIN.lock().unwrap().is_some());
+        assert_eq!(
+            finish_login_if_ready(generation, false).unwrap(),
+            Some("retry-octocat".to_string())
+        );
+        assert!(GH_LOGIN.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn exited_github_login_waits_for_the_reader_before_failure_cleanup() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let generation = 7_112;
+        let request_id = "00000000-0000-4000-8000-000000007112";
+        let child = test_child(Arc::new(AtomicBool::new(false)), true, false);
+        install_test_login_with_child(generation, request_id, b"Finishing\r\n", child);
+        let (buffer, reader_done) = {
+            let guard = GH_LOGIN.lock().unwrap();
+            let session = guard.as_ref().unwrap();
+            session.reader_done.store(false, Ordering::Release);
+            (session.buffer.clone(), session.reader_done.clone())
+        };
+
+        assert_eq!(
+            poll_login(generation, false, true).unwrap(),
+            LoginPoll::ExitedAwaitingOutput
+        );
+        assert!(GH_LOGIN.lock().unwrap().is_some());
+
+        buffer
+            .lock()
+            .unwrap()
+            .extend_from_slice(b"\x1b[32mLogged in as flushed-octocat\x1b[0m\r\n");
+        reader_done.store(true, Ordering::Release);
+        assert_eq!(
+            poll_login(generation, false, true).unwrap(),
+            LoginPoll::Complete("flushed-octocat".to_string())
+        );
+        assert!(GH_LOGIN.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn exited_github_login_without_success_cleans_only_after_the_grace() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let generation = 7_113;
+        let request_id = "00000000-0000-4000-8000-000000007113";
+        let child = test_child(Arc::new(AtomicBool::new(false)), true, false);
+        install_test_login_with_child(generation, request_id, b"Authentication failed\r\n", child);
+
+        assert_eq!(
+            poll_login(generation, false, false).unwrap(),
+            LoginPoll::ExitedAwaitingOutput
+        );
+        assert!(GH_LOGIN.lock().unwrap().is_some());
+        assert_eq!(
+            poll_login(generation, false, true).unwrap(),
+            LoginPoll::ExitedWithoutSuccess
+        );
+        assert!(GH_LOGIN.lock().unwrap().is_none());
     }
 
     #[test]
@@ -1141,7 +1264,7 @@ mod tests {
         assert_eq!(login_cancel(generation).unwrap(), true);
         assert!(killed.load(Ordering::SeqCst));
         assert!(GH_LOGIN.lock().unwrap().is_none());
-        assert!(finish_login_if_ready(generation).is_err());
+        assert!(finish_login_if_ready(generation, false).is_err());
     }
 
     #[test]
@@ -1187,7 +1310,7 @@ mod tests {
         assert!(emitted);
         assert!(GH_LOGIN.lock().unwrap().is_some());
         assert_eq!(
-            finish_login_if_ready(generation).unwrap(),
+            finish_login_if_ready(generation, false).unwrap(),
             Some("late-octocat".to_string())
         );
         assert!(GH_LOGIN.lock().unwrap().is_none());
@@ -1353,6 +1476,27 @@ mod tests {
         assert!(killed.load(Ordering::SeqCst));
         assert!(GH_LOGIN.lock().unwrap().is_none());
         assert_eq!(cancel_on_shutdown().unwrap(), false);
+    }
+
+    #[test]
+    fn shutdown_still_quiesces_a_completed_but_running_github_login() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let generation = 7_111;
+        let request_id = "00000000-0000-4000-8000-000000007111";
+        let killed = install_test_login(
+            generation,
+            request_id,
+            b"\x1b[32mLogged in as shutdown-octocat\x1b[0m\r\n",
+        );
+
+        assert_eq!(cancel_on_shutdown().unwrap(), false);
+        assert!(killed.load(Ordering::SeqCst));
+        assert!(GH_LOGIN.lock().unwrap().is_some());
+        assert_eq!(
+            finish_login_if_ready(generation, false).unwrap(),
+            Some("shutdown-octocat".to_string())
+        );
+        assert!(GH_LOGIN.lock().unwrap().is_none());
     }
 
     #[test]
