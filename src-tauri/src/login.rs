@@ -242,8 +242,10 @@ pub(crate) fn extract_device_code(text: &str) -> Option<String> {
         let Some((left, right)) = token.split_once('-') else {
             continue;
         };
-        let ok = left.len() == 4
-            && right.len() == 4
+        // Codex가 실제로 출력한 코드는 4-4와 4-5 그룹이 모두 있었다.
+        // 각 그룹을 짧게 제한해 일반 대문자 문구는 코드로 오인하지 않는다.
+        let ok = (4..=5).contains(&left.len())
+            && (4..=5).contains(&right.len())
             && left
                 .chars()
                 .chain(right.chars())
