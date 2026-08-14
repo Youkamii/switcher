@@ -339,6 +339,14 @@ pub fn release_login_start(request_id: &str) -> Result<(), String> {
     GH_START_REQUESTS.release(request_id, GITHUB_START_KIND)
 }
 
+pub fn block_starts_for_shutdown() {
+    GH_START_REQUESTS.block_for_shutdown();
+}
+
+pub fn unblock_starts_after_failed_shutdown() {
+    GH_START_REQUESTS.unblock_after_failed_shutdown();
+}
+
 /// 프롬프트 생성 오류 뒤에도 살아 있는 정확한 GitHub 세션을 찾는다.
 /// 성공 마커가 이미 도착한 세션도 돌려줘 프런트의 정확한 waiter가 완료를 회수하게 한다.
 pub fn login_session_for_request(request_id: &str) -> Result<Option<String>, String> {

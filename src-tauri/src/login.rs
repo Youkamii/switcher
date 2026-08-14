@@ -17,6 +17,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -112,6 +113,7 @@ struct StartRequest {
 pub(crate) struct StartRequestRegistry {
     entries: Mutex<HashMap<String, StartRequest>>,
     max_live: usize,
+    shutdown_blocks: AtomicUsize,
 }
 
 pub(crate) struct StartRequestLease {
@@ -126,6 +128,7 @@ impl StartRequestRegistry {
         Self {
             entries: Mutex::new(HashMap::new()),
             max_live,
+            shutdown_blocks: AtomicUsize::new(0),
         }
     }
 
@@ -142,6 +145,9 @@ impl StartRequestRegistry {
         label: &str,
     ) -> Result<(), String> {
         let mut entries = self.entries();
+        if self.shutdown_blocks.load(Ordering::SeqCst) > 0 {
+            return Err(format!("종료 준비 중에는 {label}을 시작할 수 없습니다"));
+        }
         if entries.contains_key(request_id) {
             return Err(format!("{label} 시작 요청이 이미 예약됐습니다"));
         }
@@ -165,6 +171,10 @@ impl StartRequestRegistry {
         label: &str,
     ) -> Result<StartRequestLease, String> {
         let mut entries = self.entries();
+        if self.shutdown_blocks.load(Ordering::SeqCst) > 0 {
+            entries.remove(request_id);
+            return Err(format!("종료 준비 중이라 {label}을 취소했습니다"));
+        }
         let Some(entry) = entries.get(request_id).copied() else {
             return Err(format!("{label} 시작 요청이 예약되지 않았습니다"));
         };
@@ -209,9 +219,32 @@ impl StartRequestRegistry {
         Ok(())
     }
 
+    pub(crate) fn block_for_shutdown(&self) {
+        self.shutdown_blocks.fetch_add(1, Ordering::SeqCst);
+        let mut entries = self.entries();
+        for entry in entries.values_mut() {
+            if entry.state == StartRequestState::Reserved {
+                entry.state = StartRequestState::Cancelled;
+            }
+        }
+    }
+
+    pub(crate) fn unblock_after_failed_shutdown(&self) {
+        let _ = self
+            .shutdown_blocks
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                count.checked_sub(1)
+            });
+    }
+
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries().len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shutdown_block_count(&self) -> usize {
+        self.shutdown_blocks.load(Ordering::SeqCst)
     }
 }
 
@@ -738,6 +771,14 @@ pub fn reserve_start(provider: Provider, request_id: &str) -> Result<(), String>
 pub fn release_start(provider: Provider, request_id: &str) -> Result<(), String> {
     validate_request_id(request_id)?;
     START_REQUESTS.release(request_id, provider.dir_name())
+}
+
+pub fn block_starts_for_shutdown() {
+    START_REQUESTS.block_for_shutdown();
+}
+
+pub fn unblock_starts_after_failed_shutdown() {
+    START_REQUESTS.unblock_after_failed_shutdown();
 }
 
 fn validate_request_id(request_id: &str) -> Result<(), String> {
@@ -2105,6 +2146,80 @@ mod tests {
             .map(|entries| entries.count())
             .unwrap_or(0);
         assert_eq!(leftover, 0);
+    }
+
+    #[test]
+    fn shutdown_block_cancels_reserved_starts_without_reviving_them() {
+        let registry: &'static StartRequestRegistry =
+            Box::leak(Box::new(StartRequestRegistry::new(4)));
+        let cancelled = "00000000-0000-4000-8005-000000000001";
+        let rejected = "00000000-0000-4000-8005-000000000002";
+        let after_failure = "00000000-0000-4000-8005-000000000003";
+
+        registry.reserve(cancelled, "codex", "로그인").unwrap();
+        registry.block_for_shutdown();
+        assert_eq!(registry.shutdown_block_count(), 1);
+        assert!(registry.reserve(rejected, "codex", "로그인").is_err());
+
+        registry.unblock_after_failed_shutdown();
+        assert_eq!(registry.shutdown_block_count(), 0);
+        assert!(registry
+            .claim(cancelled, "codex", "로그인")
+            .err()
+            .unwrap()
+            .contains("취소"));
+
+        registry
+            .reserve(after_failure, "codex", "로그인")
+            .unwrap();
+        drop(
+            registry
+                .claim(after_failure, "codex", "로그인")
+                .unwrap(),
+        );
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn overlapping_shutdown_blocks_must_all_fail_before_starts_resume() {
+        let registry: &'static StartRequestRegistry =
+            Box::leak(Box::new(StartRequestRegistry::new(4)));
+        let first = "00000000-0000-4000-8006-000000000001";
+        let second = "00000000-0000-4000-8006-000000000002";
+
+        registry.block_for_shutdown();
+        registry.block_for_shutdown();
+        assert_eq!(registry.shutdown_block_count(), 2);
+
+        registry.unblock_after_failed_shutdown();
+        assert_eq!(registry.shutdown_block_count(), 1);
+        assert!(registry.reserve(first, "claude", "로그인").is_err());
+
+        registry.unblock_after_failed_shutdown();
+        assert_eq!(registry.shutdown_block_count(), 0);
+        registry.reserve(second, "claude", "로그인").unwrap();
+        registry.release(second, "claude").unwrap();
+        assert_eq!(registry.len(), 0);
+    }
+
+    #[test]
+    fn shutdown_block_does_not_discard_an_already_claimed_worker() {
+        let registry: &'static StartRequestRegistry =
+            Box::leak(Box::new(StartRequestRegistry::new(4)));
+        let request_id = "00000000-0000-4000-8007-000000000001";
+
+        registry
+            .reserve(request_id, "github", "GitHub 로그인")
+            .unwrap();
+        let lease = registry
+            .claim(request_id, "github", "GitHub 로그인")
+            .unwrap();
+        registry.block_for_shutdown();
+
+        assert_eq!(registry.len(), 1);
+        drop(lease);
+        assert_eq!(registry.len(), 0);
+        registry.unblock_after_failed_shutdown();
     }
 
     #[test]

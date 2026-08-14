@@ -1404,6 +1404,11 @@ mod shutdown_cleanup_tests {
 /// eval 전달도 memo_save IPC도 같은 메시지 펌프에 갇힌다 (red-review — 자기 봉쇄)
 fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'static) {
     use tauri::{Emitter, Manager};
+    // worker가 세션을 등록하기 전인 예약도 종료 정리보다 뒤늦게 시작하지 못하게 한다.
+    // 이미 Starting인 worker는 provider completion lock을 쥐고 세션 등록까지 진행하므로,
+    // 아래 cancel이 그 뒤를 기다렸다가 정확한 세션을 종료한다.
+    login::block_starts_for_shutdown();
+    github::block_starts_for_shutdown();
     let flushing = app
         .get_webview_window("memo")
         .map(|memo| memo.eval("window.dispatchEvent(new Event('blur'))").is_ok())
@@ -1431,6 +1436,8 @@ fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'st
             return;
         };
 
+        github::unblock_starts_after_failed_shutdown();
+        login::unblock_starts_after_failed_shutdown();
         let message = format!(
             "로그인 프로세스를 끝내지 못해 종료/재시작을 중단했습니다. 열린 로그인 패널에서 취소를 다시 누른 뒤 재시도하세요. {error}"
         );
@@ -1468,9 +1475,11 @@ fn restart_into(
                 std::process::id(),
             ) {
                 Ok(()) => handle.exit(0),
-                Err(error) => eprintln!(
-                    "업데이트 helper 시작 실패 (앱을 유지합니다): {error}"
-                ),
+                Err(error) => {
+                    github::unblock_starts_after_failed_shutdown();
+                    login::unblock_starts_after_failed_shutdown();
+                    eprintln!("업데이트 helper 시작 실패 (앱을 유지합니다): {error}");
+                }
             }
             return;
         }
@@ -1485,7 +1494,11 @@ fn restart_into(
         match cmd.spawn() {
             Ok(_) => handle.exit(0),
             // 스폰 실패면 앱은 계속 산다 — 교체는 이미 됐으니 다음 실행부터 반영
-            Err(e) => eprintln!("재시작 실패 (다음 실행부터 새 버전): {e}"),
+            Err(e) => {
+                github::unblock_starts_after_failed_shutdown();
+                login::unblock_starts_after_failed_shutdown();
+                eprintln!("재시작 실패 (다음 실행부터 새 버전): {e}");
+            }
         }
     });
 }
