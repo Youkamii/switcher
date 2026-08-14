@@ -230,9 +230,9 @@ pub(crate) fn pick_login_url(candidates: Vec<String>) -> Option<String> {
         .or_else(|| candidates.into_iter().next())
 }
 
-/// 코덱스가 보여주는 일회용 코드(예: V4GM-HT05H)를 찾는다.
+/// 코덱스가 보여주는 일회용 코드(예: ABCD-EFGH)를 찾는다.
 /// 대시 구분선("----")이나 날짜("2026-07-28")를 오인하지 않도록
-/// 영문과 숫자가 모두 있고 양끝이 영숫자인 것만 인정한다.
+/// 대문자가 있고 양끝이 영숫자인 것만 인정한다.
 pub(crate) fn extract_device_code(text: &str) -> Option<String> {
     for line in text.lines() {
         let token = line.trim();
@@ -243,7 +243,6 @@ pub(crate) fn extract_device_code(text: &str) -> Option<String> {
                 .chars()
                 .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
             && token.chars().any(|c| c.is_ascii_uppercase())
-            && token.chars().any(|c| c.is_ascii_digit())
             && token.starts_with(|c: char| c.is_ascii_alphanumeric())
             && token.ends_with(|c: char| c.is_ascii_alphanumeric());
         if ok {
@@ -1067,6 +1066,12 @@ mod tests {
             "https://auth.openai.com/codex/device"
         );
         assert_eq!(extract_device_code(text).unwrap(), "V4GM-HT05H");
+    }
+
+    #[test]
+    fn finds_codex_device_code_without_digits() {
+        let text = "Enter this one-time code\nABCD-EFGH\n";
+        assert_eq!(extract_device_code(text).as_deref(), Some("ABCD-EFGH"));
     }
 
     #[test]
