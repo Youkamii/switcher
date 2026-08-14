@@ -43,6 +43,8 @@ const CODE_MAX_LEN: usize = 256;
 /// 이보다 오래된 임시 로그인 폴더만 청소한다 — 다른 인스턴스의 진행 중 로그인을 지우지 않기 위함
 /// (DEVICE_TIMEOUT보다 길게 잡아, 살아 있는 세션의 폴더일 가능성을 배제)
 const SWEEP_MIN_AGE: Duration = Duration::from_secs(20 * 60);
+/// 폴더 삭제가 중간에 실패해도 다음 시작에서 정확한 경로를 즉시 복원하도록 루트에 남긴다.
+const CLEANUP_MARKER_PREFIX: &str = ".cleanup-pending-";
 
 #[derive(Serialize, Debug)]
 pub struct LoginPrompt {
@@ -340,14 +342,97 @@ fn isolated_keychain_services(config_dir: &Path) -> Vec<String> {
     out
 }
 
-/// 임시 로그인 폴더와 그 로그인이 남긴 키체인 항목(맥)을 지운다.
-/// 키체인을 폴더보다 먼저 지운다 — 폴더가 사라지면 항목 이름(경로 해시)을 되구할 수 없다.
-fn cleanup_isolated(config_dir: &Path) {
+fn cleanup_marker_path(config_dir: &Path) -> Result<PathBuf, String> {
+    let parent = config_dir
+        .parent()
+        .ok_or_else(|| format!("정리 대상의 상위 폴더가 없습니다: {}", config_dir.display()))?;
+    let name = config_dir
+        .file_name()
+        .ok_or_else(|| format!("정리 대상 폴더명이 없습니다: {}", config_dir.display()))?;
+    Ok(parent.join(format!("{CLEANUP_MARKER_PREFIX}{}", name.to_string_lossy())))
+}
+
+fn pending_cleanup_target(marker: &Path) -> Option<PathBuf> {
+    let name = marker.file_name()?.to_str()?;
+    let target = name.strip_prefix(CLEANUP_MARKER_PREFIX)?;
+    let mut components = Path::new(target).components();
+    let std::path::Component::Normal(target) = components.next()? else {
+        return None;
+    };
+    if components.next().is_some() {
+        return None;
+    }
+    Some(marker.parent()?.join(target))
+}
+
+fn delete_isolated_keychain(config_dir: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     for service in isolated_keychain_services(config_dir) {
-        crate::accounts::keychain::delete_item(&service);
+        crate::accounts::keychain::delete_item(&service)?;
     }
-    remove_dir_retry(config_dir);
+    #[cfg(not(target_os = "macos"))]
+    let _ = config_dir;
+    Ok(())
+}
+
+/// 정리 경로를 먼저 보존한 뒤 키체인, 폴더 순서로 지운다.
+/// 어느 단계든 실패하면 marker가 남아 다음 시작의 sweep가 즉시 다시 시도한다.
+fn cleanup_isolated_with<K, R>(
+    config_dir: &Path,
+    delete_keychain: K,
+    remove_dir: R,
+) -> Result<(), String>
+where
+    K: FnOnce(&Path) -> Result<(), String>,
+    R: FnOnce(&Path) -> Result<(), String>,
+{
+    let marker = cleanup_marker_path(config_dir)?;
+    let parent = marker
+        .parent()
+        .ok_or_else(|| format!("정리 표식의 상위 폴더가 없습니다: {}", marker.display()))?;
+    let mut parent_builder = fs::DirBuilder::new();
+    parent_builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        parent_builder.mode(0o700);
+    }
+    parent_builder
+        .create(parent)
+        .map_err(|e| format!("정리 표식 폴더 생성 실패 ({}): {e}", parent.display()))?;
+    fs::write(&marker, b"")
+        .map_err(|e| format!("정리 재시도 표식 생성 실패 ({}): {e}", marker.display()))?;
+    delete_keychain(config_dir)?;
+    remove_dir(config_dir)?;
+    fs::remove_file(&marker)
+        .map_err(|e| format!("정리 재시도 표식 삭제 실패 ({}): {e}", marker.display()))?;
+    Ok(())
+}
+
+/// 임시 로그인 폴더와 그 로그인이 남긴 키체인 항목(맥)을 지운다.
+/// 키체인을 폴더보다 먼저 지운다 — 폴더가 사라지면 항목 이름(경로 해시)을 복구할 수 없다.
+fn cleanup_isolated(config_dir: &Path) -> Result<(), String> {
+    cleanup_isolated_with(config_dir, delete_isolated_keychain, remove_dir_retry)
+}
+
+fn combine_cleanup_result<T>(
+    result: Result<T, String>,
+    cleanup: Result<(), String>,
+) -> Result<T, String> {
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(error)) => Err(format!(
+            "계정 정보는 저장됐지만 격리 로그인 정리에 실패했습니다: {error}"
+        )),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(cleanup_error)) => Err(format!(
+            "{error}; 격리 로그인 정리에도 실패했습니다: {cleanup_error}"
+        )),
+    }
+}
+
+fn with_isolated_cleanup<T>(result: Result<T, String>, config_dir: &Path) -> Result<T, String> {
+    combine_cleanup_result(result, cleanup_isolated(config_dir))
 }
 
 fn temp_config_dir(env: &Env) -> PathBuf {
@@ -361,23 +446,76 @@ fn temp_config_dir(env: &Env) -> PathBuf {
 
 /// 임시 폴더는 토큰이 들어 있을 수 있으므로 반드시 지운다.
 /// 방금 종료한 프로세스가 아직 파일을 물고 있을 수 있어 몇 번 재시도한다.
-fn remove_dir_retry(dir: &Path) {
-    for attempt in 0..5 {
-        if !dir.exists() || fs::remove_dir_all(dir).is_ok() {
-            return;
+fn remove_dir_retry_with<F>(
+    dir: &Path,
+    attempts: usize,
+    base_delay: Duration,
+    mut remove: F,
+) -> Result<(), String>
+where
+    F: FnMut(&Path) -> std::io::Result<()>,
+{
+    let mut last_error = None;
+    for attempt in 0..attempts {
+        match remove(dir) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => last_error = Some(error),
         }
-        std::thread::sleep(Duration::from_millis(150 * (attempt + 1)));
+        if attempt + 1 < attempts && !base_delay.is_zero() {
+            std::thread::sleep(base_delay * (attempt as u32 + 1));
+        }
     }
+    let error = last_error
+        .map(|error| error.to_string())
+        .unwrap_or_else(|| "삭제를 시도하지 못했습니다".to_string());
+    Err(format!(
+        "임시 로그인 폴더 삭제 실패 ({}): {error}",
+        dir.display()
+    ))
+}
+
+fn remove_dir_retry(dir: &Path) -> Result<(), String> {
+    remove_dir_retry_with(dir, 5, Duration::from_millis(150), |path| {
+        fs::remove_dir_all(path)
+    })
 }
 
 /// 중단·크래시가 남긴 임시 로그인 폴더를 청소한다.
 /// 다른 인스턴스가 진행 중일 수 있으므로 충분히 오래된 것만 지운다.
-pub fn sweep_stale(env: &Env) {
+fn sweep_stale_checked(env: &Env) -> Result<(), String> {
     let root = env.store.join("_login");
-    let Ok(entries) = fs::read_dir(&root) else {
-        return;
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("로그인 임시 폴더 확인 실패: {error}")),
     };
-    for entry in entries.flatten() {
+    let mut errors = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                errors.push(format!("로그인 임시 항목 확인 실패: {error}"));
+                continue;
+            }
+        };
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                errors.push(format!("로그인 임시 항목 종류 확인 실패: {error}"));
+                continue;
+            }
+        };
+        if file_type.is_file() {
+            if let Some(target) = pending_cleanup_target(&path) {
+                if let Err(error) = cleanup_isolated(&target) {
+                    errors.push(error);
+                }
+                continue;
+            }
+        }
+        let is_dir = file_type.is_dir();
         let old_enough = entry
             .metadata()
             .and_then(|m| m.modified())
@@ -385,10 +523,21 @@ pub fn sweep_stale(env: &Env) {
             .and_then(|t| t.elapsed().ok())
             .map(|age| age > SWEEP_MIN_AGE)
             .unwrap_or(false);
-        if old_enough {
-            cleanup_isolated(&entry.path());
+        if is_dir && old_enough {
+            if let Err(error) = cleanup_isolated(&path) {
+                errors.push(error);
+            }
         }
     }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("격리 로그인 잔재 정리 실패: {}", errors.join("; ")))
+    }
+}
+
+pub fn sweep_stale(env: &Env) {
+    let _ = sweep_stale_checked(env);
 }
 
 /// CLI 설치·업데이트 명령 (안내문 공용 — 프로그램명 매핑은 cli_args가 단일 출처)
@@ -471,7 +620,7 @@ fn start_impl(
         if guard.is_some() {
             return Err("이미 로그인이 진행 중입니다".into());
         }
-        sweep_stale(env);
+        sweep_stale_checked(env)?;
 
         let config_dir = temp_config_dir(env);
         let mut config_builder = fs::DirBuilder::new();
@@ -481,9 +630,15 @@ fn start_impl(
             use std::os::unix::fs::DirBuilderExt;
             config_builder.mode(0o700);
         }
-        config_builder
-            .create(&config_dir)
-            .map_err(|e| format!("임시 폴더 생성 실패 {}: {e}", config_dir.display()))?;
+        if let Err(error) = config_builder.create(&config_dir) {
+            return with_isolated_cleanup(
+                Err(format!(
+                    "임시 폴더 생성 실패 {}: {error}",
+                    config_dir.display()
+                )),
+                &config_dir,
+            );
+        }
 
         let pair = match native_pty_system().openpty(PtySize {
                 rows: 40,
@@ -494,8 +649,10 @@ fn start_impl(
             }) {
             Ok(pair) => pair,
             Err(error) => {
-                cleanup_isolated(&config_dir);
-                return Err(format!("가상 콘솔 생성 실패: {error}"));
+                return with_isolated_cleanup(
+                    Err(format!("가상 콘솔 생성 실패: {error}")),
+                    &config_dir,
+                )
             }
         };
 
@@ -515,29 +672,32 @@ fn start_impl(
         }
         cmd.env(env_key, &config_dir);
 
-        let mut child = pair.slave.spawn_command(cmd).map_err(|e| {
-            cleanup_isolated(&config_dir);
-            format!(
-                "{program} 실행에 실패했습니다: {e} — 설치·업데이트: {}",
-                install_cmd(provider)
-            )
-        })?;
+        let mut child = match pair.slave.spawn_command(cmd) {
+            Ok(child) => child,
+            Err(error) => {
+                return with_isolated_cleanup(
+                    Err(format!(
+                        "{program} 실행에 실패했습니다: {error} — 설치·업데이트: {}",
+                        install_cmd(provider)
+                    )),
+                    &config_dir,
+                )
+            }
+        };
         drop(pair.slave);
 
         let mut reader = match pair.master.try_clone_reader() {
             Ok(reader) => reader,
             Err(error) => {
                 terminate_child(child.as_mut());
-                cleanup_isolated(&config_dir);
-                return Err(format!("콘솔 읽기 실패: {error}"));
+                return with_isolated_cleanup(Err(format!("콘솔 읽기 실패: {error}")), &config_dir);
             }
         };
         let raw_writer = match pair.master.take_writer() {
             Ok(writer) => writer,
             Err(error) => {
                 terminate_child(child.as_mut());
-                cleanup_isolated(&config_dir);
-                return Err(format!("콘솔 쓰기 실패: {error}"));
+                return with_isolated_cleanup(Err(format!("콘솔 쓰기 실패: {error}")), &config_dir);
             }
         };
         let writer = Arc::new(Mutex::new(raw_writer));
@@ -556,8 +716,7 @@ fn start_impl(
                 Ok(acc) => acc,
                 Err(_) => {
                     terminate_child(child.as_mut());
-                    cleanup_isolated(&config_dir);
-                    return Err("내부 잠금 오류".into());
+                    return with_isolated_cleanup(Err("내부 잠금 오류".into()), &config_dir);
                 }
             };
             let next = SESSION_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
@@ -659,12 +818,16 @@ fn start_impl(
         }
         // 자식이 종료했고 플러시 유예도 지났는데 주소가 없다 — 재시도로 해결될 문제가 아니다
         if exited_at.is_some_and(|t| t.elapsed() > EXIT_FLUSH) {
-            cancel_generation(my_gen);
-            return Err(early_exit_error(provider));
+            return Err(cancel_generation_with_reason(
+                my_gen,
+                early_exit_error(provider),
+            ));
         }
         if Instant::now() > deadline {
-            cancel_generation(my_gen);
-            return Err("로그인 주소를 받지 못했습니다 — 잠시 후 다시 시도하세요".into());
+            return Err(cancel_generation_with_reason(
+                my_gen,
+                "로그인 주소를 받지 못했습니다 — 잠시 후 다시 시도하세요".into(),
+            ));
         }
         std::thread::sleep(POLL);
     }
@@ -713,13 +876,17 @@ fn wait_for_exit(timeout: Duration, generation: u64) -> Result<(), String> {
             Ok(None) => {}
             Err(e) => {
                 // 상태 확인이 안 되는 세션은 살려둬 봐야 '계정 추가'만 막는다 (#18) — 정리
-                cancel_generation(generation);
-                return Err(format!("로그인 상태 확인 실패: {e} — 로그인을 정리했습니다"));
+                return Err(cancel_generation_with_reason(
+                    generation,
+                    format!("로그인 상태 확인 실패: {e}"),
+                ));
             }
         }
         if started.elapsed() > timeout {
-            cancel_generation(generation);
-            return Err("시간이 초과됐습니다 — 처음부터 다시 시도하세요".into());
+            return Err(cancel_generation_with_reason(
+                generation,
+                "시간이 초과됐습니다 — 처음부터 다시 시도하세요".into(),
+            ));
         }
         std::thread::sleep(POLL);
     }
@@ -754,8 +921,10 @@ fn wait_for_exit_or_rejection(
             Ok(Some(_)) => return Ok(SubmitWait::Exited),
             Ok(None) => {}
             Err(e) => {
-                cancel_generation(generation);
-                return Err(format!("로그인 상태 확인 실패: {e} — 로그인을 정리했습니다"));
+                return Err(cancel_generation_with_reason(
+                    generation,
+                    format!("로그인 상태 확인 실패: {e}"),
+                ));
             }
         }
         let fresh = {
@@ -766,8 +935,10 @@ fn wait_for_exit_or_rejection(
             return Ok(SubmitWait::Rejected);
         }
         if started.elapsed() > timeout {
-            cancel_generation(generation);
-            return Err("시간이 초과됐습니다 — 처음부터 다시 시도하세요".into());
+            return Err(cancel_generation_with_reason(
+                generation,
+                "시간이 초과됐습니다 — 처음부터 다시 시도하세요".into(),
+            ));
         }
         std::thread::sleep(POLL);
     }
@@ -852,8 +1023,7 @@ fn import_started(
     delete_epoch: u64,
 ) -> Result<LoginOutcome, String> {
     let result = import_inner(env, provider, config_dir, delete_epoch);
-    cleanup_isolated(config_dir);
-    result
+    with_isolated_cleanup(result, config_dir)
 }
 
 fn import_inner(
@@ -955,9 +1125,9 @@ pub fn submit_code(env: &Env, code: &str, generation: u64) -> Result<LoginOutcom
         // 콘솔 통로가 죽은 세션을 남겨두면 앱 재시작 전까지 '계정 추가'가
         // "이미 진행 중" 오류로 막힌다 (#18) — 즉시 정리한다.
         // cancel()이 SESSION 잠금을 다시 잡으므로 위 블록이 끝난 뒤에 부른다.
-        cancel_generation(generation);
-        return Err(format!(
-            "코드 전달 실패: {e} — 로그인을 정리했습니다. '계정 추가'로 다시 시도하세요"
+        return Err(cancel_generation_with_reason(
+            generation,
+            format!("코드 전달 실패: {e}. '계정 추가'로 다시 시도하세요"),
         ));
     }
     match wait_for_exit_or_rejection(FINISH_TIMEOUT, mark, generation)? {
@@ -1043,14 +1213,27 @@ fn terminate_child(child: &mut (dyn Child + Send + Sync)) {
     }
 }
 
-fn terminate_session(mut session: Session) {
+fn terminate_session(mut session: Session) -> Result<(), String> {
     terminate_child(session.child.as_mut());
-    cleanup_isolated(&session.config_dir);
+    cleanup_isolated(&session.config_dir).map_err(|error| {
+        format!("로그인 프로세스는 종료했지만 격리 로그인 정리에 실패했습니다: {error}")
+    })
 }
 
-fn cancel_generation(generation: u64) {
+fn cancel_generation(generation: u64) -> Result<bool, String> {
     if let Some(session) = take_session(Some(generation)) {
-        terminate_session(session);
+        terminate_session(session)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+fn cancel_generation_with_reason(generation: u64, reason: String) -> String {
+    match cancel_generation(generation) {
+        Ok(true) => format!("{reason} — 로그인을 정리했습니다"),
+        Ok(false) => reason,
+        Err(cleanup_error) => format!("{reason}; {cleanup_error}"),
     }
 }
 
@@ -1059,8 +1242,7 @@ pub fn cancel() -> bool {
         return false;
     };
     if let Some(session) = take_session(None) {
-        terminate_session(session);
-        true
+        terminate_session(session).is_ok()
     } else {
         false
     }
@@ -1094,7 +1276,7 @@ pub fn cancel_start(request_id: &str) -> Result<bool, String> {
     };
     if let Some(session) = session {
         SESSION_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        terminate_session(session);
+        terminate_session(session)?;
     }
     Ok(true)
 }
@@ -1111,10 +1293,7 @@ pub fn cancel_session(generation: u64) -> Result<bool, String> {
         .as_ref()
         .map(|session| session.generation);
     match current {
-        Some(active) if active == generation => {
-            cancel_generation(generation);
-            Ok(true)
-        }
+        Some(active) if active == generation => cancel_generation(generation),
         Some(_) => Err("이전 로그인 패널의 취소 요청이라 무시했습니다".into()),
         None => Ok(false),
     }
@@ -1451,6 +1630,106 @@ mod tests {
         assert!(cancel_start("not-a-uuid").is_err());
     }
 
+    #[test]
+    fn cleanup_keeps_retry_path_when_keychain_step_fails() {
+        use std::cell::Cell;
+
+        let env = test_env("cleanup-keychain-failure");
+        let dir = env.store.join("_login").join("pending");
+        fs::create_dir_all(&dir).unwrap();
+        let remove_called = Cell::new(false);
+        let error = cleanup_isolated_with(
+            &dir,
+            |_| Err("keychain locked".into()),
+            |_| {
+                remove_called.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("keychain locked"));
+        assert!(!remove_called.get(), "키체인 실패 뒤 폴더를 지우면 안 된다");
+        assert!(dir.exists(), "키체인 경로를 복원할 폴더가 남아야 한다");
+        let marker = cleanup_marker_path(&dir).unwrap();
+        assert!(
+            marker.exists(),
+            "다음 시작이 즉시 재시도할 표식이 남아야 한다"
+        );
+
+        fs::remove_dir_all(&dir).unwrap();
+        fs::remove_file(marker).unwrap();
+    }
+
+    #[test]
+    fn cleanup_still_attempts_keychain_when_session_folder_is_missing() {
+        use std::cell::Cell;
+
+        let env = test_env("cleanup-missing-folder");
+        let dir = env.store.join("_login").join("already-removed");
+        fs::create_dir_all(dir.parent().unwrap()).unwrap();
+        let keychain_called = Cell::new(false);
+        cleanup_isolated_with(
+            &dir,
+            |_| {
+                keychain_called.set(true);
+                Ok(())
+            },
+            |_| Ok(()),
+        )
+        .unwrap();
+
+        assert!(keychain_called.get());
+        assert!(!cleanup_marker_path(&dir).unwrap().exists());
+    }
+
+    #[test]
+    fn pending_cleanup_marker_cannot_escape_its_root() {
+        let root = Path::new("cleanup-root");
+        assert_eq!(
+            pending_cleanup_target(&root.join(".cleanup-pending-session")),
+            Some(root.join("session"))
+        );
+        assert!(pending_cleanup_target(&root.join(".cleanup-pending-..")).is_none());
+        assert!(pending_cleanup_target(&root.join(".cleanup-pending-.")).is_none());
+        assert!(pending_cleanup_target(Path::new(".cleanup-pending-")).is_none());
+    }
+
+    #[test]
+    fn remove_dir_retry_reports_the_last_failure() {
+        use std::cell::Cell;
+
+        let attempts = Cell::new(0);
+        let target = Path::new("locked-login-folder");
+        let error = remove_dir_retry_with(target, 3, Duration::ZERO, |_| {
+            let attempt = attempts.get() + 1;
+            attempts.set(attempt);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("locked-{attempt}"),
+            ))
+        })
+        .unwrap_err();
+
+        assert_eq!(attempts.get(), 3);
+        assert!(error.contains("locked-login-folder"));
+        assert!(error.contains("locked-3"));
+    }
+
+    #[test]
+    fn cleanup_failure_is_not_hidden_after_a_successful_import() {
+        let result = combine_cleanup_result(Ok("saved"), Err("folder locked".into()));
+        let error = result.unwrap_err();
+        assert!(error.contains("계정 정보는 저장됐지만"));
+        assert!(error.contains("folder locked"));
+
+        let failed: Result<(), String> =
+            combine_cleanup_result(Err("login failed".into()), Err("cleanup failed".into()));
+        let error = failed.unwrap_err();
+        assert!(error.contains("login failed"));
+        assert!(error.contains("cleanup failed"));
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn program_resolution_never_sends_unknown_input_to_shell() {
@@ -1477,8 +1756,38 @@ mod tests {
         let env = test_env("sweep");
         let fresh = env.store.join("_login").join("fresh");
         fs::create_dir_all(&fresh).unwrap();
-        sweep_stale(&env);
+        sweep_stale_checked(&env).unwrap();
         assert!(fresh.exists(), "방금 만든 폴더(다른 인스턴스의 진행 중 로그인일 수 있음)는 남겨야 한다");
+    }
+
+    #[test]
+    fn sweep_retries_fresh_pending_cleanup_immediately() {
+        let env = test_env("sweep-pending");
+        let pending = env.store.join("_login").join("fresh-pending");
+        fs::create_dir_all(&pending).unwrap();
+        fs::write(pending.join("auth.json"), b"fixture-only").unwrap();
+        let marker = cleanup_marker_path(&pending).unwrap();
+        fs::write(&marker, b"").unwrap();
+
+        sweep_stale_checked(&env).unwrap();
+
+        assert!(!pending.exists());
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn sweep_does_not_treat_a_marker_shaped_directory_as_a_marker() {
+        let env = test_env("sweep-marker-directory");
+        let root = env.store.join("_login");
+        let victim = root.join("victim");
+        let marker_shaped_dir = root.join(".cleanup-pending-victim");
+        fs::create_dir_all(&victim).unwrap();
+        fs::create_dir_all(&marker_shaped_dir).unwrap();
+
+        sweep_stale_checked(&env).unwrap();
+
+        assert!(victim.exists());
+        assert!(marker_shaped_dir.exists());
     }
 
     /// 실환경: 격리 로그인이 남긴 임시 폴더(맥은 키체인 항목 포함)를 실제 import
