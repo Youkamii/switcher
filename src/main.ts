@@ -2176,7 +2176,7 @@ document.querySelectorAll<HTMLButtonElement>(".tb-actions button").forEach((btn)
   btn.addEventListener("pointercancel", clearPressing);
 });
 
-// 메모장 (Type2 전용 버튼) — 별도 창 토글. 내용·투명도는 메모창이 스스로 관리
+// 메모장 (Type1·2·3 공통 버튼) — 별도 창 토글. 내용·투명도는 메모창이 스스로 관리
 document.getElementById("memobtn")!.addEventListener("click", () => {
   void invoke("memo_toggle").catch((error) => toast(String(error), true));
 });

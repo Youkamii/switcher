@@ -55,12 +55,12 @@ body {
 
 /* 타이틀바 요소도 골조와 함께 옅어진다 — 단 #pin·#drag-handle은 예외.
    locked에서는 아래의 0.18 곱 규칙이 대신 맡는다 */
-body:not(.locked) :is(#logo, #alpha, #refresh, #privacybtn, #clambtn, #blackbtn, #monbtn) {
+body:not(.locked) :is(#logo, #alpha, #refresh, #memobtn, #privacybtn, #clambtn, #blackbtn, #monbtn) {
   opacity: var(--fg-alpha);
 }
 
 /* 마우스를 타이틀바에 올리면 조작 요소가 되살아난다 — 투명해도 조작은 가능 */
-.titlebar:hover :is(#logo, #alpha, #refresh, #privacybtn, #clambtn, #blackbtn, #monbtn) {
+.titlebar:hover :is(#logo, #alpha, #refresh, #memobtn, #privacybtn, #clambtn, #blackbtn, #monbtn) {
   opacity: 1;
 }
 
@@ -111,14 +111,15 @@ input[type="range"] {
   max-width: 84px;
 }
 
-/* 메모 버튼은 Type2·3에서 — Type1은 타이틀바가 이미 꽉 차 버튼이 밀린다
-   (#44 실측). Type3는 2줄 구도로 자리가 생겨 함께 산다 (사용자 요청) */
+/* 메모 버튼은 공통 2줄 타이틀바의 둘째 줄에서 Type1·2·3 모두 표시한다. */
 #memobtn {
-  display: none;
+  display: inline-block;
 }
 
 body.locked #memobtn {
-  display: inline-block;
+  /* 본문 투명도를 한 번 더 곱하면 Type3에서 사라져 보인다 — Type 버튼과 같은
+     최소 가시성을 유지하고, hover 규칙은 아래에서 그대로 1로 복원한다. */
+  --locked-button-opacity: 0.18;
 }
 
 /* 미니멀에서도 📊 토글은 산다 — SYSTEM 섹션은 사용량 전용 독트린(#41)의
@@ -887,7 +888,7 @@ body.locked main {
 
 body.locked .tb-actions button {
   /* 투명도 슬라이더를 최하로 내리면 나머지 버튼도 함께 사라진다 (#42) */
-  opacity: calc(0.18 * var(--fg-alpha));
+  opacity: var(--locked-button-opacity, calc(0.18 * var(--fg-alpha)));
   padding: 1px 6px;
   font-size: 10px;
   transition: opacity 0.15s;
