@@ -1451,6 +1451,133 @@ mod tests {
     use super::*;
     use crate::accounts::test_support::{fake_jwt, test_env};
 
+    #[cfg(windows)]
+    const TASKKILL_TREE_ROLE: &str = "SWITCHER_TASKKILL_TREE_ROLE";
+    #[cfg(windows)]
+    const TASKKILL_TREE_PID_FILE: &str = "SWITCHER_TASKKILL_TREE_PID_FILE";
+
+    #[cfg(windows)]
+    struct TestProcessHandle(windows_sys::Win32::Foundation::HANDLE);
+
+    #[cfg(windows)]
+    impl TestProcessHandle {
+        fn open(pid: u32) -> std::io::Result<Self> {
+            use windows_sys::Win32::System::Threading::{
+                OpenProcess, PROCESS_TERMINATE, SYNCHRONIZATION_SYNCHRONIZE,
+            };
+
+            let handle =
+                unsafe { OpenProcess(PROCESS_TERMINATE | SYNCHRONIZATION_SYNCHRONIZE, 0, pid) };
+            if handle.is_null() {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(Self(handle))
+            }
+        }
+
+        fn wait(&self, timeout_ms: u32) -> u32 {
+            unsafe {
+                windows_sys::Win32::System::Threading::WaitForSingleObject(self.0, timeout_ms)
+            }
+        }
+
+        fn terminate(&self) {
+            unsafe {
+                windows_sys::Win32::System::Threading::TerminateProcess(self.0, 1);
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    impl Drop for TestProcessHandle {
+        fn drop(&mut self) {
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.0);
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    struct TestProcessTree {
+        parent: std::process::Child,
+        child: Option<TestProcessHandle>,
+        pid_file: PathBuf,
+    }
+
+    #[cfg(windows)]
+    impl Drop for TestProcessTree {
+        fn drop(&mut self) {
+            if matches!(self.parent.try_wait(), Ok(None)) {
+                let _ = run_windows_taskkill(self.parent.id());
+            }
+            if matches!(self.parent.try_wait(), Ok(None)) {
+                let _ = self.parent.kill();
+            }
+            let _ = self.parent.wait();
+
+            if let Some(child) = &self.child {
+                use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+
+                if child.wait(0) == WAIT_TIMEOUT {
+                    child.terminate();
+                    let _ = child.wait(5_000);
+                }
+            }
+            let _ = fs::remove_file(&self.pid_file);
+        }
+    }
+
+    #[cfg(windows)]
+    fn spawn_hidden_test_fixture(
+        test_name: &str,
+        role: &str,
+        pid_file: &Path,
+    ) -> std::io::Result<std::process::Child> {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+        std::process::Command::new(std::env::current_exe()?)
+            .args(["--exact", test_name, "--nocapture"])
+            .env(TASKKILL_TREE_ROLE, role)
+            .env(TASKKILL_TREE_PID_FILE, pid_file)
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    }
+
+    #[cfg(windows)]
+    fn wait_for_fixture_child_pid(
+        parent: &mut std::process::Child,
+        pid_file: &Path,
+    ) -> Result<u32, String> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match fs::read_to_string(pid_file) {
+                Ok(pid) => match pid.trim().parse::<u32>() {
+                    Ok(pid) if pid > 0 => return Ok(pid),
+                    _ => return Err(format!("fixture가 잘못된 자식 PID를 기록했습니다: {pid:?}")),
+                },
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("fixture 자식 PID 확인 실패: {error}")),
+            }
+
+            if let Some(status) = parent
+                .try_wait()
+                .map_err(|error| format!("fixture 부모 상태 확인 실패: {error}"))?
+            {
+                return Err(format!(
+                    "fixture가 자식 PID를 기록하기 전에 종료했습니다: {status}"
+                ));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("fixture 자식 PID 대기 시간이 초과됐습니다".into());
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+
     #[test]
     fn strips_ansi_and_finds_url() {
         // 실제 클로드 로그인 화면에서 그대로 가져온 형태 (OSC 8 하이퍼링크 포함)
@@ -1870,6 +1997,99 @@ mod tests {
         assert!(path.is_absolute());
         assert_eq!(path, PathBuf::from(r"C:\Windows\System32\taskkill.exe"));
         assert!(taskkill_path_from_root(Path::new("Windows")).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_taskkill_tree_child_fixture() {
+        if std::env::var(TASKKILL_TREE_ROLE).as_deref() != Ok("child") {
+            return;
+        }
+        std::thread::sleep(Duration::from_secs(120));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_taskkill_tree_parent_fixture() {
+        if std::env::var(TASKKILL_TREE_ROLE).as_deref() != Ok("parent") {
+            return;
+        }
+
+        let Some(pid_file) = std::env::var_os(TASKKILL_TREE_PID_FILE).map(PathBuf::from) else {
+            return;
+        };
+        let mut child = spawn_hidden_test_fixture(
+            "login::tests::windows_taskkill_tree_child_fixture",
+            "child",
+            &pid_file,
+        )
+        .expect("taskkill fixture 자식 실행 실패");
+        if fs::write(&pid_file, child.id().to_string()).is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return;
+        }
+        let _ = child.wait();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn absolute_taskkill_terminates_hidden_process_tree() {
+        use windows_sys::Win32::Foundation::WAIT_OBJECT_0;
+
+        let system_root = std::env::var_os("SystemRoot").expect("SystemRoot가 있어야 합니다");
+        let taskkill = taskkill_path_from_root(Path::new(&system_root)).unwrap();
+        assert!(taskkill.is_absolute());
+        assert!(
+            taskkill.is_file(),
+            "taskkill.exe가 없습니다: {}",
+            taskkill.display()
+        );
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let pid_file = std::env::temp_dir().join(format!(
+            "switcher-taskkill-tree-{}-{nonce}.pid",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&pid_file);
+        let parent = spawn_hidden_test_fixture(
+            "login::tests::windows_taskkill_tree_parent_fixture",
+            "parent",
+            &pid_file,
+        )
+        .expect("taskkill fixture 부모 실행 실패");
+        let mut tree = TestProcessTree {
+            parent,
+            child: None,
+            pid_file,
+        };
+
+        let child_pid = wait_for_fixture_child_pid(&mut tree.parent, &tree.pid_file).unwrap();
+        tree.child =
+            Some(TestProcessHandle::open(child_pid).expect("fixture 자식 handle 열기 실패"));
+
+        run_windows_taskkill(tree.parent.id()).expect("System32 taskkill /T /F 실행 실패");
+        wait_for_exit_with(
+            "taskkill fixture 부모",
+            101,
+            false,
+            || {
+                tree.parent
+                    .try_wait()
+                    .map(|status| status.map(|_| true))
+                    .map_err(|error| error.to_string())
+            },
+            std::thread::sleep,
+        )
+        .unwrap();
+        assert_eq!(
+            tree.child.as_ref().unwrap().wait(5_000),
+            WAIT_OBJECT_0,
+            "taskkill /T가 fixture 자식을 종료하지 못했습니다"
+        );
     }
 
     #[test]
