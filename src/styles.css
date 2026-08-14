@@ -274,7 +274,7 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
 
 
 /* 타이틀바는 전 타입 공통 2줄 구도 (사용자 지시: 버튼이 늘어 한 줄 수용 포기) —
-   1줄 [로고·슬라이더 ↔ Type버튼], 2줄 [아이콘 버튼들 균등 분배].
+   1줄 [로고·슬라이더 ↔ 새로고침·Type버튼], 2줄 [아이콘 버튼들 균등 분배].
    #tb-break(폭 100%)가 줄바꿈을 강제하고, order가 줄을 배정한다 */
 .titlebar {
   display: flex;
@@ -306,12 +306,17 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
 #privacybtn { order: 6; }
 #clambtn { order: 7; }
 #blackbtn { order: 8; }
-#refresh { order: 9; }
+#refresh { order: 0; }
 .tb-actions button:not(#pin) {
   flex: 1 1 0;
   /* 좌우 3px: 균등 분배가 가장자리(벽)까지 붙지 않게 — 첫·끝 버튼의 바깥
      마진이 곧 줄의 양쪽 인셋이 된다 (사용자 보고) */
   margin: 0 3px;
+}
+
+.tb-actions button#refresh {
+  flex: 0 0 auto;
+  margin: 0 0 0 auto;
 }
 
 .tb-actions button {
@@ -371,6 +376,10 @@ body.minimal #clambtn.pinned {
   font-size: 11px;
   text-align: center;
   flex: none;
+  margin-left: 0;
+}
+
+body.locked #pin {
   margin-left: auto;
 }
 
