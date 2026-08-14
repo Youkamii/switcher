@@ -18,7 +18,7 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -270,6 +270,7 @@ struct GhLoginSession {
     /// 코드 표시 후 Enter를 보내는 데 쓴다 (reader 스레드의 커서 질의 응답과 공유)
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     buffer: Arc<Mutex<Vec<u8>>>,
+    reader_done: Arc<AtomicBool>,
     _master: Box<dyn MasterPty + Send>,
 }
 
@@ -494,8 +495,10 @@ pub fn login_start(request_id: String) -> Result<GhLoginPrompt, String> {
             .map_err(|e| format!("gh 실행 실패: {e}"))?;
         drop(pair.slave);
         let buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+        let reader_done = Arc::new(AtomicBool::new(false));
         let responder = writer.clone();
         let sink = buffer.clone();
+        let reader_finished = reader_done.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             let mut tail: Vec<u8> = Vec::new();
@@ -522,6 +525,7 @@ pub fn login_start(request_id: String) -> Result<GhLoginPrompt, String> {
                     }
                 }
             }
+            reader_finished.store(true, Ordering::Release);
         });
         *guard = Some(GhLoginSession {
             generation: my_gen,
@@ -529,6 +533,7 @@ pub fn login_start(request_id: String) -> Result<GhLoginPrompt, String> {
             child,
             writer,
             buffer,
+            reader_done,
             _master: pair.master,
         });
     }
@@ -766,13 +771,53 @@ fn terminate_child_verified(child: &mut (dyn Child + Send + Sync)) -> Result<(),
     )
 }
 
-fn terminate_active_session(guard: &mut Option<GhLoginSession>) -> Result<bool, String> {
+fn terminate_active_session_with<F, T>(
+    guard: &mut Option<GhLoginSession>,
+    drain_attempts: usize,
+    mut pause: F,
+    terminate: T,
+) -> Result<bool, String>
+where
+    F: FnMut(),
+    T: FnOnce(&mut (dyn Child + Send + Sync)) -> Result<(), String>,
+{
     let Some(session) = guard.as_mut() else {
         return Ok(false);
     };
-    terminate_child_verified(session.child.as_mut())?;
+    terminate(session.child.as_mut())?;
+
+    for attempt in 0..=drain_attempts {
+        if session_login(session)?.is_some() {
+            return Ok(false);
+        }
+        if session.reader_done.load(Ordering::Acquire) {
+            // reader_done은 buffer 쓰기 뒤 Release로 기록된다. 신호를 본 다음 다시 읽어
+            // 마지막 write와 cancel의 경합에서도 성공 마커를 놓치지 않는다.
+            if session_login(session)?.is_some() {
+                return Ok(false);
+            }
+            break;
+        }
+        if attempt < drain_attempts {
+            pause();
+        }
+    }
+
+    if session_login(session)?.is_some() {
+        return Ok(false);
+    }
     *guard = None;
     Ok(true)
+}
+
+fn terminate_active_session(guard: &mut Option<GhLoginSession>) -> Result<bool, String> {
+    let drain_attempts = (GH_EXIT_FLUSH.as_millis() / GH_TERMINATE_POLL.as_millis()) as usize;
+    terminate_active_session_with(
+        guard,
+        drain_attempts,
+        || std::thread::sleep(GH_TERMINATE_POLL),
+        terminate_child_verified,
+    )
 }
 
 /// 진행 중 로그인 취소 — gh 프로세스 종료를 확인한 뒤에만 세션을 비운다.
@@ -907,6 +952,7 @@ mod tests {
             }),
             writer,
             buffer: Arc::new(Mutex::new(output.to_vec())),
+            reader_done: Arc::new(AtomicBool::new(true)),
             _master: pair.master,
         });
         killed
@@ -947,6 +993,7 @@ mod tests {
             child: Box::new(child),
             writer,
             buffer: Arc::new(Mutex::new(output.to_vec())),
+            reader_done: Arc::new(AtomicBool::new(true)),
             _master: pair.master,
         });
     }
@@ -1057,6 +1104,55 @@ mod tests {
         assert!(killed.load(Ordering::SeqCst));
         assert!(GH_LOGIN.lock().unwrap().is_none());
         assert!(finish_login_if_ready(generation).is_err());
+    }
+
+    #[test]
+    fn cancellation_drains_late_success_before_removing_session() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let generation = 7_109;
+        let request_id = "00000000-0000-4000-8000-000000007109";
+        let child = test_child(Arc::new(AtomicBool::new(false)), true, false);
+        install_test_login_with_child(
+            generation,
+            request_id,
+            b"Waiting for authentication\r\n",
+            child,
+        );
+        let (buffer, reader_done) = {
+            let guard = GH_LOGIN.lock().unwrap();
+            let session = guard.as_ref().unwrap();
+            session.reader_done.store(false, Ordering::Release);
+            (session.buffer.clone(), session.reader_done.clone())
+        };
+        let mut emitted = false;
+
+        let cancelled = {
+            let mut guard = GH_LOGIN.lock().unwrap();
+            terminate_active_session_with(
+                &mut guard,
+                1,
+                || {
+                    assert!(!emitted);
+                    buffer
+                        .lock()
+                        .unwrap()
+                        .extend_from_slice(b"\x1b[32mLogged in as late-octocat\x1b[0m\r\n");
+                    reader_done.store(true, Ordering::Release);
+                    emitted = true;
+                },
+                terminate_child_verified,
+            )
+            .unwrap()
+        };
+
+        assert!(!cancelled);
+        assert!(emitted);
+        assert!(GH_LOGIN.lock().unwrap().is_some());
+        assert_eq!(
+            finish_login_if_ready(generation).unwrap(),
+            Some("late-octocat".to_string())
+        );
+        assert!(GH_LOGIN.lock().unwrap().is_none());
     }
 
     #[test]
