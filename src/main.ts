@@ -1480,6 +1480,20 @@ function applyViewMode() {
 let hitElements: HTMLElement[] = [];
 let hitRegionRetryTimer: number | undefined;
 
+function visibleHitRect(
+  rect: Pick<DOMRect, "left" | "top" | "right" | "bottom">,
+  viewportWidth: number,
+  viewportHeight: number,
+): [number, number, number, number] | null {
+  const left = Math.max(0, Math.min(viewportWidth, rect.left));
+  const top = Math.max(0, Math.min(viewportHeight, rect.top));
+  const right = Math.max(0, Math.min(viewportWidth, rect.right));
+  const bottom = Math.max(0, Math.min(viewportHeight, rect.bottom));
+  const width = right - left;
+  const height = bottom - top;
+  return width > 0 && height > 0 ? [left, top, width, height] : null;
+}
+
 function reportHitRegions() {
   hitElements = [];
   const regions: { rect: number[]; action: [string, string] | null }[] = [];
@@ -1494,6 +1508,20 @@ function reportHitRegions() {
         hitElements.push(el);
       });
     }
+    // 로그인 패널이 높이 상한 아래로 밀려도 현재 보이는 스크롤 포트가 휠과
+    // 포인터를 받아야 패널과 취소 버튼까지 내려갈 수 있다. 창 밖 좌표는 잘라서
+    // 네이티브 hit-region이 실제 WebView 영역만 열도록 한다.
+    if (loginOpen) {
+      const rect = visibleHitRect(
+        app.getBoundingClientRect(),
+        window.innerWidth,
+        window.innerHeight,
+      );
+      if (rect) {
+        regions.push({ rect, action: null });
+        hitElements.push(app);
+      }
+    }
     // .display-row: 펼쳐진 밝기 슬라이더 조작용 (접힘 상태면 DOM에 없다)
     // .collapsible: 접이식 섹션 제목 — 위젯 모드에서도 클릭해 펼칠 수 있게
     // .tb-actions는 컨테이너가 아니라 **자식을 하나씩** 보고한다 — Type3(미니멀)
@@ -1502,7 +1530,7 @@ function reportHitRegions() {
     // 숨김(0크기) 요소는 거른다 — 좌상단 유령 히트 방지.
     document
       .querySelectorAll<HTMLElement>(
-        ".tb-actions > *, #drag-handle, .display-row, .collapsible, #login-host",
+        ".tb-actions > *, #drag-handle, .display-row, .collapsible",
       )
       .forEach((el) => {
         const r = el.getBoundingClientRect();

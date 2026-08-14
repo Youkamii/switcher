@@ -392,6 +392,7 @@ button.danger-armed {
 main {
   padding: 0 14px 14px;
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
 }
 

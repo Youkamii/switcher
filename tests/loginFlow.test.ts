@@ -1,9 +1,25 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import ts from "typescript";
 
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 const stylesSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+const loginScrollRegion =
+  /if \(loginOpen\) \{\s*const rect = visibleHitRect\(\s*app\.getBoundingClientRect\(\),\s*window\.innerWidth,\s*window\.innerHeight,?\s*\);\s*if \(rect\) \{\s*regions\.push\(\{ rect, action: null \}\);\s*hitElements\.push\(app\);/;
+
+function loadVisibleHitRect() {
+  const source = mainSource.match(/function visibleHitRect\([\s\S]*?\n\}/)?.[0];
+  assert.ok(source, "visible hit-region geometry helper must exist");
+  const javascript = ts.transpileModule(source, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  return Function(`${javascript}\nreturn visibleHitRect;`)() as (
+    rect: { left: number; top: number; right: number; bottom: number },
+    viewportWidth: number,
+    viewportHeight: number,
+  ) => [number, number, number, number] | null;
+}
 
 test("resizes the window after account login panels are mounted", () => {
   assert.match(
@@ -41,9 +57,41 @@ test("keeps cancel visible and clickable in locked account views", () => {
   assert.match(stylesSource, /#app\.locked #login-host button\.link[\s\S]*?display: inline-block;/);
   assert.match(
     mainSource,
-    /querySelectorAll<HTMLElement>\([^)]*#login-host[^)]*\)/,
-    "the native click-through map must include the login panel",
+    loginScrollRegion,
+    "the native click-through map must include the visible scroll port during login",
   );
+});
+
+test("clips the login scroll hit-region to the visible WebView", () => {
+  const visibleHitRect = loadVisibleHitRect();
+
+  assert.deepEqual(
+    visibleHitRect({ left: -12, top: 42, right: 372, bottom: 620 }, 360, 540),
+    [0, 42, 360, 498],
+  );
+  assert.deepEqual(
+    visibleHitRect({ left: 0, top: 30, right: 360, bottom: 540 }, 360, 540),
+    [0, 30, 360, 510],
+    "the titlebar above main must remain outside the scroll hit-region",
+  );
+  assert.equal(
+    visibleHitRect({ left: 20, top: 550, right: 340, bottom: 620 }, 360, 540),
+    null,
+  );
+});
+
+test("keeps the full scroll viewport interactive only while login is open", () => {
+  assert.match(
+    mainSource,
+    /if \(locked\) \{[\s\S]*?if \(loginOpen\) \{\s*const rect = visibleHitRect\(\s*app\.getBoundingClientRect\(\)/,
+    "the full main viewport must only become a native UI region in click-through mode during login",
+  );
+  assert.doesNotMatch(
+    mainSource,
+    /querySelectorAll<HTMLElement>\([^)]*#app[^)]*\)/,
+    "the regular selector list must not make the whole app interactive after login closes",
+  );
+  assert.match(stylesSource, /main \{[\s\S]*?min-height: 0;[\s\S]*?overflow-y: auto;/);
 });
 
 test("guards login completion and serializes GitHub cancellation", () => {
