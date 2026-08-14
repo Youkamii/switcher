@@ -74,7 +74,7 @@ test("a settings failure never turns the optional prompt into a startup block", 
   );
 });
 
-test("wires a star-above-label dialog without starring on mount", () => {
+test("wires a compact inline prompt without starring on mount", () => {
   assert.match(mainSource, /starPromptHost\.setAttribute\("role", "dialog"\)/);
   assert.match(mainSource, /close\.textContent = "×"/);
   assert.match(mainSource, /chooseGithubStarPrompt\("dismissed"\)/);
@@ -87,8 +87,39 @@ test("wires a star-above-label dialog without starring on mount", () => {
   )?.[0];
   assert.ok(mountSource);
   assert.doesNotMatch(mountSource, /github_star_repository/);
-  assert.match(stylesSource, /\.star-prompt-action \{[\s\S]*?flex-direction: column;/);
-  assert.match(stylesSource, /\.star-prompt-close \{[\s\S]*?position: absolute;/);
+  assert.match(mountSource, /starPromptHost\.append\(action, close\)/);
+  assert.doesNotMatch(
+    mountSource,
+    /OPEN SOURCE|star-prompt-title|star-prompt-copy|star-prompt-eyebrow/,
+  );
+
+  const promptRules = stylesSource.match(/\.star-prompt \{[\s\S]*?\n\}/)?.[0];
+  const actionRules = stylesSource.match(/\.star-prompt-action \{[\s\S]*?\n\}/)?.[0];
+  const closeRules = stylesSource.match(/\.star-prompt-close \{[\s\S]*?\n\}/)?.[0];
+  const shellRules = stylesSource.match(
+    /body\.star-prompt-open \.shell \{[\s\S]*?\n\}/,
+  )?.[0];
+  const titlebarRules = stylesSource.match(
+    /body\.star-prompt-open \.titlebar \{[\s\S]*?\n\}/,
+  )?.[0];
+  assert.ok(promptRules);
+  assert.ok(actionRules);
+  assert.ok(closeRules);
+  assert.ok(shellRules);
+  assert.ok(titlebarRules);
+  assert.match(promptRules, /display: flex;/);
+  assert.match(promptRules, /gap: 6px;/);
+  assert.match(promptRules, /padding: 20px 0;/);
+  assert.match(actionRules, /height: 32px;/);
+  assert.match(closeRules, /width: 32px;/);
+  assert.match(closeRules, /height: 32px;/);
+  assert.match(shellRules, /background: rgba\(17, 17, 24, 0\.98\);/);
+  assert.match(titlebarRules, /display: none;/);
+  assert.doesNotMatch(actionRules, /flex-direction: column/);
+  assert.doesNotMatch(promptRules, /gradient|box-shadow/);
+  assert.doesNotMatch(actionRules, /gradient|box-shadow/);
+  assert.doesNotMatch(closeRules, /position: absolute/);
+  assert.doesNotMatch(stylesSource, /\.star-prompt::before|\.star-prompt::after/);
 });
 
 test("blocks early renders and keeps the prompt clickable in compact modes", () => {
@@ -104,5 +135,8 @@ test("blocks early renders and keeps the prompt clickable in compact modes", () 
     mainSource,
     /const interactionPanelOpen = loginOpen \|\| starPromptOpen;[\s\S]*?if \(interactionPanelOpen\)[\s\S]*?regions\.push\(\{ rect, action: null \}\)/,
   );
-  assert.match(mainSource, /const width = loginOpen \|\| starPromptOpen\s*\? 360/);
+  assert.match(
+    mainSource,
+    /const width = loginOpen\s*\? 360\s*: starPromptOpen\s*\? 240/,
+  );
 });
