@@ -489,8 +489,8 @@ async function cancelActiveLogin(attempt: number) {
         requestId: accountRequestId,
       });
       const cancelled = cancelledWithCleanupWarning(outcome);
-      // cancel_login_start가 backend 세션 등록보다 먼저 도착했을 수 있다.
-      // backend가 request ID를 기억하므로 작업 스레드가 늦게 떠도 CLI를 만들지 않는다.
+      // 예약 전 취소면 false다. 시작 Promise가 이미 생겼다면 그 결과의 정확한
+      // 세션을 다시 확인해 완료와 취소 중 어느 쪽이 이겼는지 확정한다.
       if (!cancelled) {
         const [started] = await Promise.allSettled([start]);
         if (started.status === "fulfilled" && started.value && "needs_code" in started.value) {
@@ -715,7 +715,11 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
     row.hidden = true;
     const attempt = beginLogin(provider);
     const requestId = activeAccountRequestId!;
+    let reserved = false;
     try {
+      await invoke("reserve_login_start", { provider, requestId });
+      reserved = true;
+      if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
       const start = invoke<LoginPrompt>("start_login", { provider, requestId });
       activeLoginStart = start;
       const prompt = await start;
@@ -729,6 +733,11 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
     } catch (error) {
       if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
       const message = String(error);
+      if (!reserved) {
+        toast(message, true);
+        finishLogin(attempt);
+        return;
+      }
       try {
         const sessionId = await invoke<string | null>("login_session_for_request", {
           requestId,
@@ -746,6 +755,12 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
       }
       toast(message, true);
       finishLogin(attempt);
+    } finally {
+      try {
+        await invoke("release_login_start", { provider, requestId });
+      } catch (error) {
+        if (isCurrentLogin(attempt)) toast(String(error), true);
+      }
     }
   });
 }
@@ -1054,7 +1069,11 @@ function githubAddButton(section: HTMLElement) {
     row.hidden = true;
     const attempt = beginLogin("github");
     const requestId = activeGithubRequestId!;
+    let reserved = false;
     try {
+      await invoke("reserve_login_start", { provider: "github", requestId });
+      reserved = true;
+      if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
       const start = invoke<GithubLoginPrompt>("github_login_start", {
         requestId,
       });
@@ -1089,6 +1108,11 @@ function githubAddButton(section: HTMLElement) {
     } catch (error) {
       if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
       const message = String(error);
+      if (!reserved) {
+        toast(message, true);
+        finishLogin(attempt);
+        return;
+      }
       try {
         const sessionId = await invoke<string | null>("github_login_session_for_request", {
           requestId,
@@ -1107,6 +1131,12 @@ function githubAddButton(section: HTMLElement) {
       }
       toast(message, true);
       finishLogin(attempt);
+    } finally {
+      try {
+        await invoke("release_login_start", { provider: "github", requestId });
+      } catch (error) {
+        if (isCurrentLogin(attempt)) toast(String(error), true);
+      }
     }
   });
 }

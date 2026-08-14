@@ -342,13 +342,33 @@ async fn fetch_usage(provider: String, profile: Option<String>) -> Result<usage:
 /// 다른 활성 계정은 건드리지 않는다. 같은 활성 계정을 재로그인한 경우에만 새 토큰을
 /// 활성 위치에도 반영해 다음 전환 백업이 폐기된 옛 토큰을 되살리지 않게 한다.
 #[tauri::command]
+fn reserve_login_start(provider: String, request_id: String) -> Result<(), String> {
+    if provider == "github" {
+        github::reserve_login_start(&request_id)
+    } else {
+        login::reserve_start(Provider::parse(&provider)?, &request_id)
+    }
+}
+
+#[tauri::command]
+fn release_login_start(provider: String, request_id: String) -> Result<(), String> {
+    if provider == "github" {
+        github::release_login_start(&request_id)
+    } else {
+        login::release_start(Provider::parse(&provider)?, &request_id)
+    }
+}
+
+#[tauri::command]
 async fn start_login(provider: String, request_id: String) -> Result<login::LoginPrompt, String> {
     let provider = Provider::parse(&provider)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        login::start_requested(&Env::real()?, provider, request_id)
+    let worker_request_id = request_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        login::start_requested(&Env::real()?, provider, worker_request_id)
     })
-    .await
-    .map_err(|e| format!("로그인 시작 실패: {e}"))?
+    .await;
+    login::release_start(provider, &request_id)?;
+    result.map_err(|e| format!("로그인 시작 실패: {e}"))?
 }
 
 /// 브라우저에서 받은 코드를 넘겨 로그인을 끝낸다 (클로드)
@@ -949,9 +969,11 @@ async fn github_switch(name: String) -> Result<(), String> {
 /// GitHub 계정 추가 시작 — 위젯에 띄울 주소·일회용 코드 (PTY로 gh auth login)
 #[tauri::command]
 async fn github_login_start(request_id: String) -> Result<github::GhLoginPrompt, String> {
-    tauri::async_runtime::spawn_blocking(move || github::login_start(request_id))
-        .await
-        .map_err(|e| format!("GitHub 로그인 시작 실패: {e}"))?
+    let worker_request_id = request_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || github::login_start(worker_request_id))
+        .await;
+    github::release_login_start(&request_id)?;
+    result.map_err(|e| format!("GitHub 로그인 시작 실패: {e}"))?
 }
 
 /// 브라우저에서 코드 입력이 끝나기를 기다린다 — 성공 시 로그인 이름
@@ -2493,6 +2515,8 @@ pub fn run() {
             clamshell_mode,
             clamshell_cycle,
             fetch_usage,
+            reserve_login_start,
+            release_login_start,
             start_login,
             submit_login_code,
             await_device_login,

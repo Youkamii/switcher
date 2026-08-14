@@ -148,6 +148,19 @@ test("finishes a pending Claude or Codex cancellation with its exact session", (
   );
 });
 
+test("reserves every login request before start and releases it in finally", () => {
+  assert.match(
+    mainSource,
+    /function addAccountButton[\s\S]*?await invoke\("reserve_login_start", \{ provider, requestId \}\);[\s\S]*?invoke<LoginPrompt>\("start_login", \{ provider, requestId \}\)[\s\S]*?finally \{[\s\S]*?invoke\("release_login_start", \{ provider, requestId \}\)/,
+    "Claude and Codex must await an explicit reservation before starting and release it on every exit",
+  );
+  assert.match(
+    mainSource,
+    /function githubAddButton[\s\S]*?await invoke\("reserve_login_start", \{ provider: "github", requestId \}\);[\s\S]*?invoke<GithubLoginPrompt>\("github_login_start"[\s\S]*?finally \{[\s\S]*?invoke\("release_login_start", \{ provider: "github", requestId \}\)/,
+    "GitHub must use the same explicit reservation lifecycle",
+  );
+});
+
 test("treats an already completed exact login cancellation as idempotent", () => {
   assert.match(
     mainSource,

@@ -15,7 +15,6 @@
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -278,9 +277,9 @@ static GH_LOGIN: Mutex<Option<GhLoginSession>> = Mutex::new(None);
 /// 로그인 완료와 취소가 맞붙을 때의 잠금 순서:
 /// GH_COMPLETION_LOCK -> GH_LOGIN -> GhLoginSession::buffer.
 static GH_COMPLETION_LOCK: Mutex<()> = Mutex::new(());
-static GH_CANCELLED_START_REQUESTS: LazyLock<Mutex<HashSet<String>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
-const MAX_PENDING_START_CANCELLATIONS: usize = 32;
+const MAX_LIVE_START_REQUESTS: usize = 32;
+static GH_START_REQUESTS: LazyLock<crate::login::StartRequestRegistry> =
+    LazyLock::new(|| crate::login::StartRequestRegistry::new(MAX_LIVE_START_REQUESTS));
 static GH_LOGIN_GEN: AtomicU64 = AtomicU64::new(0);
 
 /// 로그인 링크·코드가 뜰 때까지 / 브라우저 완료까지 기다리는 시간 (login.rs와 동일 기준)
@@ -324,6 +323,18 @@ fn validate_request_id(request_id: &str) -> Result<(), String> {
     valid
         .then_some(())
         .ok_or_else(|| "잘못된 GitHub 로그인 요청 ID입니다".to_string())
+}
+
+const GITHUB_START_KIND: &str = "github";
+
+pub fn reserve_login_start(request_id: &str) -> Result<(), String> {
+    validate_request_id(request_id)?;
+    GH_START_REQUESTS.reserve(request_id, GITHUB_START_KIND, "GitHub 로그인")
+}
+
+pub fn release_login_start(request_id: &str) -> Result<(), String> {
+    validate_request_id(request_id)?;
+    GH_START_REQUESTS.release(request_id, GITHUB_START_KIND)
 }
 
 /// 프롬프트 생성 오류 뒤에도 살아 있는 정확한 GitHub 세션을 찾는다.
@@ -447,20 +458,15 @@ fn finish_login_if_ready(generation: u64) -> Result<Option<String>, String> {
 /// gh auth login을 PTY로 시작해 주소와 일회용 코드를 돌려준다
 pub fn login_start(request_id: String) -> Result<GhLoginPrompt, String> {
     validate_request_id(&request_id)?;
-    let Some(bin) = gh_bin() else {
-        return Err("gh CLI를 찾을 수 없습니다 — GitHub CLI를 설치하세요".to_string());
-    };
     let my_gen;
     {
+        let _completion = GH_COMPLETION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
         let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
-        {
-            let mut cancelled = GH_CANCELLED_START_REQUESTS
-                .lock()
-                .map_err(|_| "내부 잠금 오류")?;
-            if cancelled.remove(&request_id) {
-                return Err("GitHub 로그인을 취소했습니다".into());
-            }
-        }
+        let mut start_request =
+            GH_START_REQUESTS.claim(&request_id, GITHUB_START_KIND, "GitHub 로그인")?;
+        let Some(bin) = gh_bin() else {
+            return Err("gh CLI를 찾을 수 없습니다 — GitHub CLI를 설치하세요".to_string());
+        };
         if let Some(session) = guard.as_mut() {
             // 좀비 세션 리퍼: 웹뷰 리로드 등으로 wait/cancel이 못 불린 채 gh가 이미
             // 종료했으면 걷어내고 새로 시작한다 — 앱 재시작 없이 복구 (red-review)
@@ -550,6 +556,7 @@ pub fn login_start(request_id: String) -> Result<GhLoginPrompt, String> {
             reader_done,
             _master: pair.master,
         });
+        start_request.release();
     }
 
     // 일회용 코드가 화면에 뜰 때까지 (잠금 밖 — 취소 가능해야 하므로)
@@ -854,16 +861,7 @@ pub fn login_cancel_start(request_id: &str) -> Result<bool, String> {
     let _completion = GH_COMPLETION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
     let Some(current) = guard.as_ref() else {
-        let mut cancelled = GH_CANCELLED_START_REQUESTS
-            .lock()
-            .map_err(|_| "내부 잠금 오류")?;
-        if cancelled.len() >= MAX_PENDING_START_CANCELLATIONS
-            && !cancelled.contains(request_id)
-        {
-            return Err("대기 중인 GitHub 로그인 취소 요청이 너무 많습니다".into());
-        }
-        cancelled.insert(request_id.to_string());
-        return Ok(true);
+        return Ok(GH_START_REQUESTS.cancel(request_id));
     };
     ensure_request_id(&current.request_id, request_id)?;
     if session_login(current)?.is_some() {
@@ -1358,20 +1356,74 @@ mod tests {
     }
 
     #[test]
-    fn pending_github_start_cancellations_do_not_overwrite_each_other() {
+    fn failed_starts_and_late_cancels_do_not_grow_the_github_registry() {
         let _test = GH_TEST_LOCK.lock().unwrap();
-        let first = "00000000-0000-4000-8000-000000000011";
-        let second = "00000000-0000-4000-8000-000000000012";
-        assert_eq!(login_cancel_start(first).unwrap(), true);
-        assert_eq!(login_cancel_start(second).unwrap(), true);
-        let mut cancelled = GH_CANCELLED_START_REQUESTS.lock().unwrap();
-        assert!(cancelled.remove(first));
-        assert!(cancelled.remove(second));
+        let baseline = GH_START_REQUESTS.len();
+        for index in 0..64 {
+            let request_id = format!("00000000-0000-4000-8101-{index:012x}");
+            reserve_login_start(&request_id).unwrap();
+            let lease = GH_START_REQUESTS
+                .claim(&request_id, GITHUB_START_KIND, "GitHub 로그인")
+                .unwrap();
+            drop(lease);
+            assert!(!login_cancel_start(&request_id).unwrap());
+        }
+        assert_eq!(GH_START_REQUESTS.len(), baseline);
+    }
+
+    #[test]
+    fn github_start_requests_are_isolated_and_unknown_cancel_is_a_noop() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let baseline = GH_START_REQUESTS.len();
+        let first = "00000000-0000-4000-8102-000000000001";
+        let second = "00000000-0000-4000-8102-000000000002";
+        let unknown = "00000000-0000-4000-8102-000000000003";
+
+        assert!(!login_cancel_start(unknown).unwrap());
+        assert_eq!(GH_START_REQUESTS.len(), baseline);
+        reserve_login_start(first).unwrap();
+        reserve_login_start(second).unwrap();
+        assert!(login_cancel_start(first).unwrap());
+
+        let second_lease = GH_START_REQUESTS
+            .claim(second, GITHUB_START_KIND, "GitHub 로그인")
+            .unwrap();
+        drop(second_lease);
+        assert!(GH_START_REQUESTS
+            .claim(first, GITHUB_START_KIND, "GitHub 로그인")
+            .err()
+            .unwrap()
+            .contains("취소"));
+        assert_eq!(GH_START_REQUESTS.len(), baseline);
+    }
+
+    #[test]
+    fn github_start_request_cleanup_survives_panic_and_join_release() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let baseline = GH_START_REQUESTS.len();
+        let panics = "00000000-0000-4000-8103-000000000001";
+        let never_joined = "00000000-0000-4000-8103-000000000002";
+
+        reserve_login_start(panics).unwrap();
+        let unwind = std::panic::catch_unwind(|| {
+            let _lease = GH_START_REQUESTS
+                .claim(panics, GITHUB_START_KIND, "GitHub 로그인")
+                .unwrap();
+            panic!("injected GitHub worker panic");
+        });
+        assert!(unwind.is_err());
+        assert!(!login_cancel_start(panics).unwrap());
+
+        reserve_login_start(never_joined).unwrap();
+        release_login_start(never_joined).unwrap();
+        assert!(!login_cancel_start(never_joined).unwrap());
+        assert_eq!(GH_START_REQUESTS.len(), baseline);
     }
 
     #[test]
     fn pending_github_start_cancellation_rejects_unbounded_ids() {
         assert!(login_cancel_start("not-a-uuid").is_err());
+        assert!(reserve_login_start("not-a-uuid").is_err());
     }
 
     /// 실기기 전용: 인앱 로그인 프롬프트(주소+일회용 코드)가 뜨는지 확인하고
@@ -1380,8 +1432,9 @@ mod tests {
     #[ignore]
     fn real_github_login_prompt_then_cancel() {
         let _test = GH_TEST_LOCK.lock().unwrap();
-        let prompt = login_start("00000000-0000-4000-8000-000000000099".to_string())
-            .expect("로그인 프롬프트 실패");
+        let request_id = "00000000-0000-4000-8000-000000000099";
+        reserve_login_start(request_id).unwrap();
+        let prompt = login_start(request_id.to_string()).expect("로그인 프롬프트 실패");
         println!("url={} code={}", prompt.url, prompt.device_code);
         assert!(prompt.url.contains("github.com"));
         assert!(prompt.device_code.contains('-'));

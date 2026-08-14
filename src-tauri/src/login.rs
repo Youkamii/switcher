@@ -13,7 +13,7 @@
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -72,7 +72,7 @@ pub struct LoginOutcome {
 
 #[derive(Serialize, Debug, PartialEq, Eq)]
 pub struct CancelOutcome {
-    /// true면 대상 프로세스가 없던 사전 취소를 기록했거나, 실제 프로세스 종료를 확인했다.
+    /// true면 예약된 사전 취소를 기록했거나, 실제 프로세스 종료를 확인했다.
     pub cancelled: bool,
     /// 프로세스 종료 뒤 격리 로그인 흔적 정리만 실패한 경우의 재시도 가능한 경고.
     pub cleanup_error: Option<String>,
@@ -92,10 +92,146 @@ struct Session {
 }
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
-/// spawn_blocking 작업이 실제로 시작되기 전에 들어온 취소 요청을 request ID별로 기억한다.
-static CANCELLED_START_REQUESTS: LazyLock<Mutex<HashSet<String>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
-const MAX_PENDING_START_CANCELLATIONS: usize = 32;
+const MAX_LIVE_START_REQUESTS: usize = 32;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StartRequestState {
+    Reserved,
+    Starting,
+    Cancelled,
+}
+
+#[derive(Clone, Copy)]
+struct StartRequest {
+    kind: &'static str,
+    state: StartRequestState,
+}
+
+/// 프런트 예약부터 worker의 세션 등록까지 살아 있는 시작 요청만 보관한다.
+/// 완료 ID나 임의 취소 ID는 남기지 않아 오래 켜 둬도 상한이 고갈되지 않는다.
+pub(crate) struct StartRequestRegistry {
+    entries: Mutex<HashMap<String, StartRequest>>,
+    max_live: usize,
+}
+
+pub(crate) struct StartRequestLease {
+    registry: &'static StartRequestRegistry,
+    request_id: String,
+    kind: &'static str,
+    active: bool,
+}
+
+impl StartRequestRegistry {
+    pub(crate) fn new(max_live: usize) -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            max_live,
+        }
+    }
+
+    fn entries(&self) -> std::sync::MutexGuard<'_, HashMap<String, StartRequest>> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub(crate) fn reserve(
+        &'static self,
+        request_id: &str,
+        kind: &'static str,
+        label: &str,
+    ) -> Result<(), String> {
+        let mut entries = self.entries();
+        if entries.contains_key(request_id) {
+            return Err(format!("{label} 시작 요청이 이미 예약됐습니다"));
+        }
+        if entries.len() >= self.max_live {
+            return Err(format!("대기 중인 {label} 시작 요청이 너무 많습니다"));
+        }
+        entries.insert(
+            request_id.to_string(),
+            StartRequest {
+                kind,
+                state: StartRequestState::Reserved,
+            },
+        );
+        Ok(())
+    }
+
+    pub(crate) fn claim(
+        &'static self,
+        request_id: &str,
+        kind: &'static str,
+        label: &str,
+    ) -> Result<StartRequestLease, String> {
+        let mut entries = self.entries();
+        let Some(entry) = entries.get(request_id).copied() else {
+            return Err(format!("{label} 시작 요청이 예약되지 않았습니다"));
+        };
+        if entry.kind != kind {
+            return Err(format!("{label} 시작 요청 종류가 일치하지 않습니다"));
+        }
+        match entry.state {
+            StartRequestState::Reserved => {
+                entries.get_mut(request_id).unwrap().state = StartRequestState::Starting;
+                Ok(StartRequestLease {
+                    registry: self,
+                    request_id: request_id.to_string(),
+                    kind,
+                    active: true,
+                })
+            }
+            StartRequestState::Cancelled => {
+                entries.remove(request_id);
+                Err(format!("{label}을 취소했습니다"))
+            }
+            StartRequestState::Starting => Err(format!("{label} 시작 요청이 이미 실행 중입니다")),
+        }
+    }
+
+    pub(crate) fn cancel(&self, request_id: &str) -> bool {
+        let mut entries = self.entries();
+        let Some(entry) = entries.get_mut(request_id) else {
+            return false;
+        };
+        entry.state = StartRequestState::Cancelled;
+        true
+    }
+
+    pub(crate) fn release(&self, request_id: &str, kind: &'static str) -> Result<(), String> {
+        let mut entries = self.entries();
+        if let Some(entry) = entries.get(request_id) {
+            if entry.kind != kind {
+                return Err("로그인 시작 요청 종류가 일치하지 않습니다".to_string());
+            }
+            entries.remove(request_id);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.entries().len()
+    }
+}
+
+impl StartRequestLease {
+    pub(crate) fn release(&mut self) {
+        if self.active {
+            let _ = self.registry.release(&self.request_id, self.kind);
+            self.active = false;
+        }
+    }
+}
+
+impl Drop for StartRequestLease {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+static START_REQUESTS: LazyLock<StartRequestRegistry> =
+    LazyLock::new(|| StartRequestRegistry::new(MAX_LIVE_START_REQUESTS));
 /// CLI 종료 뒤 자격증명을 반영하는 마지막 단계와 취소를 한 순서로 만든다.
 /// 먼저 잠근 쪽만 세션을 가져가므로 "취소 성공 뒤 가져오기"가 생기지 않는다.
 static LOGIN_COMPLETION_LOCK: Mutex<()> = Mutex::new(());
@@ -594,6 +730,16 @@ pub fn start_requested(
     start_impl(env, provider, cli_args(provider), request_id)
 }
 
+pub fn reserve_start(provider: Provider, request_id: &str) -> Result<(), String> {
+    validate_request_id(request_id)?;
+    START_REQUESTS.reserve(request_id, provider.dir_name(), "로그인")
+}
+
+pub fn release_start(provider: Provider, request_id: &str) -> Result<(), String> {
+    validate_request_id(request_id)?;
+    START_REQUESTS.release(request_id, provider.dir_name())
+}
+
 fn validate_request_id(request_id: &str) -> Result<(), String> {
     let bytes = request_id.as_bytes();
     let valid = bytes.len() == 36
@@ -648,14 +794,6 @@ fn start_impl(
     let completion = LOGIN_COMPLETION_LOCK
         .lock()
         .map_err(|_| "내부 잠금 오류")?;
-    {
-        let mut cancelled = CANCELLED_START_REQUESTS
-            .lock()
-            .map_err(|_| "내부 잠금 오류")?;
-        if cancelled.remove(&request_id) {
-            return Err("로그인을 취소했습니다".into());
-        }
-    }
     // CLI/PTY 준비가 길어지는 동안 일어난 삭제도 "로그인 시작 뒤 삭제"로 잡아야 한다.
     // 세션 등록 직전에 찍으면 그 사이 삭제가 tombstone보다 먼저가 되어 되살아난다.
     let delete_epoch = deletion_snapshot();
@@ -663,6 +801,15 @@ fn start_impl(
     // 연타로 두 로그인이 동시에 시작해 폴더·세션이 꼬이는 것을 막는다 (red-review 2라운드)
     {
         let mut guard = SESSION.lock().map_err(|_| "내부 잠금 오류")?;
+        let mut start_request = if request_id.is_empty() {
+            None
+        } else {
+            Some(START_REQUESTS.claim(
+                &request_id,
+                provider.dir_name(),
+                "로그인",
+            )?)
+        };
         if guard.is_some() {
             return Err("이미 로그인이 진행 중입니다".into());
         }
@@ -806,6 +953,9 @@ fn start_impl(
             writer,
             _master: pair.master,
         });
+        if let Some(request) = start_request.as_mut() {
+            request.release();
+        }
     }
     drop(completion);
 
@@ -1447,8 +1597,8 @@ pub fn cancel() -> Result<CancelOutcome, String> {
     Ok(finish_cancelled_session(session))
 }
 
-/// 프롬프트가 오기 전 취소. 시작 작업보다 먼저 도착하면 request ID를 기억해
-/// 뒤늦게 실행된 작업이 CLI를 만들기 전에 중단한다.
+/// 프롬프트가 오기 전 취소. 예약된 요청만 취소 상태로 바꾸며, 모르는 ID는
+/// 새 상태를 만들지 않는다. worker는 CLI를 만들기 전에 이 상태를 소비한다.
 pub fn cancel_start(request_id: &str) -> Result<CancelOutcome, String> {
     validate_request_id(request_id)?;
     let _completion = LOGIN_COMPLETION_LOCK
@@ -1462,17 +1612,8 @@ pub fn cancel_start(request_id: &str) -> Result<CancelOutcome, String> {
             }
             Some(_) => return Err("이전 로그인 시작 취소 요청이라 무시했습니다".into()),
             None => {
-                let mut cancelled = CANCELLED_START_REQUESTS
-                    .lock()
-                    .map_err(|_| "내부 잠금 오류")?;
-                if cancelled.len() >= MAX_PENDING_START_CANCELLATIONS
-                    && !cancelled.contains(request_id)
-                {
-                    return Err("대기 중인 로그인 취소 요청이 너무 많습니다".into());
-                }
-                cancelled.insert(request_id.to_string());
                 return Ok(CancelOutcome {
-                    cancelled: true,
+                    cancelled: START_REQUESTS.cancel(request_id),
                     cleanup_error: None,
                 });
             }
@@ -1506,6 +1647,8 @@ pub fn cancel_session(generation: u64) -> Result<CancelOutcome, String> {
 mod tests {
     use super::*;
     use crate::accounts::test_support::{fake_jwt, test_env};
+
+    static START_REQUEST_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[cfg(windows)]
     const TASKKILL_TREE_ROLE: &str = "SWITCHER_TASKKILL_TREE_ROLE";
@@ -1939,9 +2082,12 @@ mod tests {
 
     #[test]
     fn cancel_before_start_prevents_the_cli_from_launching() {
+        let _requests = START_REQUEST_TEST_LOCK.lock().unwrap();
         let _ = cancel();
         let first = "00000000-0000-4000-8000-000000000001";
         let second = "00000000-0000-4000-8000-000000000002";
+        reserve_start(Provider::Codex, first).unwrap();
+        reserve_start(Provider::Codex, second).unwrap();
         assert!(cancel_start(first).unwrap().cancelled);
         assert!(cancel_start(second).unwrap().cancelled);
         let env = test_env("cancel-before-start");
@@ -1962,8 +2108,84 @@ mod tests {
     }
 
     #[test]
-    fn start_cancellation_rejects_unbounded_request_ids() {
+    fn failed_starts_and_late_cancels_do_not_grow_the_login_registry() {
+        let _requests = START_REQUEST_TEST_LOCK.lock().unwrap();
+        let baseline = START_REQUESTS.len();
+        for index in 0..64 {
+            let request_id = format!("00000000-0000-4000-8001-{index:012x}");
+            reserve_start(Provider::Claude, &request_id).unwrap();
+            let lease = START_REQUESTS
+                .claim(&request_id, Provider::Claude.dir_name(), "로그인")
+                .unwrap();
+            drop(lease); // worker 시작 실패 또는 panic의 RAII 정리
+            assert!(!cancel_start(&request_id).unwrap().cancelled);
+        }
+        assert_eq!(START_REQUESTS.len(), baseline);
+    }
+
+    #[test]
+    fn login_start_requests_are_isolated_and_unknown_cancel_is_a_noop() {
+        let _requests = START_REQUEST_TEST_LOCK.lock().unwrap();
+        let baseline = START_REQUESTS.len();
+        let first = "00000000-0000-4000-8002-000000000001";
+        let second = "00000000-0000-4000-8002-000000000002";
+        let unknown = "00000000-0000-4000-8002-000000000003";
+
+        assert!(!cancel_start(unknown).unwrap().cancelled);
+        assert_eq!(START_REQUESTS.len(), baseline);
+        reserve_start(Provider::Claude, first).unwrap();
+        reserve_start(Provider::Codex, second).unwrap();
+        assert!(cancel_start(first).unwrap().cancelled);
+
+        let second_lease = START_REQUESTS
+            .claim(second, Provider::Codex.dir_name(), "로그인")
+            .unwrap();
+        drop(second_lease);
+        assert!(START_REQUESTS
+            .claim(first, Provider::Claude.dir_name(), "로그인")
+            .err()
+            .unwrap()
+            .contains("취소"));
+        assert_eq!(START_REQUESTS.len(), baseline);
+    }
+
+    #[test]
+    fn login_start_request_cleanup_survives_panic_and_join_release() {
+        let _requests = START_REQUEST_TEST_LOCK.lock().unwrap();
+        let baseline = START_REQUESTS.len();
+        let panics = "00000000-0000-4000-8003-000000000001";
+        let never_joined = "00000000-0000-4000-8003-000000000002";
+
+        reserve_start(Provider::Claude, panics).unwrap();
+        let unwind = std::panic::catch_unwind(|| {
+            let _lease = START_REQUESTS
+                .claim(panics, Provider::Claude.dir_name(), "로그인")
+                .unwrap();
+            panic!("injected worker panic");
+        });
+        assert!(unwind.is_err());
+        assert!(!cancel_start(panics).unwrap().cancelled);
+
+        reserve_start(Provider::Codex, never_joined).unwrap();
+        release_start(Provider::Codex, never_joined).unwrap();
+        assert!(!cancel_start(never_joined).unwrap().cancelled);
+        assert_eq!(START_REQUESTS.len(), baseline);
+    }
+
+    #[test]
+    fn login_start_request_rejects_wrong_provider_and_unbounded_ids() {
+        let _requests = START_REQUEST_TEST_LOCK.lock().unwrap();
+        let request_id = "00000000-0000-4000-8004-000000000001";
+        reserve_start(Provider::Claude, request_id).unwrap();
+        assert!(START_REQUESTS
+            .claim(request_id, Provider::Codex.dir_name(), "로그인")
+            .err()
+            .unwrap()
+            .contains("종류"));
+        release_start(Provider::Claude, request_id).unwrap();
+
         assert!(cancel_start("not-a-uuid").is_err());
+        assert!(reserve_start(Provider::Claude, "not-a-uuid").is_err());
         assert!(session_for_request("not-a-uuid").is_err());
     }
 
