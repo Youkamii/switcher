@@ -36,6 +36,10 @@ pub const KEY_SHOW_BLACK: &str = "show_black";
 pub const KEY_SHOW_DISPLAY: &str = "show_display";
 /// TFSD (Token Full Self-Driving) — 사용량 기반 자동 계정 전환 (기본 꺼짐, 옵트인)
 pub const KEY_TFSD: &str = "tfsd";
+/// 첫 실행 GitHub Star 안내 선택. 버전과 무관하게 한 번만 묻는다.
+const KEY_GITHUB_STAR_PROMPT_CHOICE: &str = "github_star_prompt_choice";
+pub const STAR_PROMPT_CHOICE_STAR: &str = "star";
+pub const STAR_PROMPT_CHOICE_DISMISSED: &str = "dismissed";
 
 /// 불리언 설정 읽기 — 파일이 없거나 키가 없거나 타입이 다르면 default
 pub fn load_flag(store: &Path, key: &str, default: bool) -> bool {
@@ -49,6 +53,49 @@ pub fn save_flag(store: &Path, key: &str, value: bool) -> Result<(), String> {
     save_value(store, key, Value::Bool(value))
 }
 
+/// 선택값이 없거나 알 수 없는 값이면 다시 묻는다.
+pub fn load_github_star_prompt_choice(store: &Path) -> Result<Option<String>, String> {
+    let Some(value) = read_settings_checked(store)? else {
+        return Ok(None);
+    };
+    let root = value
+        .as_object()
+        .ok_or_else(|| "설정 파일 형식이 올바르지 않습니다".to_string())?;
+    Ok(root
+        .get(KEY_GITHUB_STAR_PROMPT_CHOICE)
+        .and_then(Value::as_str)
+        .map(String::from)
+        .filter(|choice| {
+            matches!(
+                choice.as_str(),
+                STAR_PROMPT_CHOICE_STAR | STAR_PROMPT_CHOICE_DISMISSED
+            )
+        }))
+}
+
+pub fn save_github_star_prompt_choice(store: &Path, choice: &str) -> Result<(), String> {
+    if !matches!(choice, STAR_PROMPT_CHOICE_STAR | STAR_PROMPT_CHOICE_DISMISSED) {
+        return Err("잘못된 GitHub Star 안내 선택입니다".to_string());
+    }
+    save_value_checked(
+        store,
+        KEY_GITHUB_STAR_PROMPT_CHOICE,
+        Value::String(choice.to_string()),
+    )
+}
+
+/// 첫 실행 안내는 선택형 기능이므로 읽을 수 없는 기존 설정을 빈 파일로 덮어쓰지 않는다.
+fn save_value_checked(store: &Path, key: &str, value: Value) -> Result<(), String> {
+    fs::create_dir_all(store).map_err(|e| format!("설정 폴더 생성 실패: {e}"))?;
+    let mut root = match read_settings_checked(store)? {
+        Some(v @ Value::Object(_)) => v,
+        Some(_) => return Err("설정 파일 형식이 올바르지 않습니다".to_string()),
+        None => Value::Object(Default::default()),
+    };
+    root[key] = value;
+    write_settings(store, &root)
+}
+
 /// 키 하나를 갱신해 저장. 다른 키는 보존하고, 임시 파일 + rename으로 원자적으로 쓴다 —
 /// 쓰다 만 파일이 남으면 다음 시작에서 모든 설정이 기본값으로 뒤집힌다 (자동 실행 재등록 등).
 fn save_value(store: &Path, key: &str, value: Value) -> Result<(), String> {
@@ -58,7 +105,11 @@ fn save_value(store: &Path, key: &str, value: Value) -> Result<(), String> {
         _ => Value::Object(Default::default()),
     };
     root[key] = value;
-    let text = serde_json::to_string_pretty(&root).map_err(|e| format!("설정 직렬화 실패: {e}"))?;
+    write_settings(store, &root)
+}
+
+fn write_settings(store: &Path, root: &Value) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(root).map_err(|e| format!("설정 직렬화 실패: {e}"))?;
     let path = settings_path(store);
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, text).map_err(|e| format!("설정 저장 실패: {e}"))?;
@@ -143,6 +194,18 @@ fn settings_path(store: &Path) -> PathBuf {
 fn read_settings(store: &Path) -> Option<Value> {
     let text = fs::read_to_string(settings_path(store)).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+fn read_settings_checked(store: &Path) -> Result<Option<Value>, String> {
+    let path = settings_path(store);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("설정 읽기 실패: {error}")),
+    };
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|error| format!("설정 파일 분석 실패: {error}"))
 }
 
 /// 저장된 UI 언어. 파일이 없거나 값이 지원 목록 밖이면 "ko".
@@ -233,5 +296,61 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(settings_path(&store)).unwrap()).unwrap();
         assert_eq!(saved["future_key"], 42);
         assert_eq!(saved["lang"], "ja");
+    }
+
+    #[test]
+    fn github_star_prompt_choice_is_stable_and_preserves_settings() {
+        let store = test_store("github-star-prompt");
+        assert_eq!(load_github_star_prompt_choice(&store), Ok(None));
+
+        save_language(&store, "en").unwrap();
+        save_github_star_prompt_choice(&store, STAR_PROMPT_CHOICE_STAR).unwrap();
+        assert_eq!(
+            load_github_star_prompt_choice(&store)
+                .unwrap()
+                .as_deref(),
+            Some(STAR_PROMPT_CHOICE_STAR)
+        );
+        assert_eq!(load_language(&store), "en");
+
+        save_github_star_prompt_choice(&store, STAR_PROMPT_CHOICE_DISMISSED).unwrap();
+        assert_eq!(
+            load_github_star_prompt_choice(&store)
+                .unwrap()
+                .as_deref(),
+            Some(STAR_PROMPT_CHOICE_DISMISSED)
+        );
+    }
+
+    #[test]
+    fn github_star_prompt_rejects_unknown_choices() {
+        let store = test_store("github-star-prompt-invalid");
+        assert!(save_github_star_prompt_choice(&store, "later").is_err());
+        assert_eq!(load_github_star_prompt_choice(&store), Ok(None));
+
+        fs::create_dir_all(&store).unwrap();
+        fs::write(
+            settings_path(&store),
+            r#"{"github_star_prompt_choice":"unexpected"}"#,
+        )
+        .unwrap();
+        assert_eq!(load_github_star_prompt_choice(&store), Ok(None));
+    }
+
+    #[test]
+    fn github_star_prompt_never_overwrites_unreadable_settings() {
+        let store = test_store("github-star-prompt-corrupt");
+        fs::create_dir_all(&store).unwrap();
+        let path = settings_path(&store);
+        fs::write(&path, r#"{"lang":"en""#).unwrap();
+
+        assert!(load_github_star_prompt_choice(&store).is_err());
+        assert!(save_github_star_prompt_choice(&store, STAR_PROMPT_CHOICE_STAR).is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), r#"{"lang":"en""#);
+
+        fs::write(settings_path(&store), "[]").unwrap();
+        assert!(load_github_star_prompt_choice(&store).is_err());
+        assert!(save_github_star_prompt_choice(&store, STAR_PROMPT_CHOICE_STAR).is_err());
+        assert_eq!(fs::read_to_string(settings_path(&store)).unwrap(), "[]");
     }
 }

@@ -966,6 +966,36 @@ async fn github_switch(name: String) -> Result<(), String> {
         .map_err(|e| format!("GitHub 전환 작업 실패: {e}"))?
 }
 
+#[tauri::command]
+fn get_github_star_prompt_choice() -> Result<Option<String>, String> {
+    let env = Env::real()?;
+    settings::load_github_star_prompt_choice(&env.store)
+}
+
+#[tauri::command]
+fn set_github_star_prompt_choice(choice: String) -> Result<(), String> {
+    let env = Env::real()?;
+    settings::save_github_star_prompt_choice(&env.store, &choice)
+}
+
+/// 명시적으로 Star를 누른 경우에만 현재 gh 계정으로 요청한다. 인증·권한 문제면
+/// 고정 저장소 URL을 기본 브라우저로 열어 사용자가 직접 선택할 수 있게 한다.
+#[tauri::command]
+async fn github_star_repository(
+    app: tauri::AppHandle,
+) -> Result<github::GithubStarOutcome, String> {
+    use tauri_plugin_opener::OpenerExt;
+
+    let star_result = tauri::async_runtime::spawn_blocking(github::star_repository)
+        .await
+        .unwrap_or_else(|_| Err("star_worker_failed".to_string()));
+    github::finish_star_with_open(star_result, || {
+        app.opener()
+            .open_url(github::SWITCHER_REPOSITORY_URL, None::<&str>)
+            .map_err(|_| "repository_open_failed".to_string())
+    })
+}
+
 /// GitHub 계정 추가 시작 — 위젯에 띄울 주소·일회용 코드 (PTY로 gh auth login)
 #[tauri::command]
 async fn github_login_start(request_id: String) -> Result<github::GhLoginPrompt, String> {
@@ -2089,6 +2119,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main_window(app);
         }))
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             use tauri::Manager;
             #[cfg(target_os = "macos")]
@@ -2550,6 +2581,9 @@ pub fn run() {
             tfsd_toggle,
             github_list,
             github_switch,
+            get_github_star_prompt_choice,
+            set_github_star_prompt_choice,
+            github_star_repository,
             github_login_start,
             github_login_wait,
             github_login_cancel,

@@ -77,6 +77,9 @@ const ko = {
   clamOff: "클램셸 슬립 방지 — 덮개를 닫아도 잠들지 않게. 한 번 누르면 이번 한 번만, 두 번 누르면 계속 (macOS는 켤 때 관리자 승인 1회)",
   clamOnce: "클램셸: 이번 한 번 — 덮개를 닫았다 다시 열면 자동 해제됩니다. 누르면 '계속 켬'으로",
   clamKeep: "클램셸: 계속 켬 — 다시 누를 때까지 유지되고, 누르면 원래대로 복원됩니다",
+  starPromptTitle: "Switcher를 응원해주세요",
+  starPromptBody: "Switcher가 마음에 들었다면 GitHub Star로 프로젝트를 응원해주세요.",
+  starPromptDismiss: "건너뛰기",
 };
 
 export type MsgKey = keyof typeof ko;
@@ -153,6 +156,9 @@ const en: Messages = {
   clamOff: "Clamshell no-sleep — keep running with the lid closed. Click once for one time, twice to keep on (macOS asks for admin approval when enabling)",
   clamOnce: "Clamshell: this once — auto-restores after the lid closes and reopens. Click for 'keep on'",
   clamKeep: "Clamshell: keep on — stays on until you click again to restore",
+  starPromptTitle: "Support Switcher",
+  starPromptBody: "Enjoying Switcher? A GitHub Star helps the project grow.",
+  starPromptDismiss: "Not now",
 };
 
 const ja: Messages = {
@@ -226,6 +232,9 @@ const ja: Messages = {
   clamOff: "クラムシェル・スリープ防止 — 蓋を閉じても眠らない。1回で今回のみ、2回で継続（macOS は有効化時に管理者承認が1回必要）",
   clamOnce: "クラムシェル: 今回のみ — 蓋を閉じて再び開くと自動解除。押すと「継続」に",
   clamKeep: "クラムシェル: 継続 — もう一度押して解除するまで維持します",
+  starPromptTitle: "Switcherを応援してください",
+  starPromptBody: "Switcherを気に入ったら、GitHub Starでプロジェクトを応援してください。",
+  starPromptDismiss: "今回はしない",
 };
 
 const zhCN: Messages = {
@@ -296,6 +305,9 @@ const zhCN: Messages = {
   clamOff: "合盖不休眠 — 合上盖子也继续运行。按一次仅此一次，按两次持续开启（macOS 启用时需一次管理员授权）",
   clamOnce: "合盖不休眠：仅此一次 — 盖子合上再打开后自动恢复。再按切换为持续",
   clamKeep: "合盖不休眠：持续开启 — 保持到再次按下并恢复原状",
+  starPromptTitle: "支持 Switcher",
+  starPromptBody: "喜欢 Switcher 的话，请用 GitHub Star 支持这个项目。",
+  starPromptDismiss: "暂时不要",
 };
 
 const zhTW: Messages = {
@@ -366,6 +378,9 @@ const zhTW: Messages = {
   clamOff: "闔蓋不休眠 — 闔上螢幕也繼續運作。按一次僅此一次，按兩次持續開啟（macOS 啟用時需一次管理員授權）",
   clamOnce: "闔蓋不休眠：僅此一次 — 螢幕闔上再打開後自動恢復。再按切換為持續",
   clamKeep: "闔蓋不休眠：持續開啟 — 保持到再次按下並恢復原狀",
+  starPromptTitle: "支持 Switcher",
+  starPromptBody: "喜歡 Switcher 的話，請用 GitHub Star 支持這個專案。",
+  starPromptDismiss: "暫時不要",
 };
 
 const hi: Messages = {
@@ -439,6 +454,9 @@ const hi: Messages = {
   clamOff: "क्लैमशेल नो-स्लीप — ढक्कन बंद होने पर भी चलता रहे। एक बार दबाएँ = इस बार, दो बार = लगातार (macOS पर चालू करते समय एक बार व्यवस्थापक अनुमति)",
   clamOnce: "क्लैमशेल: इस बार — ढक्कन बंद कर फिर खोलने पर अपने आप बहाल। दबाने पर 'लगातार'",
   clamKeep: "क्लैमशेल: लगातार — दोबारा दबाकर बहाल करने तक चालू रहता है",
+  starPromptTitle: "Switcher का समर्थन करें",
+  starPromptBody: "अगर आपको Switcher पसंद है, तो GitHub Star देकर प्रोजेक्ट का समर्थन करें।",
+  starPromptDismiss: "अभी नहीं",
 };
 
 const MESSAGES: Record<Lang, Messages> = {

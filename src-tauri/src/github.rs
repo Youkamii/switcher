@@ -21,6 +21,24 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+pub const SWITCHER_REPOSITORY_URL: &str = "https://github.com/Youkamii/switcher";
+const SWITCHER_STAR_ENDPOINT: &str = "/user/starred/Youkamii/switcher";
+const SWITCHER_STAR_ARGS: [&str; 6] = [
+    "api",
+    SWITCHER_STAR_ENDPOINT,
+    "--hostname",
+    "github.com",
+    "--method",
+    "PUT",
+];
+
+#[derive(Serialize, Debug, PartialEq, Eq)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum GithubStarOutcome {
+    Starred,
+    RepositoryOpened,
+}
+
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct GithubAccount {
     pub login: String,
@@ -110,6 +128,38 @@ fn run_gh(args: &[&str]) -> Result<std::process::Output, String> {
     cmd.args(args)
         .output()
         .map_err(|e| format!("gh 실행 실패: {e}"))
+}
+
+fn star_repository_with<F>(run: F) -> Result<(), String>
+where
+    F: FnOnce(&[&str]) -> Result<bool, String>,
+{
+    match run(&SWITCHER_STAR_ARGS) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("api_failed".to_string()),
+        Err(_) => Err("gh_unavailable".to_string()),
+    }
+}
+
+/// 현재 gh의 github.com 활성 계정으로 Star를 추가한다. 토큰과 CLI stderr는
+/// 호출자에게 돌려주지 않는다 — 실패하면 상위 명령이 고정 저장소 URL을 연다.
+pub fn star_repository() -> Result<(), String> {
+    star_repository_with(|args| run_gh(args).map(|output| output.status.success()))
+}
+
+pub fn finish_star_with_open<F>(
+    star_result: Result<(), String>,
+    open_repository: F,
+) -> Result<GithubStarOutcome, String>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    if star_result.is_ok() {
+        return Ok(GithubStarOutcome::Starred);
+    }
+    open_repository()
+        .map(|_| GithubStarOutcome::RepositoryOpened)
+        .map_err(|_| "GitHub Star 요청과 저장소 열기에 모두 실패했습니다".to_string())
 }
 
 /// gh 설정 폴더 (GH_CONFIG_DIR > 플랫폼 기본값 — gh 문서와 동일한 우선순위)
@@ -952,6 +1002,55 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     static GH_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn github_star_uses_the_fixed_authenticated_put_endpoint() {
+        let result = star_repository_with(|args| {
+            assert_eq!(args, SWITCHER_STAR_ARGS);
+            Ok(true)
+        });
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn successful_github_star_does_not_open_the_browser() {
+        let opened = std::cell::Cell::new(false);
+        let outcome = finish_star_with_open(Ok(()), || {
+            opened.set(true);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(outcome, GithubStarOutcome::Starred);
+        assert!(!opened.get());
+    }
+
+    #[test]
+    fn failed_github_star_opens_the_repository_once() {
+        let opened = std::cell::Cell::new(0);
+        let outcome = finish_star_with_open(Err("api_failed".to_string()), || {
+            opened.set(opened.get() + 1);
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(outcome, GithubStarOutcome::RepositoryOpened);
+        assert_eq!(opened.get(), 1);
+    }
+
+    #[test]
+    fn github_star_hides_command_details_when_all_paths_fail() {
+        let error = finish_star_with_open(Err("sensitive command detail".to_string()), || {
+            Err("sensitive opener detail".to_string())
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            error,
+            "GitHub Star 요청과 저장소 열기에 모두 실패했습니다"
+        );
+        assert!(!error.contains("sensitive"));
+    }
 
     #[derive(Clone, Debug)]
     struct TestChild {
