@@ -379,6 +379,17 @@ fn delete_isolated_keychain(config_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn remove_cleanup_marker(marker: &Path) -> Result<(), String> {
+    match fs::remove_file(marker) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "정리 재시도 표식 삭제 실패 ({}): {error}",
+            marker.display()
+        )),
+    }
+}
+
 /// 정리 경로를 먼저 보존한 뒤 키체인, 폴더 순서로 지운다.
 /// 어느 단계든 실패하면 marker가 남아 다음 시작의 sweep가 즉시 다시 시도한다.
 fn cleanup_isolated_with<K, R>(
@@ -408,9 +419,7 @@ where
         .map_err(|e| format!("정리 재시도 표식 생성 실패 ({}): {e}", marker.display()))?;
     delete_keychain(config_dir)?;
     remove_dir(config_dir)?;
-    fs::remove_file(&marker)
-        .map_err(|e| format!("정리 재시도 표식 삭제 실패 ({}): {e}", marker.display()))?;
-    Ok(())
+    remove_cleanup_marker(&marker)
 }
 
 /// 임시 로그인 폴더와 그 로그인이 남긴 키체인 항목(맥)을 지운다.
@@ -1914,6 +1923,41 @@ mod tests {
 
         assert!(keychain_called.get());
         assert!(!cleanup_marker_path(&dir).unwrap().exists());
+    }
+
+    #[test]
+    fn cleanup_accepts_marker_removed_by_a_concurrent_sweep() {
+        let env = test_env("cleanup-concurrent-sweep");
+        let dir = env.store.join("_login").join("pending");
+        fs::create_dir_all(&dir).unwrap();
+        let marker = cleanup_marker_path(&dir).unwrap();
+
+        cleanup_isolated_with(
+            &dir,
+            |_| Ok(()),
+            |_| {
+                // Reproduce the exact interleaving where another sweep finishes first.
+                fs::remove_file(&marker).unwrap();
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(!marker.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn cleanup_marker_removal_preserves_real_errors() {
+        let env = test_env("cleanup-marker-error");
+        let marker = env.store.join("_login").join("marker-directory");
+        fs::create_dir_all(&marker).unwrap();
+
+        let error = remove_cleanup_marker(&marker).unwrap_err();
+
+        assert!(error.contains("정리 재시도 표식 삭제 실패"));
+        assert!(error.contains(&marker.display().to_string()));
+        fs::remove_dir_all(marker).unwrap();
     }
 
     #[test]
