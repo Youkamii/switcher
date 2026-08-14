@@ -317,6 +317,11 @@ type LoginOutcome = {
   updated_existing: boolean;
 };
 
+type CancelOutcome = {
+  cancelled: boolean;
+  cleanup_error: string | null;
+};
+
 type LoginPrompt = {
   session_id: string;
   url: string;
@@ -391,6 +396,11 @@ function finishLogin(attempt: number) {
   void render({ immediate: true });
 }
 
+function cancelledWithCleanupWarning(outcome: CancelOutcome): boolean {
+  if (outcome.cleanup_error) toast(outcome.cleanup_error, true);
+  return outcome.cancelled;
+}
+
 async function cancelActiveLogin(attempt: number) {
   if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
   loginCancelingAttempt = attempt;
@@ -434,18 +444,23 @@ async function cancelActiveLogin(attempt: number) {
         }
       }
     } else if (sessionId) {
-      completionWon = !(await invoke<boolean>("cancel_login", { sessionId }));
+      const outcome = await invoke<CancelOutcome>("cancel_login", { sessionId });
+      completionWon = !cancelledWithCleanupWarning(outcome);
     } else {
       if (!accountRequestId) throw new Error("로그인 요청 ID가 없습니다");
-      const cancelled = await invoke<boolean>("cancel_login_start", {
+      const outcome = await invoke<CancelOutcome>("cancel_login_start", {
         requestId: accountRequestId,
       });
+      const cancelled = cancelledWithCleanupWarning(outcome);
       // cancel_login_start가 backend 세션 등록보다 먼저 도착했을 수 있다.
       // backend가 request ID를 기억하므로 작업 스레드가 늦게 떠도 CLI를 만들지 않는다.
       if (!cancelled) {
         const [started] = await Promise.allSettled([start]);
         if (started.status === "fulfilled" && started.value && "needs_code" in started.value) {
-          await invoke<boolean>("cancel_login", { sessionId: started.value.session_id });
+          const exact = await invoke<CancelOutcome>("cancel_login", {
+            sessionId: started.value.session_id,
+          });
+          cancelledWithCleanupWarning(exact);
         }
       }
     }

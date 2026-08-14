@@ -70,6 +70,14 @@ pub struct LoginOutcome {
     pub updated_existing: bool,
 }
 
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub struct CancelOutcome {
+    /// true면 대상 프로세스가 없던 사전 취소를 기록했거나, 실제 프로세스 종료를 확인했다.
+    pub cancelled: bool,
+    /// 프로세스 종료 뒤 격리 로그인 흔적 정리만 실패한 경우의 재시도 가능한 경고.
+    pub cleanup_error: Option<String>,
+}
+
 struct Session {
     generation: u64,
     request_id: String,
@@ -1351,52 +1359,72 @@ fn cleanup_terminated_session(session: Session) -> Result<(), String> {
     })
 }
 
-fn cancel_generation(generation: u64) -> Result<bool, String> {
+fn finish_cancel_with_cleanup<T, F>(session: Option<T>, cleanup: F) -> CancelOutcome
+where
+    F: FnOnce(T) -> Result<(), String>,
+{
+    match session {
+        Some(session) => CancelOutcome {
+            cancelled: true,
+            cleanup_error: cleanup(session).err(),
+        },
+        None => CancelOutcome {
+            cancelled: false,
+            cleanup_error: None,
+        },
+    }
+}
+
+fn finish_cancelled_session(session: Option<Session>) -> CancelOutcome {
+    finish_cancel_with_cleanup(session, cleanup_terminated_session)
+}
+
+fn cancel_generation(generation: u64) -> Result<CancelOutcome, String> {
     let session = {
         let mut guard = SESSION.lock().map_err(|_| "내부 잠금 오류")?;
         if guard
             .as_ref()
             .is_none_or(|session| session.generation != generation)
         {
-            return Ok(false);
+            return Ok(CancelOutcome {
+                cancelled: false,
+                cleanup_error: None,
+            });
         }
         terminate_and_take_session(&mut guard)?
     };
-    if let Some(session) = session {
-        cleanup_terminated_session(session)?;
-        Ok(true)
-    } else {
-        Ok(false)
-    }
+    Ok(finish_cancelled_session(session))
 }
 
 fn cancel_generation_with_reason(generation: u64, reason: String) -> String {
     match cancel_generation(generation) {
-        Ok(true) => format!("{reason} — 로그인을 정리했습니다"),
-        Ok(false) => reason,
-        Err(cleanup_error) => format!("{reason}; {cleanup_error}"),
+        Ok(CancelOutcome {
+            cancelled: true,
+            cleanup_error: None,
+        }) => format!("{reason} — 로그인을 정리했습니다"),
+        Ok(CancelOutcome {
+            cleanup_error: Some(cleanup_error),
+            ..
+        }) => format!("{reason}; {cleanup_error}"),
+        Ok(_) => reason,
+        Err(cancel_error) => format!("{reason}; {cancel_error}"),
     }
 }
 
-pub fn cancel() -> bool {
-    let Ok(_completion) = LOGIN_COMPLETION_LOCK.lock() else {
-        return false;
-    };
+pub fn cancel() -> Result<CancelOutcome, String> {
+    let _completion = LOGIN_COMPLETION_LOCK
+        .lock()
+        .map_err(|_| "내부 잠금 오류")?;
     let session = {
-        let Ok(mut guard) = SESSION.lock() else {
-            return false;
-        };
-        match terminate_and_take_session(&mut guard) {
-            Ok(session) => session,
-            Err(_) => return false,
-        }
+        let mut guard = SESSION.lock().map_err(|_| "내부 잠금 오류")?;
+        terminate_and_take_session(&mut guard)?
     };
-    session.is_some_and(|session| cleanup_terminated_session(session).is_ok())
+    Ok(finish_cancelled_session(session))
 }
 
 /// 프롬프트가 오기 전 취소. 시작 작업보다 먼저 도착하면 request ID를 기억해
 /// 뒤늦게 실행된 작업이 CLI를 만들기 전에 중단한다.
-pub fn cancel_start(request_id: &str) -> Result<bool, String> {
+pub fn cancel_start(request_id: &str) -> Result<CancelOutcome, String> {
     validate_request_id(request_id)?;
     let _completion = LOGIN_COMPLETION_LOCK
         .lock()
@@ -1418,19 +1446,19 @@ pub fn cancel_start(request_id: &str) -> Result<bool, String> {
                     return Err("대기 중인 로그인 취소 요청이 너무 많습니다".into());
                 }
                 cancelled.insert(request_id.to_string());
-                return Ok(true);
+                return Ok(CancelOutcome {
+                    cancelled: true,
+                    cleanup_error: None,
+                });
             }
         }
     };
-    if let Some(session) = session {
-        cleanup_terminated_session(session)?;
-    }
-    Ok(true)
+    Ok(finish_cancelled_session(session))
 }
 
 /// 현재 세션을 정확한 세대값으로 취소한다.
 /// `Ok(false)`는 같은 세션의 완료 처리가 먼저 끝나 이미 정리됐다는 뜻이다.
-pub fn cancel_session(generation: u64) -> Result<bool, String> {
+pub fn cancel_session(generation: u64) -> Result<CancelOutcome, String> {
     let _completion = LOGIN_COMPLETION_LOCK
         .lock()
         .map_err(|_| "내부 잠금 오류")?;
@@ -1442,7 +1470,10 @@ pub fn cancel_session(generation: u64) -> Result<bool, String> {
     match current {
         Some(active) if active == generation => cancel_generation(generation),
         Some(_) => Err("이전 로그인 패널의 취소 요청이라 무시했습니다".into()),
-        None => Ok(false),
+        None => Ok(CancelOutcome {
+            cancelled: false,
+            cleanup_error: None,
+        }),
     }
 }
 
@@ -1638,8 +1669,14 @@ mod tests {
 
     #[test]
     fn cancel_after_completion_is_idempotent() {
-        cancel();
-        assert_eq!(cancel_session(u64::MAX).unwrap(), false);
+        let _ = cancel();
+        assert_eq!(
+            cancel_session(u64::MAX).unwrap(),
+            CancelOutcome {
+                cancelled: false,
+                cleanup_error: None,
+            }
+        );
     }
 
     #[test]
@@ -1851,7 +1888,7 @@ mod tests {
 
     #[test]
     fn missing_cli_fails_fast_with_install_hint() {
-        cancel(); // 다른 테스트가 남긴 세션이 있으면 정리
+        let _ = cancel(); // 다른 테스트가 남긴 세션이 있으면 정리
         let env = test_env("missing-cli");
         let t0 = Instant::now();
         let err = start_impl(
@@ -1877,11 +1914,11 @@ mod tests {
 
     #[test]
     fn cancel_before_start_prevents_the_cli_from_launching() {
-        cancel();
+        let _ = cancel();
         let first = "00000000-0000-4000-8000-000000000001";
         let second = "00000000-0000-4000-8000-000000000002";
-        assert_eq!(cancel_start(first).unwrap(), true);
-        assert_eq!(cancel_start(second).unwrap(), true);
+        assert!(cancel_start(first).unwrap().cancelled);
+        assert!(cancel_start(second).unwrap().cancelled);
         let env = test_env("cancel-before-start");
         for request_id in [first, second] {
             let err = start_impl(
@@ -1902,6 +1939,16 @@ mod tests {
     #[test]
     fn start_cancellation_rejects_unbounded_request_ids() {
         assert!(cancel_start("not-a-uuid").is_err());
+    }
+
+    #[test]
+    fn cleanup_failure_is_a_warning_after_verified_cancellation() {
+        let outcome = finish_cancel_with_cleanup(Some("isolated-login-path"), |_| {
+            Err("folder locked".into())
+        });
+
+        assert!(outcome.cancelled);
+        assert_eq!(outcome.cleanup_error.as_deref(), Some("folder locked"));
     }
 
     #[test]
@@ -2309,7 +2356,7 @@ mod tests {
     #[test]
     #[ignore]
     fn real_start_login_returns_url() {
-        cancel(); // 앞선 테스트가 남긴 세션 정리
+        let _ = cancel(); // 앞선 테스트가 남긴 세션 정리
         let env = Env::real().unwrap();
         let live_cred = env.live_credential_path(Provider::Claude);
         let before = fs::read(&live_cred).unwrap();
@@ -2324,7 +2371,7 @@ mod tests {
         );
         assert!(prompt.needs_code, "클로드는 코드 입력이 필요하다");
 
-        cancel();
+        let _ = cancel();
         assert_eq!(before, fs::read(&live_cred).unwrap(), "활성 토큰이 변경됐다");
     }
 
@@ -2335,7 +2382,7 @@ mod tests {
     #[test]
     #[ignore]
     fn real_probe_bad_code_screen() {
-        cancel();
+        let _ = cancel();
         let env = Env::real().unwrap();
         let prompt = start(&env, Provider::Claude).unwrap();
         assert!(prompt.needs_code);
@@ -2373,7 +2420,7 @@ mod tests {
                 break;
             }
         }
-        cancel();
+        let _ = cancel();
     }
 
     /// 실환경: 잘못된 코드가 45초 타임아웃이 아니라 몇 초 안에 "코드가 거부"로
@@ -2382,7 +2429,7 @@ mod tests {
     #[test]
     #[ignore]
     fn real_bad_code_fast_fail_keeps_session() {
-        cancel();
+        let _ = cancel();
         let env = Env::real().unwrap();
         let prompt = start(&env, Provider::Claude).unwrap();
         assert!(prompt.needs_code);
@@ -2401,14 +2448,14 @@ mod tests {
             SESSION.lock().unwrap().is_some(),
             "거부 후에도 세션은 유지되어야 한다"
         );
-        cancel();
+        let _ = cancel();
     }
 
     /// 코덱스 device-auth가 주소와 일회용 코드를 주는지 확인한다.
     #[test]
     #[ignore]
     fn real_start_login_codex_device_code() {
-        cancel(); // 앞선 테스트가 남긴 세션 정리
+        let _ = cancel(); // 앞선 테스트가 남긴 세션 정리
         let env = Env::real().unwrap();
         let prompt = start(&env, Provider::Codex).unwrap();
         println!(
@@ -2418,6 +2465,6 @@ mod tests {
         assert!(prompt.url.contains("openai.com"), "주소: {}", prompt.url);
         assert!(prompt.device_code.is_some(), "일회용 코드가 없다");
         assert!(!prompt.needs_code, "코덱스는 위젯 코드 입력이 필요 없다");
-        cancel();
+        let _ = cancel();
     }
 }

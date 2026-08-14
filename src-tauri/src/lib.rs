@@ -379,7 +379,7 @@ async fn await_device_login(session_id: String) -> Result<login::LoginOutcome, S
 }
 
 #[tauri::command]
-fn cancel_login(session_id: String) -> Result<bool, String> {
+fn cancel_login(session_id: String) -> Result<login::CancelOutcome, String> {
     let generation = session_id
         .parse::<u64>()
         .map_err(|_| "로그인 세션 ID가 올바르지 않습니다")?;
@@ -388,7 +388,7 @@ fn cancel_login(session_id: String) -> Result<bool, String> {
 
 /// 로그인 주소를 아직 받는 중이라 세션 ID가 프런트에 도착하지 않았을 때도 취소한다.
 #[tauri::command]
-fn cancel_login_start(request_id: String) -> Result<bool, String> {
+fn cancel_login_start(request_id: String) -> Result<login::CancelOutcome, String> {
     login::cancel_start(&request_id)
 }
 
@@ -1236,7 +1236,7 @@ fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'st
         if let Err(error) = github::cancel_on_shutdown() {
             eprintln!("GitHub 로그인 종료 정리 실패: {error}");
         }
-        login::cancel();
+        let _ = login::cancel();
         if flushing {
             std::thread::sleep(std::time::Duration::from_millis(250));
         }

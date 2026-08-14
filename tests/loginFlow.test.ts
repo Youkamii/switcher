@@ -143,7 +143,7 @@ test("finishes a pending Claude or Codex cancellation with its exact session", (
   );
   assert.match(
     mainSource,
-    /invoke<boolean>\("cancel_login_start", \{\s*requestId: accountRequestId,\s*\}\)[\s\S]*?if \(!cancelled\)[\s\S]*?Promise\.allSettled\(\[start\]\)/,
+    /invoke<CancelOutcome>\("cancel_login_start", \{\s*requestId: accountRequestId,\s*\}\)[\s\S]*?cancelledWithCleanupWarning\(outcome\)[\s\S]*?if \(!cancelled\)[\s\S]*?Promise\.allSettled\(\[start\]\)/,
     "a cancellation recorded before worker startup must close immediately without waiting for a prompt",
   );
 });
@@ -151,13 +151,31 @@ test("finishes a pending Claude or Codex cancellation with its exact session", (
 test("treats an already completed exact login cancellation as idempotent", () => {
   assert.match(
     mainSource,
-    /completionWon = !\(await invoke<boolean>\("cancel_login", \{ sessionId \}\)\)[\s\S]*?if \(completionWon\)[\s\S]*?Promise\.allSettled\(\[accountWait\]\)[\s\S]*?reportLogin\(finished\.value\)/,
+    /invoke<CancelOutcome>\("cancel_login", \{ sessionId \}\)[\s\S]*?completionWon = !cancelledWithCleanupWarning\(outcome\)[\s\S]*?if \(completionWon\)[\s\S]*?Promise\.allSettled\(\[accountWait\]\)[\s\S]*?reportLogin\(finished\.value\)/,
     "when completion wins, the completed account result must be reported instead of pretending cancellation won",
   );
   assert.match(
     mainSource,
     /completionWon = !\(await invoke<boolean>\("github_login_cancel", \{ sessionId \}\)\)[\s\S]*?if \(completionWon\)[\s\S]*?Promise\.allSettled\(\[githubWait\]\)[\s\S]*?ghAdded/,
     "GitHub completion must likewise be reported when it wins the cancellation race",
+  );
+});
+
+test("shows isolated-cleanup warnings after verified cancellation and still closes once", () => {
+  assert.match(
+    mainSource,
+    /function cancelledWithCleanupWarning\(outcome: CancelOutcome\): boolean \{\s*if \(outcome\.cleanup_error\) toast\(outcome\.cleanup_error, true\);\s*return outcome\.cancelled;\s*\}/,
+    "cleanup-only failures must be rendered as warnings without rejecting cancellation",
+  );
+  assert.match(
+    mainSource,
+    /async function cancelActiveLogin[\s\S]*?invoke<CancelOutcome>\("cancel_login_start"[\s\S]*?cancelledWithCleanupWarning\(outcome\)[\s\S]*?finishLogin\(attempt\);/,
+    "the pre-prompt path must report cleanup warnings and then close the login panel",
+  );
+  assert.match(
+    mainSource,
+    /invoke<CancelOutcome>\("cancel_login", \{ sessionId \}\)[\s\S]*?cancelledWithCleanupWarning\(outcome\)[\s\S]*?finishLogin\(attempt\);/,
+    "the post-prompt path must report cleanup warnings and then close the login panel",
   );
 });
 
