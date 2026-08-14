@@ -95,6 +95,14 @@ test("finishes a pending Claude or Codex cancellation with its exact session", (
   );
 });
 
+test("treats an already completed exact login cancellation as idempotent", () => {
+  assert.match(
+    mainSource,
+    /loginCancelingAttempt = attempt;[\s\S]*?await invoke\("cancel_login", \{ sessionId \}\)[\s\S]*?finishLogin\(attempt\);/,
+    "the panel must close when completion wins the backend race before exact cancellation",
+  );
+});
+
 test("blocks account switches while an account login is active", () => {
   assert.match(
     mainSource,

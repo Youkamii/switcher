@@ -586,33 +586,33 @@ fn login_cleanup(generation: u64) -> Result<(), String> {
 }
 
 /// 진행 중 로그인 취소 — gh 프로세스를 죽이고 세션을 비운다
-pub fn login_cancel(generation: u64) -> Result<(), String> {
+pub fn login_cancel(generation: u64) -> Result<bool, String> {
     let mut session = {
         let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
-        let current = guard
-            .as_ref()
-            .ok_or_else(|| "GitHub 로그인이 이미 끝났거나 취소됐습니다".to_string())?;
+        let Some(current) = guard.as_ref() else {
+            return Ok(false);
+        };
         ensure_generation(current.generation, generation)?;
         guard.take().expect("checked above")
     };
     let _ = session.child.kill();
-    Ok(())
+    Ok(true)
 }
 
 /// 프런트가 아직 프롬프트와 세션 ID를 받기 전의 명시적인 취소 경로.
-pub fn login_cancel_start(request_id: &str) -> Result<(), String> {
+pub fn login_cancel_start(request_id: &str) -> Result<bool, String> {
     let mut session = {
         let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
         let Some(current) = guard.as_ref() else {
             // start 명령보다 먼저 도착할 수 있다. 프런트가 start 결과를 기다린 뒤
             // 반환된 세대값으로 다시 취소하므로 여기서는 성공으로 넘긴다.
-            return Ok(());
+            return Ok(false);
         };
         ensure_request_id(&current.request_id, request_id)?;
         guard.take().expect("checked above")
     };
     let _ = session.child.kill();
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -688,6 +688,11 @@ mod tests {
         assert!(ensure_generation(43, 42).is_err());
         assert!(ensure_request_id("request-new", "request-new").is_ok());
         assert!(ensure_request_id("request-new", "request-old").is_err());
+    }
+
+    #[test]
+    fn cancelling_an_already_finished_github_login_is_idempotent() {
+        assert_eq!(login_cancel(u64::MAX).unwrap(), false);
     }
 
     /// 실기기 전용: 인앱 로그인 프롬프트(주소+일회용 코드)가 뜨는지 확인하고

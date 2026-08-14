@@ -1016,7 +1016,9 @@ pub fn cancel() {
     }
 }
 
-pub fn cancel_session(generation: u64) -> Result<(), String> {
+/// 현재 세션을 정확한 세대값으로 취소한다.
+/// `Ok(false)`는 같은 세션의 완료 처리가 먼저 끝나 이미 정리됐다는 뜻이다.
+pub fn cancel_session(generation: u64) -> Result<bool, String> {
     let _completion = LOGIN_COMPLETION_LOCK
         .lock()
         .map_err(|_| "내부 잠금 오류")?;
@@ -1028,10 +1030,10 @@ pub fn cancel_session(generation: u64) -> Result<(), String> {
     match current {
         Some(active) if active == generation => {
             cancel_generation(generation);
-            Ok(())
+            Ok(true)
         }
         Some(_) => Err("이전 로그인 패널의 취소 요청이라 무시했습니다".into()),
-        None => Err("로그인이 이미 끝났거나 취소됐습니다".into()),
+        None => Ok(false),
     }
 }
 
@@ -1099,9 +1101,9 @@ mod tests {
     }
 
     #[test]
-    fn cancel_unknown_session_is_not_reported_as_success() {
+    fn cancel_after_completion_is_idempotent() {
         cancel();
-        assert!(cancel_session(u64::MAX).is_err());
+        assert_eq!(cancel_session(u64::MAX).unwrap(), false);
     }
 
     #[test]

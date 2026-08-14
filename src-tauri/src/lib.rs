@@ -377,7 +377,7 @@ async fn await_device_login(session_id: String) -> Result<login::LoginOutcome, S
 }
 
 #[tauri::command]
-fn cancel_login(session_id: String) -> Result<(), String> {
+fn cancel_login(session_id: String) -> Result<bool, String> {
     let generation = session_id
         .parse::<u64>()
         .map_err(|_| "로그인 세션 ID가 올바르지 않습니다")?;
@@ -959,7 +959,7 @@ async fn github_login_wait(session_id: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-fn github_login_cancel(session_id: String) -> Result<(), String> {
+fn github_login_cancel(session_id: String) -> Result<bool, String> {
     let generation = session_id
         .parse::<u64>()
         .map_err(|_| "GitHub 로그인 세션 ID가 올바르지 않습니다")?;
@@ -967,7 +967,7 @@ fn github_login_cancel(session_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn github_login_cancel_start(request_id: String) -> Result<(), String> {
+fn github_login_cancel_start(request_id: String) -> Result<bool, String> {
     github::login_cancel_start(&request_id)
 }
 
