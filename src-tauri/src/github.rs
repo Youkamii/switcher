@@ -287,6 +287,8 @@ const GH_PROMPT_TIMEOUT: Duration = Duration::from_secs(60);
 const GH_FINISH_TIMEOUT: Duration = Duration::from_secs(600);
 const GH_POLL: Duration = Duration::from_millis(300);
 const GH_OUTPUT_CAP: usize = 256 * 1024;
+const GH_WAIT_TIMEOUT_MESSAGE: &str =
+    "GitHub 로그인 대기 시간(10분)을 넘겼습니다 — 다시 시도하세요";
 /// 자식 종료 후 남은 출력이 버퍼에 도착하기를 기다리는 유예 (login.rs EXIT_FLUSH와 동일).
 /// 이게 없으면 gh가 "Logged in as"를 찍고 즉시 종료할 때 성공을 실패로 오인한다.
 const GH_EXIT_FLUSH: Duration = Duration::from_millis(700);
@@ -386,11 +388,20 @@ fn prompt_timeout_error(generation: u64, tail: &str) -> String {
     )
 }
 
-fn wait_timeout_error(generation: u64) -> String {
-    error_after_cancel(
-        generation,
-        "GitHub 로그인 대기 시간(10분)을 넘겼습니다 — 다시 시도하세요".to_string(),
-    )
+/// wait 경계에서 취소 drain 중 늦은 성공이 보이면 오류로 위장하지 않고 회수한다.
+fn wait_result_after_cancel(generation: u64, error: String) -> Result<String, String> {
+    match login_cancel(generation) {
+        Ok(true) => Err(error),
+        Ok(false) => match poll_login(generation, false, false) {
+            Ok(LoginPoll::Complete(login)) => Ok(login),
+            Ok(_) => Err(error),
+            Err(poll_error) if poll_error.contains("취소") => Err(error),
+            Err(poll_error) => Err(format!("{error} / GitHub 로그인 완료 확인 실패: {poll_error}")),
+        },
+        Err(cancel_error) => Err(format!(
+            "{error} / GitHub 로그인 프로세스 정리 실패: {cancel_error}"
+        )),
+    }
 }
 
 /// gh의 일회용 코드 추출: "! First copy your one-time code: XXXX-XXXX" (실측).
@@ -691,7 +702,10 @@ pub fn login_wait(generation: u64) -> Result<String, String> {
                 completed_at = None;
                 exited_at = None;
                 if Instant::now() > deadline {
-                    return Err(wait_timeout_error(generation));
+                    return wait_result_after_cancel(
+                        generation,
+                        GH_WAIT_TIMEOUT_MESSAGE.to_string(),
+                    );
                 }
             }
             LoginPoll::SuccessRunning => {
@@ -699,8 +713,19 @@ pub fn login_wait(generation: u64) -> Result<String, String> {
                 exited_at = None;
             }
             LoginPoll::ExitedAwaitingOutput => {
-                exited_at.get_or_insert_with(Instant::now);
+                let exited = exited_at.get_or_insert_with(Instant::now);
                 completed_at = None;
+                if exited.elapsed() >= GH_EXIT_FLUSH {
+                    let last = text
+                        .lines()
+                        .rev()
+                        .find(|line| !line.trim().is_empty())
+                        .unwrap_or("");
+                    return wait_result_after_cancel(
+                        generation,
+                        format!("GitHub 로그인 출력 정리가 완료되지 않았습니다: {last}"),
+                    );
+                }
             }
             LoginPoll::ExitedWithoutSuccess => {
                 let last = text
@@ -1439,7 +1464,8 @@ mod tests {
         let child = test_child(fail_kill.clone(), false, false);
         install_test_login_with_child(generation, request_id, b"Waiting\r\n", child);
 
-        let error = wait_timeout_error(generation);
+        let error = wait_result_after_cancel(generation, GH_WAIT_TIMEOUT_MESSAGE.to_string())
+            .unwrap_err();
 
         assert!(error.contains("대기 시간(10분)을 넘겼습니다"));
         assert!(error.contains("종료 요청 실패: injected kill failure"));
@@ -1456,12 +1482,53 @@ mod tests {
         let request_id = "00000000-0000-4000-8000-000000007108";
         install_test_login(generation, request_id, b"Waiting\r\n");
 
-        let error = wait_timeout_error(generation);
+        let error = wait_result_after_cancel(generation, GH_WAIT_TIMEOUT_MESSAGE.to_string())
+            .unwrap_err();
 
         assert_eq!(
             error,
             "GitHub 로그인 대기 시간(10분)을 넘겼습니다 — 다시 시도하세요"
         );
+        assert!(GH_LOGIN.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn wait_boundary_recovers_a_late_success_from_cancel_drain() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let generation = 7_114;
+        let request_id = "00000000-0000-4000-8000-000000007114";
+        let killed = install_test_login(
+            generation,
+            request_id,
+            b"\x1b[32mLogged in as boundary-octocat\x1b[0m\r\n",
+        );
+
+        assert_eq!(
+            wait_result_after_cancel(generation, "stale timeout".to_string()).unwrap(),
+            "boundary-octocat"
+        );
+        assert!(killed.load(Ordering::SeqCst));
+        assert!(GH_LOGIN.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn stalled_reader_is_bounded_and_cleared_after_verified_child_exit() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let generation = 7_115;
+        let request_id = "00000000-0000-4000-8000-000000007115";
+        let child = test_child(Arc::new(AtomicBool::new(false)), true, false);
+        install_test_login_with_child(generation, request_id, b"Finishing\r\n", child);
+        GH_LOGIN
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .reader_done
+            .store(false, Ordering::Release);
+
+        let error = wait_result_after_cancel(generation, "reader stalled".to_string()).unwrap_err();
+
+        assert_eq!(error, "reader stalled");
         assert!(GH_LOGIN.lock().unwrap().is_none());
     }
 
