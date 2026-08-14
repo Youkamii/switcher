@@ -36,6 +36,10 @@ const DEVICE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const POLL: Duration = Duration::from_millis(300);
 /// 자식 프로세스가 종료한 뒤 남은 출력이 버퍼에 도착하기를 기다리는 유예
 const EXIT_FLUSH: Duration = Duration::from_millis(700);
+const TERMINATE_POLL: Duration = Duration::from_millis(50);
+#[cfg(windows)]
+const TASKKILL_WAIT_ATTEMPTS: usize = 61;
+const CHILD_EXIT_WAIT_ATTEMPTS: usize = 41;
 /// 화면 누적 버퍼 상한 (TUI 스피너가 세션 내내 쌓이므로 캡을 둔다)
 const OUTPUT_CAP: usize = 256 * 1024;
 /// 코드 입력 최대 길이 (콘솔 stdin으로 흘러가므로 과대 입력을 막는다)
@@ -656,6 +660,41 @@ fn start_impl(
             }
         };
 
+        // 세션에 보존할 PTY 통로를 자식 실행 전에 모두 준비한다. 실행 뒤 준비에 실패하면
+        // 아직 SESSION에 넣지 못한 자식과 격리 경로를 복구할 방법이 없어진다.
+        let mut reader = match pair.master.try_clone_reader() {
+            Ok(reader) => reader,
+            Err(error) => {
+                return with_isolated_cleanup(Err(format!("콘솔 읽기 실패: {error}")), &config_dir)
+            }
+        };
+        let raw_writer = match pair.master.take_writer() {
+            Ok(writer) => writer,
+            Err(error) => {
+                return with_isolated_cleanup(Err(format!("콘솔 쓰기 실패: {error}")), &config_dir)
+            }
+        };
+        let writer = Arc::new(Mutex::new(raw_writer));
+        let responder = writer.clone();
+
+        let sink = output_buffer();
+        // 세션 세대 표식 — 취소 직후 빠른 재시작 때 이전 세션의 reader 스레드가
+        // 마지막 조각을 새 세션 버퍼에 흘려 넣는 경합 방지 (#18 견고성). 자식을
+        // 실행하기 전에 준비해, 실패한 자식과 격리 경로가 SESSION 밖에 남지 않게 한다.
+        my_gen = {
+            // 버퍼 잠금 안에서 세대를 올리고 비운다 — 이전 reader가 잠금을 쥔 채
+            // 붙이는 중이면 그 뒤에 비워지고, 이후 조각은 세대 불일치로 버려진다
+            let mut acc = match sink.lock() {
+                Ok(acc) => acc,
+                Err(_) => {
+                    return with_isolated_cleanup(Err("내부 잠금 오류".into()), &config_dir)
+                }
+            };
+            let next = SESSION_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            acc.reset();
+            next
+        };
+
         // npm 전역 설치본은 .cmd 셔임이라 cmd 경유로 실행한다
         #[cfg(windows)]
         let mut cmd = {
@@ -672,7 +711,7 @@ fn start_impl(
         }
         cmd.env(env_key, &config_dir);
 
-        let mut child = match pair.slave.spawn_command(cmd) {
+        let child = match pair.slave.spawn_command(cmd) {
             Ok(child) => child,
             Err(error) => {
                 return with_isolated_cleanup(
@@ -686,43 +725,6 @@ fn start_impl(
         };
         drop(pair.slave);
 
-        let mut reader = match pair.master.try_clone_reader() {
-            Ok(reader) => reader,
-            Err(error) => {
-                terminate_child(child.as_mut());
-                return with_isolated_cleanup(Err(format!("콘솔 읽기 실패: {error}")), &config_dir);
-            }
-        };
-        let raw_writer = match pair.master.take_writer() {
-            Ok(writer) => writer,
-            Err(error) => {
-                terminate_child(child.as_mut());
-                return with_isolated_cleanup(Err(format!("콘솔 쓰기 실패: {error}")), &config_dir);
-            }
-        };
-        let writer = Arc::new(Mutex::new(raw_writer));
-        let responder = writer.clone();
-
-        let sink = output_buffer();
-        // 세션 세대 표식 — 취소 직후 빠른 재시작 때 이전 세션의 reader 스레드가
-        // 마지막 조각을 새 세션 버퍼에 흘려 넣는 경합 방지 (#18 견고성). reader는
-        // 붙일 때마다 자기 세대인지 확인하고, 세대가 바뀌었으면 조용히 버리고 끝낸다.
-        // (join으로 풀 수도 있지만, 플랫폼에 따라 read가 늦게 풀리면 취소가 그만큼
-        // 매달린다 — 세대 표식은 기다림 없이 같은 효과를 낸다)
-        my_gen = {
-            // 버퍼 잠금 안에서 세대를 올리고 비운다 — 이전 reader가 잠금을 쥔 채
-            // 붙이는 중이면 그 뒤에 비워지고, 이후 조각은 세대 불일치로 버려진다
-            let mut acc = match sink.lock() {
-                Ok(acc) => acc,
-                Err(_) => {
-                    terminate_child(child.as_mut());
-                    return with_isolated_cleanup(Err("내부 잠금 오류".into()), &config_dir);
-                }
-            };
-            let next = SESSION_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            acc.reset();
-            next
-        };
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             // ESC[6n이 읽기 경계에 걸쳐도 놓치지 않게 직전 꼬리를 이어 검사한다
@@ -1153,76 +1155,206 @@ pub fn wait_device(env: &Env, generation: u64) -> Result<LoginOutcome, String> {
 
 /// 진행 중인 로그인을 중단하고 임시 폴더를 지운다.
 /// Windows에서는 cmd 셔임을 거치므로 트리째 종료해야 CLI가 살아남지 않는다.
-fn take_session(generation: Option<u64>) -> Option<Session> {
-    let mut guard = SESSION.lock().ok()?;
-    if generation.is_some_and(|expected| {
-        guard
-            .as_ref()
-            .is_none_or(|session| session.generation != expected)
-    }) {
-        return None;
+fn wait_for_exit_with<P, S>(
+    label: &str,
+    attempts: usize,
+    require_success: bool,
+    mut probe: P,
+    mut pause: S,
+) -> Result<(), String>
+where
+    P: FnMut() -> Result<Option<bool>, String>,
+    S: FnMut(Duration),
+{
+    let attempts = attempts.max(1);
+    for attempt in 0..attempts {
+        match probe()? {
+            Some(true) => return Ok(()),
+            Some(false) if require_success => {
+                return Err(format!("{label}가 실패 상태로 끝났습니다"));
+            }
+            Some(false) => return Ok(()),
+            None if attempt + 1 < attempts => pause(TERMINATE_POLL),
+            None => {}
+        }
     }
-    let session = guard.take();
+    Err(format!("{label} 종료를 제한 시간 안에 확인하지 못했습니다"))
+}
+
+#[cfg(any(windows, test))]
+fn confirm_tree_kill_or_natural_exit_with<P>(
+    tree_kill: Result<(), String>,
+    mut child_exited: P,
+) -> Result<bool, String>
+where
+    P: FnMut() -> Result<bool, String>,
+{
+    match tree_kill {
+        Ok(()) => Ok(false),
+        Err(tree_kill_error) => match child_exited() {
+            Ok(true) => Ok(true),
+            Ok(false) => Err(tree_kill_error),
+            Err(probe_error) => Err(format!(
+                "{tree_kill_error}; 로그인 프로세스 재확인 실패: {probe_error}"
+            )),
+        },
+    }
+}
+
+#[cfg(windows)]
+fn taskkill_path_from_root(system_root: &Path) -> Result<PathBuf, String> {
+    if !system_root.is_absolute() {
+        return Err("SystemRoot가 절대 경로가 아닙니다".into());
+    }
+    Ok(system_root.join("System32").join("taskkill.exe"))
+}
+
+#[cfg(windows)]
+fn run_windows_taskkill(pid: u32) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let system_root = std::env::var_os("SystemRoot")
+        .ok_or("Windows SystemRoot를 찾지 못해 로그인 프로세스를 종료할 수 없습니다")?;
+    let taskkill_path = taskkill_path_from_root(Path::new(&system_root))?;
+    let mut taskkill = std::process::Command::new(&taskkill_path)
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| format!("{} 실행 실패: {error}", taskkill_path.display()))?;
+    let result = wait_for_exit_with(
+        "taskkill.exe",
+        TASKKILL_WAIT_ATTEMPTS,
+        true,
+        || {
+            taskkill
+                .try_wait()
+                .map(|status| status.map(|status| status.success()))
+                .map_err(|error| format!("taskkill.exe 상태 확인 실패: {error}"))
+        },
+        std::thread::sleep,
+    );
+    if result.is_err() {
+        let _ = taskkill.kill();
+        let _ = taskkill.try_wait();
+    }
+    result
+}
+
+fn terminate_child(child: &mut (dyn Child + Send + Sync)) -> Result<(), String> {
+    match child.try_wait() {
+        Ok(Some(_)) => return Ok(()),
+        Ok(None) => {}
+        Err(error) => return Err(format!("로그인 프로세스 상태 확인 실패: {error}")),
+    }
+
+    #[cfg(windows)]
+    {
+        let pid = child
+            .process_id()
+            .ok_or("로그인 프로세스 ID를 확인하지 못해 트리를 종료할 수 없습니다")?;
+        let already_exited = confirm_tree_kill_or_natural_exit_with(
+            run_windows_taskkill(pid),
+            || {
+                child
+                    .try_wait()
+                    .map(|status| status.is_some())
+                    .map_err(|error| error.to_string())
+            },
+        )?;
+        if already_exited {
+            return Ok(());
+        }
+        return wait_for_exit_with(
+            "로그인 프로세스",
+            CHILD_EXIT_WAIT_ATTEMPTS,
+            false,
+            || {
+                child
+                    .try_wait()
+                    .map(|status| status.map(|_| true))
+                    .map_err(|error| format!("로그인 프로세스 상태 확인 실패: {error}"))
+            },
+            std::thread::sleep,
+        );
+    }
+
+    #[cfg(not(windows))]
+    {
+        // PTY 자식은 세션 리더(setsid)다 — 그룹째 보내야 CLI 자손이 살아남지 않는다
+        #[cfg(unix)]
+        if let Some(pid) = child.process_id() {
+            unsafe {
+                libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+            }
+        }
+        let kill_error = child.kill().err();
+        let wait_result = wait_for_exit_with(
+            "로그인 프로세스",
+            CHILD_EXIT_WAIT_ATTEMPTS,
+            false,
+            || {
+                child
+                    .try_wait()
+                    .map(|status| status.map(|_| true))
+                    .map_err(|error| format!("로그인 프로세스 상태 확인 실패: {error}"))
+            },
+            std::thread::sleep,
+        );
+        match (kill_error, wait_result) {
+            (_, Ok(())) => Ok(()),
+            (Some(kill_error), Err(wait_error)) => Err(format!(
+                "로그인 프로세스 종료 요청 실패: {kill_error}; {wait_error}"
+            )),
+            (None, Err(wait_error)) => Err(wait_error),
+        }
+    }
+}
+
+fn terminate_and_take_with<T, F>(slot: &mut Option<T>, terminate: F) -> Result<Option<T>, String>
+where
+    F: FnOnce(&mut T) -> Result<(), String>,
+{
+    let Some(value) = slot.as_mut() else {
+        return Ok(None);
+    };
+    terminate(value)?;
+    Ok(slot.take())
+}
+
+fn terminate_and_take_session(guard: &mut Option<Session>) -> Result<Option<Session>, String> {
+    let session = terminate_and_take_with(guard, |session| {
+        terminate_child(session.child.as_mut())
+    })?;
     if session.is_some() {
-        // SESSION 잠금 안에서 세대를 끊어야 취소 직후 시작되는 다음 세션보다
-        // 나중에 값을 올려 새 reader까지 죽이는 역전이 생기지 않는다.
+        // 종료 확인과 SESSION 제거가 같은 잠금 구간이어야 실패한 세션을 재시도할 수 있고,
+        // 이전 reader가 다음 세션의 출력 버퍼를 오염시키지 않는다.
         SESSION_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
-    session
+    Ok(session)
 }
 
-fn terminate_child(child: &mut (dyn Child + Send + Sync)) {
-    #[cfg(windows)]
-    if let Some(pid) = child.process_id() {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let taskkill = std::process::Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &pid.to_string()])
-            .creation_flags(CREATE_NO_WINDOW)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        if let Ok(mut taskkill) = taskkill {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-            while std::time::Instant::now() < deadline {
-                match taskkill.try_wait() {
-                    Ok(Some(_)) | Err(_) => break,
-                    Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
-                }
-            }
-            let _ = taskkill.kill();
-            let _ = taskkill.try_wait();
-        }
-    }
-    // PTY 자식은 세션 리더(setsid)다 — 그룹째 보내야 CLI 자손이 살아남지 않는다
-    #[cfg(unix)]
-    if let Some(pid) = child.process_id() {
-        unsafe {
-            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
-        }
-    }
-    let _ = child.kill();
-    // 종료·업데이트 재시작을 무기한 붙잡지 않는다. 정상적인 SIGKILL/taskkill 뒤에는
-    // 보통 첫 틱에 끝나며, 비정상 자식이어도 2초 뒤 정리를 다음 시작에 맡긴다.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while std::time::Instant::now() < deadline {
-        match child.try_wait() {
-            Ok(Some(_)) | Err(_) => break,
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
-        }
-    }
-}
-
-fn terminate_session(mut session: Session) -> Result<(), String> {
-    terminate_child(session.child.as_mut());
+fn cleanup_terminated_session(session: Session) -> Result<(), String> {
     cleanup_isolated(&session.config_dir).map_err(|error| {
         format!("로그인 프로세스는 종료했지만 격리 로그인 정리에 실패했습니다: {error}")
     })
 }
 
 fn cancel_generation(generation: u64) -> Result<bool, String> {
-    if let Some(session) = take_session(Some(generation)) {
-        terminate_session(session)?;
+    let session = {
+        let mut guard = SESSION.lock().map_err(|_| "내부 잠금 오류")?;
+        if guard
+            .as_ref()
+            .is_none_or(|session| session.generation != generation)
+        {
+            return Ok(false);
+        }
+        terminate_and_take_session(&mut guard)?
+    };
+    if let Some(session) = session {
+        cleanup_terminated_session(session)?;
         Ok(true)
     } else {
         Ok(false)
@@ -1241,11 +1373,16 @@ pub fn cancel() -> bool {
     let Ok(_completion) = LOGIN_COMPLETION_LOCK.lock() else {
         return false;
     };
-    if let Some(session) = take_session(None) {
-        terminate_session(session).is_ok()
-    } else {
-        false
-    }
+    let session = {
+        let Ok(mut guard) = SESSION.lock() else {
+            return false;
+        };
+        match terminate_and_take_session(&mut guard) {
+            Ok(session) => session,
+            Err(_) => return false,
+        }
+    };
+    session.is_some_and(|session| cleanup_terminated_session(session).is_ok())
 }
 
 /// 프롬프트가 오기 전 취소. 시작 작업보다 먼저 도착하면 request ID를 기억해
@@ -1258,7 +1395,9 @@ pub fn cancel_start(request_id: &str) -> Result<bool, String> {
     let session = {
         let mut guard = SESSION.lock().map_err(|_| "내부 잠금 오류")?;
         match guard.as_ref() {
-            Some(active) if active.request_id == request_id => guard.take(),
+            Some(active) if active.request_id == request_id => {
+                terminate_and_take_session(&mut guard)?
+            }
             Some(_) => return Err("이전 로그인 시작 취소 요청이라 무시했습니다".into()),
             None => {
                 let mut cancelled = CANCELLED_START_REQUESTS
@@ -1275,8 +1414,7 @@ pub fn cancel_start(request_id: &str) -> Result<bool, String> {
         }
     };
     if let Some(session) = session {
-        SESSION_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        terminate_session(session)?;
+        cleanup_terminated_session(session)?;
     }
     Ok(true)
 }
@@ -1628,6 +1766,101 @@ mod tests {
     #[test]
     fn start_cancellation_rejects_unbounded_request_ids() {
         assert!(cancel_start("not-a-uuid").is_err());
+    }
+
+    #[test]
+    fn verified_normal_exit_releases_cancelled_session() {
+        use std::cell::Cell;
+
+        let probes = Cell::new(0);
+        let pauses = Cell::new(0);
+        let mut session = Some("isolated-login-path");
+        let taken = terminate_and_take_with(&mut session, |_| {
+            wait_for_exit_with(
+                "로그인 프로세스",
+                3,
+                false,
+                || {
+                    let probe = probes.get() + 1;
+                    probes.set(probe);
+                    Ok((probe == 2).then_some(true))
+                },
+                |_| pauses.set(pauses.get() + 1),
+            )
+        })
+        .unwrap();
+
+        assert_eq!(taken, Some("isolated-login-path"));
+        assert!(session.is_none());
+        assert_eq!(probes.get(), 2);
+        assert_eq!(pauses.get(), 1);
+    }
+
+    #[test]
+    fn taskkill_failure_keeps_session_for_retry() {
+        let mut session = Some("isolated-login-path");
+        let error = terminate_and_take_with(&mut session, |_| {
+            let taskkill = wait_for_exit_with(
+                "taskkill.exe",
+                1,
+                true,
+                || Ok(Some(false)),
+                |_| {},
+            );
+            confirm_tree_kill_or_natural_exit_with(taskkill, || Ok(false)).map(|_| ())
+        })
+        .unwrap_err();
+
+        assert!(error.contains("taskkill.exe"));
+        assert!(error.contains("실패 상태"));
+        assert_eq!(session, Some("isolated-login-path"));
+    }
+
+    #[test]
+    fn taskkill_race_accepts_an_already_exited_child() {
+        let already_exited = confirm_tree_kill_or_natural_exit_with(
+            Err("taskkill.exe가 실패 상태로 끝났습니다".into()),
+            || Ok(true),
+        )
+        .unwrap();
+
+        assert!(already_exited);
+    }
+
+    #[test]
+    fn child_exit_timeout_keeps_session_for_retry() {
+        use std::cell::Cell;
+
+        let probes = Cell::new(0);
+        let pauses = Cell::new(0);
+        let mut session = Some("isolated-login-path");
+        let error = terminate_and_take_with(&mut session, |_| {
+            wait_for_exit_with(
+                "로그인 프로세스",
+                3,
+                false,
+                || {
+                    probes.set(probes.get() + 1);
+                    Ok(None)
+                },
+                |_| pauses.set(pauses.get() + 1),
+            )
+        })
+        .unwrap_err();
+
+        assert!(error.contains("제한 시간"));
+        assert_eq!(session, Some("isolated-login-path"));
+        assert_eq!(probes.get(), 3);
+        assert_eq!(pauses.get(), 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn taskkill_path_uses_absolute_system32_binary() {
+        let path = taskkill_path_from_root(Path::new(r"C:\Windows")).unwrap();
+        assert!(path.is_absolute());
+        assert_eq!(path, PathBuf::from(r"C:\Windows\System32\taskkill.exe"));
+        assert!(taskkill_path_from_root(Path::new("Windows")).is_err());
     }
 
     #[test]
