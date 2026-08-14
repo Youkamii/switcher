@@ -342,11 +342,13 @@ async fn fetch_usage(provider: String, profile: Option<String>) -> Result<usage:
 /// 다른 활성 계정은 건드리지 않는다. 같은 활성 계정을 재로그인한 경우에만 새 토큰을
 /// 활성 위치에도 반영해 다음 전환 백업이 폐기된 옛 토큰을 되살리지 않게 한다.
 #[tauri::command]
-async fn start_login(provider: String) -> Result<login::LoginPrompt, String> {
+async fn start_login(provider: String, request_id: String) -> Result<login::LoginPrompt, String> {
     let provider = Provider::parse(&provider)?;
-    tauri::async_runtime::spawn_blocking(move || login::start(&Env::real()?, provider))
-        .await
-        .map_err(|e| format!("로그인 시작 실패: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        login::start_requested(&Env::real()?, provider, request_id)
+    })
+    .await
+    .map_err(|e| format!("로그인 시작 실패: {e}"))?
 }
 
 /// 브라우저에서 받은 코드를 넘겨 로그인을 끝낸다 (클로드)
@@ -386,8 +388,8 @@ fn cancel_login(session_id: String) -> Result<bool, String> {
 
 /// 로그인 주소를 아직 받는 중이라 세션 ID가 프런트에 도착하지 않았을 때도 취소한다.
 #[tauri::command]
-fn cancel_login_start() -> bool {
-    login::cancel()
+fn cancel_login_start(request_id: String) -> Result<bool, String> {
+    login::cancel_start(&request_id)
 }
 
 /// 데모·스크린샷용: SWITCHER_VIEW=normal|locked|compact 로 초기 보기 모드를 강제한다

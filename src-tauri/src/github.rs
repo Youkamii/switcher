@@ -15,10 +15,11 @@
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
+use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -273,6 +274,9 @@ struct GhLoginSession {
 }
 
 static GH_LOGIN: Mutex<Option<GhLoginSession>> = Mutex::new(None);
+static GH_CANCELLED_START_REQUESTS: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+const MAX_PENDING_START_CANCELLATIONS: usize = 32;
 static GH_LOGIN_GEN: AtomicU64 = AtomicU64::new(0);
 
 /// 로그인 링크·코드가 뜰 때까지 / 브라우저 완료까지 기다리는 시간 (login.rs와 동일 기준)
@@ -299,6 +303,21 @@ fn ensure_request_id(active: &str, expected: &str) -> Result<(), String> {
     } else {
         Err("이전 GitHub 로그인 시작 취소 요청이라 무시했습니다".to_string())
     }
+}
+
+fn validate_request_id(request_id: &str) -> Result<(), String> {
+    let bytes = request_id.as_bytes();
+    let valid = bytes.len() == 36
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                *byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        });
+    valid
+        .then_some(())
+        .ok_or_else(|| "잘못된 GitHub 로그인 요청 ID입니다".to_string())
 }
 
 fn gh_send(generation: u64, bytes: &[u8]) -> Result<(), String> {
@@ -356,12 +375,21 @@ fn gh_login_take_buffer(generation: u64) -> Result<Vec<u8>, String> {
 
 /// gh auth login을 PTY로 시작해 주소와 일회용 코드를 돌려준다
 pub fn login_start(request_id: String) -> Result<GhLoginPrompt, String> {
+    validate_request_id(&request_id)?;
     let Some(bin) = gh_bin() else {
         return Err("gh CLI를 찾을 수 없습니다 — GitHub CLI를 설치하세요".to_string());
     };
     let my_gen;
     {
         let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
+        {
+            let mut cancelled = GH_CANCELLED_START_REQUESTS
+                .lock()
+                .map_err(|_| "내부 잠금 오류")?;
+            if cancelled.remove(&request_id) {
+                return Err("GitHub 로그인을 취소했습니다".into());
+            }
+        }
         if let Some(session) = guard.as_mut() {
             // 좀비 세션 리퍼: 웹뷰 리로드 등으로 wait/cancel이 못 불린 채 gh가 이미
             // 종료했으면 걷어내고 새로 시작한다 — 앱 재시작 없이 복구 (red-review)
@@ -601,12 +629,20 @@ pub fn login_cancel(generation: u64) -> Result<bool, String> {
 
 /// 프런트가 아직 프롬프트와 세션 ID를 받기 전의 명시적인 취소 경로.
 pub fn login_cancel_start(request_id: &str) -> Result<bool, String> {
+    validate_request_id(request_id)?;
     let mut session = {
         let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
         let Some(current) = guard.as_ref() else {
-            // start 명령보다 먼저 도착할 수 있다. 프런트가 start 결과를 기다린 뒤
-            // 반환된 세대값으로 다시 취소하므로 여기서는 성공으로 넘긴다.
-            return Ok(false);
+            let mut cancelled = GH_CANCELLED_START_REQUESTS
+                .lock()
+                .map_err(|_| "내부 잠금 오류")?;
+            if cancelled.len() >= MAX_PENDING_START_CANCELLATIONS
+                && !cancelled.contains(request_id)
+            {
+                return Err("대기 중인 GitHub 로그인 취소 요청이 너무 많습니다".into());
+            }
+            cancelled.insert(request_id.to_string());
+            return Ok(true);
         };
         ensure_request_id(&current.request_id, request_id)?;
         guard.take().expect("checked above")
@@ -695,12 +731,29 @@ mod tests {
         assert_eq!(login_cancel(u64::MAX).unwrap(), false);
     }
 
+    #[test]
+    fn pending_github_start_cancellations_do_not_overwrite_each_other() {
+        let first = "00000000-0000-4000-8000-000000000011";
+        let second = "00000000-0000-4000-8000-000000000012";
+        assert_eq!(login_cancel_start(first).unwrap(), true);
+        assert_eq!(login_cancel_start(second).unwrap(), true);
+        let mut cancelled = GH_CANCELLED_START_REQUESTS.lock().unwrap();
+        assert!(cancelled.remove(first));
+        assert!(cancelled.remove(second));
+    }
+
+    #[test]
+    fn pending_github_start_cancellation_rejects_unbounded_ids() {
+        assert!(login_cancel_start("not-a-uuid").is_err());
+    }
+
     /// 실기기 전용: 인앱 로그인 프롬프트(주소+일회용 코드)가 뜨는지 확인하고
     /// 즉시 취소한다 — 계정 무변경, 발급된 코드는 브라우저 입력 없이는 무효
     #[test]
     #[ignore]
     fn real_github_login_prompt_then_cancel() {
-        let prompt = login_start("real-test".to_string()).expect("로그인 프롬프트 실패");
+        let prompt = login_start("00000000-0000-4000-8000-000000000099".to_string())
+            .expect("로그인 프롬프트 실패");
         println!("url={} code={}", prompt.url, prompt.device_code);
         assert!(prompt.url.contains("github.com"));
         assert!(prompt.device_code.contains('-'));

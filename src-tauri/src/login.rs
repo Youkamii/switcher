@@ -13,10 +13,11 @@
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::accounts::{
@@ -65,6 +66,7 @@ pub struct LoginOutcome {
 
 struct Session {
     generation: u64,
+    request_id: String,
     delete_epoch: u64,
     provider: Provider,
     config_dir: PathBuf,
@@ -76,6 +78,10 @@ struct Session {
 }
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+/// spawn_blocking 작업이 실제로 시작되기 전에 들어온 취소 요청을 request ID별로 기억한다.
+static CANCELLED_START_REQUESTS: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+const MAX_PENDING_START_CANCELLATIONS: usize = 32;
 /// CLI 종료 뒤 자격증명을 반영하는 마지막 단계와 취소를 한 순서로 만든다.
 /// 먼저 잠근 쪽만 세션을 가져가므로 "취소 성공 뒤 가져오기"가 생기지 않는다.
 static LOGIN_COMPLETION_LOCK: Mutex<()> = Mutex::new(());
@@ -404,8 +410,33 @@ fn early_exit_error(provider: Provider) -> String {
 }
 
 /// 로그인을 시작하고 화면에 뜬 주소를 돌려준다
+#[cfg(test)]
 pub fn start(env: &Env, provider: Provider) -> Result<LoginPrompt, String> {
-    start_impl(env, provider, cli_args(provider))
+    start_impl(env, provider, cli_args(provider), String::new())
+}
+
+pub fn start_requested(
+    env: &Env,
+    provider: Provider,
+    request_id: String,
+) -> Result<LoginPrompt, String> {
+    validate_request_id(&request_id)?;
+    start_impl(env, provider, cli_args(provider), request_id)
+}
+
+fn validate_request_id(request_id: &str) -> Result<(), String> {
+    let bytes = request_id.as_bytes();
+    let valid = bytes.len() == 36
+        && bytes.iter().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                *byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        });
+    valid
+        .then_some(())
+        .ok_or_else(|| "잘못된 로그인 요청 ID입니다".to_string())
 }
 
 /// start의 본체 — 실행 명령을 주입받는다.
@@ -414,6 +445,7 @@ fn start_impl(
     env: &Env,
     provider: Provider,
     (program, args, env_key): (&str, &[&str], &str),
+    request_id: String,
 ) -> Result<LoginPrompt, String> {
     let my_gen;
     // 이전 로그인의 마지막 가져오기가 끝난 뒤에만 다음 격리 세션을 등록한다.
@@ -421,6 +453,14 @@ fn start_impl(
     let completion = LOGIN_COMPLETION_LOCK
         .lock()
         .map_err(|_| "내부 잠금 오류")?;
+    {
+        let mut cancelled = CANCELLED_START_REQUESTS
+            .lock()
+            .map_err(|_| "내부 잠금 오류")?;
+        if cancelled.remove(&request_id) {
+            return Err("로그인을 취소했습니다".into());
+        }
+    }
     // CLI/PTY 준비가 길어지는 동안 일어난 삭제도 "로그인 시작 뒤 삭제"로 잡아야 한다.
     // 세션 등록 직전에 찍으면 그 사이 삭제가 tombstone보다 먼저가 되어 되살아난다.
     let delete_epoch = deletion_snapshot();
@@ -555,6 +595,7 @@ fn start_impl(
 
         *guard = Some(Session {
             generation: my_gen,
+            request_id,
             delete_epoch,
             provider,
             config_dir,
@@ -1025,6 +1066,39 @@ pub fn cancel() -> bool {
     }
 }
 
+/// 프롬프트가 오기 전 취소. 시작 작업보다 먼저 도착하면 request ID를 기억해
+/// 뒤늦게 실행된 작업이 CLI를 만들기 전에 중단한다.
+pub fn cancel_start(request_id: &str) -> Result<bool, String> {
+    validate_request_id(request_id)?;
+    let _completion = LOGIN_COMPLETION_LOCK
+        .lock()
+        .map_err(|_| "내부 잠금 오류")?;
+    let session = {
+        let mut guard = SESSION.lock().map_err(|_| "내부 잠금 오류")?;
+        match guard.as_ref() {
+            Some(active) if active.request_id == request_id => guard.take(),
+            Some(_) => return Err("이전 로그인 시작 취소 요청이라 무시했습니다".into()),
+            None => {
+                let mut cancelled = CANCELLED_START_REQUESTS
+                    .lock()
+                    .map_err(|_| "내부 잠금 오류")?;
+                if cancelled.len() >= MAX_PENDING_START_CANCELLATIONS
+                    && !cancelled.contains(request_id)
+                {
+                    return Err("대기 중인 로그인 취소 요청이 너무 많습니다".into());
+                }
+                cancelled.insert(request_id.to_string());
+                return Ok(true);
+            }
+        }
+    };
+    if let Some(session) = session {
+        SESSION_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        terminate_session(session);
+    }
+    Ok(true)
+}
+
 /// 현재 세션을 정확한 세대값으로 취소한다.
 /// `Ok(false)`는 같은 세션의 완료 처리가 먼저 끝나 이미 정리됐다는 뜻이다.
 pub fn cancel_session(generation: u64) -> Result<bool, String> {
@@ -1331,6 +1405,7 @@ mod tests {
             &env,
             Provider::Claude,
             ("switcher-no-such-cli-xyz", [].as_slice(), "CLAUDE_CONFIG_DIR"),
+            String::new(),
         )
         .unwrap_err();
         // 예전에는 PROMPT_TIMEOUT(60초)을 꽉 채운 뒤에야 실패했다
@@ -1345,6 +1420,35 @@ mod tests {
             .map(|entries| entries.count())
             .unwrap_or(0);
         assert_eq!(leftover, 0, "임시 로그인 폴더가 정리돼야 한다");
+    }
+
+    #[test]
+    fn cancel_before_start_prevents_the_cli_from_launching() {
+        cancel();
+        let first = "00000000-0000-4000-8000-000000000001";
+        let second = "00000000-0000-4000-8000-000000000002";
+        assert_eq!(cancel_start(first).unwrap(), true);
+        assert_eq!(cancel_start(second).unwrap(), true);
+        let env = test_env("cancel-before-start");
+        for request_id in [first, second] {
+            let err = start_impl(
+                &env,
+                Provider::Codex,
+                ("must-not-launch", [].as_slice(), "CODEX_HOME"),
+                request_id.to_string(),
+            )
+            .unwrap_err();
+            assert!(err.contains("취소"));
+        }
+        let leftover = fs::read_dir(env.store.join("_login"))
+            .map(|entries| entries.count())
+            .unwrap_or(0);
+        assert_eq!(leftover, 0);
+    }
+
+    #[test]
+    fn start_cancellation_rejects_unbounded_request_ids() {
+        assert!(cancel_start("not-a-uuid").is_err());
     }
 
     #[cfg(not(windows))]

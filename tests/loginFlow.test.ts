@@ -90,8 +90,13 @@ test("routes GitHub wait and post-prompt cancel through the exact backend sessio
 test("finishes a pending Claude or Codex cancellation with its exact session", () => {
   assert.match(
     mainSource,
-    /invoke<boolean>\("cancel_login_start"\)[\s\S]*?Promise\.allSettled\(\[start\]\)[\s\S]*?"needs_code" in started\.value[\s\S]*?invoke<boolean>\("cancel_login", \{\s*sessionId: started\.value\.session_id,/,
-    "a start that registers after the first cancel must be cancelled by its returned session ID",
+    /activeAccountRequestId = provider === "github" \? null : crypto\.randomUUID\(\)[\s\S]*?invoke<LoginPrompt>\("start_login", \{ provider, requestId \}\)/,
+    "each Claude or Codex start must carry its frontend request ID",
+  );
+  assert.match(
+    mainSource,
+    /invoke<boolean>\("cancel_login_start", \{\s*requestId: accountRequestId,\s*\}\)[\s\S]*?if \(!cancelled\)[\s\S]*?Promise\.allSettled\(\[start\]\)/,
+    "a cancellation recorded before worker startup must close immediately without waiting for a prompt",
   );
 });
 

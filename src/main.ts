@@ -78,6 +78,7 @@ let loginSessionId: string | null = null;
 let loginAttempt = 0;
 let activeLoginAttempt = 0;
 let activeLoginProvider: LoginProvider | null = null;
+let activeAccountRequestId: string | null = null;
 let activeGithubRequestId: string | null = null;
 let loginCancelingAttempt: number | null = null;
 let activeLoginStart: Promise<LoginPrompt | GithubLoginPrompt> | null = null;
@@ -380,6 +381,7 @@ function finishLogin(attempt: number) {
   loginOpen = false;
   loginSessionId = null;
   activeLoginProvider = null;
+  activeAccountRequestId = null;
   activeGithubRequestId = null;
   activeLoginStart = null;
   activeAccountWait = null;
@@ -398,6 +400,7 @@ async function cancelActiveLogin(attempt: number) {
 
   const provider = activeLoginProvider;
   const sessionId = loginSessionId;
+  const accountRequestId = activeAccountRequestId;
   const githubRequestId = activeGithubRequestId;
   const start = activeLoginStart;
   const accountWait = activeAccountWait;
@@ -414,34 +417,29 @@ async function cancelActiveLogin(attempt: number) {
         let cancelled = await invoke<boolean>("github_login_cancel_start", {
           requestId: githubRequestId,
         });
-        const [started] = await Promise.allSettled([start]);
-        if (
-          !cancelled &&
-          started.status === "fulfilled" &&
-          started.value &&
-          "session_id" in started.value
-        ) {
-          cancelled = await invoke<boolean>("github_login_cancel", {
-            sessionId: started.value.session_id,
-          });
+        if (!cancelled) {
+          const [started] = await Promise.allSettled([start]);
+          if (started.status === "fulfilled" && started.value && "session_id" in started.value) {
+            cancelled = await invoke<boolean>("github_login_cancel", {
+              sessionId: started.value.session_id,
+            });
+          }
         }
       }
     } else if (sessionId) {
       completionWon = !(await invoke<boolean>("cancel_login", { sessionId }));
     } else {
-      let cancelled = await invoke<boolean>("cancel_login_start");
+      if (!accountRequestId) throw new Error("로그인 요청 ID가 없습니다");
+      const cancelled = await invoke<boolean>("cancel_login_start", {
+        requestId: accountRequestId,
+      });
       // cancel_login_start가 backend 세션 등록보다 먼저 도착했을 수 있다.
-      // start가 뒤늦게 성공하면 반환된 정확한 세션을 한 번 더 취소한다.
-      const [started] = await Promise.allSettled([start]);
-      if (
-        !cancelled &&
-        started.status === "fulfilled" &&
-        started.value &&
-        "needs_code" in started.value
-      ) {
-        cancelled = await invoke<boolean>("cancel_login", {
-          sessionId: started.value.session_id,
-        });
+      // backend가 request ID를 기억하므로 작업 스레드가 늦게 떠도 CLI를 만들지 않는다.
+      if (!cancelled) {
+        const [started] = await Promise.allSettled([start]);
+        if (started.status === "fulfilled" && started.value && "needs_code" in started.value) {
+          await invoke<boolean>("cancel_login", { sessionId: started.value.session_id });
+        }
       }
     }
     // 완료 처리가 먼저 세션을 가져갔다면 취소로 위장하지 않는다. 먼저 시작된
@@ -476,6 +474,7 @@ function beginLogin(provider: LoginProvider): number {
   loginOpen = true;
   loginSessionId = null;
   activeLoginProvider = provider;
+  activeAccountRequestId = provider === "github" ? null : crypto.randomUUID();
   activeGithubRequestId = provider === "github" ? crypto.randomUUID() : null;
   activeLoginStart = null;
   activeAccountWait = null;
@@ -636,8 +635,9 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
     addBtn.textContent = t("gettingLoginUrl");
     row.hidden = true;
     const attempt = beginLogin(provider);
+    const requestId = activeAccountRequestId!;
     try {
-      const start = invoke<LoginPrompt>("start_login", { provider });
+      const start = invoke<LoginPrompt>("start_login", { provider, requestId });
       activeLoginStart = start;
       const prompt = await start;
       if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) {
