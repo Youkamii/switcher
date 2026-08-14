@@ -8,7 +8,7 @@
   <a href="https://github.com/Youkamii/switcher/releases/latest"><img src="https://img.shields.io/github/v/release/Youkamii/switcher?style=flat-square&label=release&color=8B5CF6" alt="latest release" /></a>
   <a href="https://www.npmjs.com/package/switcher-widget"><img src="https://img.shields.io/npm/v/switcher-widget?style=flat-square&color=CB3837" alt="npm version" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Youkamii/switcher?style=flat-square&color=22C55E" alt="MIT License" /></a>
-  <a href="https://github.com/Youkamii/switcher/stargazers"><img src="https://img.shields.io/github/stars/Youkamii/switcher?style=flat-square&color=F59E0B" alt="GitHub stars" /></a>
+  <!-- <a href="https://github.com/Youkamii/switcher/stargazers"><img src="https://img.shields.io/github/stars/Youkamii/switcher?style=flat-square&color=F59E0B" alt="GitHub stars" /></a> -->
 </p>
 
 <p align="center">
