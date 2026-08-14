@@ -1233,6 +1233,9 @@ fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'st
         .unwrap_or(false);
     std::thread::spawn(move || {
         // 프로세스 트리 종료·임시 폴더 정리는 느릴 수 있으므로 UI 스레드 밖에서 한다.
+        if let Err(error) = github::cancel_on_shutdown() {
+            eprintln!("GitHub 로그인 종료 정리 실패: {error}");
+        }
         login::cancel();
         if flushing {
             std::thread::sleep(std::time::Duration::from_millis(250));

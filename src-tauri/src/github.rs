@@ -290,6 +290,8 @@ const GH_OUTPUT_CAP: usize = 256 * 1024;
 /// 자식 종료 후 남은 출력이 버퍼에 도착하기를 기다리는 유예 (login.rs EXIT_FLUSH와 동일).
 /// 이게 없으면 gh가 "Logged in as"를 찍고 즉시 종료할 때 성공을 실패로 오인한다.
 const GH_EXIT_FLUSH: Duration = Duration::from_millis(700);
+const GH_TERMINATE_TIMEOUT: Duration = Duration::from_secs(2);
+const GH_TERMINATE_POLL: Duration = Duration::from_millis(50);
 
 /// 진행 중 세션의 PTY에 입력을 보낸다 (Enter·자동 응답 공용)
 fn ensure_generation(active: u64, expected: u64) -> Result<(), String> {
@@ -453,11 +455,6 @@ pub fn login_start(request_id: String) -> Result<GhLoginPrompt, String> {
         ] {
             cmd.arg(arg);
         }
-        let child = pair
-            .slave
-            .spawn_command(cmd)
-            .map_err(|e| format!("gh 실행 실패: {e}"))?;
-        drop(pair.slave);
         let mut reader = pair
             .master
             .try_clone_reader()
@@ -467,6 +464,12 @@ pub fn login_start(request_id: String) -> Result<GhLoginPrompt, String> {
                 .take_writer()
                 .map_err(|e| format!("콘솔 쓰기 실패: {e}"))?,
         ));
+        // reader/writer 준비를 먼저 끝내야 그 사이 오류가 나도 이미 띄운 gh가 남지 않는다.
+        let child = pair
+            .slave
+            .spawn_command(cmd)
+            .map_err(|e| format!("gh 실행 실패: {e}"))?;
+        drop(pair.slave);
         let buffer: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
         let responder = writer.clone();
         let sink = buffer.clone();
@@ -638,50 +641,164 @@ fn login_cleanup(generation: u64) -> Result<(), String> {
     Ok(())
 }
 
-/// 진행 중 로그인 취소 — gh 프로세스를 죽이고 세션을 비운다
+fn child_has_exited(child: &mut (dyn Child + Send + Sync)) -> Result<bool, String> {
+    child
+        .try_wait()
+        .map(|status| status.is_some())
+        .map_err(|error| format!("gh 종료 상태 확인 실패: {error}"))
+}
+
+#[cfg(windows)]
+fn terminate_windows_process_tree(pid: u32) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let taskkill = PathBuf::from(
+        std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()),
+    )
+    .join("System32")
+    .join("taskkill.exe");
+    let mut process = std::process::Command::new(&taskkill)
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| format!("gh 프로세스 트리 종료 실행 실패: {error}"))?;
+
+    let deadline = Instant::now() + GH_TERMINATE_TIMEOUT;
+    loop {
+        match process.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                return Err(format!("gh 프로세스 트리 종료 실패: {status}"));
+            }
+            Err(error) => return Err(format!("gh 프로세스 트리 종료 확인 실패: {error}")),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(GH_TERMINATE_POLL),
+            Ok(None) => {
+                let _ = process.kill();
+                let _ = process.wait();
+                return Err("gh 프로세스 트리 종료 시간이 초과됐습니다".into());
+            }
+        }
+    }
+}
+
+fn request_child_termination(child: &mut (dyn Child + Send + Sync)) -> Result<(), String> {
+    #[cfg(windows)]
+    if let Some(pid) = child.process_id() {
+        return terminate_windows_process_tree(pid);
+    }
+
+    #[cfg(unix)]
+    if let Some(pid) = child.process_id() {
+        let result = unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+        if result == 0 {
+            return Ok(());
+        }
+    }
+
+    child
+        .kill()
+        .map_err(|error| format!("gh 종료 요청 실패: {error}"))
+}
+
+fn terminate_child_verified_with<F, K>(
+    child: &mut (dyn Child + Send + Sync),
+    poll_attempts: usize,
+    mut pause: F,
+    request_termination: K,
+) -> Result<(), String>
+where
+    F: FnMut(),
+    K: FnOnce(&mut (dyn Child + Send + Sync)) -> Result<(), String>,
+{
+    if child_has_exited(child)? {
+        return Ok(());
+    }
+
+    if let Err(error) = request_termination(child) {
+        // 상태 확인과 종료 요청 사이에 자연 종료했으면 취소는 이미 달성됐다.
+        if child_has_exited(child)? {
+            return Ok(());
+        }
+        return Err(error);
+    }
+
+    for attempt in 0..=poll_attempts {
+        if child_has_exited(child)? {
+            return Ok(());
+        }
+        if attempt < poll_attempts {
+            pause();
+        }
+    }
+    Err("gh 프로세스가 제한 시간 안에 종료되지 않았습니다".into())
+}
+
+fn terminate_child_verified(child: &mut (dyn Child + Send + Sync)) -> Result<(), String> {
+    let poll_attempts = (GH_TERMINATE_TIMEOUT.as_millis() / GH_TERMINATE_POLL.as_millis()) as usize;
+    terminate_child_verified_with(
+        child,
+        poll_attempts,
+        || std::thread::sleep(GH_TERMINATE_POLL),
+        request_child_termination,
+    )
+}
+
+fn terminate_active_session(guard: &mut Option<GhLoginSession>) -> Result<bool, String> {
+    let Some(session) = guard.as_mut() else {
+        return Ok(false);
+    };
+    terminate_child_verified(session.child.as_mut())?;
+    *guard = None;
+    Ok(true)
+}
+
+/// 진행 중 로그인 취소 — gh 프로세스 종료를 확인한 뒤에만 세션을 비운다.
 pub fn login_cancel(generation: u64) -> Result<bool, String> {
     let _completion = GH_COMPLETION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
-    let mut session = {
-        let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
-        let Some(current) = guard.as_ref() else {
-            return Ok(false);
-        };
-        ensure_generation(current.generation, generation)?;
-        if session_login(current)?.is_some() {
-            return Ok(false);
-        }
-        guard.take().expect("checked above")
+    let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
+    let Some(current) = guard.as_ref() else {
+        return Ok(false);
     };
-    let _ = session.child.kill();
-    Ok(true)
+    ensure_generation(current.generation, generation)?;
+    if session_login(current)?.is_some() {
+        return Ok(false);
+    }
+    terminate_active_session(&mut guard)
 }
 
 /// 프런트가 아직 프롬프트와 세션 ID를 받기 전의 명시적인 취소 경로.
 pub fn login_cancel_start(request_id: &str) -> Result<bool, String> {
     validate_request_id(request_id)?;
     let _completion = GH_COMPLETION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
-    let mut session = {
-        let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
-        let Some(current) = guard.as_ref() else {
-            let mut cancelled = GH_CANCELLED_START_REQUESTS
-                .lock()
-                .map_err(|_| "내부 잠금 오류")?;
-            if cancelled.len() >= MAX_PENDING_START_CANCELLATIONS
-                && !cancelled.contains(request_id)
-            {
-                return Err("대기 중인 GitHub 로그인 취소 요청이 너무 많습니다".into());
-            }
-            cancelled.insert(request_id.to_string());
-            return Ok(true);
-        };
-        ensure_request_id(&current.request_id, request_id)?;
-        if session_login(current)?.is_some() {
-            return Ok(false);
+    let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
+    let Some(current) = guard.as_ref() else {
+        let mut cancelled = GH_CANCELLED_START_REQUESTS
+            .lock()
+            .map_err(|_| "내부 잠금 오류")?;
+        if cancelled.len() >= MAX_PENDING_START_CANCELLATIONS
+            && !cancelled.contains(request_id)
+        {
+            return Err("대기 중인 GitHub 로그인 취소 요청이 너무 많습니다".into());
         }
-        guard.take().expect("checked above")
+        cancelled.insert(request_id.to_string());
+        return Ok(true);
     };
-    let _ = session.child.kill();
-    Ok(true)
+    ensure_request_id(&current.request_id, request_id)?;
+    if session_login(current)?.is_some() {
+        return Ok(false);
+    }
+    terminate_active_session(&mut guard)
+}
+
+/// 앱 종료·업데이트 직전 진행 중인 GitHub 로그인을 최대한 정리한다.
+pub fn cancel_on_shutdown() -> Result<bool, String> {
+    let _completion = GH_COMPLETION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
+    let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
+    terminate_active_session(&mut guard)
 }
 
 #[cfg(test)]
@@ -695,10 +812,16 @@ mod tests {
     #[derive(Clone, Debug)]
     struct TestChild {
         killed: Arc<AtomicBool>,
+        fail_kill: Arc<AtomicBool>,
+        exit_immediately: bool,
+        ignore_kill: bool,
     }
 
     impl ChildKiller for TestChild {
         fn kill(&mut self) -> std::io::Result<()> {
+            if self.fail_kill.load(Ordering::SeqCst) {
+                return Err(std::io::Error::other("injected kill failure"));
+            }
             self.killed.store(true, Ordering::SeqCst);
             Ok(())
         }
@@ -710,10 +833,9 @@ mod tests {
 
     impl Child for TestChild {
         fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
-            Ok(self
-                .killed
-                .load(Ordering::SeqCst)
-                .then(|| ExitStatus::with_exit_code(1)))
+            let exited = self.exit_immediately
+                || (!self.ignore_kill && self.killed.load(Ordering::SeqCst));
+            Ok(exited.then(|| ExitStatus::with_exit_code(1)))
         }
 
         fn wait(&mut self) -> std::io::Result<ExitStatus> {
@@ -748,12 +870,54 @@ mod tests {
             request_id: request_id.to_string(),
             child: Box::new(TestChild {
                 killed: killed.clone(),
+                fail_kill: Arc::new(AtomicBool::new(false)),
+                exit_immediately: false,
+                ignore_kill: false,
             }),
             writer,
             buffer: Arc::new(Mutex::new(output.to_vec())),
             _master: pair.master,
         });
         killed
+    }
+
+    fn test_child(
+        fail_kill: Arc<AtomicBool>,
+        exit_immediately: bool,
+        ignore_kill: bool,
+    ) -> TestChild {
+        TestChild {
+            killed: Arc::new(AtomicBool::new(false)),
+            fail_kill,
+            exit_immediately,
+            ignore_kill,
+        }
+    }
+
+    fn install_test_login_with_child(
+        generation: u64,
+        request_id: &str,
+        output: &[u8],
+        child: TestChild,
+    ) {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 5,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        drop(pair.slave);
+        let writer = Arc::new(Mutex::new(pair.master.take_writer().unwrap()));
+        *GH_LOGIN.lock().unwrap() = Some(GhLoginSession {
+            generation,
+            request_id: request_id.to_string(),
+            child: Box::new(child),
+            writer,
+            buffer: Arc::new(Mutex::new(output.to_vec())),
+            _master: pair.master,
+        });
     }
 
     #[test]
@@ -868,6 +1032,85 @@ mod tests {
     fn cancelling_an_already_finished_github_login_is_idempotent() {
         let _test = GH_TEST_LOCK.lock().unwrap();
         assert_eq!(login_cancel(u64::MAX).unwrap(), false);
+    }
+
+    #[test]
+    fn verified_termination_accepts_an_already_exited_child_without_killing() {
+        let fail_kill = Arc::new(AtomicBool::new(false));
+        let mut child = test_child(fail_kill, true, false);
+        let killed = child.killed.clone();
+
+        terminate_child_verified_with(&mut child, 0, || {}, request_child_termination).unwrap();
+
+        assert!(!killed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn verified_termination_reports_kill_failure() {
+        let fail_kill = Arc::new(AtomicBool::new(true));
+        let mut child = test_child(fail_kill, false, false);
+
+        let error = terminate_child_verified_with(
+            &mut child,
+            0,
+            || {},
+            request_child_termination,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("종료 요청 실패"));
+    }
+
+    #[test]
+    fn verified_termination_reports_timeout_without_real_sleep() {
+        let fail_kill = Arc::new(AtomicBool::new(false));
+        let mut child = test_child(fail_kill, false, true);
+
+        let error = terminate_child_verified_with(
+            &mut child,
+            2,
+            || {},
+            request_child_termination,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("제한 시간"));
+        assert!(child.killed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn failed_cancellation_retains_the_session_for_retry() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let generation = 7_103;
+        let request_id = "00000000-0000-4000-8000-000000007103";
+        let fail_kill = Arc::new(AtomicBool::new(true));
+        let child = test_child(fail_kill.clone(), false, false);
+        install_test_login_with_child(
+            generation,
+            request_id,
+            b"Waiting for authentication\r\n",
+            child,
+        );
+
+        assert!(login_cancel(generation).is_err());
+        assert!(GH_LOGIN.lock().unwrap().is_some());
+
+        fail_kill.store(false, Ordering::SeqCst);
+        assert_eq!(login_cancel(generation).unwrap(), true);
+        assert!(GH_LOGIN.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn shutdown_cancellation_quiesces_an_active_github_login() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let generation = 7_104;
+        let request_id = "00000000-0000-4000-8000-000000007104";
+        let killed = install_test_login(generation, request_id, b"Waiting\r\n");
+
+        assert_eq!(cancel_on_shutdown().unwrap(), true);
+        assert!(killed.load(Ordering::SeqCst));
+        assert!(GH_LOGIN.lock().unwrap().is_none());
+        assert_eq!(cancel_on_shutdown().unwrap(), false);
     }
 
     #[test]
