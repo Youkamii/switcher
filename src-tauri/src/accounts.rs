@@ -195,9 +195,17 @@ pub(crate) mod keychain {
         Ok(())
     }
 
-    /// 로그인 잔재 청소용 — 없어도 조용히 넘어간다
-    pub(crate) fn delete_item(service: &str) {
-        let _ = run_security(&["delete-generic-password", "-s", service]);
+    /// 로그인 잔재 청소용 — 항목이 없는 것은 성공이지만 실제 삭제 실패는 호출자에게 알린다.
+    pub(crate) fn delete_item(service: &str) -> Result<(), String> {
+        let out = run_security(&["delete-generic-password", "-s", service])?;
+        if out.status.success() {
+            return Ok(());
+        }
+        let err = String::from_utf8_lossy(&out.stderr);
+        if err.contains("could not be found") {
+            return Ok(());
+        }
+        Err(format!("키체인 삭제 실패 ({service}): {}", err.trim()))
     }
 
     #[cfg(test)]
@@ -218,7 +226,7 @@ pub(crate) mod keychain {
             let payload2 = br#"{"probe":"updated"}"#;
             write_item(&svc, &username(), payload2).unwrap();
             assert_eq!(read_item(&svc).unwrap().unwrap(), payload2);
-            delete_item(&svc);
+            delete_item(&svc).unwrap();
             assert!(!item_exists(&svc));
             assert!(read_item(&svc).unwrap().is_none(), "삭제 후에는 None");
         }

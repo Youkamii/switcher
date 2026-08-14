@@ -342,11 +342,33 @@ async fn fetch_usage(provider: String, profile: Option<String>) -> Result<usage:
 /// 다른 활성 계정은 건드리지 않는다. 같은 활성 계정을 재로그인한 경우에만 새 토큰을
 /// 활성 위치에도 반영해 다음 전환 백업이 폐기된 옛 토큰을 되살리지 않게 한다.
 #[tauri::command]
-async fn start_login(provider: String) -> Result<login::LoginPrompt, String> {
+fn reserve_login_start(provider: String, request_id: String) -> Result<(), String> {
+    if provider == "github" {
+        github::reserve_login_start(&request_id)
+    } else {
+        login::reserve_start(Provider::parse(&provider)?, &request_id)
+    }
+}
+
+#[tauri::command]
+fn release_login_start(provider: String, request_id: String) -> Result<(), String> {
+    if provider == "github" {
+        github::release_login_start(&request_id)
+    } else {
+        login::release_start(Provider::parse(&provider)?, &request_id)
+    }
+}
+
+#[tauri::command]
+async fn start_login(provider: String, request_id: String) -> Result<login::LoginPrompt, String> {
     let provider = Provider::parse(&provider)?;
-    tauri::async_runtime::spawn_blocking(move || login::start(&Env::real()?, provider))
-        .await
-        .map_err(|e| format!("로그인 시작 실패: {e}"))?
+    let worker_request_id = request_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        login::start_requested(&Env::real()?, provider, worker_request_id)
+    })
+    .await;
+    login::release_start(provider, &request_id)?;
+    result.map_err(|e| format!("로그인 시작 실패: {e}"))?
 }
 
 /// 브라우저에서 받은 코드를 넘겨 로그인을 끝낸다 (클로드)
@@ -377,11 +399,22 @@ async fn await_device_login(session_id: String) -> Result<login::LoginOutcome, S
 }
 
 #[tauri::command]
-fn cancel_login(session_id: String) -> Result<(), String> {
+fn cancel_login(session_id: String) -> Result<login::CancelOutcome, String> {
     let generation = session_id
         .parse::<u64>()
         .map_err(|_| "로그인 세션 ID가 올바르지 않습니다")?;
     login::cancel_session(generation)
+}
+
+/// 로그인 주소를 아직 받는 중이라 세션 ID가 프런트에 도착하지 않았을 때도 취소한다.
+#[tauri::command]
+fn cancel_login_start(request_id: String) -> Result<login::CancelOutcome, String> {
+    login::cancel_start(&request_id)
+}
+
+#[tauri::command]
+fn login_session_for_request(request_id: String) -> Result<Option<String>, String> {
+    login::session_for_request(&request_id)
 }
 
 /// 데모·스크린샷용: SWITCHER_VIEW=normal|locked|compact 로 초기 보기 모드를 강제한다
@@ -935,23 +968,41 @@ async fn github_switch(name: String) -> Result<(), String> {
 
 /// GitHub 계정 추가 시작 — 위젯에 띄울 주소·일회용 코드 (PTY로 gh auth login)
 #[tauri::command]
-async fn github_login_start() -> Result<github::GhLoginPrompt, String> {
-    tauri::async_runtime::spawn_blocking(github::login_start)
-        .await
-        .map_err(|e| format!("GitHub 로그인 시작 실패: {e}"))?
+async fn github_login_start(request_id: String) -> Result<github::GhLoginPrompt, String> {
+    let worker_request_id = request_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || github::login_start(worker_request_id))
+        .await;
+    github::release_login_start(&request_id)?;
+    result.map_err(|e| format!("GitHub 로그인 시작 실패: {e}"))?
 }
 
 /// 브라우저에서 코드 입력이 끝나기를 기다린다 — 성공 시 로그인 이름
 #[tauri::command]
-async fn github_login_wait() -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(github::login_wait)
+async fn github_login_wait(session_id: String) -> Result<String, String> {
+    let generation = session_id
+        .parse::<u64>()
+        .map_err(|_| "GitHub 로그인 세션 ID가 올바르지 않습니다")?;
+    tauri::async_runtime::spawn_blocking(move || github::login_wait(generation))
         .await
         .map_err(|e| format!("GitHub 로그인 대기 실패: {e}"))?
 }
 
 #[tauri::command]
-fn github_login_cancel() {
-    github::login_cancel();
+fn github_login_cancel(session_id: String) -> Result<bool, String> {
+    let generation = session_id
+        .parse::<u64>()
+        .map_err(|_| "GitHub 로그인 세션 ID가 올바르지 않습니다")?;
+    github::login_cancel(generation)
+}
+
+#[tauri::command]
+fn github_login_cancel_start(request_id: String) -> Result<bool, String> {
+    github::login_cancel_start(&request_id)
+}
+
+#[tauri::command]
+fn github_login_session_for_request(request_id: String) -> Result<Option<String>, String> {
+    github::login_session_for_request(&request_id)
 }
 
 /// 표시 기능 플래그 — 프론트가 어떤 섹션·버튼을 그릴지 정한다.
@@ -1196,29 +1247,210 @@ fn update_status_suffix() -> String {
     UPDATE_STATUS.lock().map(|s| s.clone()).unwrap_or_default()
 }
 
+fn run_shutdown_cleanup<CancelGithub, CancelLogin, Warn, Then>(
+    mut cancel_github: CancelGithub,
+    mut cancel_login: CancelLogin,
+    mut warn: Warn,
+    then: Then,
+) -> Result<(), String>
+where
+    CancelGithub: FnMut() -> Result<bool, String>,
+    CancelLogin: FnMut() -> Result<login::CancelOutcome, String>,
+    Warn: FnMut(String),
+    Then: FnOnce(),
+{
+    // 한쪽이 실패해도 다른 로그인 프로세스의 종료 기회까지 잃지 않게 둘 다 호출한다.
+    let github_result = cancel_github();
+    let login_result = cancel_login();
+    let mut errors = Vec::new();
+
+    if let Err(error) = github_result {
+        errors.push(format!("GitHub 로그인 종료 실패: {error}"));
+    }
+    match login_result {
+        Ok(outcome) => {
+            // cleanup_error는 #75 계약상 프로세스 종료 확인 뒤의 임시 파일 정리 경고다.
+            // 종료를 막지 않되 사용자가 다음 시작에서 재시도된다는 사실은 로그에 남긴다.
+            if let Some(error) = outcome.cleanup_error {
+                warn(format!("Claude/Codex 로그인 임시 파일 정리 경고: {error}"));
+            }
+        }
+        Err(error) => errors.push(format!("Claude/Codex 로그인 종료 실패: {error}")),
+    }
+
+    if !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+    then();
+    Ok(())
+}
+
+#[cfg(test)]
+mod shutdown_cleanup_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    fn cancelled(cleanup_error: Option<&str>) -> login::CancelOutcome {
+        login::CancelOutcome {
+            cancelled: true,
+            cleanup_error: cleanup_error.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn both_success_runs_then_once() {
+        let then_calls = Cell::new(0);
+
+        let result = run_shutdown_cleanup(
+            || Ok(false),
+            || Ok(cancelled(None)),
+            |_| panic!("successful cleanup must not warn"),
+            || then_calls.set(then_calls.get() + 1),
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(then_calls.get(), 1);
+    }
+
+    #[test]
+    fn github_failure_still_calls_generic_cancel_and_blocks_then() {
+        let login_calls = Cell::new(0);
+        let then_calls = Cell::new(0);
+
+        let error = run_shutdown_cleanup(
+            || Err("gh child still running".into()),
+            || {
+                login_calls.set(login_calls.get() + 1);
+                Ok(cancelled(None))
+            },
+            |_| {},
+            || then_calls.set(then_calls.get() + 1),
+        )
+        .unwrap_err();
+
+        assert_eq!(login_calls.get(), 1);
+        assert_eq!(then_calls.get(), 0);
+        assert!(error.contains("GitHub 로그인 종료 실패: gh child still running"));
+    }
+
+    #[test]
+    fn generic_failure_blocks_then() {
+        let then_calls = Cell::new(0);
+
+        let error = run_shutdown_cleanup(
+            || Ok(true),
+            || Err("generic child still running".into()),
+            |_| {},
+            || then_calls.set(then_calls.get() + 1),
+        )
+        .unwrap_err();
+
+        assert_eq!(then_calls.get(), 0);
+        assert!(error.contains("Claude/Codex 로그인 종료 실패: generic child still running"));
+    }
+
+    #[test]
+    fn both_failures_are_combined_after_both_attempts() {
+        let github_calls = Cell::new(0);
+        let login_calls = Cell::new(0);
+
+        let error = run_shutdown_cleanup(
+            || {
+                github_calls.set(github_calls.get() + 1);
+                Err("gh lock".into())
+            },
+            || {
+                login_calls.set(login_calls.get() + 1);
+                Err("generic lock".into())
+            },
+            |_| {},
+            || panic!("shutdown must remain blocked"),
+        )
+        .unwrap_err();
+
+        assert_eq!(github_calls.get(), 1);
+        assert_eq!(login_calls.get(), 1);
+        assert_eq!(
+            error,
+            "GitHub 로그인 종료 실패: gh lock; Claude/Codex 로그인 종료 실패: generic lock"
+        );
+    }
+
+    #[test]
+    fn cleanup_warning_is_reported_and_allows_then_once() {
+        let warning_calls = Cell::new(0);
+        let then_calls = Cell::new(0);
+
+        let result = run_shutdown_cleanup(
+            || Ok(false),
+            || Ok(cancelled(Some("remove later"))),
+            |warning| {
+                warning_calls.set(warning_calls.get() + 1);
+                assert!(warning.contains("remove later"));
+            },
+            || then_calls.set(then_calls.get() + 1),
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(warning_calls.get(), 1);
+        assert_eq!(then_calls.get(), 1);
+    }
+}
+
 /// 정리(로그인 취소·메모 플러시)를 마친 뒤 `then`을 실행한다 — 트레이 quit와
 /// 업데이트 재시작이 공유하는 종료 준비 경로. 메모 디바운스(600ms) 도중의
 /// 종료로 마지막 입력이 유실되지 않게 blur(즉시 플러시)를 지시하고, 대기와
 /// `then`은 딴 스레드에서 — 이 함수는 UI 스레드에서 불리는데 여기서 자면
 /// eval 전달도 memo_save IPC도 같은 메시지 펌프에 갇힌다 (red-review — 자기 봉쇄)
 fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'static) {
-    use tauri::Manager;
-    // 클램셸 종료 훅. 지속 모드는 사용자가 다시 누를 때까지 유지하는 설정이라
-    // 앱 종료·업데이트 재시작으로 해제하지 않는다.
-    if let Ok(env) = Env::real() {
-        clamshell::on_quit(&env.store);
-    }
+    use tauri::{Emitter, Manager};
+    // worker가 세션을 등록하기 전인 예약도 종료 정리보다 뒤늦게 시작하지 못하게 한다.
+    // 이미 Starting인 worker는 provider completion lock을 쥐고 세션 등록까지 진행하므로,
+    // 아래 cancel이 그 뒤를 기다렸다가 정확한 세션을 종료한다.
+    login::block_starts_for_shutdown();
+    github::block_starts_for_shutdown();
     let flushing = app
         .get_webview_window("memo")
         .map(|memo| memo.eval("window.dispatchEvent(new Event('blur'))").is_ok())
         .unwrap_or(false);
+    let handle = app.clone();
     std::thread::spawn(move || {
         // 프로세스 트리 종료·임시 폴더 정리는 느릴 수 있으므로 UI 스레드 밖에서 한다.
-        login::cancel();
-        if flushing {
-            std::thread::sleep(std::time::Duration::from_millis(250));
+        let result = run_shutdown_cleanup(
+            github::cancel_on_shutdown,
+            login::cancel,
+            |warning| eprintln!("{warning}"),
+            || {
+                // 클램셸 종료 훅. 지속 모드는 사용자가 다시 누를 때까지 유지하는 설정이라
+                // 앱 종료·업데이트 재시작으로 해제하지 않는다. 종료 차단 시에는 호출하지 않는다.
+                if let Ok(env) = Env::real() {
+                    clamshell::on_quit(&env.store);
+                }
+                if flushing {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+                then();
+            },
+        );
+        let Err(error) = result else {
+            return;
+        };
+
+        github::unblock_starts_after_failed_shutdown();
+        login::unblock_starts_after_failed_shutdown();
+        let message = format!(
+            "로그인 프로세스를 끝내지 못해 종료/재시작을 중단했습니다. 열린 로그인 패널에서 취소를 다시 누른 뒤 재시도하세요. {error}"
+        );
+        eprintln!("{message}");
+        let ui_handle = handle.clone();
+        if let Err(dispatch_error) = handle.run_on_main_thread(move || {
+            show_main_window(&ui_handle);
+            if let Err(emit_error) = ui_handle.emit("shutdown-blocked", message) {
+                eprintln!("종료 차단 오류 표시 실패: {emit_error}");
+            }
+        }) {
+            eprintln!("종료 차단 뒤 메인 창 표시 실패: {dispatch_error}");
         }
-        then();
     });
 }
 
@@ -1243,9 +1475,11 @@ fn restart_into(
                 std::process::id(),
             ) {
                 Ok(()) => handle.exit(0),
-                Err(error) => eprintln!(
-                    "업데이트 helper 시작 실패 (앱을 유지합니다): {error}"
-                ),
+                Err(error) => {
+                    github::unblock_starts_after_failed_shutdown();
+                    login::unblock_starts_after_failed_shutdown();
+                    eprintln!("업데이트 helper 시작 실패 (앱을 유지합니다): {error}");
+                }
             }
             return;
         }
@@ -1260,7 +1494,11 @@ fn restart_into(
         match cmd.spawn() {
             Ok(_) => handle.exit(0),
             // 스폰 실패면 앱은 계속 산다 — 교체는 이미 됐으니 다음 실행부터 반영
-            Err(e) => eprintln!("재시작 실패 (다음 실행부터 새 버전): {e}"),
+            Err(e) => {
+                github::unblock_starts_after_failed_shutdown();
+                login::unblock_starts_after_failed_shutdown();
+                eprintln!("재시작 실패 (다음 실행부터 새 버전): {e}");
+            }
         }
     });
 }
@@ -2290,10 +2528,14 @@ pub fn run() {
             clamshell_mode,
             clamshell_cycle,
             fetch_usage,
+            reserve_login_start,
+            release_login_start,
             start_login,
             submit_login_code,
             await_device_login,
             cancel_login,
+            cancel_login_start,
+            login_session_for_request,
             set_hit_regions,
             set_click_through,
             memo_load,
@@ -2311,6 +2553,8 @@ pub fn run() {
             github_login_start,
             github_login_wait,
             github_login_cancel,
+            github_login_cancel_start,
+            github_login_session_for_request,
             black_on,
             black_off,
             black_off_delayed,
