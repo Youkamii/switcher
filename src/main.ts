@@ -1592,7 +1592,7 @@ lockBtn.addEventListener("click", () => {
   // 새 모드 CSS가 줄인 현재 내용만으로도 창을 먼저 따라붙인다. 새 카드 목록은
   // 바로 뒤의 즉시 렌더가 교체하고, 완성 높이는 그 렌더가 한 번 더 맞춘다.
   fitHeight();
-  // 모드가 바뀌면 화면 구성이 달라진다 — 다시 그린다 (열려 있던 로그인 패널도 정리됨)
+  // 모드가 바뀌면 화면 구성을 다시 그리되, 열려 있던 로그인 패널 DOM은 그대로 옮긴다.
   void render({ immediate: true });
 });
 applyViewMode();
