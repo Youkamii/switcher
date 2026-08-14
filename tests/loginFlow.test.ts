@@ -54,7 +54,7 @@ test("guards login completion and serializes GitHub cancellation", () => {
   );
   assert.match(
     mainSource,
-    /loginCancelingAttempt = attempt;[\s\S]*?await invoke\("github_login_cancel", \{ sessionId \}\)[\s\S]*?finishLogin\(attempt\);/,
+    /loginCancelingAttempt = attempt;[\s\S]*?invoke<boolean>\("github_login_cancel", \{ sessionId \}\)[\s\S]*?finishLogin\(attempt\);/,
     "GitHub cancellation must finish before another login can start",
   );
 });
@@ -72,7 +72,7 @@ test("routes GitHub wait and post-prompt cancel through the exact backend sessio
   );
   assert.match(
     mainSource,
-    /invoke\("github_login_cancel", \{\s*sessionId:/,
+    /invoke<boolean>\("github_login_cancel", \{\s*sessionId:/,
     "a GitHub cancel after the prompt must target that exact session",
   );
   assert.match(
@@ -82,7 +82,7 @@ test("routes GitHub wait and post-prompt cancel through the exact backend sessio
   );
   assert.match(
     mainSource,
-    /invoke\("github_login_cancel_start", \{ requestId: githubRequestId \}\)/,
+    /invoke<boolean>\("github_login_cancel_start", \{\s*requestId: githubRequestId,/,
     "the pending-prompt cancel path must carry that frontend request ID",
   );
 });
@@ -90,7 +90,7 @@ test("routes GitHub wait and post-prompt cancel through the exact backend sessio
 test("finishes a pending Claude or Codex cancellation with its exact session", () => {
   assert.match(
     mainSource,
-    /await invoke\("cancel_login_start"\);[\s\S]*?Promise\.allSettled\(\[start\]\)[\s\S]*?"needs_code" in started\.value[\s\S]*?invoke\("cancel_login", \{ sessionId: started\.value\.session_id \}\)/,
+    /invoke<boolean>\("cancel_login_start"\)[\s\S]*?Promise\.allSettled\(\[start\]\)[\s\S]*?"needs_code" in started\.value[\s\S]*?invoke<boolean>\("cancel_login", \{\s*sessionId: started\.value\.session_id,/,
     "a start that registers after the first cancel must be cancelled by its returned session ID",
   );
 });
@@ -98,8 +98,13 @@ test("finishes a pending Claude or Codex cancellation with its exact session", (
 test("treats an already completed exact login cancellation as idempotent", () => {
   assert.match(
     mainSource,
-    /loginCancelingAttempt = attempt;[\s\S]*?await invoke\("cancel_login", \{ sessionId \}\)[\s\S]*?finishLogin\(attempt\);/,
-    "the panel must close when completion wins the backend race before exact cancellation",
+    /completionWon = !\(await invoke<boolean>\("cancel_login", \{ sessionId \}\)\)[\s\S]*?if \(completionWon\)[\s\S]*?Promise\.allSettled\(\[accountWait\]\)[\s\S]*?reportLogin\(finished\.value\)/,
+    "when completion wins, the completed account result must be reported instead of pretending cancellation won",
+  );
+  assert.match(
+    mainSource,
+    /completionWon = !\(await invoke<boolean>\("github_login_cancel", \{ sessionId \}\)\)[\s\S]*?if \(completionWon\)[\s\S]*?Promise\.allSettled\(\[githubWait\]\)[\s\S]*?ghAdded/,
+    "GitHub completion must likewise be reported when it wins the cancellation race",
   );
 });
 

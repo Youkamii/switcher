@@ -81,7 +81,8 @@ let activeLoginProvider: LoginProvider | null = null;
 let activeGithubRequestId: string | null = null;
 let loginCancelingAttempt: number | null = null;
 let activeLoginStart: Promise<LoginPrompt | GithubLoginPrompt> | null = null;
-let activeGithubWait: Promise<unknown> | null = null;
+let activeAccountWait: Promise<LoginOutcome> | null = null;
+let activeGithubWait: Promise<string> | null = null;
 const loginHost = document.createElement("section");
 loginHost.id = "login-host";
 
@@ -381,6 +382,7 @@ function finishLogin(attempt: number) {
   activeLoginProvider = null;
   activeGithubRequestId = null;
   activeLoginStart = null;
+  activeAccountWait = null;
   activeGithubWait = null;
   loginCancelingAttempt = null;
   loginHost.replaceChildren();
@@ -398,31 +400,61 @@ async function cancelActiveLogin(attempt: number) {
   const sessionId = loginSessionId;
   const githubRequestId = activeGithubRequestId;
   const start = activeLoginStart;
+  const accountWait = activeAccountWait;
   const githubWait = activeGithubWait;
+  let completionWon = false;
   try {
     if (provider === "github") {
       if (sessionId) {
-        await invoke("github_login_cancel", { sessionId });
+        completionWon = !(await invoke<boolean>("github_login_cancel", { sessionId }));
       } else {
         // 프롬프트가 아직 없을 때만 현재 세션 취소를 쓴다. start 등록보다 먼저
         // 도착했으면 start 결과의 세대값으로 한 번 더 정확히 취소한다.
         if (!githubRequestId) throw new Error("GitHub 로그인 요청 ID가 없습니다");
-        await invoke("github_login_cancel_start", { requestId: githubRequestId });
+        let cancelled = await invoke<boolean>("github_login_cancel_start", {
+          requestId: githubRequestId,
+        });
         const [started] = await Promise.allSettled([start]);
-        if (started.status === "fulfilled" && started.value && "session_id" in started.value) {
-          await invoke("github_login_cancel", { sessionId: started.value.session_id });
+        if (
+          !cancelled &&
+          started.status === "fulfilled" &&
+          started.value &&
+          "session_id" in started.value
+        ) {
+          cancelled = await invoke<boolean>("github_login_cancel", {
+            sessionId: started.value.session_id,
+          });
         }
       }
-      await Promise.allSettled([githubWait]);
     } else if (sessionId) {
-      await invoke("cancel_login", { sessionId });
+      completionWon = !(await invoke<boolean>("cancel_login", { sessionId }));
     } else {
-      await invoke("cancel_login_start");
+      let cancelled = await invoke<boolean>("cancel_login_start");
       // cancel_login_start가 backend 세션 등록보다 먼저 도착했을 수 있다.
       // start가 뒤늦게 성공하면 반환된 정확한 세션을 한 번 더 취소한다.
       const [started] = await Promise.allSettled([start]);
-      if (started.status === "fulfilled" && started.value && "needs_code" in started.value) {
-        await invoke("cancel_login", { sessionId: started.value.session_id });
+      if (
+        !cancelled &&
+        started.status === "fulfilled" &&
+        started.value &&
+        "needs_code" in started.value
+      ) {
+        cancelled = await invoke<boolean>("cancel_login", {
+          sessionId: started.value.session_id,
+        });
+      }
+    }
+    // 완료 처리가 먼저 세션을 가져갔다면 취소로 위장하지 않는다. 먼저 시작된
+    // 완료 Promise의 실제 결과를 보고한 뒤 새 계정이 보이도록 다시 그린다.
+    if (completionWon) {
+      if (provider === "github" && githubWait) {
+        const [finished] = await Promise.allSettled([githubWait]);
+        if (finished.status === "fulfilled") toast(t("ghAdded", { login: finished.value }));
+        else toast(String(finished.reason), true);
+      } else if (accountWait) {
+        const [finished] = await Promise.allSettled([accountWait]);
+        if (finished.status === "fulfilled") reportLogin(finished.value);
+        else toast(String(finished.reason), true);
       }
     }
   } catch (error) {
@@ -446,6 +478,7 @@ function beginLogin(provider: LoginProvider): number {
   activeLoginProvider = provider;
   activeGithubRequestId = provider === "github" ? crypto.randomUUID() : null;
   activeLoginStart = null;
+  activeAccountWait = null;
   activeGithubWait = null;
   loginCancelingAttempt = null;
   const attempt = ++loginAttempt;
@@ -499,14 +532,18 @@ function loginPanel(prompt: LoginPrompt, attempt: number): HTMLElement {
       okBtn.disabled = true;
       input.disabled = true;
       okBtn.textContent = t("okWorking");
+      const wait = invoke<LoginOutcome>("submit_login_code", {
+        code,
+        sessionId: prompt.session_id,
+      });
+      activeAccountWait = wait;
       try {
-        const result = await invoke<LoginOutcome>("submit_login_code", {
-          code,
-          sessionId: prompt.session_id,
-        });
+        const result = await wait;
+        if (activeAccountWait === wait) activeAccountWait = null;
         if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
         reportLogin(result);
       } catch (error) {
+        if (activeAccountWait === wait) activeAccountWait = null;
         if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
         const message = String(error);
         // "코드가 거부" = CLI가 몇 초 안에 거부를 알렸고(백엔드 화면 감지, 실측)
@@ -543,13 +580,17 @@ function loginPanel(prompt: LoginPrompt, attempt: number): HTMLElement {
     prereq.textContent = t("codexPrereq");
     panel.appendChild(prereq);
     void (async () => {
+      const wait = invoke<LoginOutcome>("await_device_login", {
+        sessionId: prompt.session_id,
+      });
+      activeAccountWait = wait;
       try {
-        const result = await invoke<LoginOutcome>("await_device_login", {
-          sessionId: prompt.session_id,
-        });
+        const result = await wait;
+        if (activeAccountWait === wait) activeAccountWait = null;
         if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
         reportLogin(result);
       } catch (error) {
+        if (activeAccountWait === wait) activeAccountWait = null;
         if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
         toast(String(error), true);
       }

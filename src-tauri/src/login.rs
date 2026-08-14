@@ -1013,12 +1013,15 @@ fn cancel_generation(generation: u64) {
     }
 }
 
-pub fn cancel() {
+pub fn cancel() -> bool {
     let Ok(_completion) = LOGIN_COMPLETION_LOCK.lock() else {
-        return;
+        return false;
     };
     if let Some(session) = take_session(None) {
         terminate_session(session);
+        true
+    } else {
+        false
     }
 }
 
