@@ -243,8 +243,8 @@ pub(crate) fn extract_device_code(text: &str) -> Option<String> {
             continue;
         };
         // Codex가 실제로 출력한 코드는 4-4와 4-5 그룹이 모두 있었다.
-        // 각 그룹을 짧게 제한해 일반 대문자 문구는 코드로 오인하지 않는다.
-        let ok = (4..=5).contains(&left.len())
+        // 첫 그룹은 4자로 고정해 ERROR-CODE 같은 일반 문구를 오인하지 않는다.
+        let ok = left.len() == 4
             && (4..=5).contains(&right.len())
             && left
                 .chars()
@@ -1124,6 +1124,8 @@ mod tests {
         assert!(extract_device_code("A-------B").is_none());
         assert!(extract_device_code("ABCD--EFGH").is_none());
         assert!(extract_device_code("A-B-C-D-E").is_none());
+        assert!(extract_device_code("ERROR-CODE").is_none());
+        assert!(extract_device_code("HELLO-WORLD").is_none());
         assert_eq!(extract_device_code("A1B2-C3D4").as_deref(), Some("A1B2-C3D4"));
     }
 
