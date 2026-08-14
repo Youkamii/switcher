@@ -338,10 +338,33 @@ fn gh_send(generation: u64, bytes: &[u8]) -> Result<(), String> {
             .and_then(|_| writer.flush())
             .map_err(|e| format!("GitHub 로그인 입력 전송 실패: {e}"))
     })();
-    if result.is_err() {
-        let _ = login_cancel(generation);
+    match result {
+        Ok(()) => Ok(()),
+        Err(error) => Err(error_after_cancel(generation, error)),
     }
-    result
+}
+
+fn error_after_cancel(generation: u64, error: String) -> String {
+    match login_cancel(generation) {
+        Ok(_) => error,
+        Err(cancel_error) => {
+            format!("{error} / GitHub 로그인 프로세스 정리 실패: {cancel_error}")
+        }
+    }
+}
+
+fn prompt_timeout_error(generation: u64, tail: &str) -> String {
+    error_after_cancel(
+        generation,
+        format!("gh 로그인 화면이 60초 안에 뜨지 않았습니다 — 마지막 화면: {tail}"),
+    )
+}
+
+fn wait_timeout_error(generation: u64) -> String {
+    error_after_cancel(
+        generation,
+        "GitHub 로그인 대기 시간(10분)을 넘겼습니다 — 다시 시도하세요".to_string(),
+    )
 }
 
 /// gh의 일회용 코드 추출: "! First copy your one-time code: XXXX-XXXX" (실측).
@@ -570,10 +593,7 @@ pub fn login_start(request_id: String) -> Result<GhLoginPrompt, String> {
                 .take(3)
                 .collect::<Vec<_>>()
                 .join(" | ");
-            let _ = login_cancel(my_gen);
-            return Err(format!(
-                "gh 로그인 화면이 60초 안에 뜨지 않았습니다 — 마지막 화면: {tail}"
-            ));
+            return Err(prompt_timeout_error(my_gen, &tail));
         }
         std::thread::sleep(GH_POLL);
     }
@@ -624,8 +644,7 @@ pub fn login_wait(generation: u64) -> Result<String, String> {
             }
         }
         if Instant::now() > deadline {
-            let _ = login_cancel(generation);
-            return Err("GitHub 로그인 대기 시간(10분)을 넘겼습니다 — 다시 시도하세요".to_string());
+            return Err(wait_timeout_error(generation));
         }
         std::thread::sleep(GH_POLL);
     }
@@ -850,6 +869,18 @@ mod tests {
         #[cfg(windows)]
         fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
             None
+        }
+    }
+
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("injected write failure"))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
         }
     }
 
@@ -1097,6 +1128,83 @@ mod tests {
 
         fail_kill.store(false, Ordering::SeqCst);
         assert_eq!(login_cancel(generation).unwrap(), true);
+        assert!(GH_LOGIN.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn send_failure_preserves_termination_failure_and_session() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let generation = 7_105;
+        let request_id = "00000000-0000-4000-8000-000000007105";
+        let fail_kill = Arc::new(AtomicBool::new(true));
+        let child = test_child(fail_kill.clone(), false, false);
+        install_test_login_with_child(generation, request_id, b"Waiting\r\n", child);
+        GH_LOGIN.lock().unwrap().as_mut().unwrap().writer =
+            Arc::new(Mutex::new(Box::new(FailingWriter)));
+
+        let error = gh_send(generation, b"y\r").unwrap_err();
+
+        assert!(error.contains("입력 전송 실패: injected write failure"));
+        assert!(error.contains("프로세스 정리 실패"));
+        assert!(error.contains("종료 요청 실패: injected kill failure"));
+        assert!(GH_LOGIN.lock().unwrap().is_some());
+
+        fail_kill.store(false, Ordering::SeqCst);
+        assert_eq!(login_cancel(generation).unwrap(), true);
+    }
+
+    #[test]
+    fn prompt_timeout_preserves_termination_failure_and_session() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let generation = 7_106;
+        let request_id = "00000000-0000-4000-8000-000000007106";
+        let fail_kill = Arc::new(AtomicBool::new(true));
+        let child = test_child(fail_kill.clone(), false, false);
+        install_test_login_with_child(generation, request_id, b"Waiting\r\n", child);
+
+        let error = prompt_timeout_error(generation, "Waiting for code");
+
+        assert!(error.contains("60초 안에 뜨지 않았습니다"));
+        assert!(error.contains("마지막 화면: Waiting for code"));
+        assert!(error.contains("종료 요청 실패: injected kill failure"));
+        assert!(GH_LOGIN.lock().unwrap().is_some());
+
+        fail_kill.store(false, Ordering::SeqCst);
+        assert_eq!(login_cancel(generation).unwrap(), true);
+    }
+
+    #[test]
+    fn wait_timeout_preserves_termination_failure_and_session() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let generation = 7_107;
+        let request_id = "00000000-0000-4000-8000-000000007107";
+        let fail_kill = Arc::new(AtomicBool::new(true));
+        let child = test_child(fail_kill.clone(), false, false);
+        install_test_login_with_child(generation, request_id, b"Waiting\r\n", child);
+
+        let error = wait_timeout_error(generation);
+
+        assert!(error.contains("대기 시간(10분)을 넘겼습니다"));
+        assert!(error.contains("종료 요청 실패: injected kill failure"));
+        assert!(GH_LOGIN.lock().unwrap().is_some());
+
+        fail_kill.store(false, Ordering::SeqCst);
+        assert_eq!(login_cancel(generation).unwrap(), true);
+    }
+
+    #[test]
+    fn timeout_error_stays_unchanged_when_cancel_succeeds() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let generation = 7_108;
+        let request_id = "00000000-0000-4000-8000-000000007108";
+        install_test_login(generation, request_id, b"Waiting\r\n");
+
+        let error = wait_timeout_error(generation);
+
+        assert_eq!(
+            error,
+            "GitHub 로그인 대기 시간(10분)을 넘겼습니다 — 다시 시도하세요"
+        );
         assert!(GH_LOGIN.lock().unwrap().is_none());
     }
 
