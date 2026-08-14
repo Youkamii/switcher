@@ -494,6 +494,7 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
           void render({ immediate: true });
         }),
       );
+      fitHeight();
     } catch (error) {
       loginSessionId = null;
       loginOpen = false;
@@ -841,6 +842,7 @@ function githubAddButton(section: HTMLElement) {
       });
       panel.appendChild(cancelBtn);
       slot.appendChild(panel);
+      fitHeight();
     } catch (error) {
       loginOpen = false;
       toast(String(error), true);
