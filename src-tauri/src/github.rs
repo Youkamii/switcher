@@ -274,6 +274,9 @@ struct GhLoginSession {
 }
 
 static GH_LOGIN: Mutex<Option<GhLoginSession>> = Mutex::new(None);
+/// 로그인 완료와 취소가 맞붙을 때의 잠금 순서:
+/// GH_COMPLETION_LOCK -> GH_LOGIN -> GhLoginSession::buffer.
+static GH_COMPLETION_LOCK: Mutex<()> = Mutex::new(());
 static GH_CANCELLED_START_REQUESTS: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 const MAX_PENDING_START_CANCELLATIONS: usize = 32;
@@ -371,6 +374,34 @@ fn gh_login_take_buffer(generation: u64) -> Result<Vec<u8>, String> {
     };
     let data = buffer.lock().map_err(|_| "내부 잠금 오류")?.clone();
     Ok(data)
+}
+
+fn extract_gh_login(text: &str) -> Option<String> {
+    text.lines()
+        .rev()
+        .find_map(|line| line.trim().split("Logged in as ").nth(1))
+        .map(|rest| rest.split_whitespace().next().unwrap_or("").to_string())
+        .filter(|login| !login.is_empty())
+}
+
+fn session_login(session: &GhLoginSession) -> Result<Option<String>, String> {
+    let raw = session.buffer.lock().map_err(|_| "내부 잠금 오류")?;
+    Ok(extract_gh_login(&crate::login::strip_ansi(&raw)))
+}
+
+/// 성공 마커 재확인과 세션 제거를 취소와 같은 완료 잠금 안에서 처리한다.
+fn finish_login_if_ready(generation: u64) -> Result<Option<String>, String> {
+    let _completion = GH_COMPLETION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
+    let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
+    let session = guard
+        .as_ref()
+        .ok_or_else(|| "로그인을 취소했습니다".to_string())?;
+    ensure_generation(session.generation, generation)?;
+    let login = session_login(session)?;
+    if login.is_some() {
+        *guard = None;
+    }
+    Ok(login)
 }
 
 /// gh auth login을 PTY로 시작해 주소와 일회용 코드를 돌려준다
@@ -572,15 +603,9 @@ pub fn login_wait(generation: u64) -> Result<String, String> {
             answered_git_prompt = true;
             gh_send(generation, b"y\r")?;
         }
-        // 성공 마커: "✓ Logged in as <login>" (gh 실측 출력)
-        if let Some(login) = text
-            .lines()
-            .rev()
-            .find_map(|line| line.trim().split("Logged in as ").nth(1))
-            .map(|rest| rest.split_whitespace().next().unwrap_or("").to_string())
-            .filter(|l| !l.is_empty())
-        {
-            login_cleanup(generation)?;
+        // 성공 마커: "✓ Logged in as <login>" (gh 실측 출력).
+        // 판정과 정리를 취소와 같은 완료 잠금 안에서 한 번에 처리한다.
+        if let Some(login) = finish_login_if_ready(generation)? {
             return Ok(login);
         }
         if let Some(at) = exited_at {
@@ -615,12 +640,16 @@ fn login_cleanup(generation: u64) -> Result<(), String> {
 
 /// 진행 중 로그인 취소 — gh 프로세스를 죽이고 세션을 비운다
 pub fn login_cancel(generation: u64) -> Result<bool, String> {
+    let _completion = GH_COMPLETION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     let mut session = {
         let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
         let Some(current) = guard.as_ref() else {
             return Ok(false);
         };
         ensure_generation(current.generation, generation)?;
+        if session_login(current)?.is_some() {
+            return Ok(false);
+        }
         guard.take().expect("checked above")
     };
     let _ = session.child.kill();
@@ -630,6 +659,7 @@ pub fn login_cancel(generation: u64) -> Result<bool, String> {
 /// 프런트가 아직 프롬프트와 세션 ID를 받기 전의 명시적인 취소 경로.
 pub fn login_cancel_start(request_id: &str) -> Result<bool, String> {
     validate_request_id(request_id)?;
+    let _completion = GH_COMPLETION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     let mut session = {
         let mut guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
         let Some(current) = guard.as_ref() else {
@@ -645,6 +675,9 @@ pub fn login_cancel_start(request_id: &str) -> Result<bool, String> {
             return Ok(true);
         };
         ensure_request_id(&current.request_id, request_id)?;
+        if session_login(current)?.is_some() {
+            return Ok(false);
+        }
         guard.take().expect("checked above")
     };
     let _ = session.child.kill();
@@ -654,6 +687,74 @@ pub fn login_cancel_start(request_id: &str) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use portable_pty::{ChildKiller, ExitStatus};
+    use std::sync::atomic::AtomicBool;
+
+    static GH_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[derive(Clone, Debug)]
+    struct TestChild {
+        killed: Arc<AtomicBool>,
+    }
+
+    impl ChildKiller for TestChild {
+        fn kill(&mut self) -> std::io::Result<()> {
+            self.killed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn clone_killer(&self) -> Box<dyn ChildKiller + Send + Sync> {
+            Box::new(self.clone())
+        }
+    }
+
+    impl Child for TestChild {
+        fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+            Ok(self
+                .killed
+                .load(Ordering::SeqCst)
+                .then(|| ExitStatus::with_exit_code(1)))
+        }
+
+        fn wait(&mut self) -> std::io::Result<ExitStatus> {
+            self.killed.store(true, Ordering::SeqCst);
+            Ok(ExitStatus::with_exit_code(1))
+        }
+
+        fn process_id(&self) -> Option<u32> {
+            None
+        }
+
+        #[cfg(windows)]
+        fn as_raw_handle(&self) -> Option<std::os::windows::io::RawHandle> {
+            None
+        }
+    }
+
+    fn install_test_login(generation: u64, request_id: &str, output: &[u8]) -> Arc<AtomicBool> {
+        let pair = native_pty_system()
+            .openpty(PtySize {
+                rows: 5,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        drop(pair.slave);
+        let writer = Arc::new(Mutex::new(pair.master.take_writer().unwrap()));
+        let killed = Arc::new(AtomicBool::new(false));
+        *GH_LOGIN.lock().unwrap() = Some(GhLoginSession {
+            generation,
+            request_id: request_id.to_string(),
+            child: Box::new(TestChild {
+                killed: killed.clone(),
+            }),
+            writer,
+            buffer: Arc::new(Mutex::new(output.to_vec())),
+            _master: pair.master,
+        });
+        killed
+    }
 
     #[test]
     fn parses_single_account_keyring() {
@@ -727,12 +828,51 @@ mod tests {
     }
 
     #[test]
+    fn completed_github_login_wins_over_both_cancel_paths() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let generation = 7_101;
+        let request_id = "00000000-0000-4000-8000-000000007101";
+        let killed = install_test_login(
+            generation,
+            request_id,
+            b"\x1b[32mLogged in as octocat\x1b[0m\r\n",
+        );
+
+        assert_eq!(login_cancel_start(request_id).unwrap(), false);
+        assert_eq!(login_cancel(generation).unwrap(), false);
+        assert!(GH_LOGIN.lock().unwrap().is_some());
+        assert!(!killed.load(Ordering::SeqCst));
+
+        assert_eq!(
+            finish_login_if_ready(generation).unwrap(),
+            Some("octocat".to_string())
+        );
+        assert!(GH_LOGIN.lock().unwrap().is_none());
+        assert!(!killed.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn cancellation_winner_removes_session_before_waiter_can_finish() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let generation = 7_102;
+        let request_id = "00000000-0000-4000-8000-000000007102";
+        let killed = install_test_login(generation, request_id, b"Waiting for authentication\r\n");
+
+        assert_eq!(login_cancel(generation).unwrap(), true);
+        assert!(killed.load(Ordering::SeqCst));
+        assert!(GH_LOGIN.lock().unwrap().is_none());
+        assert!(finish_login_if_ready(generation).is_err());
+    }
+
+    #[test]
     fn cancelling_an_already_finished_github_login_is_idempotent() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
         assert_eq!(login_cancel(u64::MAX).unwrap(), false);
     }
 
     #[test]
     fn pending_github_start_cancellations_do_not_overwrite_each_other() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
         let first = "00000000-0000-4000-8000-000000000011";
         let second = "00000000-0000-4000-8000-000000000012";
         assert_eq!(login_cancel_start(first).unwrap(), true);
@@ -752,6 +892,7 @@ mod tests {
     #[test]
     #[ignore]
     fn real_github_login_prompt_then_cancel() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
         let prompt = login_start("00000000-0000-4000-8000-000000000099".to_string())
             .expect("로그인 프롬프트 실패");
         println!("url={} code={}", prompt.url, prompt.device_code);
