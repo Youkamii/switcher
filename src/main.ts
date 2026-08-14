@@ -16,6 +16,13 @@ import {
   monitorGeometryKey,
   type PhysicalRect,
 } from "./windowGeometry";
+import {
+  completeFirstRunStarChoice,
+  firstRunStartupState,
+  STAR_CTA_LABEL,
+  type FirstRunStartupState,
+  type GithubStarPromptChoice,
+} from "./firstRunStar";
 
 type ProfileInfo = {
   name: string;
@@ -79,6 +86,14 @@ type LoginProvider = ProviderId | "github";
 
 const app = document.getElementById("app")!;
 const titlebarEl = document.querySelector(".titlebar") as HTMLElement;
+let startupState: FirstRunStartupState | "checking" = "checking";
+let starPromptOpen = false;
+let starPromptBusy = false;
+const starPromptHost = document.createElement("section");
+starPromptHost.className = "star-prompt";
+starPromptHost.setAttribute("role", "dialog");
+starPromptHost.setAttribute("aria-modal", "true");
+starPromptHost.setAttribute("aria-labelledby", "star-prompt-title");
 const shutdownStatus = document.createElement("div");
 shutdownStatus.className = "shutdown-status";
 shutdownStatus.setAttribute("role", "alert");
@@ -117,6 +132,87 @@ function showShutdownStatus(state: "restarting" | "blocked", message: string) {
 function toast(message: string, isError = false) {
   if (isError) console.error(message);
   else console.log(message);
+}
+
+function updateGithubStarPromptText() {
+  starPromptHost.querySelector<HTMLElement>("#star-prompt-title")!.textContent =
+    t("starPromptTitle");
+  starPromptHost.querySelector<HTMLElement>(".star-prompt-copy")!.textContent =
+    t("starPromptBody");
+  const close = starPromptHost.querySelector<HTMLButtonElement>(".star-prompt-close")!;
+  close.title = t("starPromptDismiss");
+  close.setAttribute("aria-label", t("starPromptDismiss"));
+}
+
+function revealAppAfterStarPrompt() {
+  startupState = "ready";
+  starPromptOpen = false;
+  starPromptBusy = false;
+  document.body.classList.remove("star-prompt-open");
+  app.replaceChildren();
+  fitHeight();
+  refreshHitRegionsAfterLayout();
+  void render({ immediate: true });
+}
+
+function chooseGithubStarPrompt(choice: GithubStarPromptChoice) {
+  if (starPromptBusy) return;
+  starPromptBusy = true;
+  starPromptHost.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
+    button.disabled = true;
+  });
+
+  void completeFirstRunStarChoice(choice, {
+    persist: (selected) => invoke("set_github_star_prompt_choice", { choice: selected }),
+    revealApp: revealAppAfterStarPrompt,
+    starRepository: () => invoke("github_star_repository"),
+    reportError: (error) => toast(String(error), true),
+  });
+}
+
+function mountGithubStarPrompt() {
+  starPromptOpen = true;
+  document.body.classList.add("star-prompt-open");
+
+  if (starPromptHost.childElementCount === 0) {
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "star-prompt-close";
+    close.textContent = "×";
+    close.addEventListener("click", () => chooseGithubStarPrompt("dismissed"));
+
+    const eyebrow = document.createElement("div");
+    eyebrow.className = "star-prompt-eyebrow";
+    eyebrow.textContent = "OPEN SOURCE";
+
+    const title = document.createElement("h2");
+    title.id = "star-prompt-title";
+
+    const copy = document.createElement("p");
+    copy.className = "star-prompt-copy";
+
+    const action = document.createElement("button");
+    action.type = "button";
+    action.className = "star-prompt-action";
+    const star = document.createElement("span");
+    star.className = "star-prompt-star";
+    star.setAttribute("aria-hidden", "true");
+    star.textContent = "★";
+    const label = document.createElement("span");
+    label.className = "star-prompt-label";
+    label.textContent = STAR_CTA_LABEL;
+    action.append(star, label);
+    action.addEventListener("click", () => chooseGithubStarPrompt("star"));
+
+    starPromptHost.append(close, eyebrow, title, copy, action);
+  }
+
+  updateGithubStarPromptText();
+  if (app.firstElementChild !== starPromptHost || app.childElementCount !== 1) {
+    app.replaceChildren(starPromptHost);
+  }
+  fitHeight();
+  refreshHitRegionsAfterLayout();
 }
 
 /// 리셋까지 남은 시간을 짧게 (예: "3h 42m", "5d 23h")
@@ -1486,6 +1582,11 @@ let renderAbort: (() => void) | null = null;
 /// 보여주고 사용량은 교체된 카드에 이어서 채운다. 생략(스무스)은 주기·수동
 /// 새로고침 — 기존 화면을 그대로 둔 채 다 받아진 뒤 한 번에 교체한다.
 async function render(opts?: { immediate?: boolean }) {
+  // 첫 실행 선택을 읽기 전이나 안내 중에는 계정 본문을 절대 그리지 않는다.
+  if (startupState !== "ready") {
+    if (startupState === "star-prompt") mountGithubStarPrompt();
+    return;
+  }
   // 새로고침 연타·자동 주기와의 경합으로 화면이 겹쳐 그려지는 것을 막고,
   // 그리는 도중 재요청이 오면 끝난 뒤 한 번 더 그린다
   if (rendering) {
@@ -1661,8 +1762,9 @@ function visibleHitRect(
 function reportHitRegions() {
   hitElements = [];
   const regions: { rect: number[]; action: [string, string] | null }[] = [];
+  const interactionPanelOpen = loginOpen || starPromptOpen;
   if (locked) {
-    if (!loginOpen) {
+    if (!interactionPanelOpen) {
       document.querySelectorAll<HTMLElement>(".card.switchable").forEach((el) => {
         const r = el.getBoundingClientRect();
         regions.push({
@@ -1675,7 +1777,7 @@ function reportHitRegions() {
     // 로그인 패널이 높이 상한 아래로 밀려도 현재 보이는 스크롤 포트가 휠과
     // 포인터를 받아야 패널과 취소 버튼까지 내려갈 수 있다. 창 밖 좌표는 잘라서
     // 네이티브 hit-region이 실제 WebView 영역만 열도록 한다.
-    if (loginOpen) {
+    if (interactionPanelOpen) {
       const rect = visibleHitRect(
         app.getBoundingClientRect(),
         window.innerWidth,
@@ -1887,7 +1989,7 @@ async function fitWindowToContent() {
       const target = Math.ceil(Math.max(80, Math.min(total + 1, max)));
       // 컴팩트 모드는 창 자체도 좁게, 미니멀은 더 좁게 (150→120, 사용자 지시 —
       // 타이틀바 버튼은 한 줄을 포기하고 다음 줄로 흐른다)
-      const width = loginOpen
+      const width = loginOpen || starPromptOpen
         ? 360
         : viewMode === "minimal"
           ? 120
@@ -2528,5 +2630,16 @@ void (async () => {
   }
   await loadVisibility();
   applyStaticText();
-  void render();
+  try {
+    const choice = await invoke<GithubStarPromptChoice | null>(
+      "get_github_star_prompt_choice",
+    );
+    startupState = firstRunStartupState(choice);
+  } catch (error) {
+    // 설정 조회 실패로 앱 자체가 막히면 선택형 안내가 강제가 된다 — 본문을 연다.
+    toast(String(error), true);
+    startupState = "ready";
+  }
+  if (startupState === "star-prompt") mountGithubStarPrompt();
+  else void render();
 })();

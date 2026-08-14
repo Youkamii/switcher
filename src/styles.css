@@ -1123,3 +1123,151 @@ body.privacy .card-name,
 body.privacy .hint.warn {
   filter: blur(5px);
 }
+
+/* 첫 실행 GitHub Star 안내 — 본문 대신 단독으로 표시한다. 이전 종료 때 Type2/3였어도
+   읽고 누를 수 있게 투명도·축소 모드의 시각 규칙에서 독립시킨다. */
+body.star-prompt-open .tb-actions,
+body.star-prompt-open #drag-handle {
+  display: none;
+}
+
+body.star-prompt-open #logo {
+  display: flex;
+  opacity: 1;
+}
+
+body.star-prompt-open .titlebar {
+  justify-content: center;
+  padding: 10px 14px 6px;
+}
+
+.star-prompt {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-height: 224px;
+  margin: 4px 0 0;
+  padding: 24px 18px 18px;
+  border: 1px solid rgba(167, 139, 250, 0.76);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 50% 18%, rgba(250, 204, 21, 0.2), transparent 34%),
+    linear-gradient(145deg, rgba(45, 37, 68, 0.99), rgba(24, 24, 35, 0.99));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 12px 32px rgba(0, 0, 0, 0.26);
+  color: #f8f7ff;
+  text-align: center;
+}
+
+.star-prompt::before,
+.star-prompt::after {
+  position: absolute;
+  z-index: -1;
+  width: 90px;
+  height: 90px;
+  border: 1px solid rgba(167, 139, 250, 0.18);
+  border-radius: 50%;
+  content: "";
+}
+
+.star-prompt::before {
+  top: -48px;
+  left: -28px;
+}
+
+.star-prompt::after {
+  right: -38px;
+  bottom: -58px;
+}
+
+.star-prompt-close {
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: #b8b3c9;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.star-prompt-close:hover,
+.star-prompt-close:focus-visible {
+  border-color: rgba(167, 139, 250, 0.72);
+  color: #fff;
+  outline: none;
+}
+
+.star-prompt-eyebrow {
+  margin-bottom: 5px;
+  color: #c4b5fd;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 2.2px;
+}
+
+.star-prompt h2 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.star-prompt-copy {
+  max-width: 260px;
+  margin: 7px auto 15px;
+  color: #c7c3d5;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.star-prompt-action {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 188px;
+  min-height: 94px;
+  gap: 7px;
+  border: 1px solid rgba(250, 204, 21, 0.76);
+  border-radius: 14px;
+  background: linear-gradient(145deg, #6d52c7, #8b5cf6);
+  box-shadow:
+    0 9px 24px rgba(109, 82, 199, 0.34),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  color: #fff;
+  transition: transform 120ms ease-out, box-shadow 120ms ease-out;
+}
+
+.star-prompt-action:hover,
+.star-prompt-action:focus-visible {
+  border-color: #fde047;
+  box-shadow:
+    0 11px 30px rgba(139, 92, 246, 0.46),
+    0 0 0 2px rgba(250, 204, 21, 0.18);
+  outline: none;
+  transform: translateY(-2px);
+}
+
+.star-prompt-action:disabled,
+.star-prompt-close:disabled {
+  cursor: default;
+  opacity: 0.6;
+  transform: none;
+}
+
+.star-prompt-star {
+  color: #fde047;
+  font-size: 42px;
+  line-height: 0.9;
+  text-shadow: 0 0 18px rgba(250, 204, 21, 0.48);
+}
+
+.star-prompt-label {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.2px;
+}
