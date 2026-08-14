@@ -401,6 +401,25 @@ function cancelledWithCleanupWarning(outcome: CancelOutcome): boolean {
   return outcome.cancelled;
 }
 
+function retainFailedLoginForCancel(error: string, sessionId: string, attempt: number) {
+  if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+  loginSessionId = sessionId;
+  activeLoginStart = null;
+  toast(error, true);
+
+  const panel = document.createElement("div");
+  panel.className = "login-panel";
+  const message = document.createElement("div");
+  message.className = "usage-error";
+  message.textContent = error;
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "link";
+  cancelBtn.textContent = t("cancel");
+  cancelBtn.addEventListener("click", () => void cancelActiveLogin(attempt));
+  panel.append(message, cancelBtn);
+  mountLoginPanel(panel, attempt);
+}
+
 async function cancelActiveLogin(attempt: number) {
   if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
   loginCancelingAttempt = attempt;
@@ -637,6 +656,26 @@ function reportLogin(result: LoginOutcome) {
   );
 }
 
+function watchGithubLogin(sessionId: string, attempt: number): Promise<string> {
+  const wait = invoke<string>("github_login_wait", { sessionId });
+  activeGithubWait = wait;
+  void (async () => {
+    try {
+      const login = await wait;
+      if (activeGithubWait === wait) activeGithubWait = null;
+      if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+      toast(t("ghAdded", { login }));
+    } catch (error) {
+      if (activeGithubWait === wait) activeGithubWait = null;
+      if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+      toast(String(error), true);
+    }
+    if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+    finishLogin(attempt);
+  })();
+  return wait;
+}
+
 function addAccountButton(provider: ProviderId, section: HTMLElement) {
   const row = document.createElement("div");
   row.className = "add-row";
@@ -671,7 +710,23 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
       mountLoginPanel(loginPanel(prompt, attempt), attempt);
     } catch (error) {
       if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
-      toast(String(error), true);
+      const message = String(error);
+      try {
+        const sessionId = await invoke<string | null>("login_session_for_request", {
+          requestId,
+        });
+        if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+        if (sessionId) {
+          retainFailedLoginForCancel(message, sessionId, attempt);
+          return;
+        }
+      } catch (lookupError) {
+        if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+        toast(`${message}; ${String(lookupError)}`, true);
+        finishLogin(attempt);
+        return;
+      }
+      toast(message, true);
       finishLogin(attempt);
     }
   });
@@ -1006,23 +1061,7 @@ function githubAddButton(section: HTMLElement) {
       waiting.className = "usage-note";
       waiting.textContent = t("waitingBrowser");
       panel.appendChild(waiting);
-      void (async () => {
-        const wait = invoke<string>("github_login_wait", {
-          sessionId: prompt.session_id,
-        });
-        activeGithubWait = wait;
-        try {
-          const login = await wait;
-          if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
-          toast(t("ghAdded", { login }));
-        } catch (error) {
-          if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
-          toast(String(error), true);
-        }
-        if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
-        activeGithubWait = null;
-        finishLogin(attempt);
-      })();
+      watchGithubLogin(prompt.session_id, attempt);
       const cancelBtn = document.createElement("button");
       cancelBtn.className = "link";
       cancelBtn.textContent = t("cancel");
@@ -1031,7 +1070,24 @@ function githubAddButton(section: HTMLElement) {
       mountLoginPanel(panel, attempt);
     } catch (error) {
       if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
-      toast(String(error), true);
+      const message = String(error);
+      try {
+        const sessionId = await invoke<string | null>("github_login_session_for_request", {
+          requestId,
+        });
+        if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+        if (sessionId) {
+          retainFailedLoginForCancel(message, sessionId, attempt);
+          watchGithubLogin(sessionId, attempt);
+          return;
+        }
+      } catch (lookupError) {
+        if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+        toast(`${message}; ${String(lookupError)}`, true);
+        finishLogin(attempt);
+        return;
+      }
+      toast(message, true);
       finishLogin(attempt);
     }
   });

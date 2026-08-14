@@ -326,6 +326,20 @@ fn validate_request_id(request_id: &str) -> Result<(), String> {
         .ok_or_else(|| "잘못된 GitHub 로그인 요청 ID입니다".to_string())
 }
 
+/// 프롬프트 생성 오류 뒤에도 살아 있는 정확한 GitHub 세션을 찾는다.
+/// 성공 마커가 이미 도착한 세션도 돌려줘 프런트의 정확한 waiter가 완료를 회수하게 한다.
+pub fn login_session_for_request(request_id: &str) -> Result<Option<String>, String> {
+    validate_request_id(request_id)?;
+    let _completion = GH_COMPLETION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
+    let guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
+    Ok(crate::login::exact_session_id(
+        guard
+            .as_ref()
+            .map(|session| (session.request_id.as_str(), session.generation)),
+        request_id,
+    ))
+}
+
 fn gh_send(generation: u64, bytes: &[u8]) -> Result<(), String> {
     let result = (|| {
         let guard = GH_LOGIN.lock().map_err(|_| "내부 잠금 오류")?;
@@ -1067,6 +1081,32 @@ mod tests {
         assert!(ensure_generation(43, 42).is_err());
         assert!(ensure_request_id("request-new", "request-new").is_ok());
         assert!(ensure_request_id("request-new", "request-old").is_err());
+    }
+
+    #[test]
+    fn active_github_session_lookup_is_exact_and_keeps_completion_drainable() {
+        let _test = GH_TEST_LOCK.lock().unwrap();
+        let generation = 7_178;
+        let request_id = "00000000-0000-4000-8000-000000007178";
+        install_test_login(
+            generation,
+            request_id,
+            b"\x1b[32mLogged in as recoverable-octocat\x1b[0m\r\n",
+        );
+
+        assert_eq!(
+            login_session_for_request(request_id).unwrap().as_deref(),
+            Some("7178")
+        );
+        assert_eq!(
+            login_session_for_request("00000000-0000-4000-8000-000000007179").unwrap(),
+            None
+        );
+        assert_eq!(
+            finish_login_if_ready(generation).unwrap().as_deref(),
+            Some("recoverable-octocat")
+        );
+        assert!(GH_LOGIN.lock().unwrap().is_none());
     }
 
     #[test]

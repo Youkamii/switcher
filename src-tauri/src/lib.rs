@@ -392,6 +392,11 @@ fn cancel_login_start(request_id: String) -> Result<login::CancelOutcome, String
     login::cancel_start(&request_id)
 }
 
+#[tauri::command]
+fn login_session_for_request(request_id: String) -> Result<Option<String>, String> {
+    login::session_for_request(&request_id)
+}
+
 /// 데모·스크린샷용: SWITCHER_VIEW=normal|locked|compact 로 초기 보기 모드를 강제한다
 #[tauri::command]
 fn initial_view_mode() -> Option<String> {
@@ -971,6 +976,11 @@ fn github_login_cancel(session_id: String) -> Result<bool, String> {
 #[tauri::command]
 fn github_login_cancel_start(request_id: String) -> Result<bool, String> {
     github::login_cancel_start(&request_id)
+}
+
+#[tauri::command]
+fn github_login_session_for_request(request_id: String) -> Result<Option<String>, String> {
+    github::login_session_for_request(&request_id)
 }
 
 /// 표시 기능 플래그 — 프론트가 어떤 섹션·버튼을 그릴지 정한다.
@@ -2317,6 +2327,7 @@ pub fn run() {
             await_device_login,
             cancel_login,
             cancel_login_start,
+            login_session_for_request,
             set_hit_regions,
             set_click_through,
             memo_load,
@@ -2335,6 +2346,7 @@ pub fn run() {
             github_login_wait,
             github_login_cancel,
             github_login_cancel_start,
+            github_login_session_for_request,
             black_on,
             black_off,
             black_off_delayed,

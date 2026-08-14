@@ -115,7 +115,7 @@ test("routes GitHub wait and post-prompt cancel through the exact backend sessio
   );
   assert.match(
     mainSource,
-    /invoke<string>\("github_login_wait", \{\s*sessionId: prompt\.session_id,?\s*\}\)/,
+    /watchGithubLogin\(prompt\.session_id, attempt\)/,
     "the GitHub waiter must identify the session it belongs to",
   );
   assert.match(
@@ -184,6 +184,32 @@ test("finishes GitHub login when completion beats a pre-prompt cancel", () => {
     mainSource,
     /github_login_cancel_start[\s\S]*?github_login_cancel[\s\S]*?if \(!cancelled\) \{\s*completionWon = true;\s*githubWait = invoke<string>\("github_login_wait", \{\s*sessionId: started\.value\.session_id,[\s\S]*?activeGithubWait = githubWait;/,
     "a completed pre-prompt GitHub session must be consumed instead of being left behind",
+  );
+});
+
+test("retains exact cancel controls when a Claude or Codex start leaves a live session", () => {
+  assert.match(
+    mainSource,
+    /invoke<string \| null>\("login_session_for_request", \{\s*requestId,\s*\}\)[\s\S]*?if \(sessionId\) \{\s*retainFailedLoginForCancel\(message, sessionId, attempt\);\s*return;\s*\}[\s\S]*?toast\(message, true\);\s*finishLogin\(attempt\);/,
+    "a matching preserved session must keep the panel while an ordinary cleaned failure closes it",
+  );
+  assert.match(
+    mainSource,
+    /function retainFailedLoginForCancel[\s\S]*?loginSessionId = sessionId;[\s\S]*?cancelBtn\.addEventListener\("click", \(\) => void cancelActiveLogin\(attempt\)\)[\s\S]*?mountLoginPanel\(panel, attempt\);/,
+    "the retained panel must keep the exact session ID and an enabled retry-cancel action",
+  );
+});
+
+test("retains GitHub prompt failures and drains completion through the exact recovered waiter", () => {
+  assert.match(
+    mainSource,
+    /invoke<string \| null>\("github_login_session_for_request", \{\s*requestId,\s*\}\)[\s\S]*?retainFailedLoginForCancel\(message, sessionId, attempt\);\s*watchGithubLogin\(sessionId, attempt\);\s*return;/,
+    "GitHub start failures with a surviving process must keep cancel controls and start an exact waiter",
+  );
+  assert.match(
+    mainSource,
+    /function watchGithubLogin\(sessionId: string, attempt: number\): Promise<string> \{\s*const wait = invoke<string>\("github_login_wait", \{ sessionId \}\);[\s\S]*?toast\(t\("ghAdded", \{ login \}\)\)[\s\S]*?finishLogin\(attempt\);/,
+    "a completion that wins after prompt failure must still be consumed and reported",
   );
 });
 

@@ -609,6 +609,31 @@ fn validate_request_id(request_id: &str) -> Result<(), String> {
         .ok_or_else(|| "잘못된 로그인 요청 ID입니다".to_string())
 }
 
+pub(crate) fn exact_session_id(
+    active: Option<(&str, u64)>,
+    request_id: &str,
+) -> Option<String> {
+    active
+        .filter(|(active_request_id, _)| *active_request_id == request_id)
+        .map(|(_, generation)| generation.to_string())
+}
+
+/// start가 오류를 돌려준 뒤에도 종료되지 않은 정확한 요청의 세션이 남았는지 확인한다.
+/// 완료·취소와 같은 잠금 순서를 써서 이미 정리된 세션 ID를 돌려주지 않는다.
+pub fn session_for_request(request_id: &str) -> Result<Option<String>, String> {
+    validate_request_id(request_id)?;
+    let _completion = LOGIN_COMPLETION_LOCK
+        .lock()
+        .map_err(|_| "내부 잠금 오류")?;
+    let guard = SESSION.lock().map_err(|_| "내부 잠금 오류")?;
+    Ok(exact_session_id(
+        guard
+            .as_ref()
+            .map(|session| (session.request_id.as_str(), session.generation)),
+        request_id,
+    ))
+}
+
 /// start의 본체 — 실행 명령을 주입받는다.
 /// 테스트가 존재하지 않는 명령을 넣어 조기 종료 경로(미설치 CLI)를 검증한다.
 fn start_impl(
@@ -1939,6 +1964,25 @@ mod tests {
     #[test]
     fn start_cancellation_rejects_unbounded_request_ids() {
         assert!(cancel_start("not-a-uuid").is_err());
+        assert!(session_for_request("not-a-uuid").is_err());
+    }
+
+    #[test]
+    fn active_session_lookup_only_returns_the_exact_start_request() {
+        let active = Some(("00000000-0000-4000-8000-000000000078", 78));
+
+        assert_eq!(
+            exact_session_id(active, "00000000-0000-4000-8000-000000000078").as_deref(),
+            Some("78")
+        );
+        assert_eq!(
+            exact_session_id(active, "00000000-0000-4000-8000-000000000079"),
+            None
+        );
+        assert_eq!(
+            exact_session_id(None, "00000000-0000-4000-8000-000000000078"),
+            None
+        );
     }
 
     #[test]
