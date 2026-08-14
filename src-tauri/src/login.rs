@@ -416,6 +416,11 @@ fn start_impl(
     (program, args, env_key): (&str, &[&str], &str),
 ) -> Result<LoginPrompt, String> {
     let my_gen;
+    // 이전 로그인의 마지막 가져오기가 끝난 뒤에만 다음 격리 세션을 등록한다.
+    // 등록까지만 직렬화하고 프롬프트 대기 중에는 취소가 들어올 수 있게 즉시 놓는다.
+    let completion = LOGIN_COMPLETION_LOCK
+        .lock()
+        .map_err(|_| "내부 잠금 오류")?;
     // CLI/PTY 준비가 길어지는 동안 일어난 삭제도 "로그인 시작 뒤 삭제"로 잡아야 한다.
     // 세션 등록 직전에 찍으면 그 사이 삭제가 tombstone보다 먼저가 되어 되살아난다.
     let delete_epoch = deletion_snapshot();
@@ -558,6 +563,7 @@ fn start_impl(
             _master: pair.master,
         });
     }
+    drop(completion);
 
     // 주소가 화면에 뜰 때까지 기다린다 (잠금 밖 — 취소 가능해야 하므로)
     let deadline = Instant::now() + PROMPT_TIMEOUT;
