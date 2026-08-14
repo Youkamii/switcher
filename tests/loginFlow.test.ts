@@ -113,6 +113,14 @@ test("treats an already completed exact login cancellation as idempotent", () =>
   );
 });
 
+test("finishes GitHub login when completion beats a pre-prompt cancel", () => {
+  assert.match(
+    mainSource,
+    /github_login_cancel_start[\s\S]*?github_login_cancel[\s\S]*?if \(!cancelled\) \{\s*completionWon = true;\s*githubWait = invoke<string>\("github_login_wait", \{\s*sessionId: started\.value\.session_id,[\s\S]*?activeGithubWait = githubWait;/,
+    "a completed pre-prompt GitHub session must be consumed instead of being left behind",
+  );
+});
+
 test("blocks account switches while an account login is active", () => {
   assert.match(
     mainSource,

@@ -404,7 +404,7 @@ async function cancelActiveLogin(attempt: number) {
   const githubRequestId = activeGithubRequestId;
   const start = activeLoginStart;
   const accountWait = activeAccountWait;
-  const githubWait = activeGithubWait;
+  let githubWait = activeGithubWait;
   let completionWon = false;
   try {
     if (provider === "github") {
@@ -423,6 +423,13 @@ async function cancelActiveLogin(attempt: number) {
             cancelled = await invoke<boolean>("github_login_cancel", {
               sessionId: started.value.session_id,
             });
+            if (!cancelled) {
+              completionWon = true;
+              githubWait = invoke<string>("github_login_wait", {
+                sessionId: started.value.session_id,
+              });
+              activeGithubWait = githubWait;
+            }
           }
         }
       }
