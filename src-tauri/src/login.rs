@@ -236,15 +236,16 @@ pub(crate) fn pick_login_url(candidates: Vec<String>) -> Option<String> {
 pub(crate) fn extract_device_code(text: &str) -> Option<String> {
     for line in text.lines() {
         let token = line.trim();
-        let ok = token.len() >= 8
-            && token.len() <= 16
-            && token.contains('-')
-            && token
+        let Some((left, right)) = token.split_once('-') else {
+            continue;
+        };
+        let ok = left.len() == 4
+            && right.len() == 4
+            && left
                 .chars()
-                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '-')
-            && token.chars().any(|c| c.is_ascii_uppercase())
-            && token.starts_with(|c: char| c.is_ascii_alphanumeric())
-            && token.ends_with(|c: char| c.is_ascii_alphanumeric());
+                .chain(right.chars())
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+            && token.chars().any(|c| c.is_ascii_uppercase());
         if ok {
             return Some(token.to_string());
         }
@@ -1086,6 +1087,9 @@ mod tests {
         assert!(extract_device_code("------------").is_none());
         assert!(extract_device_code("2026-07-28").is_none());
         assert!(extract_device_code("-V4GM-HT05").is_none());
+        assert!(extract_device_code("A-------B").is_none());
+        assert!(extract_device_code("ABCD--EFGH").is_none());
+        assert!(extract_device_code("A-B-C-D-E").is_none());
         assert_eq!(extract_device_code("A1B2-C3D4").as_deref(), Some("A1B2-C3D4"));
     }
 
