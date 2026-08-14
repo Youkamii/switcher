@@ -78,8 +78,9 @@ let loginSessionId: string | null = null;
 let loginAttempt = 0;
 let activeLoginAttempt = 0;
 let activeLoginProvider: LoginProvider | null = null;
+let activeGithubRequestId: string | null = null;
 let loginCancelingAttempt: number | null = null;
-let activeLoginStart: Promise<unknown> | null = null;
+let activeLoginStart: Promise<LoginPrompt | GithubLoginPrompt> | null = null;
 let activeGithubWait: Promise<unknown> | null = null;
 const loginHost = document.createElement("section");
 loginHost.id = "login-host";
@@ -321,6 +322,12 @@ type LoginPrompt = {
   needs_code: boolean;
 };
 
+type GithubLoginPrompt = {
+  session_id: string;
+  url: string;
+  device_code: string;
+};
+
 async function copyText(value: string, button: HTMLButtonElement, label: string) {
   try {
     await navigator.clipboard.writeText(value);
@@ -372,6 +379,7 @@ function finishLogin(attempt: number) {
   loginOpen = false;
   loginSessionId = null;
   activeLoginProvider = null;
+  activeGithubRequestId = null;
   activeLoginStart = null;
   activeGithubWait = null;
   loginCancelingAttempt = null;
@@ -388,15 +396,23 @@ async function cancelActiveLogin(attempt: number) {
 
   const provider = activeLoginProvider;
   const sessionId = loginSessionId;
+  const githubRequestId = activeGithubRequestId;
   const start = activeLoginStart;
   const githubWait = activeGithubWait;
   try {
     if (provider === "github") {
-      await invoke("github_login_cancel");
-      // 첫 취소가 login_start의 세션 등록보다 빨랐을 수도 있다. start가 끝난 뒤
-      // 한 번 더 정리해야 주소를 받는 중 누른 취소도 고아 gh 프로세스를 안 남긴다.
-      await Promise.allSettled([start]);
-      await invoke("github_login_cancel");
+      if (sessionId) {
+        await invoke("github_login_cancel", { sessionId });
+      } else {
+        // 프롬프트가 아직 없을 때만 현재 세션 취소를 쓴다. start 등록보다 먼저
+        // 도착했으면 start 결과의 세대값으로 한 번 더 정확히 취소한다.
+        if (!githubRequestId) throw new Error("GitHub 로그인 요청 ID가 없습니다");
+        await invoke("github_login_cancel_start", { requestId: githubRequestId });
+        const [started] = await Promise.allSettled([start]);
+        if (started.status === "fulfilled" && started.value && "session_id" in started.value) {
+          await invoke("github_login_cancel", { sessionId: started.value.session_id });
+        }
+      }
       await Promise.allSettled([githubWait]);
     } else if (sessionId) {
       await invoke("cancel_login", { sessionId });
@@ -423,6 +439,7 @@ function beginLogin(provider: LoginProvider): number {
   loginOpen = true;
   loginSessionId = null;
   activeLoginProvider = provider;
+  activeGithubRequestId = provider === "github" ? crypto.randomUUID() : null;
   activeLoginStart = null;
   activeGithubWait = null;
   loginCancelingAttempt = null;
@@ -895,11 +912,19 @@ function githubAddButton(section: HTMLElement) {
     addBtn.textContent = t("gettingLoginUrl");
     row.hidden = true;
     const attempt = beginLogin("github");
+    const requestId = activeGithubRequestId!;
     try {
-      const start = invoke<{ url: string; device_code: string }>("github_login_start");
+      const start = invoke<GithubLoginPrompt>("github_login_start", {
+        requestId,
+      });
       activeLoginStart = start;
       const prompt = await start;
-      if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+      if (!isCurrentLogin(attempt)) {
+        void invoke("github_login_cancel", { sessionId: prompt.session_id });
+        return;
+      }
+      if (loginCancelingAttempt === attempt) return;
+      loginSessionId = prompt.session_id;
       activeLoginStart = null;
       const panel = document.createElement("div");
       panel.className = "login-panel";
@@ -914,7 +939,9 @@ function githubAddButton(section: HTMLElement) {
       waiting.textContent = t("waitingBrowser");
       panel.appendChild(waiting);
       void (async () => {
-        const wait = invoke<string>("github_login_wait");
+        const wait = invoke<string>("github_login_wait", {
+          sessionId: prompt.session_id,
+        });
         activeGithubWait = wait;
         try {
           const login = await wait;

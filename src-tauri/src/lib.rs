@@ -941,23 +941,34 @@ async fn github_switch(name: String) -> Result<(), String> {
 
 /// GitHub 계정 추가 시작 — 위젯에 띄울 주소·일회용 코드 (PTY로 gh auth login)
 #[tauri::command]
-async fn github_login_start() -> Result<github::GhLoginPrompt, String> {
-    tauri::async_runtime::spawn_blocking(github::login_start)
+async fn github_login_start(request_id: String) -> Result<github::GhLoginPrompt, String> {
+    tauri::async_runtime::spawn_blocking(move || github::login_start(request_id))
         .await
         .map_err(|e| format!("GitHub 로그인 시작 실패: {e}"))?
 }
 
 /// 브라우저에서 코드 입력이 끝나기를 기다린다 — 성공 시 로그인 이름
 #[tauri::command]
-async fn github_login_wait() -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(github::login_wait)
+async fn github_login_wait(session_id: String) -> Result<String, String> {
+    let generation = session_id
+        .parse::<u64>()
+        .map_err(|_| "GitHub 로그인 세션 ID가 올바르지 않습니다")?;
+    tauri::async_runtime::spawn_blocking(move || github::login_wait(generation))
         .await
         .map_err(|e| format!("GitHub 로그인 대기 실패: {e}"))?
 }
 
 #[tauri::command]
-fn github_login_cancel() {
-    github::login_cancel();
+fn github_login_cancel(session_id: String) -> Result<(), String> {
+    let generation = session_id
+        .parse::<u64>()
+        .map_err(|_| "GitHub 로그인 세션 ID가 올바르지 않습니다")?;
+    github::login_cancel(generation)
+}
+
+#[tauri::command]
+fn github_login_cancel_start(request_id: String) -> Result<(), String> {
+    github::login_cancel_start(&request_id)
 }
 
 /// 표시 기능 플래그 — 프론트가 어떤 섹션·버튼을 그릴지 정한다.
@@ -2318,6 +2329,7 @@ pub fn run() {
             github_login_start,
             github_login_wait,
             github_login_cancel,
+            github_login_cancel_start,
             black_on,
             black_off,
             black_off_delayed,

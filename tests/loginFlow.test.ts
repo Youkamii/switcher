@@ -54,8 +54,36 @@ test("guards login completion and serializes GitHub cancellation", () => {
   );
   assert.match(
     mainSource,
-    /loginCancelingAttempt = attempt;[\s\S]*?await invoke\("github_login_cancel"\)[\s\S]*?finishLogin\(attempt\);/,
+    /loginCancelingAttempt = attempt;[\s\S]*?await invoke\("github_login_cancel", \{ sessionId \}\)[\s\S]*?finishLogin\(attempt\);/,
     "GitHub cancellation must finish before another login can start",
+  );
+});
+
+test("routes GitHub wait and post-prompt cancel through the exact backend session", () => {
+  assert.match(
+    mainSource,
+    /type GithubLoginPrompt = \{[\s\S]*?session_id: string;[\s\S]*?\};/,
+    "the GitHub prompt must expose its backend session generation",
+  );
+  assert.match(
+    mainSource,
+    /invoke<string>\("github_login_wait", \{\s*sessionId: prompt\.session_id,?\s*\}\)/,
+    "the GitHub waiter must identify the session it belongs to",
+  );
+  assert.match(
+    mainSource,
+    /invoke\("github_login_cancel", \{\s*sessionId:/,
+    "a GitHub cancel after the prompt must target that exact session",
+  );
+  assert.match(
+    mainSource,
+    /activeGithubRequestId = provider === "github" \? crypto\.randomUUID\(\) : null;/,
+    "each GitHub login attempt must get a unique frontend request ID",
+  );
+  assert.match(
+    mainSource,
+    /invoke\("github_login_cancel_start", \{ requestId: githubRequestId \}\)/,
+    "the pending-prompt cancel path must carry that frontend request ID",
   );
 });
 
