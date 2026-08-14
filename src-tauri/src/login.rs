@@ -76,6 +76,9 @@ struct Session {
 }
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+/// CLI 종료 뒤 자격증명을 반영하는 마지막 단계와 취소를 한 순서로 만든다.
+/// 먼저 잠근 쪽만 세션을 가져가므로 "취소 성공 뒤 가져오기"가 생기지 않는다.
+static LOGIN_COMPLETION_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Default)]
 struct OutputBuffer {
@@ -855,6 +858,9 @@ fn finish_and_import(
     generation: u64,
 ) -> Result<LoginOutcome, String> {
     wait_for_exit(timeout, generation)?;
+    let _completion = LOGIN_COMPLETION_LOCK
+        .lock()
+        .map_err(|_| "내부 잠금 오류")?;
     let (provider, dir, delete_epoch) =
         finish_session(generation).ok_or("로그인 세션이 사라졌습니다")?;
     import_started(env, provider, &dir, delete_epoch)
@@ -907,6 +913,9 @@ pub fn submit_code(env: &Env, code: &str, generation: u64) -> Result<LoginOutcom
     }
     match wait_for_exit_or_rejection(FINISH_TIMEOUT, mark, generation)? {
         SubmitWait::Exited => {
+            let _completion = LOGIN_COMPLETION_LOCK
+                .lock()
+                .map_err(|_| "내부 잠금 오류")?;
             let (provider, dir, delete_epoch) =
                 finish_session(generation).ok_or("로그인 세션이 사라졌습니다")?;
             import_started(env, provider, &dir, delete_epoch)
@@ -997,12 +1006,18 @@ fn cancel_generation(generation: u64) {
 }
 
 pub fn cancel() {
+    let Ok(_completion) = LOGIN_COMPLETION_LOCK.lock() else {
+        return;
+    };
     if let Some(session) = take_session(None) {
         terminate_session(session);
     }
 }
 
 pub fn cancel_session(generation: u64) -> Result<(), String> {
+    let _completion = LOGIN_COMPLETION_LOCK
+        .lock()
+        .map_err(|_| "내부 잠금 오류")?;
     let current = SESSION
         .lock()
         .map_err(|_| "내부 잠금 오류")?
@@ -1014,7 +1029,7 @@ pub fn cancel_session(generation: u64) -> Result<(), String> {
             Ok(())
         }
         Some(_) => Err("이전 로그인 패널의 취소 요청이라 무시했습니다".into()),
-        None => Ok(()),
+        None => Err("로그인이 이미 끝났거나 취소됐습니다".into()),
     }
 }
 
@@ -1079,6 +1094,12 @@ mod tests {
     fn codex_device_timeout_matches_code_validity() {
         assert_eq!(DEVICE_TIMEOUT, Duration::from_secs(15 * 60));
         assert!(SWEEP_MIN_AGE > DEVICE_TIMEOUT);
+    }
+
+    #[test]
+    fn cancel_unknown_session_is_not_reported_as_success() {
+        cancel();
+        assert!(cancel_session(u64::MAX).is_err());
     }
 
     #[test]
