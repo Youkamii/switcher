@@ -418,7 +418,12 @@ async function cancelActiveLogin(attempt: number) {
       await invoke("cancel_login", { sessionId });
     } else {
       await invoke("cancel_login_start");
-      await Promise.allSettled([start]);
+      // cancel_login_start가 backend 세션 등록보다 먼저 도착했을 수 있다.
+      // start가 뒤늦게 성공하면 반환된 정확한 세션을 한 번 더 취소한다.
+      const [started] = await Promise.allSettled([start]);
+      if (started.status === "fulfilled" && started.value && "needs_code" in started.value) {
+        await invoke("cancel_login", { sessionId: started.value.session_id });
+      }
     }
   } catch (error) {
     if (isCurrentLogin(attempt)) {

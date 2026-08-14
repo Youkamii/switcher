@@ -87,6 +87,14 @@ test("routes GitHub wait and post-prompt cancel through the exact backend sessio
   );
 });
 
+test("finishes a pending Claude or Codex cancellation with its exact session", () => {
+  assert.match(
+    mainSource,
+    /await invoke\("cancel_login_start"\);[\s\S]*?Promise\.allSettled\(\[start\]\)[\s\S]*?"needs_code" in started\.value[\s\S]*?invoke\("cancel_login", \{ sessionId: started\.value\.session_id \}\)/,
+    "a start that registers after the first cancel must be cancelled by its returned session ID",
+  );
+});
+
 test("blocks account switches while an account login is active", () => {
   assert.match(
     mainSource,
