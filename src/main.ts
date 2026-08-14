@@ -93,7 +93,7 @@ const starPromptHost = document.createElement("section");
 starPromptHost.className = "star-prompt";
 starPromptHost.setAttribute("role", "dialog");
 starPromptHost.setAttribute("aria-modal", "true");
-starPromptHost.setAttribute("aria-labelledby", "star-prompt-title");
+starPromptHost.setAttribute("aria-label", STAR_CTA_LABEL);
 const shutdownStatus = document.createElement("div");
 shutdownStatus.className = "shutdown-status";
 shutdownStatus.setAttribute("role", "alert");
@@ -135,10 +135,6 @@ function toast(message: string, isError = false) {
 }
 
 function updateGithubStarPromptText() {
-  starPromptHost.querySelector<HTMLElement>("#star-prompt-title")!.textContent =
-    t("starPromptTitle");
-  starPromptHost.querySelector<HTMLElement>(".star-prompt-copy")!.textContent =
-    t("starPromptBody");
   const close = starPromptHost.querySelector<HTMLButtonElement>(".star-prompt-close")!;
   close.title = t("starPromptDismiss");
   close.setAttribute("aria-label", t("starPromptDismiss"));
@@ -181,16 +177,6 @@ function mountGithubStarPrompt() {
     close.textContent = "×";
     close.addEventListener("click", () => chooseGithubStarPrompt("dismissed"));
 
-    const eyebrow = document.createElement("div");
-    eyebrow.className = "star-prompt-eyebrow";
-    eyebrow.textContent = "OPEN SOURCE";
-
-    const title = document.createElement("h2");
-    title.id = "star-prompt-title";
-
-    const copy = document.createElement("p");
-    copy.className = "star-prompt-copy";
-
     const action = document.createElement("button");
     action.type = "button";
     action.className = "star-prompt-action";
@@ -204,7 +190,7 @@ function mountGithubStarPrompt() {
     action.append(star, label);
     action.addEventListener("click", () => chooseGithubStarPrompt("star"));
 
-    starPromptHost.append(close, eyebrow, title, copy, action);
+    starPromptHost.append(action, close);
   }
 
   updateGithubStarPromptText();
@@ -1989,13 +1975,15 @@ async function fitWindowToContent() {
       const target = Math.ceil(Math.max(80, Math.min(total + 1, max)));
       // 컴팩트 모드는 창 자체도 좁게, 미니멀은 더 좁게 (150→120, 사용자 지시 —
       // 타이틀바 버튼은 한 줄을 포기하고 다음 줄로 흐른다)
-      const width = loginOpen || starPromptOpen
+      const width = loginOpen
         ? 360
-        : viewMode === "minimal"
-          ? 120
-          : viewMode === "compact"
-            ? 240
-            : 360;
+        : starPromptOpen
+          ? 240
+          : viewMode === "minimal"
+            ? 120
+            : viewMode === "compact"
+              ? 240
+              : 360;
       // 크기 조절 기준은 "오른쪽 상단" — 목표 폭이 실제로 바뀌는 전환에서만
       // 우측 가장자리를 고정한다. (바깥 크기에는 그림자가 포함되므로 실측 폭과
       // 목표 폭을 비교하면 매번 어긋나 창이 조금씩 밀리는 버그가 있었다)
