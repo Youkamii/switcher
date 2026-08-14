@@ -384,6 +384,12 @@ fn cancel_login(session_id: String) -> Result<(), String> {
     login::cancel_session(generation)
 }
 
+/// 로그인 주소를 아직 받는 중이라 세션 ID가 프런트에 도착하지 않았을 때도 취소한다.
+#[tauri::command]
+fn cancel_login_start() {
+    login::cancel();
+}
+
 /// 데모·스크린샷용: SWITCHER_VIEW=normal|locked|compact 로 초기 보기 모드를 강제한다
 #[tauri::command]
 fn initial_view_mode() -> Option<String> {
@@ -2294,6 +2300,7 @@ pub fn run() {
             submit_login_code,
             await_device_login,
             cancel_login,
+            cancel_login_start,
             set_hit_regions,
             set_click_through,
             memo_load,

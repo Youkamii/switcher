@@ -68,13 +68,21 @@ const PROVIDERS = [
 ] as const;
 
 type ProviderId = (typeof PROVIDERS)[number]["id"];
+type LoginProvider = ProviderId | "github";
 
 const app = document.getElementById("app")!;
 const titlebarEl = document.querySelector(".titlebar") as HTMLElement;
 let rendering = false;
-/// 로그인 패널이 열려 있으면 자동 새로고침이 화면을 갈아엎지 않게 한다
 let loginOpen = false;
 let loginSessionId: string | null = null;
+let loginAttempt = 0;
+let activeLoginAttempt = 0;
+let activeLoginProvider: LoginProvider | null = null;
+let loginCancelingAttempt: number | null = null;
+let activeLoginStart: Promise<unknown> | null = null;
+let activeGithubWait: Promise<unknown> | null = null;
+const loginHost = document.createElement("section");
+loginHost.id = "login-host";
 
 /// 화면 알림(토스트)은 제거됐다 — 의미 없는 메시지가 위젯 폭에도 안 맞게
 /// 떠서 없앰 (사용자 결정, 2026-08-07). 원인 추적을 위해 콘솔에만 남긴다.
@@ -235,6 +243,10 @@ function profileCard(
 
   let switching = false;
   const doSwitch = async (disable?: HTMLButtonElement) => {
+    if (loginOpen) {
+      toast(t("loginBusy"), true);
+      return;
+    }
     if (switching) return;
     switching = true;
     if (disable) disable.disabled = true;
@@ -343,9 +355,97 @@ function copyBox(title: string, value: string, mono: boolean): HTMLElement {
   return box;
 }
 
-/// 로그인 패널. 성공·실패·취소 어느 경로든 onExit 하나로 끝난다 —
-/// onExit은 loginOpen을 내리고 전체를 다시 그린다 (수동 복원 분기 제거).
-function loginPanel(prompt: LoginPrompt, onExit: () => void): HTMLElement {
+function isCurrentLogin(attempt: number): boolean {
+  return loginOpen && activeLoginAttempt === attempt;
+}
+
+function mountLoginPanel(panel: HTMLElement, attempt: number) {
+  if (!isCurrentLogin(attempt)) return;
+  loginHost.replaceChildren(panel);
+  if (!loginHost.isConnected) app.appendChild(loginHost);
+  fitHeight();
+  refreshHitRegionsAfterLayout();
+}
+
+function finishLogin(attempt: number) {
+  if (!isCurrentLogin(attempt)) return;
+  loginOpen = false;
+  loginSessionId = null;
+  activeLoginProvider = null;
+  activeLoginStart = null;
+  activeGithubWait = null;
+  loginCancelingAttempt = null;
+  loginHost.replaceChildren();
+  void render({ immediate: true });
+}
+
+async function cancelActiveLogin(attempt: number) {
+  if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+  loginCancelingAttempt = attempt;
+  loginHost.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
+    button.disabled = true;
+  });
+
+  const provider = activeLoginProvider;
+  const sessionId = loginSessionId;
+  const start = activeLoginStart;
+  const githubWait = activeGithubWait;
+  try {
+    if (provider === "github") {
+      await invoke("github_login_cancel");
+      // 첫 취소가 login_start의 세션 등록보다 빨랐을 수도 있다. start가 끝난 뒤
+      // 한 번 더 정리해야 주소를 받는 중 누른 취소도 고아 gh 프로세스를 안 남긴다.
+      await Promise.allSettled([start]);
+      await invoke("github_login_cancel");
+      await Promise.allSettled([githubWait]);
+    } else if (sessionId) {
+      await invoke("cancel_login", { sessionId });
+    } else {
+      await invoke("cancel_login_start");
+      await Promise.allSettled([start]);
+    }
+  } catch (error) {
+    if (isCurrentLogin(attempt)) {
+      toast(String(error), true);
+      loginCancelingAttempt = null;
+      loginHost.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
+        button.disabled = false;
+      });
+    }
+    return;
+  }
+  if (!isCurrentLogin(attempt)) return;
+  loginCancelingAttempt = null;
+  finishLogin(attempt);
+}
+
+function beginLogin(provider: LoginProvider): number {
+  loginOpen = true;
+  loginSessionId = null;
+  activeLoginProvider = provider;
+  activeLoginStart = null;
+  activeGithubWait = null;
+  loginCancelingAttempt = null;
+  const attempt = ++loginAttempt;
+  activeLoginAttempt = attempt;
+
+  const panel = document.createElement("div");
+  panel.className = "login-panel";
+  const waiting = document.createElement("div");
+  waiting.className = "usage-note";
+  waiting.textContent = t("gettingLoginUrl");
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "link";
+  cancelBtn.textContent = t("cancel");
+  cancelBtn.addEventListener("click", () => void cancelActiveLogin(attempt));
+  panel.append(waiting, cancelBtn);
+  mountLoginPanel(panel, attempt);
+  return attempt;
+}
+
+/// 로그인 패널은 loginHost 안의 같은 DOM 노드로 유지된다. 완료 콜백은 시도 번호를
+/// 확인해 취소된 이전 waiter가 더 새 로그인 화면을 닫지 못하게 한다.
+function loginPanel(prompt: LoginPrompt, attempt: number): HTMLElement {
   const panel = document.createElement("div");
   panel.className = "login-panel";
 
@@ -382,8 +482,10 @@ function loginPanel(prompt: LoginPrompt, onExit: () => void): HTMLElement {
           code,
           sessionId: prompt.session_id,
         });
+        if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
         reportLogin(result);
       } catch (error) {
+        if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
         const message = String(error);
         // "코드가 거부" = CLI가 몇 초 안에 거부를 알렸고(백엔드 화면 감지, 실측)
         // 세션은 재입력을 기다리고 있다 — 패널을 유지하고 같은 자리에서 다시 받는다
@@ -399,7 +501,7 @@ function loginPanel(prompt: LoginPrompt, onExit: () => void): HTMLElement {
         // 패널을 닫고 처음부터 다시 시작하게 안내한다
         toast(t("retryFromStart", { error: message }), true);
       }
-      onExit();
+      finishLogin(attempt);
     };
     okBtn.addEventListener("click", submit);
     input.addEventListener("keydown", (event) => {
@@ -423,21 +525,20 @@ function loginPanel(prompt: LoginPrompt, onExit: () => void): HTMLElement {
         const result = await invoke<LoginOutcome>("await_device_login", {
           sessionId: prompt.session_id,
         });
+        if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
         reportLogin(result);
       } catch (error) {
+        if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
         toast(String(error), true);
       }
-      onExit();
+      finishLogin(attempt);
     })();
   }
 
   const cancelBtn = document.createElement("button");
   cancelBtn.className = "link";
   cancelBtn.textContent = t("cancel");
-  cancelBtn.addEventListener("click", () => {
-    void invoke("cancel_login", { sessionId: prompt.session_id });
-    onExit();
-  });
+  cancelBtn.addEventListener("click", () => void cancelActiveLogin(attempt));
   panel.appendChild(cancelBtn);
 
   return panel;
@@ -460,10 +561,8 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
   addBtn.className = "primary";
   addBtn.textContent = t("addAccount");
   row.appendChild(addBtn);
+  row.hidden = loginOpen;
   section.appendChild(row);
-
-  const slot = document.createElement("div");
-  section.appendChild(slot);
 
   addBtn.addEventListener("click", async () => {
     if (loginOpen) {
@@ -472,35 +571,23 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
     }
     addBtn.disabled = true;
     addBtn.textContent = t("gettingLoginUrl");
-    // 주소를 받는 수 초 동안 주기 렌더가 DOM을 갈아엎으면 패널이 분리된 노드에
-    // 붙어 영영 안 보인다 — 시작 전에 loginOpen을 올려 렌더를 막는다 (red-review)
-    loginOpen = true;
-    loginSessionId = null;
+    row.hidden = true;
+    const attempt = beginLogin(provider);
     try {
-      const prompt = await invoke<LoginPrompt>("start_login", { provider });
-      if (!loginOpen) {
+      const start = invoke<LoginPrompt>("start_login", { provider });
+      activeLoginStart = start;
+      const prompt = await start;
+      if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) {
         void invoke("cancel_login", { sessionId: prompt.session_id });
         return;
       }
+      activeLoginStart = null;
       loginSessionId = prompt.session_id;
-      addBtn.hidden = true;
-      slot.appendChild(
-        loginPanel(prompt, () => {
-          // 취소된 이전 waiter가 늦게 끝나도 그 사이 시작한 새 로그인 패널을
-          // 닫거나 재렌더로 지우지 못하게 현재 세션 콜백만 받는다.
-          if (loginSessionId !== prompt.session_id) return;
-          loginSessionId = null;
-          loginOpen = false;
-          void render({ immediate: true });
-        }),
-      );
-      fitHeight();
+      mountLoginPanel(loginPanel(prompt, attempt), attempt);
     } catch (error) {
-      loginSessionId = null;
-      loginOpen = false;
+      if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
       toast(String(error), true);
-      addBtn.disabled = false;
-      addBtn.textContent = t("addAccount");
+      finishLogin(attempt);
     }
   });
 }
@@ -733,6 +820,10 @@ function githubCard(acc: GithubAccount, compact = false): HTMLElement {
       switchBtn.className = "primary";
       switchBtn.textContent = t("switchBtn");
       switchBtn.addEventListener("click", async () => {
+        if (loginOpen) {
+          toast(t("loginBusy"), true);
+          return;
+        }
         switchBtn.disabled = true;
         try {
           await invoke("github_switch", { name: acc.login });
@@ -792,9 +883,8 @@ function githubAddButton(section: HTMLElement) {
   addBtn.className = "primary";
   addBtn.textContent = t("addAccount");
   row.appendChild(addBtn);
+  row.hidden = loginOpen;
   section.appendChild(row);
-  const slot = document.createElement("div");
-  section.appendChild(slot);
 
   addBtn.addEventListener("click", async () => {
     if (loginOpen) {
@@ -803,15 +893,14 @@ function githubAddButton(section: HTMLElement) {
     }
     addBtn.disabled = true;
     addBtn.textContent = t("gettingLoginUrl");
-    // 시작 대기 중 재렌더가 패널을 분리된 DOM에 붙이는 사고 방지 (위 addAccountButton과 동일)
-    loginOpen = true;
+    row.hidden = true;
+    const attempt = beginLogin("github");
     try {
-      const prompt = await invoke<{ url: string; device_code: string }>("github_login_start");
-      addBtn.hidden = true;
-      const onExit = () => {
-        loginOpen = false;
-        void render({ immediate: true });
-      };
+      const start = invoke<{ url: string; device_code: string }>("github_login_start");
+      activeLoginStart = start;
+      const prompt = await start;
+      if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+      activeLoginStart = null;
       const panel = document.createElement("div");
       panel.className = "login-panel";
       const steps = document.createElement("div");
@@ -825,29 +914,30 @@ function githubAddButton(section: HTMLElement) {
       waiting.textContent = t("waitingBrowser");
       panel.appendChild(waiting);
       void (async () => {
+        const wait = invoke<string>("github_login_wait");
+        activeGithubWait = wait;
         try {
-          const login = await invoke<string>("github_login_wait");
+          const login = await wait;
+          if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
           toast(t("ghAdded", { login }));
         } catch (error) {
+          if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
           toast(String(error), true);
         }
-        onExit();
+        if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+        activeGithubWait = null;
+        finishLogin(attempt);
       })();
       const cancelBtn = document.createElement("button");
       cancelBtn.className = "link";
       cancelBtn.textContent = t("cancel");
-      cancelBtn.addEventListener("click", () => {
-        void invoke("github_login_cancel");
-        onExit();
-      });
+      cancelBtn.addEventListener("click", () => void cancelActiveLogin(attempt));
       panel.appendChild(cancelBtn);
-      slot.appendChild(panel);
-      fitHeight();
+      mountLoginPanel(panel, attempt);
     } catch (error) {
-      loginOpen = false;
+      if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
       toast(String(error), true);
-      addBtn.disabled = false;
-      addBtn.textContent = t("addAccount");
+      finishLogin(attempt);
     }
   });
 }
@@ -1169,17 +1259,6 @@ async function render(opts?: { immediate?: boolean }) {
       renderQueued = false;
       thisImmediate = thisImmediate || queuedImmediate;
       queuedImmediate = false;
-      // 로그인 패널이 열린 채 다른 조작(전환·삭제·저장)으로 재렌더가 일어나면
-      // 패널 DOM이 사라져 위젯이 영구 마비되던 문제 — 재렌더는 곧 로그인 흐름 포기로
-      // 간주하고 백엔드 세션까지 정리한다 (red-review 2라운드)
-      if (loginOpen) {
-        loginOpen = false;
-        const sessionId = loginSessionId;
-        loginSessionId = null;
-        if (sessionId) void invoke("cancel_login", { sessionId });
-        // gh 로그인 세션도 같은 정책 — 안 열려 있으면 무해한 no-op
-        void invoke("github_login_cancel");
-      }
       // 그리는 도중 모드가 바뀌어도 한 화면은 단일 모드로 —
       // 프로바이더마다 다른 모드로 그려지는 혼종 화면 방지
       const mode = viewMode;
@@ -1242,6 +1321,8 @@ async function render(opts?: { immediate?: boolean }) {
       // 접는다. 큐가 있으면 새 상태로 다시 그리고, 없으면 다음 주기에 맡긴다.
       if (renderQueued || userIsBusy()) continue;
       // 첫 화면은 뼈대를 먼저 보여주고 사용량은 채워지는 대로 붙는다
+      // 진행 중 로그인은 버퍼에서 새로 만들지 않고 같은 노드를 옮겨 입력값·세션을 보존한다.
+      if (loginOpen) buffer.appendChild(loginHost);
       app.replaceChildren(buffer);
       // 새 SYSTEM 스켈레톤을 마지막 샘플로 즉시 채운다 — 스무스 교체마다
       // 이 섹션만 '--'로 깜빡이던 문제 (red-review). 다음 틱이 이어받는다
@@ -1263,11 +1344,14 @@ async function render(opts?: { immediate?: boolean }) {
 function userIsBusy(): boolean {
   const el = document.activeElement;
   const typing =
-    el instanceof HTMLInputElement && el.type === "text" && el.value.trim().length > 0;
+    el instanceof HTMLInputElement &&
+    el.type === "text" &&
+    el.value.trim().length > 0 &&
+    !loginHost.contains(el);
   // 섹션 드래그 중에도 스왑을 미룬다 — 잡고 있는 드래그가 소리 없이 죽지 않게.
   // dragend 유실로 고착된 래치는 pointermove 복구가 푼다 (리뷰 #53:
   // dragend 유실 시 렌더가 영구 차단되던 문제)
-  return typing || loginOpen || dragKey !== null;
+  return typing || dragKey !== null;
 }
 
 const appWindow = getCurrentWindow();
@@ -1320,14 +1404,16 @@ function reportHitRegions() {
   hitElements = [];
   const regions: { rect: number[]; action: [string, string] | null }[] = [];
   if (locked) {
-    document.querySelectorAll<HTMLElement>(".card.switchable").forEach((el) => {
-      const r = el.getBoundingClientRect();
-      regions.push({
-        rect: [r.left, r.top, r.width, r.height],
-        action: [el.dataset.provider ?? "", el.dataset.name ?? ""],
+    if (!loginOpen) {
+      document.querySelectorAll<HTMLElement>(".card.switchable").forEach((el) => {
+        const r = el.getBoundingClientRect();
+        regions.push({
+          rect: [r.left, r.top, r.width, r.height],
+          action: [el.dataset.provider ?? "", el.dataset.name ?? ""],
+        });
+        hitElements.push(el);
       });
-      hitElements.push(el);
-    });
+    }
     // .display-row: 펼쳐진 밝기 슬라이더 조작용 (접힘 상태면 DOM에 없다)
     // .collapsible: 접이식 섹션 제목 — 위젯 모드에서도 클릭해 펼칠 수 있게
     // .tb-actions는 컨테이너가 아니라 **자식을 하나씩** 보고한다 — Type3(미니멀)
@@ -1335,7 +1421,9 @@ function reportHitRegions() {
     // 버튼 전체가 클릭 투과에 삼켜졌다 (사용자 보고: 타입3 버튼 무반응).
     // 숨김(0크기) 요소는 거른다 — 좌상단 유령 히트 방지.
     document
-      .querySelectorAll<HTMLElement>(".tb-actions > *, #drag-handle, .display-row, .collapsible")
+      .querySelectorAll<HTMLElement>(
+        ".tb-actions > *, #drag-handle, .display-row, .collapsible, #login-host",
+      )
       .forEach((el) => {
         const r = el.getBoundingClientRect();
         if (r.width <= 0 || r.height <= 0) return;
@@ -1527,7 +1615,13 @@ async function fitWindowToContent() {
       const target = Math.ceil(Math.max(80, Math.min(total + 1, max)));
       // 컴팩트 모드는 창 자체도 좁게, 미니멀은 더 좁게 (150→120, 사용자 지시 —
       // 타이틀바 버튼은 한 줄을 포기하고 다음 줄로 흐른다)
-      const width = viewMode === "minimal" ? 120 : viewMode === "compact" ? 240 : 360;
+      const width = loginOpen
+        ? 360
+        : viewMode === "minimal"
+          ? 120
+          : viewMode === "compact"
+            ? 240
+            : 360;
       // 크기 조절 기준은 "오른쪽 상단" — 목표 폭이 실제로 바뀌는 전환에서만
       // 우측 가장자리를 고정한다. (바깥 크기에는 그림자가 포함되므로 실측 폭과
       // 목표 폭을 비교하면 매번 어긋나 창이 조금씩 밀리는 버그가 있었다)

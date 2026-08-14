@@ -790,6 +790,21 @@ body.minimal #privacybtn {
   display: none;
 }
 
+/* 진행 중 로그인은 보기 타입과 무관하게 같은 패널을 유지한다. 고정 모드의
+   클릭 투과 영역은 프런트가 #login-host 전체를 함께 보고한다. */
+#app.locked #login-host .login-panel,
+#app.locked #login-host .help {
+  display: block;
+}
+
+#app.locked #login-host .add-row {
+  display: flex;
+}
+
+#app.locked #login-host button.link {
+  display: inline-block;
+}
+
 /* 이동 핸들(☰) — 고정 모드에서만 보이고, 이걸 잡아야만 창이 움직인다.
    히트 영역은 이 박스 크기 그대로 보고되므로 패딩이 곧 잡히는 범위다 (#43) */
 #drag-handle {
