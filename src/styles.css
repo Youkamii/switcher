@@ -1134,26 +1134,34 @@ body.privacy .hint.warn {
   filter: blur(5px);
 }
 
-/* 첫 실행 GitHub Star 안내 — 어두운 창에 선택 버튼과 닫기만 작게 표시한다. */
-body.star-prompt-open .titlebar {
-  display: none;
+/* 첫 실행 GitHub Star 안내 — 기본 인터페이스는 뒤에 남기고, 전체를 살짝 흐린다. */
+body.star-prompt-open {
+  --bg-alpha: 1;
+  --fg-alpha: 1;
+  --bar-alpha: 1;
+  --bg: rgb(22, 22, 30);
+  --panel: rgb(31, 31, 42);
+  --panel-2: rgb(38, 38, 54);
+  --text: rgb(230, 230, 239);
+  --muted: rgb(139, 139, 158);
 }
 
 body.star-prompt-open .shell {
-  background: rgba(17, 17, 24, 0.98);
-}
-
-body.star-prompt-open main {
-  padding: 0 12px;
-  overflow: hidden;
+  position: relative;
 }
 
 .star-prompt {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
-  padding: 20px 0;
+  background: rgba(12, 12, 18, 0.56);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  pointer-events: auto;
 }
 
 .star-prompt-close {
