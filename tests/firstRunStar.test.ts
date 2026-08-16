@@ -74,7 +74,7 @@ test("a settings failure never turns the optional prompt into a startup block", 
   );
 });
 
-test("wires a compact inline prompt without starring on mount", () => {
+test("wires a compact overlay without starring on mount", () => {
   assert.match(mainSource, /starPromptHost\.setAttribute\("role", "dialog"\)/);
   assert.match(mainSource, /close\.textContent = "×"/);
   assert.match(mainSource, /chooseGithubStarPrompt\("dismissed"\)/);
@@ -88,6 +88,7 @@ test("wires a compact inline prompt without starring on mount", () => {
   assert.ok(mountSource);
   assert.doesNotMatch(mountSource, /github_star_repository/);
   assert.match(mountSource, /starPromptHost\.append\(action, close\)/);
+  assert.match(mountSource, /shell\.appendChild\(starPromptHost\)/);
   assert.doesNotMatch(
     mountSource,
     /OPEN SOURCE|star-prompt-title|star-prompt-copy|star-prompt-eyebrow/,
@@ -99,22 +100,32 @@ test("wires a compact inline prompt without starring on mount", () => {
   const shellRules = stylesSource.match(
     /body\.star-prompt-open \.shell \{[\s\S]*?\n\}/,
   )?.[0];
-  const titlebarRules = stylesSource.match(
-    /body\.star-prompt-open \.titlebar \{[\s\S]*?\n\}/,
+  const bodyRules = stylesSource.match(
+    /body\.star-prompt-open \{[\s\S]*?\n\}/,
   )?.[0];
   assert.ok(promptRules);
   assert.ok(actionRules);
   assert.ok(closeRules);
   assert.ok(shellRules);
-  assert.ok(titlebarRules);
+  assert.ok(bodyRules);
+  assert.match(promptRules, /position: absolute;/);
+  assert.match(promptRules, /inset: 0;/);
   assert.match(promptRules, /display: flex;/);
   assert.match(promptRules, /gap: 6px;/);
-  assert.match(promptRules, /padding: 20px 0;/);
+  assert.match(promptRules, /background: rgba\(12, 12, 18, 0\.56\);/);
+  assert.match(promptRules, /backdrop-filter: blur\(2px\);/);
   assert.match(actionRules, /height: 32px;/);
   assert.match(closeRules, /width: 32px;/);
   assert.match(closeRules, /height: 32px;/);
-  assert.match(shellRules, /background: rgba\(17, 17, 24, 0\.98\);/);
-  assert.match(titlebarRules, /display: none;/);
+  assert.match(shellRules, /position: relative;/);
+  assert.match(bodyRules, /--bg-alpha: 1;/);
+  assert.match(bodyRules, /--fg-alpha: 1;/);
+  assert.match(bodyRules, /--bar-alpha: 1;/);
+  assert.match(bodyRules, /--bg: rgb\(22, 22, 30\);/);
+  assert.match(bodyRules, /--panel: rgb\(31, 31, 42\);/);
+  assert.match(bodyRules, /--panel-2: rgb\(38, 38, 54\);/);
+  assert.match(bodyRules, /--text: rgb\(230, 230, 239\);/);
+  assert.match(bodyRules, /--muted: rgb\(139, 139, 158\);/);
   assert.doesNotMatch(actionRules, /flex-direction: column/);
   assert.doesNotMatch(promptRules, /gradient|box-shadow/);
   assert.doesNotMatch(actionRules, /gradient|box-shadow/);
@@ -122,10 +133,10 @@ test("wires a compact inline prompt without starring on mount", () => {
   assert.doesNotMatch(stylesSource, /\.star-prompt::before|\.star-prompt::after/);
 });
 
-test("blocks early renders and keeps the prompt clickable in compact modes", () => {
+test("renders the default interface before the overlay and blocks background input", () => {
   assert.match(
     mainSource,
-    /async function render[\s\S]*?if \(startupState !== "ready"\)[\s\S]*?mountGithubStarPrompt\(\);[\s\S]*?return;/,
+    /async function render[\s\S]*?if \(startupState === "checking"\) return;/,
   );
   assert.match(
     mainSource,
@@ -133,10 +144,34 @@ test("blocks early renders and keeps the prompt clickable in compact modes", () 
   );
   assert.match(
     mainSource,
-    /const interactionPanelOpen = loginOpen \|\| starPromptOpen;[\s\S]*?if \(interactionPanelOpen\)[\s\S]*?regions\.push\(\{ rect, action: null \}\)/,
+    /starPromptOpen = true;\s*applyViewMode\(\);\s*renderFirstRunBackdrop\(\);\s*mountGithubStarPrompt\(\);\s*void render\(\{ immediate: true \}\);/,
   );
   assert.match(
     mainSource,
-    /const width = loginOpen\s*\? 360\s*: starPromptOpen\s*\? 240/,
+    /function renderFirstRunBackdrop\(\)[\s\S]*?for \(const provider of PROVIDERS\)[\s\S]*?renderMonitor\(buffer\);[\s\S]*?app\.replaceChildren\(buffer\);/,
+  );
+  assert.match(
+    mainSource,
+    /const mode = starPromptOpen \? "normal" : viewMode;/,
+  );
+  assert.match(mainSource, /if \(!visibility\[key\] && !starPromptOpen\) continue;/);
+  assert.match(mainSource, /if \(!monitorOn && !starPromptOpen\) continue;/);
+  assert.match(
+    mainSource,
+    /if \(\(!monitorOn && !starPromptOpen\) \|\| monInflight\) return;/,
+  );
+  assert.match(mainSource, /titlebarEl\.inert = true;\s*app\.inert = true;/);
+  assert.match(mainSource, /titlebarEl\.inert = false;\s*app\.inert = false;/);
+  assert.match(mainSource, /const nativeLocked = viewMode !== "normal";/);
+  assert.match(mainSource, /invoke\("set_click_through", \{ enabled: nativeLocked \}\)/);
+  const hitRegionSource = mainSource.match(/function reportHitRegions\(\)[\s\S]*?\n\}/)?.[0];
+  assert.ok(hitRegionSource);
+  assert.match(
+    hitRegionSource,
+    /if \(locked \|\| starPromptOpen\)[\s\S]*?const interactionTarget = starPromptOpen \? starPromptHost : app;[\s\S]*?regions\.push\(\{ rect, action: null \}\)/,
+  );
+  assert.match(
+    mainSource,
+    /const width = loginOpen \|\| starPromptOpen\s*\? 360/,
   );
 });

@@ -6,7 +6,7 @@ import ts from "typescript";
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 const stylesSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const loginScrollRegion =
-  /const interactionPanelOpen = loginOpen \|\| starPromptOpen;[\s\S]*?if \(interactionPanelOpen\) \{\s*const rect = visibleHitRect\(\s*app\.getBoundingClientRect\(\),\s*window\.innerWidth,\s*window\.innerHeight,?\s*\);\s*if \(rect\) \{\s*regions\.push\(\{ rect, action: null \}\);\s*hitElements\.push\(app\);/;
+  /const interactionPanelOpen = loginOpen \|\| starPromptOpen;[\s\S]*?if \(interactionPanelOpen\) \{\s*const interactionTarget = starPromptOpen \? starPromptHost : app;\s*const rect = visibleHitRect\(\s*interactionTarget\.getBoundingClientRect\(\),\s*window\.innerWidth,\s*window\.innerHeight,?\s*\);\s*if \(rect\) \{\s*regions\.push\(\{ rect, action: null \}\);\s*hitElements\.push\(interactionTarget\);/;
 
 function loadVisibleHitRect() {
   const source = mainSource.match(/function visibleHitRect\([\s\S]*?\n\}/)?.[0];
@@ -42,7 +42,7 @@ test("keeps the active login panel when the account view type changes", () => {
   );
   assert.match(
     mainSource,
-    /const width = loginOpen\s*\? 360\s*: starPromptOpen\s*\? 240\s*:/,
+    /const width = loginOpen \|\| starPromptOpen\s*\? 360\s*:/,
     "the login panel must retain the usable full width in Type 2 and Type 3",
   );
 });
@@ -83,7 +83,7 @@ test("clips the login scroll hit-region to the visible WebView", () => {
 test("keeps the full scroll viewport interactive while a transient panel is open", () => {
   assert.match(
     mainSource,
-    /const interactionPanelOpen = loginOpen \|\| starPromptOpen;[\s\S]*?if \(locked\) \{[\s\S]*?if \(interactionPanelOpen\) \{\s*const rect = visibleHitRect\(\s*app\.getBoundingClientRect\(\)/,
+    loginScrollRegion,
     "the full main viewport must become a native UI region during login or the first-run prompt",
   );
   assert.doesNotMatch(
@@ -226,7 +226,7 @@ test("blocks account switches while an account login is active", () => {
   );
   assert.match(
     mainSource,
-    /const interactionPanelOpen = loginOpen \|\| starPromptOpen;[\s\S]*?if \(locked\) \{\s*if \(!interactionPanelOpen\) \{[\s\S]*?\.card\.switchable/,
+    /const interactionPanelOpen = loginOpen \|\| starPromptOpen;[\s\S]*?if \(locked \|\| starPromptOpen\) \{\s*if \(!interactionPanelOpen\) \{[\s\S]*?\.card\.switchable/,
     "click-through account cards must not expose native switch actions behind an interaction panel",
   );
 });

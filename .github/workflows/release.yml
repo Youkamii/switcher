@@ -1,4 +1,5 @@
-# 릴리스 자동화 — 태그(v*)만 밀면 윈도우·맥 빌드를 둘 다 만들어 릴리스를 발행한다.
+# 릴리스 발행 — workflow_dispatch로 명시한 태그만 윈도우·맥 빌드를 만들고
+# 공개 GitHub Release를 발행한다. 태그 push만으로는 릴리스나 알림을 만들지 않는다.
 #
 # 왜: 맥 zip은 맥에서, win zip은 윈도우에서만 빌드할 수 있어 릴리스마다
 # 반대편 기계의 수작업이 필요했고, 자산이 빠진 릴리스는 그 OS의 자동
@@ -6,11 +7,11 @@
 # 맥 자산 누락 — 사용자가 '업데이트 확인'을 눌러도 ✗). 이 워크플로가
 # 그 반복 작업을 끝낸다.
 #
-# 흐름: 태그 push → win(exe zip)·mac(app zip) 병렬 빌드 → 자산이 붙은 릴리스 공개
-# → npm-publish.yml을 명시적으로 실행(신뢰 게시).
+# 흐름: workflow_dispatch(tag) → win(exe zip)·mac(app zip) 병렬 빌드
+# → 자산이 붙은 릴리스 공개 → npm-publish.yml을 명시적으로 실행(신뢰 게시).
 #
-# 재실행·백필: 릴리스가 이미 있으면 자산만 채운다(--clobber). 이미 배포된
-# 태그에 대해 gh workflow run release.yml -f tag=v1.7.NN 으로 수동 실행 가능.
+# 실행·재실행·백필: gh workflow run release.yml -f tag=v1.7.NN 으로만 시작한다.
+# 릴리스가 이미 있으면 자산만 채운다(--clobber).
 #
 # 주의: 자산 이름은 update.rs(ASSET_NAME)·scripts/dist.mjs와 계약이다 —
 # switcher-win-x64.zip(루트에 switcher.exe·switcher-version.txt),
@@ -19,8 +20,6 @@
 name: release
 
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:

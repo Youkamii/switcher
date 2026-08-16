@@ -85,6 +85,7 @@ type ProviderId = (typeof PROVIDERS)[number]["id"];
 type LoginProvider = ProviderId | "github";
 
 const app = document.getElementById("app")!;
+const shell = document.querySelector(".shell") as HTMLElement;
 const titlebarEl = document.querySelector(".titlebar") as HTMLElement;
 let startupState: FirstRunStartupState | "checking" = "checking";
 let starPromptOpen = false;
@@ -145,9 +146,10 @@ function revealAppAfterStarPrompt() {
   starPromptOpen = false;
   starPromptBusy = false;
   document.body.classList.remove("star-prompt-open");
-  app.replaceChildren();
-  fitHeight();
-  refreshHitRegionsAfterLayout();
+  starPromptHost.remove();
+  titlebarEl.inert = false;
+  app.inert = false;
+  applyViewMode();
   void render({ immediate: true });
 }
 
@@ -164,6 +166,26 @@ function chooseGithubStarPrompt(choice: GithubStarPromptChoice) {
     starRepository: () => invoke("github_star_repository"),
     reportError: (error) => toast(String(error), true),
   });
+}
+
+function renderFirstRunBackdrop() {
+  const buffer = document.createDocumentFragment();
+  for (const provider of PROVIDERS) {
+    const section = document.createElement("section");
+    section.dataset.key = provider.id;
+    const heading = document.createElement("h2");
+    heading.className = "section-title";
+    heading.textContent = provider.title;
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = t("noAccounts");
+    section.append(heading, hint);
+    addAccountButton(provider.id, section);
+    buffer.appendChild(section);
+  }
+  renderMonitor(buffer);
+  app.replaceChildren(buffer);
+  fitHeight();
 }
 
 function mountGithubStarPrompt() {
@@ -194,10 +216,10 @@ function mountGithubStarPrompt() {
   }
 
   updateGithubStarPromptText();
-  if (app.firstElementChild !== starPromptHost || app.childElementCount !== 1) {
-    app.replaceChildren(starPromptHost);
-  }
-  fitHeight();
+  if (!starPromptHost.isConnected) shell.appendChild(starPromptHost);
+  titlebarEl.inert = true;
+  app.inert = true;
+  applyViewMode();
   refreshHitRegionsAfterLayout();
 }
 
@@ -1568,11 +1590,9 @@ let renderAbort: (() => void) | null = null;
 /// 보여주고 사용량은 교체된 카드에 이어서 채운다. 생략(스무스)은 주기·수동
 /// 새로고침 — 기존 화면을 그대로 둔 채 다 받아진 뒤 한 번에 교체한다.
 async function render(opts?: { immediate?: boolean }) {
-  // 첫 실행 선택을 읽기 전이나 안내 중에는 계정 본문을 절대 그리지 않는다.
-  if (startupState !== "ready") {
-    if (startupState === "star-prompt") mountGithubStarPrompt();
-    return;
-  }
+  // 선택값을 읽는 동안만 기다린다. 안내 중에는 기본 인터페이스를 먼저 그리고
+  // 전체 오버레이로 조작만 막아 앱이 무엇인지 보이는 상태를 유지한다.
+  if (startupState === "checking") return;
   // 새로고침 연타·자동 주기와의 경합으로 화면이 겹쳐 그려지는 것을 막고,
   // 그리는 도중 재요청이 오면 끝난 뒤 한 번 더 그린다
   if (rendering) {
@@ -1591,7 +1611,7 @@ async function render(opts?: { immediate?: boolean }) {
       queuedImmediate = false;
       // 그리는 도중 모드가 바뀌어도 한 화면은 단일 모드로 —
       // 프로바이더마다 다른 모드로 그려지는 혼종 화면 방지
-      const mode = viewMode;
+      const mode = starPromptOpen ? "normal" : viewMode;
       // 화면을 지우고 처음부터 다시 그리면 새로고침마다 카드가 전부 사라졌다
       // 주루룩 돌아온다 — 보이지 않는 버퍼에 완성해 두고 한 번에 교체한다
       const buffer = document.createDocumentFragment();
@@ -1603,7 +1623,7 @@ async function render(opts?: { immediate?: boolean }) {
       for (const key of sectionOrder) {
         const before = buffer.lastElementChild;
         if (key === "claude" || key === "codex") {
-          if (!visibility[key]) continue;
+          if (!visibility[key] && !starPromptOpen) continue;
           const title = PROVIDERS.find((p) => p.id === key)!.title;
           if (mode !== "normal") {
             await renderProviderCompact(key, title, buffer, mode === "minimal", pending);
@@ -1621,7 +1641,7 @@ async function render(opts?: { immediate?: boolean }) {
           if (!visibility.display || mode === "minimal") continue;
           await renderDisplays(buffer, mode === "compact");
         } else if (key === "system") {
-          if (!monitorOn) continue;
+          if (!monitorOn && !starPromptOpen) continue;
           renderMonitor(buffer);
         }
         // 방금 붙은 섹션에 순서 키를 달고 Type1이면 드래그 이동을 붙인다
@@ -1702,25 +1722,27 @@ let viewMode: ViewMode = (() => {
 let locked = viewMode !== "normal";
 
 function applyViewMode() {
-  locked = viewMode !== "normal";
+  const displayMode = starPromptOpen ? "normal" : viewMode;
+  const nativeLocked = viewMode !== "normal";
+  locked = displayMode !== "normal";
   app.classList.toggle("locked", locked);
   // 컴팩트·미니멀은 같은 축소 레이아웃을 공유하고, 미니멀이 위에 더 덜어낸다
   app.classList.toggle("compact", locked);
-  app.classList.toggle("minimal", viewMode === "minimal");
+  app.classList.toggle("minimal", displayMode === "minimal");
   // 타이틀바도 위젯 모드로 (이름·새로고침·슬라이더 숨김, 남은 버튼은 호버 시에만 또렷)
   document.body.classList.toggle("locked", locked);
-  document.body.classList.toggle("minimal", viewMode === "minimal");
+  document.body.classList.toggle("minimal", displayMode === "minimal");
   lockBtn.classList.toggle("pinned", locked);
   lockBtn.textContent =
-    viewMode === "normal" ? "Type1" : viewMode === "compact" ? "Type2" : "Type3";
+    displayMode === "normal" ? "Type1" : displayMode === "compact" ? "Type2" : "Type3";
   // 위젯 모드에서는 ☰ 핸들을 잡아야만 창이 움직인다 — 타이틀바 전체 드래그를 끈다
-  if (locked) {
+  if (locked || starPromptOpen) {
     titlebarEl.removeAttribute("data-tauri-drag-region");
   } else {
     titlebarEl.setAttribute("data-tauri-drag-region", "");
   }
   // 위젯 모드에서는 카드·버튼 위가 아니면 마우스가 뒤 창으로 통과한다
-  void invoke("set_click_through", { enabled: locked });
+  void invoke("set_click_through", { enabled: nativeLocked });
   refreshHitRegionsAfterLayout();
 }
 
@@ -1749,7 +1771,7 @@ function reportHitRegions() {
   hitElements = [];
   const regions: { rect: number[]; action: [string, string] | null }[] = [];
   const interactionPanelOpen = loginOpen || starPromptOpen;
-  if (locked) {
+  if (locked || starPromptOpen) {
     if (!interactionPanelOpen) {
       document.querySelectorAll<HTMLElement>(".card.switchable").forEach((el) => {
         const r = el.getBoundingClientRect();
@@ -1764,14 +1786,15 @@ function reportHitRegions() {
     // 포인터를 받아야 패널과 취소 버튼까지 내려갈 수 있다. 창 밖 좌표는 잘라서
     // 네이티브 hit-region이 실제 WebView 영역만 열도록 한다.
     if (interactionPanelOpen) {
+      const interactionTarget = starPromptOpen ? starPromptHost : app;
       const rect = visibleHitRect(
-        app.getBoundingClientRect(),
+        interactionTarget.getBoundingClientRect(),
         window.innerWidth,
         window.innerHeight,
       );
       if (rect) {
         regions.push({ rect, action: null });
-        hitElements.push(app);
+        hitElements.push(interactionTarget);
       }
     }
     // .display-row: 펼쳐진 밝기 슬라이더 조작용 (접힘 상태면 DOM에 없다)
@@ -1975,15 +1998,13 @@ async function fitWindowToContent() {
       const target = Math.ceil(Math.max(80, Math.min(total + 1, max)));
       // 컴팩트 모드는 창 자체도 좁게, 미니멀은 더 좁게 (150→120, 사용자 지시 —
       // 타이틀바 버튼은 한 줄을 포기하고 다음 줄로 흐른다)
-      const width = loginOpen
+      const width = loginOpen || starPromptOpen
         ? 360
-        : starPromptOpen
-          ? 240
-          : viewMode === "minimal"
-            ? 120
-            : viewMode === "compact"
-              ? 240
-              : 360;
+        : viewMode === "minimal"
+          ? 120
+          : viewMode === "compact"
+            ? 240
+            : 360;
       // 크기 조절 기준은 "오른쪽 상단" — 목표 폭이 실제로 바뀌는 전환에서만
       // 우측 가장자리를 고정한다. (바깥 크기에는 그림자가 포함되므로 실측 폭과
       // 목표 폭을 비교하면 매번 어긋나 창이 조금씩 밀리는 버그가 있었다)
@@ -2367,14 +2388,14 @@ async function monitorTick() {
   // document.hidden은 보지 않는다 — 별도 모니터 창 시절의 고아 조건으로, 맥은
   // 앱이 비활성이면(위젯의 평상시) 페이지가 hidden이라 SYSTEM이 얼어붙었다
   // (리뷰 #53). 샘플은 1초에 한 번짜리 경량 호출이다.
-  if (!monitorOn || monInflight) return;
+  if ((!monitorOn && !starPromptOpen) || monInflight) return;
   if (!document.getElementById("mon-row-cpu")) return;
   monInflight = true;
   try {
     const s = await invoke<SysStats>("stats_read");
     // 응답을 기다리는 사이 📊가 꺼졌으면 폐기 — 꺼진 동안의 샘플이
     // monHistory·monLastTick을 오염시키지 않게 (red-review)
-    if (!monitorOn) return;
+    if (!monitorOn && !starPromptOpen) return;
     // 오래 쉬었다 돌아왔으면 스파크라인을 새로 시작 — 공백 전후가
     // 연속 60초처럼 이어져 그려지는 왜곡 방지 (red-review)
     const now = Date.now();
@@ -2628,6 +2649,14 @@ void (async () => {
     toast(String(error), true);
     startupState = "ready";
   }
-  if (startupState === "star-prompt") mountGithubStarPrompt();
-  else void render();
+  if (startupState === "star-prompt") {
+    // 백엔드 조회가 늦어도 Claude·Codex·SYSTEM/NET 골격과 선택 버튼은 즉시 보인다.
+    starPromptOpen = true;
+    applyViewMode();
+    renderFirstRunBackdrop();
+    mountGithubStarPrompt();
+    void render({ immediate: true });
+  } else {
+    void render();
+  }
 })();
