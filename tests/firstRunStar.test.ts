@@ -111,12 +111,18 @@ test("wires a compact overlay without starring on mount", () => {
   assert.match(promptRules, /position: absolute;/);
   assert.match(promptRules, /inset: 0;/);
   assert.match(promptRules, /display: flex;/);
-  assert.match(promptRules, /gap: 6px;/);
+  assert.match(promptRules, /align-items: center;/);
+  assert.match(promptRules, /justify-content: center;/);
   assert.match(promptRules, /background: rgba\(12, 12, 18, 0\.56\);/);
   assert.match(promptRules, /backdrop-filter: blur\(2px\);/);
   assert.match(actionRules, /height: 32px;/);
+  assert.doesNotMatch(actionRules, /position: absolute/);
   assert.match(closeRules, /width: 32px;/);
   assert.match(closeRules, /height: 32px;/);
+  assert.match(closeRules, /position: absolute;/);
+  assert.match(closeRules, /top: calc\(50% \+ 22px\);/);
+  assert.match(closeRules, /left: 50%;/);
+  assert.match(closeRules, /transform: translateX\(-50%\);/);
   assert.match(shellRules, /position: relative;/);
   assert.match(bodyRules, /--bg-alpha: 1;/);
   assert.match(bodyRules, /--fg-alpha: 1;/);
@@ -129,7 +135,6 @@ test("wires a compact overlay without starring on mount", () => {
   assert.doesNotMatch(actionRules, /flex-direction: column/);
   assert.doesNotMatch(promptRules, /gradient|box-shadow/);
   assert.doesNotMatch(actionRules, /gradient|box-shadow/);
-  assert.doesNotMatch(closeRules, /position: absolute/);
   assert.doesNotMatch(stylesSource, /\.star-prompt::before|\.star-prompt::after/);
 });
 

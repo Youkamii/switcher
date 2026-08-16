@@ -1157,7 +1157,6 @@ body.star-prompt-open .shell {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
   background: rgba(12, 12, 18, 0.56);
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
@@ -1165,6 +1164,10 @@ body.star-prompt-open .shell {
 }
 
 .star-prompt-close {
+  position: absolute;
+  top: calc(50% + 22px);
+  left: 50%;
+  transform: translateX(-50%);
   width: 32px;
   height: 32px;
   padding: 0;
