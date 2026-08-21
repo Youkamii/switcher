@@ -23,18 +23,25 @@
         </span>
         <div class="tb-actions">
           <input id="alpha" type="range" min="0" max="100" step="5" title="투명도 (0 = 골조만)" />
-          <i id="tb-break" aria-hidden="true"></i>
+          <button id="refresh" title="사용량 새로고침">새로고침</button>
+          <button id="pin" title="보기 모드 전환 (1 전체 / 2 컴팩트 / 3 미니멀)">Type1</button>
+        </div>
+      </header>
+      <main id="app"></main>
+      <!-- 도구 독 — 아이콘 버튼은 상시 필요하지 않다. 창 맨 아래 손잡이를
+           눌러 펼친다. tb-actions 클래스를 함께 달아 버튼 모양·누름 피드백·
+           투명도 규칙을 타이틀바와 한 벌로 쓴다 (히트 영역 보고도 같은 셀렉터) -->
+      <footer class="dock">
+        <div class="tb-actions dock-tray">
           <button id="memobtn" title="메모장 (탭 1~5)">📝</button>
           <button id="tfsdbtn" title="TFSD 자율주행 자동 전환">🚗</button>
           <button id="monbtn" title="시스템 모니터">📊</button>
           <button id="privacybtn" title="이메일 가리기 (블러)">🙈</button>
           <button id="clambtn" hidden title="클램셸 슬립 방지">☕</button>
           <button id="blackbtn" title="블랙 모니터 — 마우스를 흔들거나 ESC로 해제">🌙</button>
-          <button id="refresh" title="사용량 새로고침">새로고침</button>
-          <button id="pin" title="보기 모드 전환 (1 전체 / 2 컴팩트 / 3 미니멀)">Type1</button>
         </div>
-      </header>
-      <main id="app"></main>
+        <button id="dock-toggle" aria-expanded="false" title="도구 열기">▲</button>
+      </footer>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
