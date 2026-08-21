@@ -1045,6 +1045,7 @@ struct Visibility {
     black: bool,
     display: bool,
     tfsd: bool,
+    monitor: bool,
 }
 
 /// 타이틀바 🚗 — 트레이 "TFSD 자동 전환" 체크박스와 같은 플래그를 뒤집는다
@@ -1082,6 +1083,7 @@ fn get_visibility() -> Visibility {
         black: flag(settings::KEY_SHOW_BLACK),
         display: flag(settings::KEY_SHOW_DISPLAY),
         tfsd,
+        monitor: flag(settings::KEY_SHOW_MONITOR),
     }
 }
 
@@ -1134,7 +1136,7 @@ fn build_tray_menu(
     lang: &str,
 ) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{Menu, MenuItem, Submenu};
-    let [open_l, hide_l, settings_l, language_l, auto_update_l, auto_start_l, black_l, visible_l, display_l, tfsd_l, check_update_l, quit_l] =
+    let [open_l, hide_l, settings_l, language_l, auto_update_l, auto_start_l, black_l, visible_l, display_l, tfsd_l, check_update_l, quit_l, monitor_l] =
         settings::tray_labels(lang);
     let show = MenuItem::with_id(app, "show", open_l, true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", hide_l, true, None::<&str>)?;
@@ -1239,12 +1241,27 @@ fn build_tray_menu(
             flag(settings::KEY_SHOW_DISPLAY, true),
             None::<&str>,
         )?;
+        let vis_monitor = CheckMenuItem::with_id(
+            app,
+            "vis:monitor",
+            monitor_l,
+            true,
+            flag(settings::KEY_SHOW_MONITOR, true),
+            None::<&str>,
+        )?;
         let visible = Submenu::with_id_and_items(
             app,
             "visible",
             visible_l,
             true,
-            &[&vis_claude, &vis_codex, &vis_github, &vis_black, &vis_display],
+            &[
+                &vis_claude,
+                &vis_codex,
+                &vis_github,
+                &vis_black,
+                &vis_display,
+                &vis_monitor,
+            ],
         )?;
         Submenu::with_id_and_items(
             app,
@@ -2504,6 +2521,7 @@ pub fn run() {
                             "github" => Some(settings::KEY_SHOW_GITHUB),
                             "black" => Some(settings::KEY_SHOW_BLACK),
                             "display" => Some(settings::KEY_SHOW_DISPLAY),
+                            "monitor" => Some(settings::KEY_SHOW_MONITOR),
                             _ => None,
                         };
                         if let Some(key) = key {

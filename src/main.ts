@@ -1203,6 +1203,7 @@ type Visibility = {
   black: boolean;
   display: boolean;
   tfsd: boolean;
+  monitor: boolean;
 };
 let visibility: Visibility = {
   claude: true,
@@ -1211,6 +1212,8 @@ let visibility: Visibility = {
   black: true,
   display: true,
   tfsd: false,
+  // SYSTEM 섹션은 상시 표시가 기본 — 트레이 설정에서만 끈다 (#106)
+  monitor: true,
 };
 
 /// TFSD 워터마크 — 자율주행 중인 활성 카드의 배경 정중앙에 은은한 T.
@@ -1782,7 +1785,7 @@ async function render(opts?: { immediate?: boolean }) {
           if (!visibility.display || mode === "minimal") continue;
           await renderDisplays(buffer, mode === "compact");
         } else if (key === "system") {
-          if (!monitorOn && !starPromptOpen) continue;
+          if (!monitorVisible() && !starPromptOpen) continue;
           renderMonitor(buffer);
         }
         // 방금 붙은 섹션에 순서 키를 달고 Type1이면 드래그 이동을 붙인다
@@ -1818,7 +1821,7 @@ async function render(opts?: { immediate?: boolean }) {
       app.replaceChildren(buffer);
       // 새 SYSTEM 스켈레톤을 마지막 샘플로 즉시 채운다 — 스무스 교체마다
       // 이 섹션만 '--'로 깜빡이던 문제 (red-review). 다음 틱이 이어받는다
-      if (monitorOn && monLastStats) {
+      if (monitorVisible() && monLastStats) {
         paintMonitor(monLastStats);
         drawMonSpark();
       }
@@ -2268,7 +2271,6 @@ function applyStaticText() {
   if (clamMode >= 0) applyClamshell(clamMode); // 클램셸 툴팁도 새 언어로
   document.getElementById("memobtn")!.setAttribute("title", t("memoTooltip"));
   document.getElementById("tfsdbtn")!.setAttribute("title", t("tfsdBtnTooltip"));
-  document.getElementById("monbtn")!.setAttribute("title", t("monitorTooltip"));
   document.getElementById("privacybtn")!.setAttribute("title", t("privacyTooltip"));
   alphaSlider.title = t("alphaTooltip");
   lockBtn.title = t("typeTooltip");
@@ -2395,15 +2397,14 @@ interface SysStats {
   net_tx: number;
 }
 
-const monBtn = document.getElementById("monbtn") as HTMLButtonElement;
-let monitorOn = localStorage.getItem("switcher.monitor") === "1";
-monBtn.classList.toggle("pinned", monitorOn);
-monBtn.addEventListener("click", () => {
-  monitorOn = !monitorOn;
-  localStorage.setItem("switcher.monitor", monitorOn ? "1" : "0");
-  monBtn.classList.toggle("pinned", monitorOn);
-  void render({ immediate: true });
-});
+/// SYSTEM 섹션은 상시 표시가 기본이고, 끄는 곳은 트레이 → 설정 → 표시 기능
+/// 하나뿐이다 (#106). 다른 섹션들과 같은 원천(visibility)을 쓰므로 프론트가
+/// 따로 기억할 상태가 없다 — 예전 localStorage("switcher.monitor")는 버렸다.
+/// demoMonitor는 SWITCHER_OPEN=monitor 검증 훅 전용의 일회성 덮어쓰기다.
+let demoMonitor = false;
+function monitorVisible(): boolean {
+  return visibility.monitor || demoMonitor;
+}
 
 /// SYSTEM 섹션 골격 — 값은 monitorTick이 1초마다 id로 찾아 채운다
 /// (재렌더로 노드가 갈려도 다음 틱이 새 노드를 채우므로 참조를 들고 있지 않는다)
@@ -2567,14 +2568,14 @@ async function monitorTick() {
   // document.hidden은 보지 않는다 — 별도 모니터 창 시절의 고아 조건으로, 맥은
   // 앱이 비활성이면(위젯의 평상시) 페이지가 hidden이라 SYSTEM이 얼어붙었다
   // (리뷰 #53). 샘플은 1초에 한 번짜리 경량 호출이다.
-  if ((!monitorOn && !starPromptOpen) || monInflight) return;
+  if ((!monitorVisible() && !starPromptOpen) || monInflight) return;
   if (!document.getElementById("mon-row-cpu")) return;
   monInflight = true;
   try {
     const s = await invoke<SysStats>("stats_read");
     // 응답을 기다리는 사이 📊가 꺼졌으면 폐기 — 꺼진 동안의 샘플이
     // monHistory·monLastTick을 오염시키지 않게 (red-review)
-    if (!monitorOn && !starPromptOpen) return;
+    if (!monitorVisible() && !starPromptOpen) return;
     // 오래 쉬었다 돌아왔으면 스파크라인을 새로 시작 — 공백 전후가
     // 연속 60초처럼 이어져 그려지는 왜곡 방지 (red-review)
     const now = Date.now();
@@ -2601,12 +2602,11 @@ async function monitorTick() {
 }
 window.setInterval(() => void monitorTick(), 1000);
 
-// 데모·검증용 (SWITCHER_OPEN=monitor): SYSTEM 섹션을 켠 채 시작 — 저장하지 않는
-// 일회성 표시라 localStorage는 건드리지 않는다
+// 데모·검증용 (SWITCHER_OPEN=monitor): 트레이 설정에서 꺼 둔 상태여도 이번
+// 실행에서만 SYSTEM 섹션을 켠다 — 설정 파일은 건드리지 않는다
 void invoke<string>("initial_open").then((open) => {
-  if (open.includes("monitor") && !monitorOn) {
-    monitorOn = true;
-    monBtn.classList.add("pinned");
+  if (open.includes("monitor") && !monitorVisible()) {
+    demoMonitor = true;
     void render({ immediate: true });
   }
 });

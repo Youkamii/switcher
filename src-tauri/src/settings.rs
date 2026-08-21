@@ -34,6 +34,8 @@ pub const KEY_SHOW_CODEX: &str = "show_codex";
 pub const KEY_SHOW_GITHUB: &str = "show_github";
 pub const KEY_SHOW_BLACK: &str = "show_black";
 pub const KEY_SHOW_DISPLAY: &str = "show_display";
+/// 시스템 모니터 섹션 — 상시 표시가 기본이고 트레이 설정에서만 끈다 (#106)
+pub const KEY_SHOW_MONITOR: &str = "show_monitor";
 /// TFSD (Token Full Self-Driving) — 사용량 기반 자동 계정 전환 (기본 꺼짐, 옵트인)
 pub const KEY_TFSD: &str = "tfsd";
 /// 첫 실행 GitHub Star 안내 선택. 버전과 무관하게 한 번만 묻는다.
@@ -117,8 +119,10 @@ fn write_settings(store: &Path, root: &Value) -> Result<(), String> {
 }
 
 /// 트레이 라벨 — [열기, 숨기기, 설정, 언어, 자동 업데이트, 부팅 시 자동 실행,
-/// 블랙 모니터, 표시 기능, 디스플레이 밝기, TFSD, 종료] 순서
-pub fn tray_labels(lang: &str) -> [&'static str; 12] {
+/// 블랙 모니터, 표시 기능, 디스플레이 밝기, TFSD, 업데이트 확인, 종료,
+/// 시스템 모니터] 순서. 새 라벨은 반드시 **끝에** 붙인다 — 중간에 끼우면
+/// 호출부의 구조분해 순서가 통째로 밀린다
+pub fn tray_labels(lang: &str) -> [&'static str; 13] {
     match lang {
         "en" => [
             "Open",
@@ -133,6 +137,7 @@ pub fn tray_labels(lang: &str) -> [&'static str; 12] {
             "TFSD auto-switch",
             "Check for updates",
             "Quit",
+            "System monitor",
         ],
         "ja" => [
             "開く",
@@ -147,14 +152,17 @@ pub fn tray_labels(lang: &str) -> [&'static str; 12] {
             "TFSD 自動切り替え",
             "アップデートを確認",
             "終了",
+            "システムモニター",
         ],
         "zh-CN" => [
             "打开", "隐藏", "设置", "语言", "自动更新", "开机自启动", "黑屏模式", "显示的功能",
             "显示器亮度", "TFSD 自动切换", "检查更新", "退出",
+            "系统监视器",
         ],
         "zh-TW" => [
             "開啟", "隱藏", "設定", "語言", "自動更新", "開機自動啟動", "黑屏模式", "顯示的功能",
             "螢幕亮度", "TFSD 自動切換", "檢查更新", "結束",
+            "系統監視器",
         ],
         "hi" => [
             "खोलें",
@@ -169,6 +177,7 @@ pub fn tray_labels(lang: &str) -> [&'static str; 12] {
             "TFSD ऑटो-स्विच",
             "अपडेट जाँचें",
             "बंद करें",
+            "सिस्टम मॉनिटर",
         ],
         _ => [
             "열기",
@@ -183,6 +192,7 @@ pub fn tray_labels(lang: &str) -> [&'static str; 12] {
             "TFSD 자동 전환",
             "업데이트 확인",
             "종료",
+            "시스템 모니터",
         ],
     }
 }

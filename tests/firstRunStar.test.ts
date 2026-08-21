@@ -160,10 +160,12 @@ test("renders the default interface before the overlay and blocks background inp
     /const mode = starPromptOpen \? "normal" : viewMode;/,
   );
   assert.match(mainSource, /if \(!visibility\[key\] && !starPromptOpen\) continue;/);
-  assert.match(mainSource, /if \(!monitorOn && !starPromptOpen\) continue;/);
+  // 첫 실행 배경에는 SYSTEM 섹션도 그려진다 — 트레이 설정에서 꺼 뒀더라도
+  // 프롬프트 뒤 배경은 "기본 인터페이스"여야 하므로 starPromptOpen이 이긴다
+  assert.match(mainSource, /if \(!monitorVisible\(\) && !starPromptOpen\) continue;/);
   assert.match(
     mainSource,
-    /if \(\(!monitorOn && !starPromptOpen\) \|\| monInflight\) return;/,
+    /if \(\(!monitorVisible\(\) && !starPromptOpen\) \|\| monInflight\) return;/,
   );
   assert.match(mainSource, /titlebarEl\.inert = true;\s*app\.inert = true;/);
   assert.match(mainSource, /titlebarEl\.inert = false;\s*app\.inert = false;/);

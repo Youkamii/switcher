@@ -58,7 +58,7 @@ test("places Type1 refresh immediately before the view button", () => {
 test("keeps the icon buttons in the bottom dock, not the title bar", () => {
   const dockBlock = htmlSource.match(/<footer class="dock">([\s\S]*?)<\/footer>/);
   assert.ok(dockBlock, "the dock footer must exist");
-  for (const id of ["memobtn", "tfsdbtn", "monbtn", "privacybtn", "clambtn", "blackbtn"]) {
+  for (const id of ["memobtn", "tfsdbtn", "privacybtn", "clambtn", "blackbtn"]) {
     assert.ok(
       dockBlock![1].includes(`id="${id}"`),
       `#${id} must live inside the dock`,
