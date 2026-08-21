@@ -85,67 +85,49 @@ type ProviderId = (typeof PROVIDERS)[number]["id"];
 type LoginProvider = ProviderId | "github";
 
 /// 프로바이더 픽셀 아이콘 — 8×8 격자를 문자열로 적는다 ('x'가 켜진 칸).
-/// 색은 Type3 좌측 스트라이프와 같은 값이다: 클로드 보라, 코덱스 청록.
-/// 어느 모드에서 보든 "이 색 = 이 프로바이더"가 한 벌로 유지된다.
-const PROVIDER_ICONS: Record<ProviderId, { color: string; pixels: string[] }> = {
+/// 색은 CSS(.prov-icon.prov-*)가 칠한다 — Type3 좌측 스트라이프와 같은 값을
+/// 두 곳에 손으로 복사해 두지 않기 위해서다.
+const PROVIDER_ICONS: Record<ProviderId, string[]> = {
   // 방사형 별 — 중앙에서 네 방향으로 뻗는 대칭 도형
-  claude: {
-    color: "#a78bfa",
-    pixels: [
-      "..x..x..",
-      "...xx...",
-      "x.xxxx.x",
-      ".xxxxxx.",
-      ".xxxxxx.",
-      "x.xxxx.x",
-      "...xx...",
-      "..x..x..",
-    ],
-  },
+  claude: [
+    "..x..x..",
+    "...xx...",
+    "x.xxxx.x",
+    ".xxxxxx.",
+    ".xxxxxx.",
+    "x.xxxx.x",
+    "...xx...",
+    "..x..x..",
+  ],
   // 로봇 얼굴 — 안테나 둘, 빈 칸이 눈, 아래 두 칸이 다리
-  codex: {
-    color: "#2dd4bf",
-    pixels: [
-      "..x..x..",
-      "..xxxx..",
-      ".xxxxxx.",
-      ".x.xx.x.",
-      ".xxxxxx.",
-      "..xxxx..",
-      "..x..x..",
-      ".x....x.",
-    ],
-  },
+  codex: [
+    "..x..x..",
+    "..xxxx..",
+    ".xxxxxx.",
+    ".x.xx.x.",
+    ".xxxxxx.",
+    "..xxxx..",
+    "..x..x..",
+    ".x....x.",
+  ],
 };
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 function providerIcon(provider: ProviderId): SVGElement {
-  const spec = PROVIDER_ICONS[provider];
+  // 켜진 칸을 전부 한 path의 서브패스로 넣는다 — 칸마다 rect를 만들면
+  // 아이콘 하나에 30여 노드가 생긴다. 모든 서브패스가 같은 회전방향이라
+  // fill-rule: nonzero에서 구멍이 뚫리지 않는다.
+  const d = PROVIDER_ICONS[provider]
+    .flatMap((row, y) => [...row].map((cell, x) => (cell === "x" ? `M${x} ${y}h1v1h-1z` : "")))
+    .join("");
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("viewBox", "0 0 8 8");
-  svg.setAttribute("class", "prov-icon");
+  svg.setAttribute("class", `prov-icon prov-${provider}`);
   svg.setAttribute("aria-hidden", "true");
-  svg.setAttribute("fill", spec.color);
-  spec.pixels.forEach((row, y) => {
-    // 가로로 이어진 칸은 rect 하나로 묶는다 — 8×8을 셀마다 그리면 노드가 64개다
-    let x = 0;
-    while (x < row.length) {
-      if (row[x] !== "x") {
-        x += 1;
-        continue;
-      }
-      let width = 1;
-      while (row[x + width] === "x") width += 1;
-      const rect = document.createElementNS(SVG_NS, "rect");
-      rect.setAttribute("x", String(x));
-      rect.setAttribute("y", String(y));
-      rect.setAttribute("width", String(width));
-      rect.setAttribute("height", "1");
-      svg.appendChild(rect);
-      x += width;
-    }
-  });
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("d", d);
+  svg.appendChild(path);
   return svg;
 }
 
@@ -405,11 +387,64 @@ async function loadUsage(
 /// 활성 표시 dot — 카드 테두리·이름 색은 --fg-alpha를 따라 사라지지만
 /// dot은 사용량 바와 같은 --bar-alpha를 따른다. 골조만 남는 투명도에서
 /// 어느 계정이 활성인지 가리키는 표식은 이것 하나뿐이다.
+/// (비활성 dot에는 툴팁을 안 단다 — 회색 점을 보고 이미 아는 말이다)
 function statusDot(active: boolean): HTMLElement {
   const dot = document.createElement("span");
   dot.className = "status-dot";
-  dot.title = active ? t("activeDot") : t("inactiveDot");
+  if (active) dot.title = t("activeDot");
   return dot;
+}
+
+/// 프라이버시 블러(🙈)는 요소 렌더링만 흐리게 한다 — OS가 그리는 title 툴팁은
+/// 그 필터 밖이라, 가려 둔 프로필 이름이 툴팁으로 선명하게 새어 나온다.
+/// 조작 버튼을 꺼내려면 카드에 커서를 올려야 하므로(#103) 이름 위를 지날 일이
+/// 늘었다 — 가리는 동안은 툴팁 자체를 뗀다.
+function applyNameTooltip(el: HTMLElement) {
+  const name = el.dataset.profile;
+  if (!name) return;
+  if (document.body.classList.contains("privacy")) el.removeAttribute("title");
+  else el.title = t("profileNameTooltip", { name });
+}
+
+/// 블러를 켜고 끌 때는 이미 그려진 카드들의 툴팁도 즉시 따라가야 한다
+/// (applyPrivacy는 클래스만 토글하고 다시 렌더하지 않는다)
+function refreshNameTooltips() {
+  document.querySelectorAll<HTMLElement>(".card-name").forEach(applyNameTooltip);
+}
+
+/// 커서가 카드 아래쪽으로 들어오면 조작 버튼이 **정확히 커서 지점에** 생성된다
+/// (실측: 카드 하단에서 2px 위로 진입하면 그 좌표가 삭제 버튼 안이 된다).
+/// 그 순간의 클릭은 사용자가 버튼을 본 적 없는 클릭이므로 잠깐 무시한다 —
+/// 특히 삭제는 프로필 폴더를 지우고 되돌릴 수 없다.
+const ACTION_GRACE_MS = 250;
+
+/// 호버로 조작 버튼이 드나드는 카드의 공통 처리:
+/// 1) 버튼이 나고 들며 카드 높이가 바뀌므로 창을 다시 맞춘다
+/// 2) 방금 나타난 버튼의 클릭인지 판정할 수 있게 시각을 남긴다
+/// 3) 카드를 벗어나면 확인 대기(armed) 상태를 거둔다 — 안 보이는 곳에 남은
+///    armed는 다음 클릭 한 번에 삭제가 된다. 자동 해제는 웹뷰 타이머라
+///    비활성 창에서 크게 늘어진다 (CLAUDE.md 실측)
+function hoverActions(card: HTMLElement, disarm?: () => void): () => boolean {
+  let shownAt = 0;
+  const refit = () => {
+    if (!app.classList.contains("locked")) fitHeight();
+  };
+  card.addEventListener("pointerenter", () => {
+    shownAt = Date.now();
+    refit();
+  });
+  card.addEventListener("pointerleave", () => {
+    disarm?.();
+    refit();
+  });
+  // 키보드 경로(:focus-within)도 같은 높이 변화를 만든다. 이쪽은 커서 아래
+  // 생성이 없으므로 shownAt을 건드리지 않는다 — 유예도 걸리지 않는다.
+  card.addEventListener("focusin", refit);
+  card.addEventListener("focusout", () => {
+    disarm?.();
+    refit();
+  });
+  return () => Date.now() - shownAt < ACTION_GRACE_MS;
 }
 
 function profileCard(
@@ -419,6 +454,8 @@ function profileCard(
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = "card" + (profile.active ? " active" : "");
+  // 조작 버튼이 호버·포커스에만 나타나므로 카드가 키보드 도달점이 된다
+  card.tabIndex = 0;
 
   const head = document.createElement("div");
   head.className = "card-head";
@@ -426,7 +463,8 @@ function profileCard(
   const email = document.createElement("span");
   email.className = "card-name";
   email.textContent = profile.email ?? profile.name;
-  email.title = t("profileNameTooltip", { name: profile.name });
+  email.dataset.profile = profile.name;
+  applyNameTooltip(email);
   head.append(statusDot(profile.active), email);
   if (profile.plan) {
     const plan = document.createElement("span");
@@ -473,6 +511,17 @@ function profileCard(
     }
   };
 
+  const deleteBtn = document.createElement("button");
+  let armed = false;
+  const disarmDelete = () => {
+    if (!armed) return;
+    armed = false;
+    deleteBtn.textContent = t("del");
+    deleteBtn.classList.remove("danger-armed");
+  };
+  // 호버가 붙는 즉시 등록해야 아래 버튼 핸들러가 justShown을 닫아 갈 수 있다
+  const justShown = hoverActions(card, disarmDelete);
+
   const actions = document.createElement("div");
   actions.className = "card-actions";
   if (!profile.active) {
@@ -485,23 +534,26 @@ function profileCard(
     const switchBtn = document.createElement("button");
     switchBtn.className = "primary";
     switchBtn.textContent = t("switchBtn");
-    switchBtn.addEventListener("click", () => void doSwitch(switchBtn));
+    switchBtn.addEventListener("click", () => {
+      if (justShown()) return;
+      void doSwitch(switchBtn);
+    });
     actions.appendChild(switchBtn);
   }
 
-  const deleteBtn = document.createElement("button");
   deleteBtn.textContent = t("del");
-  let armed = false;
   deleteBtn.addEventListener("click", async () => {
+    // 커서 아래에 방금 생성된 버튼의 클릭은 셈에 넣지 않는다 — 이게 없으면
+    // 카드 하단으로 커서를 밀어 넣으며 더블클릭했을 때 arm과 확정이 한 번에
+    // 일어나 계정이 삭제된다 (실측)
+    if (justShown()) return;
     if (!armed) {
       armed = true;
       deleteBtn.textContent = t("delConfirm");
       deleteBtn.classList.add("danger-armed");
-      window.setTimeout(() => {
-        armed = false;
-        deleteBtn.textContent = t("del");
-        deleteBtn.classList.remove("danger-armed");
-      }, 3000);
+      // 카드를 벗어나면 hoverActions가 즉시 거둔다 — 이 타이머는 커서를
+      // 올려 둔 채 가만히 있을 때를 위한 것이다
+      window.setTimeout(disarmDelete, 3000);
       return;
     }
     deleteBtn.disabled = true;
@@ -516,14 +568,6 @@ function profileCard(
   });
   actions.appendChild(deleteBtn);
   card.appendChild(actions);
-
-  // Type1 조작 버튼은 호버에만 나타난다(CSS) — 나타나고 사라질 때 카드 높이가
-  // 바뀌므로 창도 다시 맞춘다. 위젯 모드는 버튼 자체가 숨김이라 높이가 안 변한다.
-  const refit = () => {
-    if (!app.classList.contains("locked")) fitHeight();
-  };
-  card.addEventListener("pointerenter", refit);
-  card.addEventListener("pointerleave", refit);
 
   return card;
 }
@@ -1225,12 +1269,18 @@ function githubCard(acc: GithubAccount, compact = false): HTMLElement {
     card.dataset.provider = "github";
     card.dataset.name = acc.login;
     if (!compact) {
+      // 이 카드도 계정 카드와 같은 .card-actions를 쓰므로 호버 노출 규칙에
+      // 함께 걸린다 — 높이 보정을 빼먹으면 방금 나타난 버튼이 창 밖으로
+      // 떨어져 스크롤 없이는 못 누른다 (red-review)
+      card.tabIndex = 0;
+      const justShown = hoverActions(card);
       const actions = document.createElement("div");
       actions.className = "card-actions";
       const switchBtn = document.createElement("button");
       switchBtn.className = "primary";
       switchBtn.textContent = t("switchBtn");
       switchBtn.addEventListener("click", async () => {
+        if (justShown()) return;
         if (loginOpen) {
           toast(t("loginBusy"), true);
           return;
@@ -1550,7 +1600,8 @@ function compactCard(
     const email = document.createElement("span");
     email.className = "card-name";
     email.textContent = profile.email ?? profile.name;
-    email.title = t("profileNameTooltip", { name: profile.name });
+    email.dataset.profile = profile.name;
+    applyNameTooltip(email);
     head.append(statusDot(profile.active), email);
     if (profile.plan) {
       const plan = document.createElement("span");
@@ -2702,6 +2753,8 @@ const privacyBtn = document.getElementById("privacybtn") as HTMLButtonElement;
 function applyPrivacy(on: boolean) {
   document.body.classList.toggle("privacy", on);
   privacyBtn.classList.toggle("pinned", on);
+  // 블러는 요소만 흐리게 한다 — title 툴팁은 필터 밖이라 따로 떼야 한다
+  refreshNameTooltips();
 }
 let privacyOn = localStorage.getItem("switcher.privacy") === "1";
 applyPrivacy(privacyOn);

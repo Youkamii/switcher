@@ -53,14 +53,21 @@ body {
   overflow: hidden;
 }
 
-/* 타이틀바 요소도 골조와 함께 옅어진다 — 단 #pin·#drag-handle은 예외.
-   locked에서는 아래의 0.18 곱 규칙이 대신 맡는다 */
-body:not(.locked) :is(#logo, #alpha, #refresh, #memobtn, #privacybtn, #clambtn, #blackbtn, #monbtn) {
+/* 타이틀바·독 요소도 골조와 함께 옅어진다 — 단 #pin·#drag-handle은 예외.
+   locked에서는 아래의 0.18 곱 규칙이 대신 맡는다.
+   아이콘 버튼은 ID를 나열하지 않고 .dock-tray로 잡는다 — 하단 독으로 옮긴
+   뒤(#105) ID 사다리가 세 곳에 흩어졌고 그중 절반이 죽은 셀렉터가 됐다
+   (.titlebar 자손이 아니게 된 ID들, red-review). 이 방식은 #tfsdbtn도
+   같이 잡는다 — 혼자 페이드에서 빠져 있던 것이 원래 누락이었다 */
+body:not(.locked) :is(#logo, #alpha, #refresh),
+body:not(.locked) .dock-tray button {
   opacity: var(--fg-alpha);
 }
 
-/* 마우스를 타이틀바에 올리면 조작 요소가 되살아난다 — 투명해도 조작은 가능 */
-.titlebar:hover :is(#logo, #alpha, #refresh, #memobtn, #privacybtn, #clambtn, #blackbtn, #monbtn) {
+/* 마우스를 올리면 조작 요소가 되살아난다 — 투명해도 조작은 가능.
+   잠긴 버튼(:disabled)은 잠긴 티가 남아야 하므로 제외한다 */
+.titlebar:hover :is(#logo, #alpha, #refresh),
+.dock:hover .dock-tray button:not(:disabled) {
   opacity: 1;
 }
 
@@ -173,8 +180,6 @@ body.locked #memobtn {
 .mon-row .bar {
   flex: 1;
   height: 6px;
-  /* 시스템 바는 사용량 바보다 길다 — 같은 칸 크기를 유지하려면 칸을 더 준다 */
-  --seg: 24;
 }
 
 .mon-val {
@@ -296,18 +301,20 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
 }
 
 /* 균등 분배 — 남는 폭을 버튼들이 나눠 가져 어느 타입에서도 한쪽에 몰리지
-   않는다 (사용자 보고: 타입3 우측 몰림). 지금 이 규칙을 실제로 쓰는 것은
-   하단 독의 아이콘 버튼들이다 */
-.tb-actions button:not(#pin) {
+   않는다 (사용자 보고: 타입3 우측 몰림). 아이콘 버튼이 하단 독으로 옮겨간
+   뒤로 이 규칙의 대상은 트레이뿐이라 이름도 그렇게 맞춘다 */
+.dock-tray button {
   flex: 1 1 0;
   /* 좌우 3px: 균등 분배가 가장자리(벽)까지 붙지 않게 — 첫·끝 버튼의 바깥
      마진이 곧 줄의 양쪽 인셋이 된다 (사용자 보고) */
   margin: 0 3px;
 }
 
+/* 새로고침은 제 폭을 지키고, 왼쪽 자유 공간을 흡수해 Type 버튼 옆에 붙는다
+   (.titlebar가 space-between이라 margin-left:auto가 배치를 만든다) */
 .tb-actions button#refresh {
   flex: 0 0 auto;
-  margin: 0 0 0 auto;
+  margin-left: auto;
 }
 
 .tb-actions button {
@@ -343,10 +350,15 @@ body.dock-open .dock-tray {
 }
 
 /* 손잡이 — 접혀 있을 땐 얇은 띠 하나로만 존재를 알린다. 전역 button 규칙의
-   배경·테두리·모서리를 전부 걷어낸다 (ID라 특이도로 이긴다) */
+   배경·테두리·모서리를 전부 걷어낸다 (ID라 특이도로 이긴다).
+   폭을 창 전체로 두지 않는다: 위젯 모드에서 히트 영역으로 보고되는 띠는
+   그 좌표의 클릭을 뒤 창에 넘기지 않고 삼킨다 — 창 밑변 전체를 막을 이유가
+   없다 (red-review). 72px면 찾기에 충분하고 양옆은 투과로 남는다 */
 #dock-toggle {
   flex: none;
-  width: 100%;
+  align-self: center;
+  width: 72px;
+  max-width: 100%;
   height: 13px;
   padding: 0;
   line-height: 12px;
@@ -354,12 +366,14 @@ body.dock-open .dock-tray {
   background: none;
   border: none;
   border-radius: 0;
-  color: var(--muted);
+  /* 색까지 --muted(=--fg-alpha)로 두면 슬라이더 최하에서 글리프가 실효 알파
+     0.03이 돼 사라진다. 도구로 가는 유일한 입구라 알파를 고정한다 */
+  color: rgba(139, 139, 158, 0.95);
   cursor: pointer;
   /* 접혀 있을 때가 찾아야 할 때다 — 이동 핸들(☰ 0.6)에 준하게 또렷하고,
-     펼친 뒤에는 물러난다. 투명도 슬라이더와 무관하게 남는다(고정값) */
+     펼친 뒤에는 물러난다 */
   opacity: 0.62;
-  transition: opacity 0.15s;
+  transition: opacity 0.15s, filter 80ms ease-out;
 }
 
 body.dock-open #dock-toggle {
@@ -371,21 +385,17 @@ body.dock-open #dock-toggle:hover {
   opacity: 1;
 }
 
-/* 마우스를 독에 올리면 조작 요소가 되살아난다 — 타이틀바의 hover 복원을
-   독에 다시 건 것이다 (독은 .titlebar 밖이라 그 규칙이 닿지 않는다).
-   :is(#…)로 ID 특이도를 확보해야 위쪽 body:not(.locked) :is(#…) 페이드
-   규칙(1,1,1)을 이긴다 — 클래스만으로 쓰면 hover가 먹지 않는다. */
-body:not(.locked) .dock:hover
-  :is(#memobtn, #tfsdbtn, #monbtn, #privacybtn, #clambtn, #blackbtn) {
-  opacity: 1;
+/* 손잡이도 누름 피드백을 받는다 — 비활성 패널에서는 :hover/:active가 오지
+   않아 JS가 .pressing을 직접 단다. 테두리가 없으므로 밝기만 준다 */
+#dock-toggle.pressing {
+  filter: brightness(1.8);
 }
 
-body.locked .dock:hover .tb-actions button {
-  opacity: 1;
-}
-
-body.locked .dock:hover .tb-actions button:disabled {
-  opacity: 0.35;
+/* 사용자가 일부러 연 서랍은 위젯 모드에서도 보여야 한다 — 0.18은 "안 쓰는
+   동안 안 거슬리게"를 위한 값이지, 방금 열어젖힌 도구에 쓸 값이 아니다.
+   (아래 :disabled 규칙이 뒤에 와서 잠긴 버튼은 여전히 잠긴 티가 난다) */
+body.locked.dock-open .dock-tray button {
+  opacity: 0.55;
 }
 
 /* 비활성 패널에서는 :hover/:active가 오지 않는다 (사용자 보고: 눌리는지 모르겠음)
@@ -438,7 +448,6 @@ body.minimal #clambtn.pinned {
   font-size: 11px;
   text-align: center;
   flex: none;
-  margin-left: 0;
 }
 
 body.locked #pin {
@@ -598,20 +607,30 @@ button.link:hover {
   letter-spacing: 1px;
 }
 
-/* 프로바이더 픽셀 아이콘 — 8×8 격자라 크기를 칸 배수로 잡아야 셀 경계가
-   반픽셀에 걸리지 않는다. crispEdges로 안티에일리어싱도 끈다 */
+/* 프로바이더 픽셀 아이콘 — 8×8 격자라 크기가 8의 배수여야 셀 경계가
+   반픽셀에 걸리지 않는다. 12px(=1.5px/칸)로 두면 crispEdges가 칸마다
+   1px·2px를 번갈아 스냅해 대칭 도형의 팔 길이가 어긋난다 (red-review).
+   색은 Type3 좌측 스트라이프와 같은 값 — 어느 모드에서 보든 한 벌이다 */
 .prov-icon {
-  width: 12px;
-  height: 12px;
+  width: 16px;
+  height: 16px;
   flex: none;
   shape-rendering: crispEdges;
   /* 제목 글자와 함께 옅어진다 */
   opacity: var(--fg-alpha);
 }
 
+.prov-icon.prov-claude {
+  fill: var(--accent);
+}
+
+.prov-icon.prov-codex {
+  fill: #2dd4bf;
+}
+
 .compact-head .prov-icon {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 .card {
@@ -843,8 +862,6 @@ button.link:hover {
 
 #app.minimal .compact-row .bar {
   height: 4px;
-  /* 120px 폭에서 바는 80px 남짓 — 16칸이면 칸이 홈보다 얇아진다 */
-  --seg: 12;
 }
 
 #app.minimal .tfsd-watermark svg {
@@ -873,6 +890,14 @@ body.minimal #privacybtn {
 
 #app.minimal .compact-card.prov-codex {
   border-left: 3px solid rgba(45, 212, 191, calc(0.75 * var(--bar-alpha)));
+}
+
+/* Type3에는 카드 머리가 없어 상태 dot을 못 단다 — 활성 표시는 테두리뿐인데
+   그게 --fg-alpha를 따라 사라져, 정작 골조만 남는 투명도에서 어느 계정이
+   활성인지 알 수 없었다 (red-review). 여기서만 --bar-alpha로 갈아 끼운다.
+   좌측은 프로바이더 스트라이프가 계속 이긴다(더 구체적인 셀렉터) */
+#app.minimal .card.active {
+  border-color: rgba(167, 139, 250, calc(0.85 * var(--bar-alpha)));
 }
 
 /* 프로바이더 묶음 사이 칸막이 — 얇은 선과 여백. 스트라이프와 함께
@@ -914,8 +939,8 @@ body.minimal #privacybtn {
   white-space: nowrap;
 }
 
-/* 고정 모드: 조작 요소를 전부 숨겨 사용량 전용 위젯이 된다 */
-#app.locked .card-actions,
+/* 고정 모드: 조작 요소를 전부 숨겨 사용량 전용 위젯이 된다.
+   (.card-actions는 이제 기본이 display:none이라 여기 적을 필요가 없다) */
 #app.locked .add-row,
 #app.locked .save-row,
 #app.locked .login-panel,
@@ -1021,11 +1046,11 @@ body.minimal .titlebar {
   column-gap: 2px;
 }
 
-body.minimal .tb-actions button {
+/* Type3(120px)에서 트레이 버튼이 한 줄에 들어가도록 여백을 걷는다.
+   대상이 독의 아이콘 버튼뿐이므로 셀렉터도 그렇게 적는다 (#pin·#refresh는
+   각자 ID 규칙이 있고 새로고침은 고정 모드에서 아예 숨는다) */
+body.minimal .dock-tray button {
   padding: 1px 3px;
-}
-
-body.minimal .tb-actions button:not(#pin) {
   margin: 0;
 }
 
@@ -1071,10 +1096,15 @@ body.minimal .tb-actions button:not(#pin) {
   overflow: hidden;
   /* 투명도 최하에서 바도 은은해진다 (0.45 바닥 — 그래프 기능은 유지) */
   opacity: var(--bar-alpha);
-  --seg: 16;
+  /* 칸 크기는 절대값으로 고정한다. 폭을 칸 "수"로 나누면 좁은 바에서 칸이
+     홈보다 얇아져 트랙이 통째로 홈색이 된다 — Type3 SYSTEM에서 실측:
+     36px 바 ÷ 24칸 = 1.5px 칸에서 홈 1.5px를 빼면 채움이 0px가 되어
+     CPU·MEM 그래프가 검은 막대로 보였다 (red-review). 절대 폭이면 어느
+     모드에서 보든 칸 크기가 같아 모드별 재정의도 필요 없다 */
+  --seg-w: 8px;
 }
 
-/* 세그먼트 홈 — 트랙 전체를 --seg칸으로 균등 분할한다.
+/* 세그먼트 홈 — 트랙을 --seg-w 간격으로 썬다.
    채움(.bar-fill) 위를 덮으므로 홈 위치가 채움 양과 무관하게 고정된다
    (채움 쪽에 마스크를 걸면 칸 폭이 채움 폭을 따라 늘었다 줄었다 한다).
    홈 색은 --panel 같은 배경 변수가 아니라 불투명 고정색이다 — 반투명
@@ -1087,8 +1117,8 @@ body.minimal .tb-actions button:not(#pin) {
   pointer-events: none;
   background: repeating-linear-gradient(
     90deg,
-    transparent 0 calc(100% / var(--seg) - 1.5px),
-    rgba(18, 18, 26, 0.95) calc(100% / var(--seg) - 1.5px) calc(100% / var(--seg))
+    transparent 0 calc(var(--seg-w) - 1.5px),
+    rgba(18, 18, 26, 0.95) calc(var(--seg-w) - 1.5px) var(--seg-w)
   );
 }
 
@@ -1125,31 +1155,39 @@ body.minimal .tb-actions button:not(#pin) {
   margin: 3px 0;
 }
 
+/* 조작 버튼은 기본이 숨김이다 — 계정마다 상시 노출하면 계정 수만큼 세로가
+   늘어난다. Type2/3(고정 모드)은 끝까지 숨김이고, Type1만 아래에서 호버·
+   포커스에 꺼낸다. 나타나며 카드 높이가 바뀌므로 창 높이도 따라 맞춰야
+   한다 (hoverActions의 fitHeight). */
 .card-actions {
-  display: flex;
+  display: none;
   gap: 6px;
   margin-top: 8px;
   justify-content: flex-end;
 }
 
-/* Type1 조작 버튼은 카드에 마우스를 올렸을 때만 — 계정마다 상시 노출하면
-   계정 수만큼 세로가 늘어난다. 나타나며 카드 높이가 바뀌므로 창 높이도
-   따라 맞춰야 한다 (profileCard의 pointerenter/leave → fitHeight).
-   Type2/3(#app.locked)은 조작 요소를 통째로 숨기므로 이 규칙 밖이다. */
-#app:not(.locked) .card-actions {
-  display: none;
-}
-
-#app:not(.locked) .card:hover .card-actions {
+/* :focus-within은 키보드 경로다 — 카드가 tabindex를 갖고 있어(profileCard·
+   githubCard) 탭으로 카드에 닿으면 버튼이 나타나고, 다음 탭이 버튼에 들어간다.
+   이게 없으면 숨은 버튼은 포커스 트리 밖이라 키보드로 영영 도달하지 못한다 */
+#app:not(.locked) .card:hover .card-actions,
+#app:not(.locked) .card:focus-within .card-actions {
   display: flex;
 }
 
 /* 버튼이 숨어 있어도 "여기 뭔가 있다"가 보이게 — 전환 후보 카드는 호버에
    테두리가 살아난다 (고정 모드의 .hit-hover와 같은 신호) */
-#app:not(.locked) .card.switchable:hover {
+#app:not(.locked) .card.switchable:hover,
+#app:not(.locked) .card.switchable:focus-within {
   border-color: rgba(167, 139, 250, calc(0.75 * var(--fg-alpha)));
   /* 비활성 카드의 낮춘 채도(.card:not(.active))도 함께 살아난다 */
   filter: none;
+}
+
+/* 카드 자체는 키보드 도달점일 뿐 — 눌러서 뭔가 되는 곳이 아니므로
+   포커스 링은 은은하게만 */
+#app:not(.locked) .card:focus-visible {
+  outline: 1px solid rgba(167, 139, 250, 0.7);
+  outline-offset: 1px;
 }
 
 .save-row {
