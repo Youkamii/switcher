@@ -447,6 +447,14 @@ function profileCard(
   actions.appendChild(deleteBtn);
   card.appendChild(actions);
 
+  // Type1 조작 버튼은 호버에만 나타난다(CSS) — 나타나고 사라질 때 카드 높이가
+  // 바뀌므로 창도 다시 맞춘다. 위젯 모드는 버튼 자체가 숨김이라 높이가 안 변한다.
+  const refit = () => {
+    if (!app.classList.contains("locked")) fitHeight();
+  };
+  card.addEventListener("pointerenter", refit);
+  card.addEventListener("pointerleave", refit);
+
   return card;
 }
 

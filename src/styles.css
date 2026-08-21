@@ -1054,6 +1054,26 @@ body.minimal .tb-actions button:not(#pin) {
   justify-content: flex-end;
 }
 
+/* Type1 조작 버튼은 카드에 마우스를 올렸을 때만 — 계정마다 상시 노출하면
+   계정 수만큼 세로가 늘어난다. 나타나며 카드 높이가 바뀌므로 창 높이도
+   따라 맞춰야 한다 (profileCard의 pointerenter/leave → fitHeight).
+   Type2/3(#app.locked)은 조작 요소를 통째로 숨기므로 이 규칙 밖이다. */
+#app:not(.locked) .card-actions {
+  display: none;
+}
+
+#app:not(.locked) .card:hover .card-actions {
+  display: flex;
+}
+
+/* 버튼이 숨어 있어도 "여기 뭔가 있다"가 보이게 — 전환 후보 카드는 호버에
+   테두리가 살아난다 (고정 모드의 .hit-hover와 같은 신호) */
+#app:not(.locked) .card.switchable:hover {
+  border-color: rgba(167, 139, 250, calc(0.75 * var(--fg-alpha)));
+  /* 비활성 카드의 낮춘 채도(.card:not(.active))도 함께 살아난다 */
+  filter: none;
+}
+
 .save-row {
   display: flex;
   gap: 6px;
