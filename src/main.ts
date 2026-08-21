@@ -150,6 +150,7 @@ function revealAppAfterStarPrompt() {
   starPromptHost.remove();
   titlebarEl.inert = false;
   app.inert = false;
+  dockEl.inert = false;
   applyViewMode();
   void render({ immediate: true });
 }
@@ -220,6 +221,9 @@ function mountGithubStarPrompt() {
   if (!starPromptHost.isConnected) shell.appendChild(starPromptHost);
   titlebarEl.inert = true;
   app.inert = true;
+  // 독도 프롬프트 동안 잠근다 — 오버레이(z-index 20)가 클릭은 가로채지만
+  // inert가 없으면 탭 이동으로 도구 버튼에 포커스가 들어간다
+  dockEl.inert = true;
   applyViewMode();
   refreshHitRegionsAfterLayout();
 }
