@@ -529,11 +529,30 @@ button.link:hover {
 }
 
 .section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   margin: 12px 0 6px;
   font-size: 12px;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 1px;
+}
+
+/* 프로바이더 픽셀 아이콘 — 8×8 격자라 크기를 칸 배수로 잡아야 셀 경계가
+   반픽셀에 걸리지 않는다. crispEdges로 안티에일리어싱도 끈다 */
+.prov-icon {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  shape-rendering: crispEdges;
+  /* 제목 글자와 함께 옅어진다 */
+  opacity: var(--fg-alpha);
+}
+
+.compact-head .prov-icon {
+  width: 10px;
+  height: 10px;
 }
 
 .card {
