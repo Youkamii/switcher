@@ -556,6 +556,28 @@ button.link:hover {
   margin-bottom: 6px;
 }
 
+/* 활성 표시 dot — 카드 테두리와 이름 색은 --fg-alpha를 따라 사라지지만
+   dot은 사용량 바와 같은 --bar-alpha를 따른다. 골조만 남는 투명도에서
+   어느 계정이 활성인지 가리키는 표식은 이것 하나뿐이다.
+   (프라이버시 블러는 .card-name만 대상이라 dot은 또렷하게 남는다) */
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: rgba(139, 139, 158, calc(0.75 * var(--bar-alpha)));
+}
+
+.card.active .status-dot {
+  background: rgba(74, 222, 128, var(--bar-alpha));
+  box-shadow: 0 0 5px rgba(74, 222, 128, calc(0.55 * var(--bar-alpha)));
+}
+
+.compact-card .status-dot {
+  width: 5px;
+  height: 5px;
+}
+
 .card-name {
   font-weight: 700;
   font-size: 13px;

@@ -332,6 +332,16 @@ async function loadUsage(
   fitHeight();
 }
 
+/// 활성 표시 dot — 카드 테두리·이름 색은 --fg-alpha를 따라 사라지지만
+/// dot은 사용량 바와 같은 --bar-alpha를 따른다. 골조만 남는 투명도에서
+/// 어느 계정이 활성인지 가리키는 표식은 이것 하나뿐이다.
+function statusDot(active: boolean): HTMLElement {
+  const dot = document.createElement("span");
+  dot.className = "status-dot";
+  dot.title = active ? t("activeDot") : t("inactiveDot");
+  return dot;
+}
+
 function profileCard(
   provider: ProviderId,
   profile: ProfileInfo,
@@ -347,7 +357,7 @@ function profileCard(
   email.className = "card-name";
   email.textContent = profile.email ?? profile.name;
   email.title = t("profileNameTooltip", { name: profile.name });
-  head.append(email);
+  head.append(statusDot(profile.active), email);
   if (profile.plan) {
     const plan = document.createElement("span");
     plan.className = "badge plan";
@@ -1461,7 +1471,7 @@ function compactCard(
     email.className = "card-name";
     email.textContent = profile.email ?? profile.name;
     email.title = t("profileNameTooltip", { name: profile.name });
-    head.appendChild(email);
+    head.append(statusDot(profile.active), email);
     if (profile.plan) {
       const plan = document.createElement("span");
       plan.className = "badge plan";
