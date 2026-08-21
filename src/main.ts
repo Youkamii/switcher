@@ -152,6 +152,7 @@ function providerIcon(provider: ProviderId): SVGElement {
 const app = document.getElementById("app")!;
 const shell = document.querySelector(".shell") as HTMLElement;
 const titlebarEl = document.querySelector(".titlebar") as HTMLElement;
+const dockEl = document.querySelector(".dock") as HTMLElement;
 let startupState: FirstRunStartupState | "checking" = "checking";
 let starPromptOpen = false;
 let starPromptBusy = false;
@@ -1888,9 +1889,12 @@ function reportHitRegions() {
     // 타이틀바가 컨테이너를 display:contents(박스 없음 → rect 0×0)로 만들어
     // 버튼 전체가 클릭 투과에 삼켜졌다 (사용자 보고: 타입3 버튼 무반응).
     // 숨김(0크기) 요소는 거른다 — 좌상단 유령 히트 방지.
+    // #dock-toggle: 하단 독 손잡이. 트레이 안 버튼들은 .tb-actions > * 가 이미
+    // 잡는다 (트레이가 tb-actions 클래스를 함께 달고 있다). 접힌 트레이는
+    // display:none이라 rect 0×0으로 걸러진다.
     document
       .querySelectorAll<HTMLElement>(
-        ".tb-actions > *, #drag-handle, .display-row, .collapsible",
+        ".tb-actions > *, #dock-toggle, #drag-handle, .display-row, .collapsible",
       )
       .forEach((el) => {
         const r = el.getBoundingClientRect();
@@ -2076,7 +2080,10 @@ async function fitWindowToContent() {
           bottomPad
         : 40;
       const tbHeight = titlebarEl.offsetHeight;
-      const total = tbHeight + content + 2; // 테두리
+      // 하단 독은 main 밖(shell 직속)이라 content 계산에 안 잡힌다 — 따로 더한다.
+      // 접힘/펼침으로 높이가 바뀌므로 매 바퀴 다시 잰다.
+      const dockHeight = dockEl.offsetHeight;
+      const total = tbHeight + content + dockHeight + 2; // 테두리
       const max = Math.floor((currentWorkAreaHeight ?? window.screen.availHeight) * 0.9);
       // 배율이 소수인 화면에서 round가 1px을 깎아 하단을 자르지 않게 올림한다.
       // 논리→물리 변환의 최근접 반올림까지 버티도록 콘텐츠보다 1px 여유를 둔다.
@@ -2142,7 +2149,7 @@ async function fitWindowToContent() {
       // 즉시 보고하면 옛 폭 기준 좌표가 남아 버튼 위 클릭이 투과돼 버린다
       refreshHitRegionsAfterLayout();
       if (revision !== fitRevision) continue;
-      if (titlebarEl.offsetHeight !== tbHeight) {
+      if (titlebarEl.offsetHeight !== tbHeight || dockEl.offsetHeight !== dockHeight) {
         fitRevision += 1;
         continue;
       }
@@ -2210,7 +2217,36 @@ function applyStaticText() {
   document.getElementById("privacybtn")!.setAttribute("title", t("privacyTooltip"));
   alphaSlider.title = t("alphaTooltip");
   lockBtn.title = t("typeTooltip");
+  applyDockLabel();
 }
+
+// ── 하단 도구 독 (#105) ────────────────────────────────────────────
+// 아이콘 버튼은 상시 필요하지 않다 — 창 맨 아래 손잡이를 눌러 펼친다.
+// 펼침 상태는 유지된다: 늘 쓰는 사람이 매 실행마다 다시 열 이유가 없다.
+const dockToggle = document.getElementById("dock-toggle") as HTMLButtonElement;
+let dockOpen = localStorage.getItem("switcher.dock") === "1";
+
+function applyDockLabel() {
+  dockToggle.textContent = dockOpen ? "▼" : "▲";
+  dockToggle.title = dockOpen ? t("dockClose") : t("dockOpen");
+  dockToggle.setAttribute("aria-expanded", dockOpen ? "true" : "false");
+}
+
+function applyDock() {
+  document.body.classList.toggle("dock-open", dockOpen);
+  applyDockLabel();
+  // 트레이가 접히고 펼쳐지며 창 높이가 바뀐다. 히트 영역은 fitWindowToContent가
+  // 크기 변경을 끝낸 뒤 스스로 다시 보고한다 — 여기서 먼저 부르면 옛 좌표가 남는다.
+  fitHeight();
+}
+
+dockToggle.addEventListener("click", () => {
+  dockOpen = !dockOpen;
+  localStorage.setItem("switcher.dock", dockOpen ? "1" : "0");
+  applyDock();
+});
+
+applyDock();
 
 // 블랙 모니터 — 모든 화면을 최상위 검은 막으로 (해제는 오버레이 쪽: 흔들기·ESC)
 document.getElementById("blackbtn")!.addEventListener("click", () => {
@@ -2262,13 +2298,16 @@ document.documentElement.addEventListener("mouseenter", () => {
 // 비활성 패널에서는 :active가 안 먹어 클릭 피드백이 없다 (실기기 사용자 보고)
 // — 포인터 이벤트로 누름 상태(.pressing)를 직접 단다. 클릭은 확실히 도달하므로
 // pointerdown도 도달한다.
-document.querySelectorAll<HTMLButtonElement>(".tb-actions button").forEach((btn) => {
-  btn.addEventListener("pointerdown", () => btn.classList.add("pressing"));
-  const clearPressing = () => btn.classList.remove("pressing");
-  btn.addEventListener("pointerup", clearPressing);
-  btn.addEventListener("pointerleave", clearPressing);
-  btn.addEventListener("pointercancel", clearPressing);
-});
+// 독 손잡이도 같은 피드백을 받는다 — 위젯 모드에서는 여기도 :hover가 안 온다
+document
+  .querySelectorAll<HTMLButtonElement>(".tb-actions button, #dock-toggle")
+  .forEach((btn) => {
+    btn.addEventListener("pointerdown", () => btn.classList.add("pressing"));
+    const clearPressing = () => btn.classList.remove("pressing");
+    btn.addEventListener("pointerup", clearPressing);
+    btn.addEventListener("pointerleave", clearPressing);
+    btn.addEventListener("pointercancel", clearPressing);
+  });
 
 // 메모장 (Type1·2·3 공통 버튼) — 별도 창 토글. 내용·투명도는 메모창이 스스로 관리
 document.getElementById("memobtn")!.addEventListener("click", () => {
