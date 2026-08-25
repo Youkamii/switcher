@@ -2122,18 +2122,24 @@ window.setInterval(() => {
 }, 5 * 60 * 1000);
 
 /// 정적 골격(타이틀바)의 문자열 — 렌더 밖 요소라 언어가 바뀔 때 직접 갈아 끼운다
+function labelIconButton(id: string, label: string) {
+  const button = document.getElementById(id)!;
+  button.setAttribute("title", label);
+  button.setAttribute("aria-label", label);
+}
+
 function applyStaticText() {
   document.documentElement.lang = currentLang();
   const refreshBtn = document.getElementById("refresh")!;
   refreshBtn.textContent = t("refresh");
   refreshBtn.setAttribute("title", t("refreshTooltip"));
   document.getElementById("drag-handle")!.setAttribute("title", t("dragHandle"));
-  document.getElementById("blackbtn")!.setAttribute("title", t("blackTooltip"));
+  labelIconButton("blackbtn", t("blackTooltip"));
   if (clamMode >= 0) applyClamshell(clamMode); // 클램셸 툴팁도 새 언어로
-  document.getElementById("memobtn")!.setAttribute("title", t("memoTooltip"));
-  document.getElementById("tfsdbtn")!.setAttribute("title", t("tfsdBtnTooltip"));
-  document.getElementById("monbtn")!.setAttribute("title", t("monitorTooltip"));
-  document.getElementById("privacybtn")!.setAttribute("title", t("privacyTooltip"));
+  labelIconButton("memobtn", t("memoTooltip"));
+  labelIconButton("tfsdbtn", t("tfsdBtnTooltip"));
+  labelIconButton("monbtn", t("monitorTooltip"));
+  labelIconButton("privacybtn", t("privacyTooltip"));
   alphaSlider.title = t("alphaTooltip");
   lockBtn.title = t("typeTooltip");
   applyDockLabel();
@@ -2146,8 +2152,10 @@ const dockToggle = document.getElementById("dock-toggle") as HTMLButtonElement;
 let dockOpen = localStorage.getItem("switcher.dock") === "1";
 
 function applyDockLabel() {
+  const label = dockOpen ? t("dockClose") : t("dockOpen");
   dockToggle.textContent = dockOpen ? "▼" : "▲";
-  dockToggle.title = dockOpen ? t("dockClose") : t("dockOpen");
+  dockToggle.title = label;
+  dockToggle.setAttribute("aria-label", label);
   dockToggle.setAttribute("aria-expanded", dockOpen ? "true" : "false");
 }
 
@@ -2182,7 +2190,9 @@ function applyClamshell(mode: number) {
   clamBtn.hidden = mode < 0; // 덮개 센서가 없거나 미지원인 플랫폼에서는 숨긴다
   clamBtn.classList.toggle("pinned", mode === 2);
   clamBtn.classList.toggle("half", mode === 1);
-  clamBtn.title = mode === 1 ? t("clamOnce") : mode === 2 ? t("clamKeep") : t("clamOff");
+  const label = mode === 1 ? t("clamOnce") : mode === 2 ? t("clamKeep") : t("clamOff");
+  clamBtn.title = label;
+  clamBtn.setAttribute("aria-label", label);
   if (wasHidden !== clamBtn.hidden) fitHeight();
   refreshHitRegionsAfterLayout();
 }

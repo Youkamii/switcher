@@ -32,7 +32,15 @@
            눌러 펼친다. tb-actions 클래스를 함께 달아 버튼 모양·누름 피드백·
            투명도 규칙을 타이틀바와 한 벌로 쓴다 (히트 영역 보고도 같은 셀렉터) -->
       <footer class="dock">
-        <div class="tb-actions dock-tray">
+        <button
+          id="dock-toggle"
+          type="button"
+          aria-expanded="false"
+          aria-controls="dock-tray"
+          aria-label="도구 열기"
+          title="도구 열기"
+        >▲</button>
+        <div id="dock-tray" class="tb-actions dock-tray">
           <button id="memobtn" title="메모장 (탭 1~5)">📝</button>
           <button id="tfsdbtn" title="TFSD 자율주행 자동 전환">🚗</button>
           <button id="monbtn" title="시스템 모니터">📊</button>
@@ -40,7 +48,6 @@
           <button id="clambtn" hidden title="클램셸 슬립 방지">☕</button>
           <button id="blackbtn" title="블랙 모니터 — 마우스를 흔들거나 ESC로 해제">🌙</button>
         </div>
-        <button id="dock-toggle" aria-expanded="false" title="도구 열기">▲</button>
       </footer>
     </div>
     <script type="module" src="/src/main.ts"></script>

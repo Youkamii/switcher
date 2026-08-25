@@ -12,12 +12,12 @@ const css = stylesSource.replace(/\/\*[\s\S]*?\*\//g, "");
 /// 선언 블록을 셀렉터로 훑어 특정 속성의 값들을 모은다 — "어느 규칙에서든
 /// 이 속성이 이 값 말고 다른 값으로 덮이지 않는다"를 검사하기 위한 것
 function declaredValues(selectorPart: string, property: string): string[] {
-  const propertyPattern = new RegExp(`\\b${property}\\s*:\\s*([^;}]+)`, "g");
+  const propertyPattern = new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;}]+)`, "g");
   return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
     .filter(
       ([, selector, declarations]) =>
         selector.includes(selectorPart) &&
-        new RegExp(`\\b${property}\\s*:`).test(declarations),
+        new RegExp(`(?:^|;)\\s*${property}\\s*:`).test(declarations),
     )
     .flatMap(([, , declarations]) =>
       [...declarations.matchAll(propertyPattern)].map((match) => match[1].trim()),
@@ -46,7 +46,9 @@ test("places Type1 refresh immediately before the view button", () => {
     "Type2 and Type3 must keep refresh hidden",
   );
   assert.ok(
-    !htmlSource.includes("tb-break") && !css.includes("tb-break") && !/\border\s*:/.test(css),
+    !htmlSource.includes("tb-break") &&
+      !css.includes("tb-break") &&
+      declaredValues(".titlebar", "order").length === 0,
     "the two-row toolbar machinery (forced break + order assignment) is gone",
   );
 });
@@ -62,8 +64,51 @@ test("keeps the icon buttons in the bottom dock, not the title bar", () => {
   }
   assert.match(
     dockBlock![1],
-    /<div class="tb-actions dock-tray">/,
+    /<div id="dock-tray" class="tb-actions dock-tray">/,
     "the tray must carry tb-actions too — button styling and hit-region reporting key off it",
+  );
+  assert.match(
+    dockBlock![1],
+    /<button[\s\S]*?id="dock-toggle"[\s\S]*?aria-controls="dock-tray"[\s\S]*?<div id="dock-tray"/,
+    "the disclosure must precede its controlled tray so Tab enters the tools after opening",
+  );
+  assert.match(
+    mainSource,
+    /dockToggle\.setAttribute\("aria-label", label\)/,
+    "the icon-only disclosure must expose its translated action as an accessible name",
+  );
+  assert.deepEqual(
+    declaredValues("#dock-toggle", "height"),
+    ["24px"],
+    "the dock entry point must not collapse to a hard-to-hit strip",
+  );
+  assert.deepEqual(
+    declaredValues(".dock-tray button", "min-height"),
+    ["24px"],
+    "opened tool buttons must keep a usable vertical hit target",
+  );
+  for (const [id, key] of [
+    ["blackbtn", "blackTooltip"],
+    ["memobtn", "memoTooltip"],
+    ["tfsdbtn", "tfsdBtnTooltip"],
+    ["monbtn", "monitorTooltip"],
+    ["privacybtn", "privacyTooltip"],
+  ]) {
+    assert.match(
+      mainSource,
+      new RegExp(`labelIconButton\\("${id}", t\\("${key}"\\)\\)`),
+      `#${id} must expose its translated function instead of only its emoji`,
+    );
+  }
+  assert.match(
+    mainSource,
+    /clamBtn\.setAttribute\("aria-label", label\)/,
+    "the clamshell button must expose its current translated mode",
+  );
+  assert.match(
+    css,
+    /body:not\(\.locked\) \.dock-tray button:disabled\s*\{[\s\S]*?opacity:\s*0\.35;/,
+    "a busy dock action must still look disabled in Type1",
   );
   assert.match(
     stylesSource,
