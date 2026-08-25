@@ -53,14 +53,20 @@ body {
   overflow: hidden;
 }
 
-/* 타이틀바 요소도 골조와 함께 옅어진다 — 단 #pin·#drag-handle은 예외.
-   locked에서는 아래의 0.18 곱 규칙이 대신 맡는다 */
-body:not(.locked) :is(#logo, #alpha, #refresh, #memobtn, #privacybtn, #clambtn, #blackbtn, #monbtn) {
+/* 타이틀바·독 요소도 골조와 함께 옅어진다 — 단 #pin·#drag-handle은 예외.
+   locked에서는 아래의 0.18 곱 규칙이 대신 맡는다.
+   아이콘 버튼은 ID를 나열하지 않고 .dock-tray로 잡는다 — 하단 독으로 옮긴
+   뒤(#105) ID 사다리가 세 곳에 흩어졌고 그중 절반이 죽은 셀렉터가 됐다.
+   이 방식은 #tfsdbtn도 같이 잡는다 — 혼자 페이드에서 빠져 있던 누락도 막는다. */
+body:not(.locked) :is(#logo, #alpha, #refresh),
+body:not(.locked) .dock-tray button {
   opacity: var(--fg-alpha);
 }
 
-/* 마우스를 타이틀바에 올리면 조작 요소가 되살아난다 — 투명해도 조작은 가능 */
-.titlebar:hover :is(#logo, #alpha, #refresh, #memobtn, #privacybtn, #clambtn, #blackbtn, #monbtn) {
+/* 마우스를 올리면 조작 요소가 되살아난다 — 투명해도 조작은 가능.
+   잠긴 버튼(:disabled)은 잠긴 티가 남아야 하므로 제외한다. */
+.titlebar:hover :is(#logo, #alpha, #refresh),
+.dock:hover .dock-tray button:not(:disabled) {
   opacity: 1;
 }
 
@@ -274,9 +280,8 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
 }
 
 
-/* 타이틀바는 전 타입 공통 2줄 구도 (사용자 지시: 버튼이 늘어 한 줄 수용 포기) —
-   1줄 [로고·슬라이더 ↔ 새로고침·Type버튼], 2줄 [아이콘 버튼들 균등 분배].
-   #tb-break(폭 100%)가 줄바꿈을 강제하고, order가 줄을 배정한다 */
+/* 타이틀바는 한 줄이다 — 아이콘 버튼은 하단 독으로 내려갔다 (#105).
+   [☰ 핸들 · 로고 · 슬라이더 ↔ 새로고침 · Type버튼] */
 .titlebar {
   display: flex;
   align-items: center;
@@ -288,28 +293,18 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
   flex: none;
 }
 
-/* 버튼들을 타이틀바 flex에 직접 태운다 — 히트 영역은 자식 개별 보고라 무관 */
+/* 버튼들을 타이틀바 flex에 직접 태운다 — 히트 영역은 자식 개별 보고라 무관.
+   하단 독의 트레이는 .dock-tray가 이 규칙을 덮어 자기 flex 줄을 만든다 */
 .tb-actions {
   display: contents;
 }
 
-#tb-break {
-  flex-basis: 100%;
-  height: 0;
-  order: 2;
-}
-
-/* 2줄 배정 + 균등 분배 — 남는 폭을 버튼들이 나눠 가져 어느 타입에서도
-   오른쪽에 몰리지 않는다 (사용자 보고: 타입3 우측 몰림) */
-#memobtn { order: 3; }
-#tfsdbtn { order: 4; }
-#monbtn { order: 5; }
-#privacybtn { order: 6; }
-#clambtn { order: 7; }
-#blackbtn { order: 8; }
-#refresh { order: 0; }
-.tb-actions button:not(#pin) {
+/* 균등 분배 — 남는 폭을 버튼들이 나눠 가져 어느 타입에서도 한쪽에 몰리지
+   않는다 (사용자 보고: 타입3 우측 몰림). 아이콘 버튼이 하단 독으로 옮겨간
+   뒤로 이 규칙의 대상은 트레이뿐이라 이름도 그렇게 맞춘다. */
+.dock-tray button {
   flex: 1 1 0;
+  min-height: 24px;
   /* 좌우 3px: 균등 분배가 가장자리(벽)까지 붙지 않게 — 첫·끝 버튼의 바깥
      마진이 곧 줄의 양쪽 인셋이 된다 (사용자 보고) */
   margin: 0 3px;
@@ -317,7 +312,7 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
 
 .tb-actions button#refresh {
   flex: 0 0 auto;
-  margin: 0 0 0 auto;
+  margin-left: auto;
 }
 
 .tb-actions button {
@@ -325,6 +320,80 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
   font-size: 11px;
   cursor: pointer;
   transition: filter 80ms ease-out, box-shadow 80ms ease-out;
+}
+
+/* ── 하단 도구 독 (#105) ────────────────────────────────────────────
+   손잡이는 창 맨 아래에 항상 붙어 있고 트레이가 그 위로 펼쳐진다 —
+   열고 닫아도 손잡이 자리가 움직이지 않아 다시 찾을 필요가 없다.
+   창 높이는 fitWindowToContent가 이 footer 높이까지 재서 맞춘다. */
+.dock {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid rgba(52, 52, 74, calc(0.9 * var(--fg-alpha)));
+}
+
+.dock-tray {
+  /* .tb-actions의 display:contents를 덮는다 — 독에서는 자기 줄을 가져야 한다.
+     좁은 Type3에서 버튼이 넘치면 다음 줄로 흐른다 */
+  order: 1;
+  display: none;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 3px 0;
+  padding: 4px 4px 3px;
+}
+
+body.dock-open .dock-tray {
+  display: flex;
+}
+
+/* 손잡이 — 접혀 있을 땐 작은 띠 하나로만 존재를 알린다. 전역 button 규칙의
+   배경·테두리·모서리를 전부 걷어낸다 (ID라 특이도로 이긴다).
+   폭을 창 전체로 두면 위젯 모드에서 밑변 전체가 클릭 투과를 막으므로,
+   72×24px만 히트 영역으로 남긴다. DOM에서는 트레이보다 앞에 두어 키보드로
+   연 직후 Tab을 누르면 첫 도구로 들어가고, 화면에서는 order로 맨 아래에 둔다. */
+#dock-toggle {
+  order: 2;
+  flex: none;
+  align-self: center;
+  width: 72px;
+  max-width: 100%;
+  height: 24px;
+  padding: 0;
+  line-height: 23px;
+  font-size: 9px;
+  background: none;
+  border: none;
+  border-radius: 0;
+  /* 도구로 가는 유일한 입구라 최저 투명도에서도 사라지지 않게 고정한다. */
+  color: rgba(139, 139, 158, 0.95);
+  cursor: pointer;
+  /* 접혀 있을 때가 찾아야 할 때다 — 이동 핸들(☰ 0.6)에 준하게 또렷하고,
+     펼친 뒤에는 물러난다. 투명도 슬라이더와 무관하게 남는다(고정값) */
+  opacity: 0.62;
+  transition: opacity 0.15s, filter 80ms ease-out;
+}
+
+body.dock-open #dock-toggle {
+  opacity: 0.42;
+}
+
+#dock-toggle:hover,
+body.dock-open #dock-toggle:hover {
+  opacity: 1;
+}
+
+/* 손잡이도 누름 피드백을 받는다 — 비활성 패널에서는 :hover/:active가 오지
+   않아 JS가 .pressing을 직접 단다. 테두리가 없으므로 밝기만 준다. */
+#dock-toggle.pressing {
+  filter: brightness(1.8);
+}
+
+/* 사용자가 일부러 연 서랍은 위젯 모드에서도 보여야 한다. 아래 :disabled
+   규칙이 뒤에 와서 잠긴 버튼은 여전히 잠긴 티가 난다. */
+body.locked.dock-open .dock-tray button {
+  opacity: 0.55;
 }
 
 /* 비활성 패널에서는 :hover/:active가 오지 않는다 (사용자 보고: 눌리는지 모르겠음)
@@ -335,7 +404,8 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
 }
 
 /* 관리자 승인 대기·승격 검증(~2초) 동안 잠김을 분명히 보이게 */
-.tb-actions button:disabled {
+.tb-actions button:disabled,
+body:not(.locked) .dock-tray button:disabled {
   opacity: 0.35;
   cursor: default;
 }
@@ -377,7 +447,6 @@ body.minimal #clambtn.pinned {
   font-size: 11px;
   text-align: center;
   flex: none;
-  margin-left: 0;
 }
 
 body.locked #pin {
@@ -917,11 +986,9 @@ body.minimal .titlebar {
   column-gap: 2px;
 }
 
-body.minimal .tb-actions button {
+/* Type3(120px)에서 트레이 버튼이 한 줄에 들어가도록 여백을 걷는다. */
+body.minimal .dock-tray button {
   padding: 1px 3px;
-}
-
-body.minimal .tb-actions button:not(#pin) {
   margin: 0;
 }
 
@@ -958,18 +1025,43 @@ body.minimal .tb-actions button:not(#pin) {
 }
 
 .bar {
+  position: relative; /* 세그먼트 홈(::after)의 기준점 */
   height: 7px;
   background: #2b2b3d;
-  border-radius: 99px;
+  /* 세그먼트는 칸을 세어 읽는다 — 99px 라운드면 첫·끝 칸이 반달이 돼 세기
+     어려워진다. 각을 거의 살리되 가장자리만 아주 살짝 다듬는다 */
+  border-radius: 2px;
   overflow: hidden;
   /* 투명도 최하에서 바도 은은해진다 (0.45 바닥 — 그래프 기능은 유지) */
   opacity: var(--bar-alpha);
+  /* 칸 수로 나누면 좁은 바에서 홈보다 칸이 얇아져 채움이 사라진다.
+     절대 폭으로 고정해 Type1·2·3과 SYSTEM에서 같은 크기를 유지한다. */
+  --seg-w: 8px;
+}
+
+/* 세그먼트 홈 — 트랙을 --seg-w 간격으로 썬다.
+   채움(.bar-fill) 위를 덮으므로 홈 위치가 채움 양과 무관하게 고정된다
+   (채움 쪽에 마스크를 걸면 칸 폭이 채움 폭을 따라 늘었다 줄었다 한다).
+   홈 색은 --panel 같은 배경 변수가 아니라 불투명 고정색이다 — 반투명
+   모드에서 배경이 빠져도 칸은 셀 수 있어야 한다 (바 전체는 부모의
+   --bar-alpha를 따라 함께 옅어진다) */
+.bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0 calc(var(--seg-w) - 1.5px),
+    rgba(18, 18, 26, 0.95) calc(var(--seg-w) - 1.5px) var(--seg-w)
+  );
 }
 
 .bar-fill {
   height: 100%;
   background: var(--accent);
-  border-radius: 99px;
+  /* 세그먼트 안에서는 채움 끝이 둥글면 칸이 어긋나 보인다 */
+  border-radius: 1px;
   transition: width 0.3s;
 }
 

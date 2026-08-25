@@ -6,51 +6,135 @@ const htmlSource = readFileSync(new URL("../index.html", import.meta.url), "utf8
 const stylesSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 
-test("places Type1 refresh immediately before the view button on the first row", () => {
+/// 주석을 걷어낸 CSS — 셀렉터 캡처가 주석 속 ID를 규칙으로 오인하지 않게 한다.
+const css = stylesSource.replace(/\/\*[\s\S]*?\*\//g, "");
+
+/// 선언 블록을 셀렉터로 훑어 특정 속성의 값들을 모은다 — "어느 규칙에서든
+/// 이 속성이 이 값 말고 다른 값으로 덮이지 않는다"를 검사하기 위한 것
+function declaredValues(selectorPart: string, property: string): string[] {
+  const propertyPattern = new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([^;}]+)`, "g");
+  return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(
+      ([, selector, declarations]) =>
+        selector.includes(selectorPart) &&
+        new RegExp(`(?:^|;)\\s*${property}\\s*:`).test(declarations),
+    )
+    .flatMap(([, , declarations]) =>
+      [...declarations.matchAll(propertyPattern)].map((match) => match[1].trim()),
+    );
+}
+
+test("places Type1 refresh immediately before the view button", () => {
   assert.match(
     htmlSource,
     /<button id="refresh"[^>]*>[^<]*<\/button>\s*<button id="pin"/,
     "refresh must stay immediately before the view button in DOM order",
   );
-  assert.match(
-    stylesSource,
-    /#tb-break\s*\{[\s\S]*?order:\s*2;[\s\S]*?\}[\s\S]*?#refresh\s*\{\s*order:\s*0;\s*\}[\s\S]*?\.tb-actions button#refresh\s*\{\s*flex:\s*0 0 auto;\s*margin:\s*0 0 0 auto;\s*\}[\s\S]*?#pin\s*\{[\s\S]*?margin-left:\s*0;\s*\}[\s\S]*?body\.locked #pin\s*\{\s*margin-left:\s*auto;/,
-    "refresh must remain on the first row without expanding into the slider",
+  assert.deepEqual(
+    declaredValues("#refresh", "flex"),
+    ["0 0 auto"],
+    "refresh must keep its own width instead of expanding into the slider",
+  );
+  assert.ok(
+    declaredValues("#refresh", "margin-left").includes("auto") ||
+      declaredValues("#refresh", "margin").some((value) => /\bauto\s*$/.test(value)),
+    "refresh must absorb the free space on its left so it sits next to the view button",
   );
   assert.match(
     stylesSource,
     /body\.locked #logo,\s*body\.locked #refresh,\s*body\.locked #alpha\s*\{\s*display:\s*none;/,
     "Type2 and Type3 must keep refresh hidden",
   );
-
-  const refreshOrderValues = [...stylesSource.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
-    .filter(([, selector, declarations]) =>
-      selector.includes("#refresh") && /\border\s*:/.test(declarations),
-    )
-    .flatMap(([, , declarations]) =>
-      [...declarations.matchAll(/\border\s*:\s*([^;}]+)/g)].map((match) =>
-        match[1].trim(),
-      ),
-    );
-  assert.deepEqual(
-    refreshOrderValues,
-    ["0"],
-    "no later refresh rule may move it behind the forced row break",
+  assert.ok(
+    !htmlSource.includes("tb-break") &&
+      !css.includes("tb-break") &&
+      declaredValues(".titlebar", "order").length === 0,
+    "the two-row toolbar machinery (forced break + order assignment) is gone",
   );
 });
 
-test("keeps memo visible and clickable in every view mode", () => {
-  const memoDisplayValues = [...stylesSource.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
-    .filter(([, selector, declarations]) =>
-      selector.includes("#memobtn") && /\bdisplay\s*:/.test(declarations),
-    )
-    .flatMap(([, , declarations]) =>
-      [...declarations.matchAll(/\bdisplay\s*:\s*([^;}]+)/g)].map((match) =>
-        match[1].trim(),
-      ),
+test("keeps the icon buttons in the bottom dock, not the title bar", () => {
+  const dockBlock = htmlSource.match(/<footer class="dock">([\s\S]*?)<\/footer>/);
+  assert.ok(dockBlock, "the dock footer must exist");
+  for (const id of ["memobtn", "tfsdbtn", "monbtn", "privacybtn", "clambtn", "blackbtn"]) {
+    assert.ok(
+      dockBlock![1].includes(`id="${id}"`),
+      `#${id} must live inside the dock`,
     );
+  }
+  assert.match(
+    dockBlock![1],
+    /<div id="dock-tray" class="tb-actions dock-tray">/,
+    "the tray must carry tb-actions too — button styling and hit-region reporting key off it",
+  );
+  assert.match(
+    dockBlock![1],
+    /<button[\s\S]*?id="dock-toggle"[\s\S]*?aria-controls="dock-tray"[\s\S]*?<div id="dock-tray"/,
+    "the disclosure must precede its controlled tray so Tab enters the tools after opening",
+  );
+  assert.match(
+    mainSource,
+    /dockToggle\.setAttribute\("aria-label", label\)/,
+    "the icon-only disclosure must expose its translated action as an accessible name",
+  );
   assert.deepEqual(
-    memoDisplayValues,
+    declaredValues("#dock-toggle", "height"),
+    ["24px"],
+    "the dock entry point must not collapse to a hard-to-hit strip",
+  );
+  assert.deepEqual(
+    declaredValues(".dock-tray button", "min-height"),
+    ["24px"],
+    "opened tool buttons must keep a usable vertical hit target",
+  );
+  for (const [id, key] of [
+    ["blackbtn", "blackTooltip"],
+    ["memobtn", "memoTooltip"],
+    ["tfsdbtn", "tfsdBtnTooltip"],
+    ["monbtn", "monitorTooltip"],
+    ["privacybtn", "privacyTooltip"],
+  ]) {
+    assert.match(
+      mainSource,
+      new RegExp(`labelIconButton\\("${id}", t\\("${key}"\\)\\)`),
+      `#${id} must expose its translated function instead of only its emoji`,
+    );
+  }
+  assert.match(
+    mainSource,
+    /clamBtn\.setAttribute\("aria-label", label\)/,
+    "the clamshell button must expose its current translated mode",
+  );
+  assert.match(
+    css,
+    /body:not\(\.locked\) \.dock-tray button:disabled\s*\{[\s\S]*?opacity:\s*0\.35;/,
+    "a busy dock action must still look disabled in Type1",
+  );
+  assert.match(
+    stylesSource,
+    /body\.dock-open \.dock-tray\s*\{\s*display:\s*flex;\s*\}/,
+    "the tray opens by body.dock-open",
+  );
+  assert.match(
+    mainSource,
+    /let dockOpen = localStorage\.getItem\("switcher\.dock"\) === "1";/,
+    "the saved dock state must be restored at startup",
+  );
+  assert.match(
+    mainSource,
+    /localStorage\.setItem\("switcher\.dock"/,
+    "dock changes must be persisted",
+  );
+  assert.match(
+    mainSource,
+    /dockToggle\.addEventListener\("click",[\s\S]*?applyDock\(\);[\s\S]*?\}\);\s*applyDock\(\);/,
+    "the restored state must be applied after wiring the toggle",
+  );
+});
+
+test("keeps memo visible and clickable in every view mode once the dock is open", () => {
+  assert.deepEqual(
+    declaredValues("#memobtn", "display"),
     ["inline-block"],
     "no view mode may hide the memo button",
   );
@@ -59,10 +143,15 @@ test("keeps memo visible and clickable in every view mode", () => {
     /body\.locked #memobtn\s*\{[\s\S]*?--locked-button-opacity:\s*0\.18;/,
     "Type2 and Type3 memo must not disappear after opacity is applied twice",
   );
-  assert.match(
-    stylesSource,
-    /body\.minimal \.tb-actions button\s*\{\s*padding:\s*1px 3px;\s*\}[\s\S]*?body\.minimal \.tb-actions button:not\(#pin\)\s*\{\s*margin:\s*0;/,
-    "Type3 buttons must keep their narrow fit rules",
+  assert.deepEqual(
+    declaredValues("body.minimal .dock-tray button", "padding"),
+    ["1px 3px"],
+    "Type3 dock buttons must keep their narrow padding",
+  );
+  assert.deepEqual(
+    declaredValues("body.minimal .dock-tray button", "margin"),
+    ["0"],
+    "Type3 dock buttons must drop their side margins to fit one row",
   );
   assert.match(
     mainSource,
@@ -71,7 +160,40 @@ test("keeps memo visible and clickable in every view mode", () => {
   );
   assert.match(
     mainSource,
-    /querySelectorAll<HTMLElement>\(\s*"\.tb-actions > \*, #drag-handle, \.display-row, \.collapsible",\s*\)[\s\S]*?r\.width <= 0 \|\| r\.height <= 0[\s\S]*?regions\.push/,
-    "Type2 and Type3 memo must stay inside the native hit-region report",
+    /querySelectorAll<HTMLElement>\(\s*"\.tb-actions > \*, #dock-toggle, #drag-handle, \.display-row, \.collapsible",\s*\)[\s\S]*?r\.width <= 0 \|\| r\.height <= 0[\s\S]*?regions\.push/,
+    "Type2 and Type3 dock buttons and handle must stay inside the native hit-region report",
+  );
+});
+
+test("keeps segmented bars visible at a fixed cell width", () => {
+  const barBlock = css.match(/(?:^|\})\s*\.bar\s*\{([^{}]*)\}/);
+  assert.ok(barBlock, "the base .bar rule must exist");
+  assert.match(
+    barBlock[1],
+    /--seg-w:\s*8px;/,
+    "every usage and SYSTEM bar must use the same absolute segment width",
+  );
+  assert.match(
+    css,
+    /transparent 0 calc\(var\(--seg-w\) - 1\.5px\)[\s\S]*?var\(--seg-w\)/,
+    "segment gaps must be based on the fixed width",
+  );
+  assert.doesNotMatch(
+    css,
+    /--seg\s*:/,
+    "view-specific segment counts can collapse narrow bars to zero-width fill",
+  );
+});
+
+test("sizes the window around the dock", () => {
+  assert.match(
+    mainSource,
+    /const dockHeight = dockEl\.offsetHeight;[\s\S]*?const total = tbHeight \+ content \+ dockHeight \+ 2;/,
+    "the dock sits outside main, so its height must be added explicitly",
+  );
+  assert.match(
+    mainSource,
+    /titlebarEl\.offsetHeight !== tbHeight \|\| dockEl\.offsetHeight !== dockHeight/,
+    "a dock height that changed mid-resize must trigger another pass",
   );
 });
