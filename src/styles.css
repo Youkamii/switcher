@@ -53,14 +53,20 @@ body {
   overflow: hidden;
 }
 
-/* 타이틀바 요소도 골조와 함께 옅어진다 — 단 #pin·#drag-handle은 예외.
-   locked에서는 아래의 0.18 곱 규칙이 대신 맡는다 */
-body:not(.locked) :is(#logo, #alpha, #refresh, #memobtn, #privacybtn, #clambtn, #blackbtn, #monbtn) {
+/* 타이틀바·독 요소도 골조와 함께 옅어진다 — 단 #pin·#drag-handle은 예외.
+   locked에서는 아래의 0.18 곱 규칙이 대신 맡는다.
+   아이콘 버튼은 ID를 나열하지 않고 .dock-tray로 잡는다 — 하단 독으로 옮긴
+   뒤(#105) ID 사다리가 세 곳에 흩어졌고 그중 절반이 죽은 셀렉터가 됐다.
+   이 방식은 #tfsdbtn도 같이 잡는다 — 혼자 페이드에서 빠져 있던 누락도 막는다. */
+body:not(.locked) :is(#logo, #alpha, #refresh),
+body:not(.locked) .dock-tray button {
   opacity: var(--fg-alpha);
 }
 
-/* 마우스를 타이틀바에 올리면 조작 요소가 되살아난다 — 투명해도 조작은 가능 */
-.titlebar:hover :is(#logo, #alpha, #refresh, #memobtn, #privacybtn, #clambtn, #blackbtn, #monbtn) {
+/* 마우스를 올리면 조작 요소가 되살아난다 — 투명해도 조작은 가능.
+   잠긴 버튼(:disabled)은 잠긴 티가 남아야 하므로 제외한다. */
+.titlebar:hover :is(#logo, #alpha, #refresh),
+.dock:hover .dock-tray button:not(:disabled) {
   opacity: 1;
 }
 
@@ -173,8 +179,6 @@ body.locked #memobtn {
 .mon-row .bar {
   flex: 1;
   height: 6px;
-  /* 시스템 바는 사용량 바보다 길다 — 같은 칸 크기를 유지하려면 칸을 더 준다 */
-  --seg: 24;
 }
 
 .mon-val {
@@ -296,9 +300,9 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
 }
 
 /* 균등 분배 — 남는 폭을 버튼들이 나눠 가져 어느 타입에서도 한쪽에 몰리지
-   않는다 (사용자 보고: 타입3 우측 몰림). 지금 이 규칙을 실제로 쓰는 것은
-   하단 독의 아이콘 버튼들이다 */
-.tb-actions button:not(#pin) {
+   않는다 (사용자 보고: 타입3 우측 몰림). 아이콘 버튼이 하단 독으로 옮겨간
+   뒤로 이 규칙의 대상은 트레이뿐이라 이름도 그렇게 맞춘다. */
+.dock-tray button {
   flex: 1 1 0;
   /* 좌우 3px: 균등 분배가 가장자리(벽)까지 붙지 않게 — 첫·끝 버튼의 바깥
      마진이 곧 줄의 양쪽 인셋이 된다 (사용자 보고) */
@@ -307,7 +311,7 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
 
 .tb-actions button#refresh {
   flex: 0 0 auto;
-  margin: 0 0 0 auto;
+  margin-left: auto;
 }
 
 .tb-actions button {
@@ -343,10 +347,14 @@ body.dock-open .dock-tray {
 }
 
 /* 손잡이 — 접혀 있을 땐 얇은 띠 하나로만 존재를 알린다. 전역 button 규칙의
-   배경·테두리·모서리를 전부 걷어낸다 (ID라 특이도로 이긴다) */
+   배경·테두리·모서리를 전부 걷어낸다 (ID라 특이도로 이긴다).
+   폭을 창 전체로 두면 위젯 모드에서 밑변 전체가 클릭 투과를 막으므로,
+   찾기 충분한 72px만 히트 영역으로 남긴다. */
 #dock-toggle {
   flex: none;
-  width: 100%;
+  align-self: center;
+  width: 72px;
+  max-width: 100%;
   height: 13px;
   padding: 0;
   line-height: 12px;
@@ -354,12 +362,13 @@ body.dock-open .dock-tray {
   background: none;
   border: none;
   border-radius: 0;
-  color: var(--muted);
+  /* 도구로 가는 유일한 입구라 최저 투명도에서도 사라지지 않게 고정한다. */
+  color: rgba(139, 139, 158, 0.95);
   cursor: pointer;
   /* 접혀 있을 때가 찾아야 할 때다 — 이동 핸들(☰ 0.6)에 준하게 또렷하고,
      펼친 뒤에는 물러난다. 투명도 슬라이더와 무관하게 남는다(고정값) */
   opacity: 0.62;
-  transition: opacity 0.15s;
+  transition: opacity 0.15s, filter 80ms ease-out;
 }
 
 body.dock-open #dock-toggle {
@@ -371,21 +380,16 @@ body.dock-open #dock-toggle:hover {
   opacity: 1;
 }
 
-/* 마우스를 독에 올리면 조작 요소가 되살아난다 — 타이틀바의 hover 복원을
-   독에 다시 건 것이다 (독은 .titlebar 밖이라 그 규칙이 닿지 않는다).
-   :is(#…)로 ID 특이도를 확보해야 위쪽 body:not(.locked) :is(#…) 페이드
-   규칙(1,1,1)을 이긴다 — 클래스만으로 쓰면 hover가 먹지 않는다. */
-body:not(.locked) .dock:hover
-  :is(#memobtn, #tfsdbtn, #monbtn, #privacybtn, #clambtn, #blackbtn) {
-  opacity: 1;
+/* 손잡이도 누름 피드백을 받는다 — 비활성 패널에서는 :hover/:active가 오지
+   않아 JS가 .pressing을 직접 단다. 테두리가 없으므로 밝기만 준다. */
+#dock-toggle.pressing {
+  filter: brightness(1.8);
 }
 
-body.locked .dock:hover .tb-actions button {
-  opacity: 1;
-}
-
-body.locked .dock:hover .tb-actions button:disabled {
-  opacity: 0.35;
+/* 사용자가 일부러 연 서랍은 위젯 모드에서도 보여야 한다. 아래 :disabled
+   규칙이 뒤에 와서 잠긴 버튼은 여전히 잠긴 티가 난다. */
+body.locked.dock-open .dock-tray button {
+  opacity: 0.55;
 }
 
 /* 비활성 패널에서는 :hover/:active가 오지 않는다 (사용자 보고: 눌리는지 모르겠음)
@@ -438,7 +442,6 @@ body.minimal #clambtn.pinned {
   font-size: 11px;
   text-align: center;
   flex: none;
-  margin-left: 0;
 }
 
 body.locked #pin {
@@ -802,8 +805,6 @@ button.link:hover {
 
 #app.minimal .compact-row .bar {
   height: 4px;
-  /* 120px 폭에서 바는 80px 남짓 — 16칸이면 칸이 홈보다 얇아진다 */
-  --seg: 12;
 }
 
 #app.minimal .tfsd-watermark svg {
@@ -980,11 +981,9 @@ body.minimal .titlebar {
   column-gap: 2px;
 }
 
-body.minimal .tb-actions button {
+/* Type3(120px)에서 트레이 버튼이 한 줄에 들어가도록 여백을 걷는다. */
+body.minimal .dock-tray button {
   padding: 1px 3px;
-}
-
-body.minimal .tb-actions button:not(#pin) {
   margin: 0;
 }
 
@@ -1030,10 +1029,12 @@ body.minimal .tb-actions button:not(#pin) {
   overflow: hidden;
   /* 투명도 최하에서 바도 은은해진다 (0.45 바닥 — 그래프 기능은 유지) */
   opacity: var(--bar-alpha);
-  --seg: 16;
+  /* 칸 수로 나누면 좁은 바에서 홈보다 칸이 얇아져 채움이 사라진다.
+     절대 폭으로 고정해 Type1·2·3과 SYSTEM에서 같은 크기를 유지한다. */
+  --seg-w: 8px;
 }
 
-/* 세그먼트 홈 — 트랙 전체를 --seg칸으로 균등 분할한다.
+/* 세그먼트 홈 — 트랙을 --seg-w 간격으로 썬다.
    채움(.bar-fill) 위를 덮으므로 홈 위치가 채움 양과 무관하게 고정된다
    (채움 쪽에 마스크를 걸면 칸 폭이 채움 폭을 따라 늘었다 줄었다 한다).
    홈 색은 --panel 같은 배경 변수가 아니라 불투명 고정색이다 — 반투명
@@ -1046,8 +1047,8 @@ body.minimal .tb-actions button:not(#pin) {
   pointer-events: none;
   background: repeating-linear-gradient(
     90deg,
-    transparent 0 calc(100% / var(--seg) - 1.5px),
-    rgba(18, 18, 26, 0.95) calc(100% / var(--seg) - 1.5px) calc(100% / var(--seg))
+    transparent 0 calc(var(--seg-w) - 1.5px),
+    rgba(18, 18, 26, 0.95) calc(var(--seg-w) - 1.5px) var(--seg-w)
   );
 }
 

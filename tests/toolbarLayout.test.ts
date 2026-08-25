@@ -6,11 +6,14 @@ const htmlSource = readFileSync(new URL("../index.html", import.meta.url), "utf8
 const stylesSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 
+/// 주석을 걷어낸 CSS — 셀렉터 캡처가 주석 속 ID를 규칙으로 오인하지 않게 한다.
+const css = stylesSource.replace(/\/\*[\s\S]*?\*\//g, "");
+
 /// 선언 블록을 셀렉터로 훑어 특정 속성의 값들을 모은다 — "어느 규칙에서든
 /// 이 속성이 이 값 말고 다른 값으로 덮이지 않는다"를 검사하기 위한 것
 function declaredValues(selectorPart: string, property: string): string[] {
   const propertyPattern = new RegExp(`\\b${property}\\s*:\\s*([^;}]+)`, "g");
-  return [...stylesSource.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+  return [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
     .filter(
       ([, selector, declarations]) =>
         selector.includes(selectorPart) &&
@@ -27,24 +30,24 @@ test("places Type1 refresh immediately before the view button", () => {
     /<button id="refresh"[^>]*>[^<]*<\/button>\s*<button id="pin"/,
     "refresh must stay immediately before the view button in DOM order",
   );
-  assert.match(
-    stylesSource,
-    /\.tb-actions button#refresh\s*\{\s*flex:\s*0 0 auto;\s*margin:\s*0 0 0 auto;\s*\}/,
+  assert.deepEqual(
+    declaredValues("#refresh", "flex"),
+    ["0 0 auto"],
     "refresh must keep its own width instead of expanding into the slider",
+  );
+  assert.ok(
+    declaredValues("#refresh", "margin-left").includes("auto") ||
+      declaredValues("#refresh", "margin").some((value) => /\bauto\s*$/.test(value)),
+    "refresh must absorb the free space on its left so it sits next to the view button",
   );
   assert.match(
     stylesSource,
     /body\.locked #logo,\s*body\.locked #refresh,\s*body\.locked #alpha\s*\{\s*display:\s*none;/,
     "Type2 and Type3 must keep refresh hidden",
   );
-  assert.deepEqual(
-    declaredValues("#refresh", "order"),
-    [],
-    "the toolbar is a single row now — no rule may reorder refresh",
-  );
   assert.ok(
-    !htmlSource.includes("tb-break") && !stylesSource.includes("tb-break"),
-    "the forced row break is gone with the two-row toolbar",
+    !htmlSource.includes("tb-break") && !css.includes("tb-break") && !/\border\s*:/.test(css),
+    "the two-row toolbar machinery (forced break + order assignment) is gone",
   );
 });
 
@@ -69,8 +72,18 @@ test("keeps the icon buttons in the bottom dock, not the title bar", () => {
   );
   assert.match(
     mainSource,
+    /let dockOpen = localStorage\.getItem\("switcher\.dock"\) === "1";/,
+    "the saved dock state must be restored at startup",
+  );
+  assert.match(
+    mainSource,
     /localStorage\.setItem\("switcher\.dock"/,
-    "the open state must survive a restart",
+    "dock changes must be persisted",
+  );
+  assert.match(
+    mainSource,
+    /dockToggle\.addEventListener\("click",[\s\S]*?applyDock\(\);[\s\S]*?\}\);\s*applyDock\(\);/,
+    "the restored state must be applied after wiring the toggle",
   );
 });
 
@@ -85,10 +98,15 @@ test("keeps memo visible and clickable in every view mode once the dock is open"
     /body\.locked #memobtn\s*\{[\s\S]*?--locked-button-opacity:\s*0\.18;/,
     "Type2 and Type3 memo must not disappear after opacity is applied twice",
   );
-  assert.match(
-    stylesSource,
-    /body\.minimal \.tb-actions button\s*\{\s*padding:\s*1px 3px;\s*\}[\s\S]*?body\.minimal \.tb-actions button:not\(#pin\)\s*\{\s*margin:\s*0;/,
-    "Type3 buttons must keep their narrow fit rules",
+  assert.deepEqual(
+    declaredValues("body.minimal .dock-tray button", "padding"),
+    ["1px 3px"],
+    "Type3 dock buttons must keep their narrow padding",
+  );
+  assert.deepEqual(
+    declaredValues("body.minimal .dock-tray button", "margin"),
+    ["0"],
+    "Type3 dock buttons must drop their side margins to fit one row",
   );
   assert.match(
     mainSource,
@@ -99,6 +117,26 @@ test("keeps memo visible and clickable in every view mode once the dock is open"
     mainSource,
     /querySelectorAll<HTMLElement>\(\s*"\.tb-actions > \*, #dock-toggle, #drag-handle, \.display-row, \.collapsible",\s*\)[\s\S]*?r\.width <= 0 \|\| r\.height <= 0[\s\S]*?regions\.push/,
     "Type2 and Type3 dock buttons and handle must stay inside the native hit-region report",
+  );
+});
+
+test("keeps segmented bars visible at a fixed cell width", () => {
+  const barBlock = css.match(/(?:^|\})\s*\.bar\s*\{([^{}]*)\}/);
+  assert.ok(barBlock, "the base .bar rule must exist");
+  assert.match(
+    barBlock[1],
+    /--seg-w:\s*8px;/,
+    "every usage and SYSTEM bar must use the same absolute segment width",
+  );
+  assert.match(
+    css,
+    /transparent 0 calc\(var\(--seg-w\) - 1\.5px\)[\s\S]*?var\(--seg-w\)/,
+    "segment gaps must be based on the fixed width",
+  );
+  assert.doesNotMatch(
+    css,
+    /--seg\s*:/,
+    "view-specific segment counts can collapse narrow bars to zero-width fill",
   );
 });
 
