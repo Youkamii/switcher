@@ -19,3 +19,11 @@ test("keeps the manual release path connected to npm publishing", () => {
     /gh workflow run npm-publish\.yml --ref "\$TAG" -f tag="\$TAG"/,
   );
 });
+
+test("creates GitHub releases without patch notes", () => {
+  assert.doesNotMatch(releaseWorkflow, /--generate-notes/);
+  assert.match(
+    releaseWorkflow,
+    /gh release create "\$TAG"[^\n]*--notes ""/,
+  );
+});

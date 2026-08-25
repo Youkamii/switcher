@@ -159,7 +159,7 @@ jobs:
       - name: publish
         run: |
           if ! gh release view "$TAG" > /dev/null 2>&1; then
-            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes ""
           fi
           gh release upload "$TAG" switcher-win-x64.zip switcher-mac-arm64.zip --clobber
           if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = "true" ]; then
