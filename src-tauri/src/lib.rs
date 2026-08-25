@@ -168,6 +168,7 @@ mod hit_region_tests {
 extern "system" {
     fn GetAsyncKeyState(v_key: i32) -> i16;
     fn GetDoubleClickTime() -> u32;
+    fn GetCursorPos(point: *mut WindowsPoint) -> i32;
     /// 블랙 모니터 오버레이를 최상위 밴드의 맨 위로 재상승시키는 데 사용
     fn SetWindowPos(
         hwnd: isize,
@@ -178,6 +179,20 @@ extern "system" {
         cy: i32,
         flags: u32,
     ) -> i32;
+}
+
+#[cfg(windows)]
+#[repr(C)]
+struct WindowsPoint {
+    x: i32,
+    y: i32,
+}
+
+/// 전역 커서 위치 — WebView가 포커스를 잃어도 흔들기 해제가 동작해야 한다.
+#[cfg(windows)]
+fn global_cursor_pos() -> Option<(f64, f64)> {
+    let mut point = WindowsPoint { x: 0, y: 0 };
+    (unsafe { GetCursorPos(&mut point) } != 0).then_some((point.x as f64, point.y as f64))
 }
 
 #[cfg(target_os = "macos")]
@@ -436,19 +451,41 @@ static BLACK_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// 새 세션이 켜졌으면 그 세션을 죽이지 않기 위한 가드 (#51)
 static BLACK_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// 네이티브 흔들기 감지 (#51) — black.ts JS 감지기와 같은 기준
+/// 창 생성·해제와 Windows 밝기 저장·복원을 한 세션씩 직렬화한다.
+/// 빠른 off→on에서 이전 세션의 느린 DDC 작업이 새 세션을 건드리지 않게 하는 잠금.
+static BLACK_TRANSITION: Mutex<()> = Mutex::new(());
+
+fn lock_black_transition() -> std::sync::MutexGuard<'static, ()> {
+    BLACK_TRANSITION.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn black_session_matches(active: bool, current_gen: u64, expected_gen: u64) -> bool {
+    active && current_gen == expected_gen
+}
+
+fn black_session_is_current(expected_gen: u64) -> bool {
+    black_session_matches(
+        BLACK_ACTIVE.load(Ordering::Relaxed),
+        BLACK_GEN.load(Ordering::Relaxed),
+        expected_gen,
+    )
+}
+
+/// 네이티브 흔들기 감지 (#49, #51) — black.ts JS 감지기와 같은 기준
 /// (2초 창 · 0.8px/ms · 방향 반전 12회)을 전역 커서 폴링(80ms)으로 복제한다.
 /// 웹뷰는 앱이 비활성이거나(비활성 패널 위젯 특성상 흔함) 페이지가 hidden으로
 /// 정지되면 이벤트를 못 받아 흔들기가 죽는다 — 네이티브 ESC 폴러와 같은 백업 철학.
-#[cfg(target_os = "macos")]
+#[cfg(any(windows, target_os = "macos"))]
 struct ShakeTracker {
     last: Option<(f64, f64, std::time::Instant)>,
     dir_x: f64,
     dir_y: f64,
+    dir_x_at: Option<std::time::Instant>,
+    dir_y_at: Option<std::time::Instant>,
     flips: std::collections::VecDeque<std::time::Instant>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(windows, target_os = "macos"))]
 impl ShakeTracker {
     const WINDOW_MS: u128 = 2000;
     const MIN_SPEED: f64 = 0.8; // px/ms — black.ts SHAKE_MIN_SPEED와 동일 (사용자 기준값)
@@ -459,6 +496,8 @@ impl ShakeTracker {
             last: None,
             dir_x: 0.0,
             dir_y: 0.0,
+            dir_x_at: None,
+            dir_y_at: None,
             flips: std::collections::VecDeque::new(),
         }
     }
@@ -467,9 +506,14 @@ impl ShakeTracker {
     fn record(
         flips: &mut std::collections::VecDeque<std::time::Instant>,
         prev: &mut f64,
+        prev_at: &mut Option<std::time::Instant>,
         velocity: f64,
         now: std::time::Instant,
     ) {
+        if prev_at.is_some_and(|at| now.duration_since(at).as_millis() > Self::WINDOW_MS) {
+            *prev = 0.0;
+            *prev_at = None;
+        }
         if velocity == 0.0 || velocity.abs() < Self::MIN_SPEED {
             return;
         }
@@ -478,6 +522,7 @@ impl ShakeTracker {
             flips.push_back(now);
         }
         *prev = dir;
+        *prev_at = Some(now);
     }
 
     /// 새 좌표 하나를 먹이고, 흔들기 판정이 차면 true (내부 상태 초기화)
@@ -491,8 +536,20 @@ impl ShakeTracker {
             return false;
         };
         let dt_ms = now.duration_since(lt).as_millis().max(1) as f64;
-        Self::record(&mut self.flips, &mut self.dir_x, (x - lx) / dt_ms, now);
-        Self::record(&mut self.flips, &mut self.dir_y, (y - ly) / dt_ms, now);
+        Self::record(
+            &mut self.flips,
+            &mut self.dir_x,
+            &mut self.dir_x_at,
+            (x - lx) / dt_ms,
+            now,
+        );
+        Self::record(
+            &mut self.flips,
+            &mut self.dir_y,
+            &mut self.dir_y_at,
+            (y - ly) / dt_ms,
+            now,
+        );
         while self
             .flips
             .front()
@@ -504,6 +561,8 @@ impl ShakeTracker {
             self.flips.clear();
             self.dir_x = 0.0;
             self.dir_y = 0.0;
+            self.dir_x_at = None;
+            self.dir_y_at = None;
             true
         } else {
             false
@@ -511,9 +570,9 @@ impl ShakeTracker {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, any(windows, target_os = "macos")))]
 mod shake_tests {
-    use super::ShakeTracker;
+    use super::{black_session_matches, black_window_session, ShakeTracker};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -559,6 +618,36 @@ mod shake_tests {
             assert!(!tracker.feed_at(i as f64 * 200.0, 400.0, t0 + Duration::from_millis(80 * i)));
         }
     }
+
+    #[test]
+    fn stale_direction_does_not_count_toward_a_new_shake() {
+        let mut tracker = ShakeTracker::new();
+        let t0 = Instant::now();
+        assert!(!tracker.feed_at(0.0, 400.0, t0));
+        assert!(!tracker.feed_at(500.0, 400.0, t0 + Duration::from_millis(80)));
+        assert!(!tracker.feed_at(500.0, 400.0, t0 + Duration::from_millis(3000)));
+
+        for i in 1..=12u64 {
+            let x = if i % 2 == 0 { 500.0 } else { 0.0 };
+            assert!(!tracker.feed_at(x, 400.0, t0 + Duration::from_millis(3000 + 80 * i)));
+        }
+        assert!(tracker.feed_at(0.0, 400.0, t0 + Duration::from_millis(4040)));
+    }
+
+    #[test]
+    fn stale_watcher_cannot_dismiss_a_new_session() {
+        assert!(black_session_matches(true, 8, 8));
+        assert!(!black_session_matches(false, 8, 8));
+        assert!(!black_session_matches(true, 9, 8));
+    }
+
+    #[test]
+    fn black_window_label_keeps_its_session_generation() {
+        assert_eq!(black_window_session("black-42-0"), Some(42));
+        assert_eq!(black_window_session("black-42-2"), Some(42));
+        assert_eq!(black_window_session("black-0"), None);
+        assert_eq!(black_window_session("black-42-extra"), None);
+    }
 }
 
 /// 블랙 모니터 밝기 연동 (#49, **낮추기는 Windows 전용** — #51): 켤 때 전 모니터
@@ -576,7 +665,13 @@ struct SavedBrightness {
 }
 
 #[cfg(windows)]
-static BLACK_BRIGHTNESS: Mutex<Option<Vec<SavedBrightness>>> = Mutex::new(None);
+struct BlackBrightnessSession {
+    gen: u64,
+    saved: Vec<SavedBrightness>,
+}
+
+#[cfg(windows)]
+static BLACK_BRIGHTNESS: Mutex<Option<BlackBrightnessSession>> = Mutex::new(None);
 
 #[cfg(any(windows, target_os = "macos"))]
 fn black_brightness_path() -> Option<std::path::PathBuf> {
@@ -586,7 +681,29 @@ fn black_brightness_path() -> Option<std::path::PathBuf> {
 /// 저장 후 전부 0으로 — DDC 명령이 모니터당 수십~수백 ms라 스레드에서 부른다.
 /// 밝기 미지원(None) 모니터는 건드리지 않는다. Windows 전용 (#51 — 위 참조).
 #[cfg(windows)]
-fn black_dim_all() {
+fn black_dim_all(session_gen: u64) {
+    let mut brightness = BLACK_BRIGHTNESS.lock().unwrap_or_else(|e| e.into_inner());
+    if !black_session_is_current(session_gen) {
+        return;
+    }
+    if brightness
+        .as_ref()
+        .is_some_and(|state| state.gen == session_gen)
+    {
+        return;
+    }
+    if let Some(previous) = brightness.take() {
+        if !restore_brightness_values(&previous.saved) {
+            *brightness = Some(previous);
+            return;
+        }
+        remove_black_brightness_file();
+    } else if !restore_stale_brightness_file() {
+        return;
+    }
+    if !black_session_is_current(session_gen) {
+        return;
+    }
     let saved: Vec<SavedBrightness> = display::list()
         .into_iter()
         .filter_map(|m| {
@@ -597,48 +714,110 @@ fn black_dim_all() {
             })
         })
         .collect();
-    // 목록을 뽑는 사이 꺼짐이 끼었으면 아무것도 안 한다 (빠른 토글 경합)
-    if saved.is_empty() || !BLACK_ACTIVE.load(Ordering::Relaxed) {
+    if saved.is_empty() || !black_session_is_current(session_gen) {
         return;
     }
-    if let Ok(mut guard) = BLACK_BRIGHTNESS.lock() {
-        *guard = Some(saved.clone());
-    }
+    *brightness = Some(BlackBrightnessSession {
+        gen: session_gen,
+        saved: saved.clone(),
+    });
     if let (Some(path), Ok(text)) = (black_brightness_path(), serde_json::to_string(&saved)) {
         let _ = std::fs::write(path, text);
     }
     for monitor in &saved {
-        if !BLACK_ACTIVE.load(Ordering::Relaxed) {
+        if !black_session_is_current(session_gen) {
             break;
         }
         let _ = display::set_brightness(monitor.id, 0, &monitor.name);
     }
-    // 낮추는 도중 꺼졌으면 즉시 복원 — 절반만 어두운 채 남지 않게.
-    // 정적(BLACK_BRIGHTNESS)이 아니라 **로컬 사본**으로 되돌린다: 병행
-    // black_restore_brightness가 이미 정적을 take()하고 파일까지 지운 뒤에
-    // 우리 set(0)이 늦게 착지하면, 정적 경유 복원은 no-op이라 모니터가
-    // 밝기 0으로 고착됐다 (리뷰 #53 경쟁). 같은 값을 두 스레드가 겹쳐 써도
-    // 목표값이 같아 무해하다.
-    if !BLACK_ACTIVE.load(Ordering::Relaxed) {
-        for monitor in &saved {
-            let _ = display::set_brightness(monitor.id, monitor.percent, &monitor.name);
+    if !black_session_is_current(session_gen) && restore_brightness_values(&saved) {
+        if brightness
+            .as_ref()
+            .is_some_and(|state| state.gen == session_gen)
+        {
+            brightness.take();
+            remove_black_brightness_file();
         }
-        black_restore_brightness(); // 정적·영속 파일 정리 (남아 있으면)
     }
 }
 
 /// 저장된 밝기 복원 + 영속 파일 정리 (해제 경로 전부가 공유).
 /// Windows 전용 — 낮추기가 Windows뿐이라 맥에선 부를 일이 없다 (리뷰 #53)
 #[cfg(windows)]
-fn black_restore_brightness() {
-    let saved = BLACK_BRIGHTNESS.lock().ok().and_then(|mut guard| guard.take());
-    let Some(saved) = saved else { return };
-    for monitor in &saved {
-        let _ = display::set_brightness(monitor.id, monitor.percent, &monitor.name);
+fn black_restore_brightness(session_gen: u64) {
+    let mut brightness = BLACK_BRIGHTNESS.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(saved) = brightness
+        .as_ref()
+        .filter(|state| state.gen == session_gen)
+        .map(|state| state.saved.clone())
+    else {
+        return;
+    };
+    if restore_brightness_values(&saved) {
+        brightness.take();
+        remove_black_brightness_file();
     }
+}
+
+#[cfg(windows)]
+fn restore_brightness_values(saved: &[SavedBrightness]) -> bool {
+    let mut restored = true;
+    for monitor in saved {
+        restored &= display::set_brightness(monitor.id, monitor.percent, &monitor.name).is_ok();
+    }
+    restored
+}
+
+#[cfg(windows)]
+fn remove_black_brightness_file() {
     if let Some(path) = black_brightness_path() {
         let _ = std::fs::remove_file(path);
     }
+}
+
+/// 이전 프로세스가 남긴 복원 파일이 있으면 새 세션의 원본 밝기를 읽기 전에 되돌린다.
+/// BLACK_BRIGHTNESS 잠금을 가진 호출자만 사용한다.
+#[cfg(windows)]
+fn restore_stale_brightness_file() -> bool {
+    let Some(path) = black_brightness_path() else {
+        return true;
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return true;
+    };
+    let Ok(saved) = serde_json::from_str::<Vec<SavedBrightness>>(&text) else {
+        let _ = std::fs::remove_file(path);
+        return true;
+    };
+    if !restore_brightness_values(&saved) {
+        return false;
+    }
+    let _ = std::fs::remove_file(path);
+    true
+}
+
+#[cfg(windows)]
+fn black_restore_stale_brightness() {
+    let brightness = BLACK_BRIGHTNESS.lock().unwrap_or_else(|e| e.into_inner());
+    if brightness.is_none() {
+        let _ = restore_stale_brightness_file();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn black_restore_stale_brightness() {
+    let Some(path) = black_brightness_path() else {
+        return;
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    if let Ok(saved) = serde_json::from_str::<Vec<SavedBrightness>>(&text) {
+        for monitor in &saved {
+            let _ = display::set_brightness(monitor.id, monitor.percent, &monitor.name);
+        }
+    }
+    let _ = std::fs::remove_file(path);
 }
 
 /// 블랙 모니터 켜기: 모니터마다 최상위 검은 오버레이 창을 띄운다.
@@ -652,10 +831,11 @@ fn black_restore_brightness() {
 #[tauri::command]
 async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
     use tauri::Manager;
+    let _transition = lock_black_transition();
     if BLACK_ACTIVE.swap(true, Ordering::Relaxed) {
         return Ok(()); // 이미 켜져 있다
     }
-    BLACK_GEN.fetch_add(1, Ordering::Relaxed);
+    let session_gen = BLACK_GEN.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
     let result = (|| -> Result<(), String> {
         let monitors = app
             .available_monitors()
@@ -664,7 +844,7 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
             return Err("모니터를 찾을 수 없습니다".to_string());
         }
         for (index, monitor) in monitors.iter().enumerate() {
-            let label = format!("black-{index}");
+            let label = format!("black-{session_gen}-{index}");
             if app.get_webview_window(&label).is_some() {
                 continue;
             }
@@ -697,7 +877,7 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
         }
         // ESC 해제를 받을 수 있게 첫 오버레이에 키보드 포커스
         #[cfg(windows)]
-        if let Some(first) = app.get_webview_window("black-0") {
+        if let Some(first) = app.get_webview_window(&format!("black-{session_gen}-0")) {
             let _ = first.set_focus();
         }
         // 맥: 첫 표시 전에 패널 전환·레벨·Space 참여를 정해야 처음부터 맞는 곳에
@@ -741,7 +921,9 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
                     ns_app.activateIgnoringOtherApps(true);
                 }
                 // ESC 해제를 받을 수 있게 첫 오버레이에 키보드 포커스
-                if let Some(first) = handle.get_webview_window("black-0") {
+                if let Some(first) =
+                    handle.get_webview_window(&format!("black-{session_gen}-0"))
+                {
                     let _ = first.set_focus();
                 }
             });
@@ -750,20 +932,14 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
     })();
     if result.is_err() {
         // 일부 모니터만 덮인 채 남지 않게, 만들어진 오버레이를 전부 걷어낸다
-        close_black_overlays(&app);
+        close_black_overlays_locked(&app, session_gen);
         return result;
-    }
-    // 창을 만드는 사이 꺼짐 요청(black_off)이 끼었으면 방금 만든 것까지 걷어낸다 —
-    // 감시 스레드 없는 잔존 오버레이를 남기지 않기 위함 (red-review)
-    if !BLACK_ACTIVE.load(Ordering::Relaxed) {
-        close_black_overlays(&app);
-        return Ok(());
     }
     // 밝기 최하 연동 (#49) — 오버레이가 이미 화면을 덮었으니 뒤에서 천천히 낮춘다.
     // Windows 전용 (#51): 맥 내장 패널은 밝기 0 = 백라이트 소등이라 아무것도
     // 안 보이게 된다 — 맥은 오버레이(+연기 연출)만으로 충분히 검다.
     #[cfg(windows)]
-    std::thread::spawn(black_dim_all);
+    std::thread::spawn(move || black_dim_all(session_gen));
     // 감시 스레드: ① 80ms마다 네이티브 ESC 폴링 — 오버레이 웹뷰가 죽거나
     // 키 포커스를 못 가져와도(Windows 포그라운드 잠금으로 set_focus가 조용히
     // 실패할 수 있다) 갇히지 않는 해제 수단 ② ~2초마다 창을 다시 위로 —
@@ -780,16 +956,17 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
             let _ = unsafe { GetAsyncKeyState(VK_ESCAPE) };
         }
         let mut tick: u32 = 0;
-        #[cfg(target_os = "macos")]
         let mut shake = ShakeTracker::new();
-        while BLACK_ACTIVE.load(Ordering::Relaxed) {
+        while black_session_is_current(session_gen) {
             std::thread::sleep(std::time::Duration::from_millis(80));
-            // 네이티브 흔들기 감지 (#51) — 웹뷰가 이벤트를 못 받는 상태(앱 비활성·
-            // 페이지 hidden 정지)에서도 흔들기 해제가 살아 있게 한다.
-            #[cfg(target_os = "macos")]
+            if !black_session_is_current(session_gen) {
+                break;
+            }
+            // 네이티브 흔들기 감지 (#49, #51) — 웹뷰가 포커스·이벤트를 잃어도
+            // Windows와 macOS 모두 전역 커서 좌표로 해제할 수 있게 한다.
             if let Some((x, y)) = global_cursor_pos() {
                 if shake.feed(x, y) {
-                    black_graceful_dismiss(&handle);
+                    black_graceful_dismiss(&handle, session_gen);
                     // 해제를 결정했으면 폴링 지속은 무의미 — ESC 경로와 대칭
                     // (red-review: 계속 흔들면 eval·폴백이 중복 스폰되던 낭비)
                     break;
@@ -814,13 +991,16 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
                 // 흔들기 해제와 눈에 띄게 불일치했다 (리뷰 #53, 특히 Windows
                 // 0x0001 래치는 웹뷰가 소비한 탭도 반드시 본다). 연출 기회를
                 // 주고, 웹뷰가 죽어 있으면 1.3초 강제 해제가 받친다.
-                black_graceful_dismiss(&handle);
+                black_graceful_dismiss(&handle, session_gen);
                 break;
             }
             tick += 1;
             // 80ms × 25 ≈ 2초 — 기존 재상승 주기 유지
             if tick % 25 != 0 {
                 continue;
+            }
+            if !black_session_is_current(session_gen) {
+                break;
             }
             #[cfg(windows)]
             {
@@ -882,40 +1062,44 @@ async fn black_on(_app: tauri::AppHandle) -> Result<(), String> {
 /// (black_off_delayed, 550ms)가 진행되고, 죽어 있으면 1.3초 뒤 강제 해제가 받친다.
 /// 즉시 파괴하지 않는 이유: 웹뷰 keydown이 1차라는 설계 그대로, 연출을 끊지 않기 위함.
 #[cfg(any(windows, target_os = "macos"))]
-fn black_graceful_dismiss(handle: &tauri::AppHandle) {
+fn black_graceful_dismiss(handle: &tauri::AppHandle, session_gen: u64) {
     use tauri::Manager;
+    let transition = lock_black_transition();
+    if !black_session_is_current(session_gen) {
+        return;
+    }
     // 웹뷰가 아예 없거나 eval조차 못 받으면 연출의 여지가 없다 — 즉시 닫아
     // 기존(즉시 해제)과 같은 반응성을 유지한다 (red-review: 폴백만 기다리면
     // 완전 암전이 1.3초 더 이어진다). 살아 있지만 얼어붙은 웹뷰는 아래 폴백 몫.
-    let alive = handle.get_webview_window("black-0").is_some_and(|w| {
-        w.eval("window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))")
-            .is_ok()
-    });
+    let alive = handle
+        .get_webview_window(&format!("black-{session_gen}-0"))
+        .is_some_and(|w| {
+            w.eval("window.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape'}))")
+                .is_ok()
+        });
     if !alive {
-        close_black_overlays(handle);
+        close_black_overlays_locked(handle, session_gen);
         return;
     }
-    let gen = BLACK_GEN.load(Ordering::Relaxed);
+    drop(transition);
     let fallback = handle.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(1300));
-        if BLACK_ACTIVE.load(Ordering::Relaxed) && BLACK_GEN.load(Ordering::Relaxed) == gen {
-            close_black_overlays(&fallback);
-        }
+        close_black_overlays_if_current(&fallback, session_gen);
     });
 }
 
-/// 모든 오버레이 닫기 — black_off 커맨드·네이티브 ESC 감시·부분 실패 롤백이 공유한다.
-/// close()가 아니라 destroy()다: close는 CloseRequested를 거치므로 가로채기에 취약하고,
-/// 오버레이는 어떤 경우에도 확실히 사라져야 한다.
-fn close_black_overlays(app: &tauri::AppHandle) {
+/// lifecycle 잠금을 가진 호출자만 사용한다. 세대를 먼저 무효화한 뒤 창을 파괴해
+/// 다음 black_on이 같은 label을 재사용하는 동안 이전 close가 끼어들지 못하게 한다.
+fn close_black_overlays_locked(app: &tauri::AppHandle, session_gen: u64) {
     use tauri::Manager;
+    BLACK_GEN.fetch_add(1, Ordering::Relaxed);
     BLACK_ACTIVE.store(false, Ordering::Relaxed);
     // 밝기 복원 (#49) — DDC가 느려 스레드에서. Windows 전용: 낮추기(black_dim_all)가
     // Windows뿐이라 맥에선 BLACK_BRIGHTNESS가 항상 비어 확정 no-op이었다 (리뷰 #53).
     // 맥의 구버전(1.7.21) 잔재 치유는 시작 시 영속 파일 경로가 따로 맡는다.
     #[cfg(windows)]
-    std::thread::spawn(black_restore_brightness);
+    std::thread::spawn(move || black_restore_brightness(session_gen));
     for (label, window) in app.webview_windows() {
         if label.starts_with("black-") {
             let _ = window.destroy();
@@ -923,10 +1107,28 @@ fn close_black_overlays(app: &tauri::AppHandle) {
     }
 }
 
+fn close_black_overlays_if_current(app: &tauri::AppHandle, session_gen: u64) -> bool {
+    let _transition = lock_black_transition();
+    if !black_session_is_current(session_gen) {
+        return false;
+    }
+    close_black_overlays_locked(app, session_gen);
+    true
+}
+
+fn black_window_session(label: &str) -> Option<u64> {
+    let mut parts = label.strip_prefix("black-")?.split('-');
+    let generation = parts.next()?.parse().ok()?;
+    parts.next()?.parse::<usize>().ok()?;
+    parts.next().is_none().then_some(generation)
+}
+
 /// 블랙 모니터 끄기 — (흔들기·ESC·어느 모니터에서든)
 #[tauri::command]
-fn black_off(app: tauri::AppHandle) {
-    close_black_overlays(&app);
+fn black_off(app: tauri::AppHandle, window: tauri::WebviewWindow) {
+    if let Some(session_gen) = black_window_session(window.label()) {
+        close_black_overlays_if_current(&app, session_gen);
+    }
 }
 
 /// 예약 해제 (#51) — 해제 연출을 시작하는 순간 웹뷰가 먼저 이걸 부른다.
@@ -935,15 +1137,16 @@ fn black_off(app: tauri::AppHandle) {
 /// 오버레이가 검은 채 고착된다. 550ms는 연출(420ms)이 끝나고도 남는 여유 —
 /// 연출이 정상이면 그쪽 black_off가 먼저 닫고 이건 no-op이 된다.
 #[tauri::command]
-async fn black_off_delayed(app: tauri::AppHandle) {
-    let gen = BLACK_GEN.load(Ordering::Relaxed);
+async fn black_off_delayed(app: tauri::AppHandle, window: tauri::WebviewWindow) {
+    let Some(session_gen) = black_window_session(window.label()) else {
+        return;
+    };
+    drop(window);
     tokio::time::sleep(std::time::Duration::from_millis(550)).await;
     // 잠든 사이 새 블랙 세션이 켜졌으면 그 세션은 건드리지 않는다.
     // ACTIVE 확인은 1.3초 폴백과 같은 가드 — 연출이 이미 닫은 일상 해제마다
     // 빈 닫기+복원 스레드가 한 번 더 돌던 것을 없앤다 (red-review)
-    if BLACK_ACTIVE.load(Ordering::Relaxed) && BLACK_GEN.load(Ordering::Relaxed) == gen {
-        close_black_overlays(&app);
-    }
+    close_black_overlays_if_current(&app, session_gen);
 }
 
 /// gh CLI에 로그인된 GitHub 계정 목록 (토큰은 만지지 않는다 — 이름·활성 여부만)
@@ -2302,16 +2505,7 @@ pub fn run() {
             // 지난 세션이 블랙 모니터를 켠 채 죽었으면 밝기가 최하로 남아 있다 —
             // 영속 파일이 있으면 복원하고 지운다 (#49)
             #[cfg(any(windows, target_os = "macos"))]
-            std::thread::spawn(|| {
-                let Some(path) = black_brightness_path() else { return };
-                let Ok(text) = std::fs::read_to_string(&path) else { return };
-                if let Ok(saved) = serde_json::from_str::<Vec<SavedBrightness>>(&text) {
-                    for monitor in &saved {
-                        let _ = display::set_brightness(monitor.id, monitor.percent, &monitor.name);
-                    }
-                }
-                let _ = std::fs::remove_file(path);
-            });
+            std::thread::spawn(black_restore_stale_brightness);
 
             // 데모·자가검증용: SWITCHER_OPEN=memo 이면 시작 직후 메모창을 연다
             // (SWITCHER_VIEW·SWITCHER_DEMO와 같은 스크린샷/검증 훅 계열)
