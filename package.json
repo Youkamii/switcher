@@ -1,6 +1,6 @@
 {
   "name": "switcher-widget",
-  "version": "1.8.2",
+  "version": "1.8.3",
   "description": "Desktop widget that switches between multiple Claude Code / Codex CLI accounts in one click, with per-account usage bars (Windows/macOS)",
   "license": "MIT",
   "repository": {
