@@ -20,7 +20,7 @@ switcher
 
 `switcher` 命令首次运行时会下载与已安装 npm 包版本相同的官方发布版构建（之后会直接启动）。由于程序没有代码签名，通过 npm 安装时仍可能触发 SmartScreen 警告。更新是自动的 — 每次启动都会检查新版本，下次启动生效。
 
-**直接下载** — 从[发布页](https://github.com/Youkamii/switcher/releases/latest)下载 `switcher-win-x64.zip`，解压后运行 `switcher.exe`。（Windows 10/11 64 位）
+**直接下载** — 从[下载存档](https://github.com/Youkamii/switcher/releases/tag/v1.8.5)下载 `switcher-win-x64-latest.zip`，解压后运行 `switcher.exe`。（Windows 10/11 64 位）
 
 - 由于没有代码签名，首次运行时 Windows SmartScreen 可能会弹出“未知发布者”警告。点击 `更多信息` → `仍要运行`。
 - 网页视图使用 Windows 自带的 WebView2。
@@ -47,7 +47,7 @@ switcher
 
 `switcher` 命令首次运行时会下载与已安装 npm 包版本相同的官方发布版构建（之后会直接启动）。由于应用没有签名和公证，通过 npm 安装时仍可能出现“无法验证开发者”警告。更新是自动的 — 每次启动都会检查新版本，下次启动生效。
 
-**直接下载** — 从[发布页](https://github.com/Youkamii/switcher/releases/latest)下载 `switcher-mac-arm64.zip`，解压后运行 `switcher.app`。仅支持 Apple Silicon — Intel Mac 请通过下方的[从源码构建](#从源码构建)安装。
+**直接下载** — 从[下载存档](https://github.com/Youkamii/switcher/releases/tag/v1.8.5)下载 `switcher-mac-arm64-latest.zip`，解压后运行 `switcher.app`。仅支持 Apple Silicon — Intel Mac 请通过下方的[从源码构建](#从源码构建)安装。
 
 - 由于没有代码签名，首次打开时可能会提示“无法验证开发者”而被拦截。前往 系统设置 → 隐私与安全性，在页面最底部点击**仍要打开**即可运行。
 

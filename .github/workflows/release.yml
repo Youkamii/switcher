@@ -1,22 +1,9 @@
-# 릴리스 발행 — workflow_dispatch로 명시한 태그만 윈도우·맥 빌드를 만들고
-# 공개 GitHub Release를 발행한다. 태그 push만으로는 릴리스나 알림을 만들지 않는다.
+# 조용한 릴리스 채널 — v1.8.5 공개 릴리스를 한 번만 만들고 영구 다운로드
+# 보관함으로 쓴다. 이후 버전은 같은 릴리스의 버전별 자산과 manifest만 갱신해
+# GitHub 피드에 새 ReleaseEvent가 생기지 않게 한다. 릴리스 본문은 항상 비워 둔다.
 #
-# 왜: 맥 zip은 맥에서, win zip은 윈도우에서만 빌드할 수 있어 릴리스마다
-# 반대편 기계의 수작업이 필요했고, 자산이 빠진 릴리스는 그 OS의 자동
-# 업데이트를 조용히 멈추게 했다 (실사고 2회: v1.7.11~27 맥 공백, v1.7.32
-# 맥 자산 누락 — 사용자가 '업데이트 확인'을 눌러도 ✗). 이 워크플로가
-# 그 반복 작업을 끝낸다.
-#
-# 흐름: workflow_dispatch(tag) → win(exe zip)·mac(app zip) 병렬 빌드
-# → 자산이 붙은 릴리스 공개 → npm-publish.yml을 명시적으로 실행(신뢰 게시).
-#
-# 실행·재실행·백필: gh workflow run release.yml -f tag=v1.7.NN 으로만 시작한다.
-# 릴리스가 이미 있으면 자산만 채운다(--clobber).
-#
-# 주의: 자산 이름은 update.rs(ASSET_NAME)·scripts/dist.mjs와 계약이다 —
-# switcher-win-x64.zip(루트에 switcher.exe·switcher-version.txt),
-# switcher-mac-arm64.zip(루트에 switcher.app, ditto -xk로 풀림). 자동
-# 업데이트는 자산 안 버전 == 태그 버전을 검증하므로 반드시 태그 커밋에서 빌드한다.
+# v1.8.5의 고정 이름 자산은 구형 앱이 새 채널로 넘어오기 위한 전환판이므로
+# 이후 절대 덮어쓰지 않는다. npm과 새 앱은 버전별 이름 자산을 사용한다.
 name: release
 
 on:
@@ -141,12 +128,16 @@ jobs:
   release:
     needs: [build-windows, build-macos]
     runs-on: ubuntu-latest
+    concurrency:
+      group: switcher-rolling-release
+      cancel-in-progress: false
     permissions:
       actions: write # npm-publish.yml workflow_dispatch
       contents: write # 릴리스 생성·자산 업로드
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      ROLLING_RELEASE_TAG: v1.8.5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -154,16 +145,96 @@ jobs:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           merge-multiple: true
-      # 신규 릴리스는 draft에서 두 자산을 모두 붙인 뒤 공개한다. 업로드가 중단돼도
-      # latest를 오염시키지 않고, 재실행은 남은 draft를 완성해 공개한다.
-      - name: publish
+      - name: update rolling release
         run: |
-          if ! gh release view "$TAG" > /dev/null 2>&1; then
-            gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes ""
+          WIN_VERSIONED="switcher-win-x64-$TAG.zip"
+          MAC_VERSIONED="switcher-mac-arm64-$TAG.zip"
+          WIN_LATEST="switcher-win-x64-latest.zip"
+          MAC_LATEST="switcher-mac-arm64-latest.zip"
+
+          cp switcher-win-x64.zip "$WIN_VERSIONED"
+          cp switcher-mac-arm64.zip "$MAC_VERSIONED"
+          cp switcher-win-x64.zip "$WIN_LATEST"
+          cp switcher-mac-arm64.zip "$MAC_LATEST"
+
+          if ! gh release view "$ROLLING_RELEASE_TAG" > /dev/null 2>&1; then
+            if [ "$TAG" != "$ROLLING_RELEASE_TAG" ]; then
+              echo "rolling release $ROLLING_RELEASE_TAG must be created by its bridge build" >&2
+              exit 1
+            fi
+            gh release create "$ROLLING_RELEASE_TAG" --draft --verify-tag \
+              --title "Switcher downloads" --notes ""
           fi
-          gh release upload "$TAG" switcher-win-x64.zip switcher-mac-arm64.zip --clobber
-          if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = "true" ]; then
-            gh release edit "$TAG" --draft=false
+
+          RELEASE_JSON=$(gh release view "$ROLLING_RELEASE_TAG" --json isDraft,assets)
+          IS_DRAFT=$(printf '%s' "$RELEASE_JSON" | jq -r .isDraft)
+          HAS_MANIFEST=$(printf '%s' "$RELEASE_JSON" | jq -r \
+            'any(.assets[]; .name == "switcher-update.json")')
+          if [ "$TAG" != "$ROLLING_RELEASE_TAG" ] && [ "$IS_DRAFT" = "true" ]; then
+            echo "rolling release $ROLLING_RELEASE_TAG is still a draft" >&2
+            exit 1
+          fi
+
+          tag_key() {
+            if ! [[ "$1" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+              echo "unsupported release tag: $1" >&2
+              return 1
+            fi
+            local version="${1#v}"
+            local major minor patch
+            IFS=. read -r major minor patch <<< "$version"
+            printf '%020d%020d%020d' "$major" "$minor" "$patch"
+          }
+
+          TAG_KEY=$(tag_key "$TAG") || exit 1
+          if [ "$HAS_MANIFEST" = "true" ]; then
+            gh release download "$ROLLING_RELEASE_TAG" \
+              --pattern switcher-update.json --output previous-update.json || {
+              echo "rolling release manifest download failed" >&2
+              exit 1
+            }
+            CURRENT_TAG=$(jq -er .tag_name previous-update.json) || {
+              echo "rolling release manifest has no valid tag_name" >&2
+              exit 1
+            }
+            CURRENT_KEY=$(tag_key "$CURRENT_TAG") || exit 1
+            if [[ "$TAG_KEY" < "$CURRENT_KEY" ]]; then
+              echo "refusing to move rolling release backward: $CURRENT_TAG -> $TAG" >&2
+              exit 1
+            fi
+          elif [ "$IS_DRAFT" != "true" ] || [ "$TAG" != "$ROLLING_RELEASE_TAG" ]; then
+            echo "rolling release manifest is missing" >&2
+            exit 1
+          fi
+
+          # 불변 버전 자산을 먼저 올린다. 같은 태그 재실행만 --clobber 대상이다.
+          gh release upload "$ROLLING_RELEASE_TAG" "$WIN_VERSIONED" "$MAC_VERSIONED" --clobber
+
+          # 사람용 최신 다운로드 링크는 별칭 두 개만 교체한다.
+          gh release upload "$ROLLING_RELEASE_TAG" "$WIN_LATEST" "$MAC_LATEST" --clobber
+
+          # v1.8.4 이하 앱이 마지막 공개 릴리스인 v1.8.5로 넘어올 때 쓰는 자산.
+          if [ "$TAG" = "$ROLLING_RELEASE_TAG" ]; then
+            gh release upload "$ROLLING_RELEASE_TAG" \
+              switcher-win-x64.zip switcher-mac-arm64.zip --clobber
+          fi
+
+          WIN_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$ROLLING_RELEASE_TAG/$WIN_VERSIONED"
+          MAC_URL="https://github.com/$GITHUB_REPOSITORY/releases/download/$ROLLING_RELEASE_TAG/$MAC_VERSIONED"
+          jq -n \
+            --arg tag "$TAG" \
+            --arg win "$WIN_URL" \
+            --arg mac "$MAC_URL" \
+            '{tag_name: $tag, assets: [
+              {name: "switcher-win-x64.zip", browser_download_url: $win},
+              {name: "switcher-mac-arm64.zip", browser_download_url: $mac}
+            ]}' > switcher-update.json
+
+          # 최신정보 파일을 마지막에 바꿔야 앱이 아직 안 올라간 자산을 보지 않는다.
+          gh release upload "$ROLLING_RELEASE_TAG" switcher-update.json --clobber
+
+          if [ "$IS_DRAFT" = "true" ]; then
+            gh release edit "$ROLLING_RELEASE_TAG" --draft=false
           fi
       # GITHUB_TOKEN으로 만든 release 이벤트는 다른 워크플로를 깨우지 않는다.
       - name: publish npm

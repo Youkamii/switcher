@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const DIST = path.join(ROOT, "bin-dist");
+const ROLLING_RELEASE_TAG = "v1.8.5";
 
 const ASSETS = {
   "darwin-arm64": { zip: "switcher-mac-arm64.zip", entry: "switcher.app" },
@@ -72,7 +73,8 @@ export async function ensureDist() {
   ).version;
   // npm 패키지와 정확히 같은 버전만 받는다. latest로 후퇴하면 새 패키지가
   // 구버전 실행 파일을 설치해 버전·업데이터 계약이 깨진다.
-  const url = `https://github.com/Youkamii/switcher/releases/download/v${version}/${asset.zip}`;
+  const versionedZip = `${asset.zip.slice(0, -4)}-v${version}.zip`;
+  const url = `https://github.com/Youkamii/switcher/releases/download/${ROLLING_RELEASE_TAG}/${versionedZip}`;
   fs.mkdirSync(DIST, { recursive: true });
   const tmp = path.join(os.tmpdir(), `switcher-${process.pid}-${asset.zip}`);
   try {

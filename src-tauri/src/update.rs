@@ -1,6 +1,7 @@
 //! 자동 업데이트 (Windows·macOS).
 //!
-//! GitHub 릴리스 latest를 확인해 새 버전이면 zip을 받아 검증·준비한다. macOS는
+//! GitHub의 고정 업데이트 채널에 있는 manifest를 확인해 새 버전이면 zip을 받아
+//! 검증·준비한다. macOS는
 //! 바로 원자 교체하고, Windows는 종료 뒤 helper 교체에 필요한 경로를 돌려준다 —
 //! 이후는 호출부 몫이다:
 //! - 시작 시 자동 확인: 교체만 해 두고 **다음 실행부터** 반영 (켜자마자 재시작
@@ -23,14 +24,16 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const RELEASE_LATEST_API: &str = "https://api.github.com/repos/Youkamii/switcher/releases/latest";
+const UPDATE_MANIFEST_URL: &str =
+    "https://github.com/Youkamii/switcher/releases/download/v1.8.5/switcher-update.json";
 #[cfg(windows)]
 const ASSET_NAME: &str = "switcher-win-x64.zip";
 #[cfg(target_os = "macos")]
 const ASSET_NAME: &str = "switcher-mac-arm64.zip";
-/// 자산 URL은 반드시 이 저장소의 릴리스 다운로드 경로여야 한다 — API 응답이 어떤 이유로든
+/// 자산 URL은 반드시 이 저장소의 릴리스 다운로드 경로여야 한다 — manifest가 어떤 이유로든
 /// 다른 호스트를 가리켜도 따라가지 않는다 (업데이트 채널의 신뢰 뿌리를 저장소 하나로 고정)
-const ASSET_URL_PREFIX: &str = "https://github.com/Youkamii/switcher/releases/download/";
+const ASSET_URL_PREFIX: &str =
+    "https://github.com/Youkamii/switcher/releases/download/v1.8.5/";
 #[cfg(windows)]
 const VERSION_FILE: &str = "switcher-version.txt";
 
@@ -196,7 +199,7 @@ fn release_plan(
         .flatten()
         .find(|asset| asset["name"].as_str() == Some(ASSET_NAME))
         .and_then(|asset| asset["browser_download_url"].as_str())
-        .ok_or("최신 릴리스에 이 OS용 빌드 자산이 없습니다")?
+        .ok_or("업데이트 정보에 이 OS용 빌드 자산이 없습니다")?
         .to_string();
     if !url.starts_with(ASSET_URL_PREFIX) {
         return Err(format!("업데이트 자산 주소가 예상 밖입니다: {url}"));
@@ -226,9 +229,9 @@ pub async fn check_and_apply() -> Result<UpdateOutcome, String> {
         .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|e| format!("HTTP 클라이언트 생성 실패: {e}"))?;
-    // GitHub API는 User-Agent 없는 요청을 거부한다
+    // v1.8.5 공개 릴리스를 영구 채널로 쓰므로 이후 버전은 새 릴리스를 게시하지 않는다.
     let release: serde_json::Value = client
-        .get(RELEASE_LATEST_API)
+        .get(UPDATE_MANIFEST_URL)
         .header("User-Agent", "switcher-widget")
         .send()
         .await
@@ -959,25 +962,22 @@ mod tests {
         })
     }
 
+    fn versioned_asset_url(tag: &str) -> String {
+        let stem = ASSET_NAME.strip_suffix(".zip").unwrap();
+        format!("{ASSET_URL_PREFIX}{stem}-{tag}.zip")
+    }
+
     #[test]
     fn release_plan_distinguishes_current_and_newer_version() {
-        let same = release(
-            "v1.7.33",
-            ASSET_NAME,
-            &format!("{ASSET_URL_PREFIX}v1.7.33/{ASSET_NAME}"),
-        );
+        let same = release("v1.7.33", ASSET_NAME, &versioned_asset_url("v1.7.33"));
         assert!(release_plan(&same, (1, 7, 33)).unwrap().is_none());
         // 로컬 소스가 배포 채널보다 앞선 현재 상황도 다운그레이드하지 않는다.
         assert!(release_plan(&same, (1, 7, 35)).unwrap().is_none());
 
-        let newer = release(
-            "v1.7.36",
-            ASSET_NAME,
-            &format!("{ASSET_URL_PREFIX}v1.7.36/{ASSET_NAME}"),
-        );
+        let newer = release("v1.7.36", ASSET_NAME, &versioned_asset_url("v1.7.36"));
         let (version, url) = release_plan(&newer, (1, 7, 35)).unwrap().unwrap();
         assert_eq!(version, "1.7.36");
-        assert!(url.ends_with(ASSET_NAME));
+        assert!(url.ends_with("-v1.7.36.zip"));
     }
 
     #[test]
@@ -985,7 +985,7 @@ mod tests {
         let malformed = release(
             "latest",
             ASSET_NAME,
-            &format!("{ASSET_URL_PREFIX}latest/{ASSET_NAME}"),
+            &versioned_asset_url("latest"),
         );
         assert!(release_plan(&malformed, (1, 7, 35)).is_err());
 
@@ -999,7 +999,7 @@ mod tests {
         let missing = release(
             "v1.7.36",
             "wrong-platform.zip",
-            &format!("{ASSET_URL_PREFIX}v1.7.36/wrong-platform.zip"),
+            &format!("{ASSET_URL_PREFIX}wrong-platform-v1.7.36.zip"),
         );
         assert!(release_plan(&missing, (1, 7, 35)).is_err());
     }
