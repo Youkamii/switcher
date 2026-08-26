@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { setLang, t } from "./i18n";
+import { applyAccentTheme } from "./theme";
 
 interface MemoData {
   tabs: string[];
@@ -126,12 +127,20 @@ function applyText() {
   alphaEl.title = t("memoAlphaTooltip");
 }
 
-// 초기화: 언어 → 저장된 메모 순서로. 언어 변경(트레이)도 실시간 반영
+let accentThemeFromEvent = false;
+
+// 초기화: 언어·색감 → 저장된 메모 순서로. 트레이 변경도 실시간 반영
 void (async () => {
   try {
     setLang(await invoke<string>("get_language"));
   } catch {
     // 언어를 못 받아도 기본(ko)으로 동작
+  }
+  try {
+    const saved = await invoke<string>("get_accent_theme");
+    if (!accentThemeFromEvent) applyAccentTheme(saved);
+  } catch {
+    // 색감을 못 받아도 CSS의 기본 보라색으로 동작
   }
   applyText();
   data = await invoke<MemoData>("memo_load");
@@ -144,4 +153,8 @@ void (async () => {
 void listen<string>("language-changed", (event) => {
   setLang(event.payload);
   applyText();
+});
+void listen<string>("accent-theme-changed", (event) => {
+  applyAccentTheme(event.payload);
+  accentThemeFromEvent = true;
 });

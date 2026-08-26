@@ -1,0 +1,143 @@
+:root,
+:root[data-accent-theme="purple"] {
+  --bg-rgb: 21, 21, 28;
+  --panel-rgb: 29, 29, 39;
+  --panel-2-rgb: 38, 38, 51;
+  --text-rgb: 240, 238, 248;
+  --muted-rgb: 159, 155, 176;
+  --border-rgb: 59, 57, 77;
+  --border-strong-rgb: 79, 76, 101;
+  --track-rgb: 45, 44, 61;
+  --separator-rgb: 16, 16, 23;
+  --accent-rgb: 196, 181, 253;
+  --accent-alt-rgb: 153, 246, 228;
+  --action-rgb: 37, 37, 50;
+  --accent-hover-rgb: 48, 46, 65;
+  --accent-panel-rgb: 47, 44, 67;
+  --accent-text-rgb: 250, 247, 255;
+  --on-accent-rgb: 31, 27, 46;
+  --active-text-rgb: 242, 237, 255;
+}
+
+:root[data-accent-theme="pink"] {
+  --bg-rgb: 24, 22, 27;
+  --panel-rgb: 33, 30, 38;
+  --panel-2-rgb: 43, 39, 49;
+  --text-rgb: 250, 242, 247;
+  --muted-rgb: 177, 161, 171;
+  --border-rgb: 72, 62, 70;
+  --border-strong-rgb: 96, 80, 91;
+  --track-rgb: 53, 46, 52;
+  --separator-rgb: 18, 16, 19;
+  --accent-rgb: 249, 168, 212;
+  --accent-alt-rgb: 165, 243, 252;
+  --action-rgb: 42, 37, 45;
+  --accent-hover-rgb: 61, 48, 58;
+  --accent-panel-rgb: 62, 42, 54;
+  --accent-text-rgb: 255, 247, 252;
+  --on-accent-rgb: 43, 22, 34;
+  --active-text-rgb: 253, 232, 242;
+}
+
+:root[data-accent-theme="yellow"] {
+  --bg-rgb: 26, 25, 23;
+  --panel-rgb: 36, 35, 31;
+  --panel-2-rgb: 47, 45, 39;
+  --text-rgb: 250, 248, 240;
+  --muted-rgb: 181, 175, 158;
+  --border-rgb: 78, 73, 60;
+  --border-strong-rgb: 102, 95, 76;
+  --track-rgb: 57, 54, 45;
+  --separator-rgb: 19, 18, 16;
+  --accent-rgb: 253, 230, 138;
+  --accent-alt-rgb: 196, 181, 253;
+  --action-rgb: 45, 43, 37;
+  --accent-hover-rgb: 62, 57, 43;
+  --accent-panel-rgb: 65, 58, 39;
+  --accent-text-rgb: 255, 251, 235;
+  --on-accent-rgb: 45, 39, 18;
+  --active-text-rgb: 254, 243, 199;
+  --monitor-dsk-rgb: 196, 181, 253;
+}
+
+:root[data-accent-theme="deep-green"] {
+  --bg-rgb: 15, 26, 22;
+  --panel-rgb: 21, 37, 30;
+  --panel-2-rgb: 27, 48, 39;
+  --text-rgb: 231, 248, 239;
+  --muted-rgb: 136, 170, 152;
+  --border-rgb: 45, 89, 69;
+  --border-strong-rgb: 60, 115, 88;
+  --track-rgb: 33, 71, 56;
+  --separator-rgb: 11, 21, 17;
+  --accent-rgb: 52, 211, 153;
+  --accent-alt-rgb: 251, 191, 36;
+  --action-rgb: 24, 45, 36;
+  --accent-hover-rgb: 24, 64, 46;
+  --accent-panel-rgb: 17, 64, 44;
+  --accent-text-rgb: 231, 255, 242;
+  --on-accent-rgb: 6, 26, 18;
+  --active-text-rgb: 210, 255, 232;
+  --monitor-mem-rgb: 196, 181, 253;
+}
+
+:root[data-accent-theme="sky"] {
+  --bg-rgb: 20, 23, 27;
+  --panel-rgb: 28, 33, 39;
+  --panel-2-rgb: 37, 43, 51;
+  --text-rgb: 241, 247, 250;
+  --muted-rgb: 158, 171, 180;
+  --border-rgb: 61, 73, 82;
+  --border-strong-rgb: 82, 96, 106;
+  --track-rgb: 45, 54, 62;
+  --separator-rgb: 15, 18, 21;
+  --accent-rgb: 186, 230, 253;
+  --accent-alt-rgb: 251, 207, 232;
+  --action-rgb: 36, 42, 48;
+  --accent-hover-rgb: 43, 58, 68;
+  --accent-panel-rgb: 40, 60, 72;
+  --accent-text-rgb: 244, 251, 255;
+  --on-accent-rgb: 18, 35, 45;
+  --active-text-rgb: 224, 245, 255;
+  --monitor-net-rgb: 249, 168, 212;
+}
+
+:root[data-accent-theme="white"] {
+  --bg-rgb: 23, 24, 27;
+  --panel-rgb: 34, 36, 42;
+  --panel-2-rgb: 45, 48, 55;
+  --text-rgb: 248, 250, 252;
+  --muted-rgb: 167, 173, 183;
+  --border-rgb: 80, 84, 94;
+  --border-strong-rgb: 112, 118, 130;
+  --track-rgb: 58, 62, 71;
+  --separator-rgb: 17, 18, 22;
+  --accent-rgb: 248, 250, 252;
+  --accent-alt-rgb: 203, 213, 225;
+  --action-rgb: 42, 44, 50;
+  --accent-hover-rgb: 64, 66, 73;
+  --accent-panel-rgb: 58, 60, 66;
+  --accent-text-rgb: 255, 255, 255;
+  --on-accent-rgb: 24, 25, 29;
+  --active-text-rgb: 255, 255, 255;
+}
+
+:root {
+  color-scheme: dark;
+  --monitor-mem-rgb: 74, 222, 128;
+  --monitor-dsk-rgb: 250, 204, 21;
+  --monitor-net-rgb: 96, 165, 250;
+  --bg: rgba(var(--bg-rgb), var(--bg-alpha, 1));
+  --panel: rgba(var(--panel-rgb), var(--bg-alpha, 1));
+  --panel-2: rgba(var(--panel-2-rgb), var(--bg-alpha, 1));
+  --text: rgba(var(--text-rgb), var(--fg-alpha, 1));
+  --muted: rgba(var(--muted-rgb), var(--fg-alpha, 1));
+  --accent: rgb(var(--accent-rgb));
+  --accent-alt: rgb(var(--accent-alt-rgb));
+  --accent-soft: rgba(var(--accent-rgb), 0.18);
+  --on-accent: rgb(var(--on-accent-rgb));
+  --accent-ink: var(--on-accent);
+  --accent-panel: rgba(var(--accent-panel-rgb), 0.96);
+  --accent-text: rgb(var(--accent-text-rgb));
+  --active-text: rgba(var(--active-text-rgb), var(--fg-alpha, 1));
+}

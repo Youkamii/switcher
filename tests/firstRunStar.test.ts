@@ -127,11 +127,11 @@ test("wires a compact overlay without starring on mount", () => {
   assert.match(bodyRules, /--bg-alpha: 1;/);
   assert.match(bodyRules, /--fg-alpha: 1;/);
   assert.match(bodyRules, /--bar-alpha: 1;/);
-  assert.match(bodyRules, /--bg: rgb\(22, 22, 30\);/);
-  assert.match(bodyRules, /--panel: rgb\(31, 31, 42\);/);
-  assert.match(bodyRules, /--panel-2: rgb\(38, 38, 54\);/);
-  assert.match(bodyRules, /--text: rgb\(230, 230, 239\);/);
-  assert.match(bodyRules, /--muted: rgb\(139, 139, 158\);/);
+  assert.doesNotMatch(
+    bodyRules,
+    /--(?:bg|panel|panel-2|text|muted):/,
+    "the first-run overlay must keep the selected color theme",
+  );
   assert.doesNotMatch(actionRules, /flex-direction: column/);
   assert.doesNotMatch(promptRules, /gradient|box-shadow/);
   assert.doesNotMatch(actionRules, /gradient|box-shadow/);

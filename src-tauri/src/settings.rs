@@ -1,4 +1,4 @@
-//! 위젯 자체 설정 (`~/.switcher/settings.json`) — 현재는 UI 언어(lang)만 담는다.
+//! 위젯 자체 설정 (`~/.switcher/settings.json`) — UI 언어·색감과 기능 토글을 담는다.
 //! 토큰과 무관한 파일이라 프로필 보관소와 분리해 보관소 루트에 둔다.
 
 use serde_json::Value;
@@ -18,11 +18,26 @@ pub const LANGS: [(&str, &str); 6] = [
     ("hi", "हिन्दी"),
 ];
 
+/// 앱 전체 색감. 배열 순서는 트레이 메뉴에 보이는 순서다.
+pub const ACCENT_THEMES: [(&str, &str); 6] = [
+    ("pink", "Pink"),
+    ("yellow", "Yellow"),
+    ("purple", "Purple"),
+    ("deep-green", "Deep green"),
+    ("sky", "Sky blue"),
+    ("white", "White"),
+];
+pub const DEFAULT_ACCENT_THEME: &str = "purple";
+
 pub fn is_supported(lang: &str) -> bool {
     LANGS.iter().any(|(code, _)| *code == lang)
 }
 
-/// settings.json 불리언 키 (트레이 설정 토글)
+pub fn is_accent_theme_supported(theme: &str) -> bool {
+    ACCENT_THEMES.iter().any(|(id, _)| *id == theme)
+}
+
+/// settings.json 키 (트레이 설정)
 pub const KEY_AUTO_UPDATE: &str = "auto_update";
 pub const KEY_AUTO_START: &str = "auto_start";
 /// 바탕화면 바로가기는 Windows 전용 기능 — 맥 빌드의 dead_code 경고 방지
@@ -36,6 +51,7 @@ pub const KEY_SHOW_BLACK: &str = "show_black";
 pub const KEY_SHOW_DISPLAY: &str = "show_display";
 /// TFSD (Token Full Self-Driving) — 사용량 기반 자동 계정 전환 (기본 꺼짐, 옵트인)
 pub const KEY_TFSD: &str = "tfsd";
+pub const KEY_ACCENT_THEME: &str = "accent_theme";
 /// 첫 실행 GitHub Star 안내 선택. 버전과 무관하게 한 번만 묻는다.
 const KEY_GITHUB_STAR_PROMPT_CHOICE: &str = "github_star_prompt_choice";
 pub const STAR_PROMPT_CHOICE_STAR: &str = "star";
@@ -116,15 +132,16 @@ fn write_settings(store: &Path, root: &Value) -> Result<(), String> {
     fs::rename(&tmp, &path).map_err(|e| format!("설정 저장 실패: {e}"))
 }
 
-/// 트레이 라벨 — [열기, 숨기기, 설정, 언어, 자동 업데이트, 부팅 시 자동 실행,
-/// 블랙 모니터, 표시 기능, 디스플레이 밝기, TFSD, 종료] 순서
-pub fn tray_labels(lang: &str) -> [&'static str; 12] {
+/// 트레이 라벨 — [열기, 숨기기, 설정, 언어, 색감, 자동 업데이트, 부팅 시 자동 실행,
+/// 블랙 모니터, 표시 기능, 디스플레이 밝기, TFSD, 업데이트 확인, 종료] 순서
+pub fn tray_labels(lang: &str) -> [&'static str; 13] {
     match lang {
         "en" => [
             "Open",
             "Hide",
             "Settings",
             "Language",
+            "Color",
             "Auto-update",
             "Run at startup",
             "Black monitor",
@@ -139,6 +156,7 @@ pub fn tray_labels(lang: &str) -> [&'static str; 12] {
             "隠す",
             "設定",
             "言語",
+            "カラー",
             "自動アップデート",
             "起動時に自動実行",
             "ブラックモニター",
@@ -149,11 +167,11 @@ pub fn tray_labels(lang: &str) -> [&'static str; 12] {
             "終了",
         ],
         "zh-CN" => [
-            "打开", "隐藏", "设置", "语言", "自动更新", "开机自启动", "黑屏模式", "显示的功能",
+            "打开", "隐藏", "设置", "语言", "颜色", "自动更新", "开机自启动", "黑屏模式", "显示的功能",
             "显示器亮度", "TFSD 自动切换", "检查更新", "退出",
         ],
         "zh-TW" => [
-            "開啟", "隱藏", "設定", "語言", "自動更新", "開機自動啟動", "黑屏模式", "顯示的功能",
+            "開啟", "隱藏", "設定", "語言", "色彩", "自動更新", "開機自動啟動", "黑屏模式", "顯示的功能",
             "螢幕亮度", "TFSD 自動切換", "檢查更新", "結束",
         ],
         "hi" => [
@@ -161,6 +179,7 @@ pub fn tray_labels(lang: &str) -> [&'static str; 12] {
             "छिपाएँ",
             "सेटिंग्स",
             "भाषा",
+            "रंग",
             "ऑटो-अपडेट",
             "बूट पर स्वतः चलाएँ",
             "ब्लैक मॉनिटर",
@@ -175,6 +194,7 @@ pub fn tray_labels(lang: &str) -> [&'static str; 12] {
             "숨기기",
             "설정",
             "언어",
+            "색감",
             "자동 업데이트",
             "부팅 시 자동 실행",
             "블랙 모니터",
@@ -184,6 +204,18 @@ pub fn tray_labels(lang: &str) -> [&'static str; 12] {
             "업데이트 확인",
             "종료",
         ],
+    }
+}
+
+/// 색 이름은 메뉴 언어에 맞추되 저장값은 항상 ACCENT_THEMES의 ID를 쓴다.
+pub fn accent_theme_labels(lang: &str) -> [&'static str; 6] {
+    match lang {
+        "en" => ["Pink", "Yellow", "Purple", "Deep green", "Sky blue", "White"],
+        "ja" => ["ピンク", "イエロー", "パープル", "ディープグリーン", "スカイブルー", "ホワイト"],
+        "zh-CN" => ["粉色", "黄色", "紫色", "深绿色", "天蓝色", "白色"],
+        "zh-TW" => ["粉紅色", "黃色", "紫色", "深綠色", "天藍色", "白色"],
+        "hi" => ["गुलाबी", "पीला", "बैंगनी", "गहरा हरा", "आसमानी", "सफेद"],
+        _ => ["핑크", "노랑", "보라", "진녹색", "하늘색", "흰색"],
     }
 }
 
@@ -224,6 +256,31 @@ pub fn save_language(store: &Path, lang: &str) -> Result<(), String> {
         return Err(format!("지원하지 않는 언어: {lang}"));
     }
     save_value(store, "lang", Value::String(lang.to_string()))
+}
+
+/// 저장된 앱 색감. 없거나 알 수 없는 값이면 기본 보라색을 쓴다.
+pub fn load_accent_theme(store: &Path) -> String {
+    match read_settings(store).and_then(|value| {
+        value
+            .get(KEY_ACCENT_THEME)
+            .and_then(Value::as_str)
+            .map(String::from)
+    }) {
+        Some(theme) if is_accent_theme_supported(&theme) => theme,
+        _ => DEFAULT_ACCENT_THEME.to_string(),
+    }
+}
+
+/// 앱 색감을 저장하면서 settings.json의 다른 설정은 그대로 보존한다.
+pub fn save_accent_theme(store: &Path, theme: &str) -> Result<(), String> {
+    if !is_accent_theme_supported(theme) {
+        return Err(format!("지원하지 않는 색감: {theme}"));
+    }
+    save_value_checked(
+        store,
+        KEY_ACCENT_THEME,
+        Value::String(theme.to_string()),
+    )
 }
 
 #[cfg(test)]
@@ -296,6 +353,54 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(settings_path(&store)).unwrap()).unwrap();
         assert_eq!(saved["future_key"], 42);
         assert_eq!(saved["lang"], "ja");
+    }
+
+    #[test]
+    fn accent_theme_defaults_to_purple() {
+        let store = test_store("accent-default");
+        assert_eq!(load_accent_theme(&store), DEFAULT_ACCENT_THEME);
+    }
+
+    #[test]
+    fn accent_themes_roundtrip_and_preserve_other_settings() {
+        let store = test_store("accent-roundtrip");
+        save_language(&store, "en").unwrap();
+        save_flag(&store, KEY_TFSD, true).unwrap();
+
+        for (theme, _) in ACCENT_THEMES {
+            save_accent_theme(&store, theme).unwrap();
+            assert_eq!(load_accent_theme(&store), theme);
+            assert_eq!(load_language(&store), "en");
+            assert!(load_flag(&store, KEY_TFSD, false));
+        }
+    }
+
+    #[test]
+    fn accent_theme_rejects_unknown_values() {
+        let store = test_store("accent-invalid");
+        assert!(save_accent_theme(&store, "orange").is_err());
+        assert_eq!(load_accent_theme(&store), DEFAULT_ACCENT_THEME);
+
+        fs::create_dir_all(&store).unwrap();
+        fs::write(settings_path(&store), r#"{"accent_theme":"orange"}"#).unwrap();
+        assert_eq!(load_accent_theme(&store), DEFAULT_ACCENT_THEME);
+        fs::write(settings_path(&store), r#"{"accent_theme":42}"#).unwrap();
+        assert_eq!(load_accent_theme(&store), DEFAULT_ACCENT_THEME);
+    }
+
+    #[test]
+    fn accent_theme_never_overwrites_unreadable_settings() {
+        let store = test_store("accent-corrupt");
+        fs::create_dir_all(&store).unwrap();
+        let path = settings_path(&store);
+        fs::write(&path, r#"{"lang":"en""#).unwrap();
+
+        assert!(save_accent_theme(&store, "pink").is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), r#"{"lang":"en""#);
+
+        fs::write(&path, "[]").unwrap();
+        assert!(save_accent_theme(&store, "sky").is_err());
+        assert_eq!(fs::read_to_string(path).unwrap(), "[]");
     }
 
     #[test]

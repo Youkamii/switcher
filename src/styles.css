@@ -8,12 +8,6 @@
   --bg-alpha: 1;
   --fg-alpha: 1;
   --bar-alpha: 1;
-  --bg: rgba(22, 22, 30, var(--bg-alpha));
-  --panel: rgba(31, 31, 42, var(--bg-alpha));
-  --panel-2: rgba(38, 38, 54, var(--bg-alpha));
-  --text: rgba(230, 230, 239, var(--fg-alpha));
-  --muted: rgba(139, 139, 158, var(--fg-alpha));
-  --accent: #a78bfa;
   --warn: #facc15;
   --danger: #f87171;
   --ok: #4ade80;
@@ -48,7 +42,7 @@ body {
   flex-direction: column;
   height: 100vh;
   background: var(--bg);
-  border: 1px solid rgba(52, 52, 74, calc(0.9 * var(--fg-alpha)));
+  border: 1px solid rgba(var(--border-rgb), calc(0.9 * var(--fg-alpha)));
   border-radius: 12px;
   overflow: hidden;
 }
@@ -83,10 +77,10 @@ main::-webkit-scrollbar {
   flex: none;
   margin: 6px 0 8px;
   padding: 7px 9px;
-  border: 1px solid rgba(167, 139, 250, 0.8);
+  border: 1px solid rgba(var(--accent-rgb), 0.8);
   border-radius: 7px;
-  background: rgba(46, 39, 69, 0.96);
-  color: #f5f3ff;
+  background: var(--accent-panel);
+  color: var(--accent-text);
   font-size: 11px;
   line-height: 1.35;
   overflow-wrap: anywhere;
@@ -191,20 +185,20 @@ body.locked #memobtn {
   white-space: nowrap;
 }
 
-.mon-fill-cpu {
+.mon-row .bar-fill.mon-fill-cpu {
   background: var(--accent);
 }
 
-.mon-fill-mem {
-  background: var(--ok);
+.mon-row .bar-fill.mon-fill-mem {
+  background: rgb(var(--monitor-mem-rgb));
 }
 
-.mon-fill-dsk {
-  background: var(--warn);
+.mon-row .bar-fill.mon-fill-dsk {
+  background: rgb(var(--monitor-dsk-rgb));
 }
 
-.mon-fill-net {
-  background: #60a5fa;
+.mon-row .bar-fill.mon-fill-net {
+  background: rgb(var(--monitor-net-rgb));
 }
 
 /* 90% 넘으면 색과 무관하게 위험색 */
@@ -330,7 +324,7 @@ body:not(.locked) #app > section[data-key] > :is(h2.section-title, .mon-title, .
   flex: none;
   display: flex;
   flex-direction: column;
-  border-top: 1px solid rgba(52, 52, 74, calc(0.9 * var(--fg-alpha)));
+  border-top: 1px solid rgba(var(--border-rgb), calc(0.9 * var(--fg-alpha)));
 }
 
 .dock-tray {
@@ -367,7 +361,7 @@ body.dock-open .dock-tray {
   border: none;
   border-radius: 0;
   /* 도구로 가는 유일한 입구라 최저 투명도에서도 사라지지 않게 고정한다. */
-  color: rgba(139, 139, 158, 0.95);
+  color: rgba(var(--muted-rgb), 0.95);
   cursor: pointer;
   /* 접혀 있을 때가 찾아야 할 때다 — 이동 핸들(☰ 0.6)에 준하게 또렷하고,
      펼친 뒤에는 물러난다. 투명도 슬라이더와 무관하게 남는다(고정값) */
@@ -458,12 +452,13 @@ body.locked #pin {
   align-items: center;
   flex: none;
   padding: 0 2px;
+  color: var(--accent);
 }
 
 button {
   background: var(--panel-2);
   color: var(--text);
-  border: 1px solid #34344a;
+  border: 1px solid rgb(var(--border-rgb));
   border-radius: 6px;
   padding: 4px 10px;
   font-size: 12px;
@@ -477,7 +472,7 @@ button:hover {
 
 button.primary {
   background: var(--accent);
-  color: #16161e;
+  color: var(--on-accent);
   border-color: var(--accent);
   font-weight: 700;
 }
@@ -511,7 +506,7 @@ button.link:hover {
 
 .help {
   background: var(--panel);
-  border: 1px dashed #34344a;
+  border: 1px dashed rgb(var(--border-rgb));
   border-radius: 8px;
   padding: 8px 10px;
   margin: 4px 0 8px;
@@ -531,7 +526,7 @@ button.link:hover {
   min-width: 0;
   background: var(--panel);
   color: var(--text);
-  border: 1px solid #34344a;
+  border: 1px solid rgb(var(--border-rgb));
   border-radius: 6px;
   padding: 4px 8px;
   font-size: 12px;
@@ -565,7 +560,7 @@ button.link:hover {
   flex: 1;
   min-width: 0;
   background: var(--panel-2);
-  border: 1px solid #34344a;
+  border: 1px solid rgb(var(--border-rgb));
   border-radius: 6px;
   padding: 4px 8px;
   font-size: 11px;
@@ -606,14 +601,14 @@ button.link:hover {
 .card {
   background: var(--panel);
   /* 카드 테두리도 글자와 함께 옅어진다 — 바만 남기기 위해 (#42 후속) */
-  border: 1px solid rgba(43, 43, 61, var(--fg-alpha));
+  border: 1px solid rgba(var(--track-rgb), var(--fg-alpha));
   border-radius: 10px;
   padding: 10px 12px;
   margin-bottom: 8px;
 }
 
 .card.active {
-  border-color: rgba(167, 139, 250, var(--fg-alpha));
+  border-color: rgba(var(--accent-rgb), var(--fg-alpha));
 }
 
 .card-head {
@@ -635,7 +630,7 @@ button.link:hover {
 }
 
 .card.active .card-name {
-  color: rgba(228, 255, 232, var(--fg-alpha));
+  color: var(--active-text);
 }
 
 /* 사용 중이 아닌 계정은 카드 전체 채도를 낮춰 한눈에 구분되게 */
@@ -833,11 +828,11 @@ body.minimal #privacybtn {
 /* 미니멀의 프로바이더 구분 — 왼쪽 색 스트라이프 (클로드 보라, 코덱스 청록).
    투명도와 무관하게 남아, 최하에서도 어느 그래프가 누구 것인지 보인다 */
 #app.minimal .compact-card.prov-claude {
-  border-left: 3px solid rgba(167, 139, 250, calc(0.75 * var(--bar-alpha)));
+  border-left: 3px solid rgba(var(--accent-rgb), calc(0.75 * var(--bar-alpha)));
 }
 
 #app.minimal .compact-card.prov-codex {
-  border-left: 3px solid rgba(45, 212, 191, calc(0.75 * var(--bar-alpha)));
+  border-left: 3px solid rgba(var(--accent-alt-rgb), calc(0.75 * var(--bar-alpha)));
 }
 
 /* 프로바이더 묶음 사이 칸막이 — 얇은 선과 여백. 스트라이프와 함께
@@ -845,7 +840,7 @@ body.minimal #privacybtn {
 #app.minimal > section + section {
   margin-top: 4px;
   padding-top: 3px;
-  border-top: 1px solid rgba(139, 139, 158, calc(0.25 * var(--bar-alpha)));
+  border-top: 1px solid rgba(var(--muted-rgb), calc(0.25 * var(--bar-alpha)));
 }
 
 /* 갱신 대기 상태 — 수치는 살짝 흐리게 유지하고, 우상단 작은 라벨로만 알린다 */
@@ -999,16 +994,16 @@ body.minimal .dock-tray button {
 }
 
 #app.locked .card.switchable.hit-hover {
-  border-color: rgba(167, 139, 250, 0.75);
+  border-color: rgba(var(--accent-rgb), 0.75);
 }
 
 /* 더블클릭 전환 순간의 짧은 빛 — 됐다는 신호만 살짝 */
 @keyframes switch-flash {
   0% {
-    box-shadow: 0 0 0 0 rgba(167, 139, 250, 0.55);
+    box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0.55);
   }
   100% {
-    box-shadow: 0 0 16px 5px rgba(167, 139, 250, 0);
+    box-shadow: 0 0 16px 5px rgba(var(--accent-rgb), 0);
   }
 }
 
@@ -1027,7 +1022,7 @@ body.minimal .dock-tray button {
 .bar {
   position: relative; /* 세그먼트 홈(::after)의 기준점 */
   height: 7px;
-  background: #2b2b3d;
+  background: rgb(var(--track-rgb));
   /* 세그먼트는 칸을 세어 읽는다 — 99px 라운드면 첫·끝 칸이 반달이 돼 세기
      어려워진다. 각을 거의 살리되 가장자리만 아주 살짝 다듬는다 */
   border-radius: 2px;
@@ -1053,7 +1048,7 @@ body.minimal .dock-tray button {
   background: repeating-linear-gradient(
     90deg,
     transparent 0 calc(var(--seg-w) - 1.5px),
-    rgba(18, 18, 26, 0.95) calc(var(--seg-w) - 1.5px) var(--seg-w)
+    rgba(var(--separator-rgb), 0.95) calc(var(--seg-w) - 1.5px) var(--seg-w)
   );
 }
 
@@ -1066,7 +1061,12 @@ body.minimal .dock-tray button {
 }
 
 .bar-fill.warn {
-  background: var(--warn);
+  background-color: var(--warn);
+  background-image: repeating-linear-gradient(
+    135deg,
+    rgba(var(--separator-rgb), 0.38) 0 2px,
+    transparent 2px 4px
+  );
 }
 
 .bar-fill.danger {
@@ -1107,7 +1107,7 @@ body.minimal .dock-tray button {
   flex: 1;
   background: var(--panel);
   color: var(--text);
-  border: 1px solid #34344a;
+  border: 1px solid rgb(var(--border-rgb));
   border-radius: 6px;
   padding: 4px 8px;
   font-size: 12px;
@@ -1231,11 +1231,6 @@ body.star-prompt-open {
   --bg-alpha: 1;
   --fg-alpha: 1;
   --bar-alpha: 1;
-  --bg: rgb(22, 22, 30);
-  --panel: rgb(31, 31, 42);
-  --panel-2: rgb(38, 38, 54);
-  --text: rgb(230, 230, 239);
-  --muted: rgb(139, 139, 158);
 }
 
 body.star-prompt-open .shell {
@@ -1265,15 +1260,15 @@ body.star-prompt-open .shell {
   padding: 0;
   border-color: transparent;
   background: transparent;
-  color: #8b8b9e;
+  color: rgb(var(--muted-rgb));
   font-size: 18px;
   line-height: 1;
 }
 
 .star-prompt-close:hover,
 .star-prompt-close:focus-visible {
-  border-color: #45455d;
-  color: #e6e6ef;
+  border-color: rgb(var(--border-strong-rgb));
+  color: rgb(var(--text-rgb));
   outline: none;
 }
 
@@ -1284,17 +1279,17 @@ body.star-prompt-open .shell {
   height: 32px;
   gap: 5px;
   padding: 0 12px;
-  border: 1px solid #45455d;
+  border: 1px solid rgb(var(--border-strong-rgb));
   border-radius: 7px;
-  background: #252532;
-  color: #e6e6ef;
+  background: rgb(var(--action-rgb));
+  color: rgb(var(--text-rgb));
   transition: border-color 100ms ease-out, background 100ms ease-out;
 }
 
 .star-prompt-action:hover,
 .star-prompt-action:focus-visible {
-  border-color: #a78bfa;
-  background: #2d2b3d;
+  border-color: var(--accent);
+  background: rgb(var(--accent-hover-rgb));
   outline: none;
 }
 
