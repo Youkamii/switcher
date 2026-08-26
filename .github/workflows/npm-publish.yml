@@ -29,6 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
+      ROLLING_RELEASE_TAG: v1.8.5
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -54,15 +55,15 @@ jobs:
             echo "release tag ($RELEASE_TAG) does not match package version ($PKG_VERSION)" >&2
             exit 1
           fi
-          RELEASE_JSON=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")
+          RELEASE_JSON=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$ROLLING_RELEASE_TAG")
           if [ "$(printf '%s' "$RELEASE_JSON" | jq -r .draft)" != "false" ]; then
-            echo "release $RELEASE_TAG is not published" >&2
+            echo "rolling release $ROLLING_RELEASE_TAG is not published" >&2
             exit 1
           fi
-          for ASSET in switcher-win-x64.zip switcher-mac-arm64.zip; do
+          for ASSET in "switcher-win-x64-$RELEASE_TAG.zip" "switcher-mac-arm64-$RELEASE_TAG.zip"; do
             if ! printf '%s' "$RELEASE_JSON" | jq -e --arg asset "$ASSET" \
               'any(.assets[]; .name == $asset)' > /dev/null; then
-              echo "release $RELEASE_TAG is missing $ASSET" >&2
+              echo "rolling release $ROLLING_RELEASE_TAG is missing $ASSET" >&2
               exit 1
             fi
           done

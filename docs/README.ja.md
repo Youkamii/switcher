@@ -20,7 +20,7 @@ switcher
 
 `switcher` コマンドの初回実行時に、インストールした npm パッケージと同じバージョンの公式リリースビルドをダウンロードします(2回目以降はすぐ起動します)。コード署名がないため、npm 経由でも SmartScreen の警告が表示されることがあります。アップデートは自動です — 起動のたびに新しいリリースを確認し、次回起動から反映されます。
 
-**直接ダウンロード** — [リリース](https://github.com/Youkamii/switcher/releases/latest)から `switcher-win-x64.zip` をダウンロードして展開し、`switcher.exe` を実行します。(Windows 10/11 64ビット)
+**直接ダウンロード** — [ダウンロード保管庫](https://github.com/Youkamii/switcher/releases/tag/v1.8.5)から `switcher-win-x64-latest.zip` をダウンロードして展開し、`switcher.exe` を実行します。(Windows 10/11 64ビット)
 
 - コード署名がないため、初回実行時に Windows SmartScreen が「発行元不明」の警告を表示することがあります。`詳細情報` → `実行` で起動できます。
 - WebView には Windows に標準搭載されている WebView2 を使用します。
@@ -47,7 +47,7 @@ switcher
 
 `switcher` コマンドの初回実行時に、インストールした npm パッケージと同じバージョンの公式リリースビルドをダウンロードします(2回目以降はすぐ起動します)。署名・公証がないため、npm 経由でも「開発元を確認できません」という警告が表示されることがあります。アップデートは自動です — 起動のたびに新しいリリースを確認し、次回起動から反映されます。
 
-**直接ダウンロード** — [リリース](https://github.com/Youkamii/switcher/releases/latest)から `switcher-mac-arm64.zip` をダウンロードして展開し、`switcher.app` を実行します。Apple Silicon 専用 — Intel Mac は下記の[ソースからビルド](#ソースからビルド)でインストールしてください。
+**直接ダウンロード** — [ダウンロード保管庫](https://github.com/Youkamii/switcher/releases/tag/v1.8.5)から `switcher-mac-arm64-latest.zip` をダウンロードして展開し、`switcher.app` を実行します。Apple Silicon 専用 — Intel Mac は下記の[ソースからビルド](#ソースからビルド)でインストールしてください。
 
 - コード署名がないため、初回起動時に「開発元を確認できません」とブロックされることがあります。システム設定 → プライバシーとセキュリティ の最下部に表示される **このまま開く** から実行してください。
 

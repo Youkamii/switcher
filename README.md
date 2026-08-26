@@ -1,11 +1,10 @@
 <h1 align="center">
-  <a href="https://github.com/Youkamii/switcher/releases/latest">
+  <a href="https://github.com/Youkamii/switcher/releases/tag/v1.8.5">
     <img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/readme-hero.svg" width="100%" alt="switcher — Claude Code, Codex CLI, GitHub CLI 계정 전환 위젯" />
   </a>
 </h1>
 
 <p align="center">
-  <a href="https://github.com/Youkamii/switcher/releases/latest"><img src="https://img.shields.io/github/v/release/Youkamii/switcher?style=flat-square&label=release&color=8B5CF6" alt="latest release" /></a>
   <a href="https://www.npmjs.com/package/switcher-widget"><img src="https://img.shields.io/npm/v/switcher-widget?style=flat-square&color=CB3837" alt="npm version" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Youkamii/switcher?style=flat-square&color=22C55E" alt="MIT License" /></a>
   <!-- <a href="https://github.com/Youkamii/switcher/stargazers"><img src="https://img.shields.io/github/stars/Youkamii/switcher?style=flat-square&color=F59E0B" alt="GitHub stars" /></a> -->
@@ -45,11 +44,11 @@ switcher
 첫 실행 때 설치한 npm 패키지와 **같은 버전**의 공식 릴리스 파일을 내려받습니다. 사용하려는 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 또는 [Codex CLI](https://github.com/openai/codex)는 별도로 설치되어 있어야 합니다.
 
 <p align="center">
-  <a href="https://github.com/Youkamii/switcher/releases/latest/download/switcher-win-x64.zip"><strong>Windows x64 다운로드</strong></a>
+  <a href="https://github.com/Youkamii/switcher/releases/download/v1.8.5/switcher-win-x64-latest.zip"><strong>Windows x64 다운로드</strong></a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
-  <a href="https://github.com/Youkamii/switcher/releases/latest/download/switcher-mac-arm64.zip"><strong>macOS Apple Silicon 다운로드</strong></a>
+  <a href="https://github.com/Youkamii/switcher/releases/download/v1.8.5/switcher-mac-arm64-latest.zip"><strong>macOS Apple Silicon 다운로드</strong></a>
   &nbsp;&nbsp;·&nbsp;&nbsp;
-  <a href="https://github.com/Youkamii/switcher/releases/latest">릴리스 노트</a>
+  <a href="https://github.com/Youkamii/switcher/releases/tag/v1.8.5">다운로드 보관함</a>
 </p>
 
 <p align="center">
@@ -238,8 +237,8 @@ switcher 전용 계정 중계 서버는 없습니다. 앱은 로컬 CLI 인증 �
 
 | 대상 | 공식 배포 파일 | 상태 |
 | --- | --- | --- |
-| Windows 10 1803+/11 x64 | `switcher-win-x64.zip` | 지원 |
-| macOS Apple Silicon | `switcher-mac-arm64.zip` | 지원 |
+| Windows 10 1803+/11 x64 | `switcher-win-x64-latest.zip` | 지원 |
+| macOS Apple Silicon | `switcher-mac-arm64-latest.zip` | 지원 |
 | Windows ARM64 | x64 에뮬레이션 가능 환경 | 공식 실기기 검증 대상 아님 |
 | macOS Intel | 없음 | 공식 지원 안 함 |
 | Linux | 없음 | 공식 지원 안 함 |
@@ -247,7 +246,7 @@ switcher 전용 계정 중계 서버는 없습니다. 앱은 로컬 CLI 인증 �
 ### 배포 방식
 
 - **npm**: `switcher-widget` 설치 후 첫 실행 때 패키지와 같은 버전의 위 파일을 받습니다.
-- **직접 다운로드**: [최신 GitHub Release](https://github.com/Youkamii/switcher/releases/latest)에서 압축 파일을 받아 실행합니다.
+- **직접 다운로드**: [다운로드 보관함](https://github.com/Youkamii/switcher/releases/tag/v1.8.5)에서 최신 압축 파일을 받아 실행합니다.
 - **소스 빌드**: 아래 개발 명령으로 현재 운영체제에서 직접 빌드할 수 있습니다.
 
 > [!WARNING]

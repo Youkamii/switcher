@@ -20,7 +20,7 @@ switcher
 
 The first run of the `switcher` command downloads the official release build that matches the installed npm package version (subsequent runs start instantly). The binary is unsigned, so SmartScreen may still appear when installed through npm. Updates are automatic — every launch checks for a new release and applies it on the next launch.
 
-**Direct download** — grab `switcher-win-x64.zip` from the [releases page](https://github.com/Youkamii/switcher/releases/latest), extract it, and run `switcher.exe`. (Windows 10/11, 64-bit)
+**Direct download** — grab `switcher-win-x64-latest.zip` from the [download archive](https://github.com/Youkamii/switcher/releases/tag/v1.8.5), extract it, and run `switcher.exe`. (Windows 10/11, 64-bit)
 
 - The binary is not code-signed, so Windows SmartScreen may show an "unknown publisher" warning on first launch. Click `More info` → `Run anyway`.
 - The webview uses WebView2, which ships with Windows.
@@ -47,7 +47,7 @@ switcher
 
 The first run of the `switcher` command downloads the official release build that matches the installed npm package version (subsequent runs start instantly). The app is unsigned and not notarized, so macOS may still show an unidentified-developer warning when installed through npm. Updates are automatic — every launch checks for a new release and applies it on the next launch.
 
-**Direct download** — grab `switcher-mac-arm64.zip` from the [releases page](https://github.com/Youkamii/switcher/releases/latest), extract it, and run `switcher.app`. Apple Silicon only — on Intel Macs, install via [Build from source](#build-from-source) below.
+**Direct download** — grab `switcher-mac-arm64-latest.zip` from the [download archive](https://github.com/Youkamii/switcher/releases/tag/v1.8.5), extract it, and run `switcher.app`. Apple Silicon only — on Intel Macs, install via [Build from source](#build-from-source) below.
 
 - The app is not code-signed, so the first launch may be blocked with an "unidentified developer" message. Open System Settings → Privacy & Security, scroll to the bottom, and click **Open Anyway**.
 
