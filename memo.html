@@ -4,17 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>memo</title>
+    <link rel="stylesheet" href="/src/theme.css" />
     <style>
       /* 메모창 — 위젯과 같은 팔레트의 부속 창. 투명도는 위젯과 독립:
          배경(--bg-alpha)만 빠지고 글자·테두리는 남아 어디서든 읽힌다 */
       :root {
         color-scheme: dark;
         --bg-alpha: 1;
-        --bg: rgba(22, 22, 30, var(--bg-alpha));
-        --panel: rgba(38, 38, 54, var(--bg-alpha));
-        --text: #e6e6ef;
-        --muted: #8b8b9e;
-        --accent: #a78bfa;
         font-family: "Pretendard", "Malgun Gothic", system-ui, sans-serif;
         font-size: 13px;
       }
@@ -38,7 +34,7 @@
         flex-direction: column;
         height: 100vh;
         background: var(--bg);
-        border: 1px solid rgba(52, 52, 74, 0.9);
+        border: 1px solid rgba(var(--border-rgb), 0.9);
         border-radius: 12px;
         overflow: hidden;
       }
@@ -63,9 +59,9 @@
       .tab {
         width: 24px;
         height: 21px;
-        border: 1px solid rgba(52, 52, 74, 0.9);
+        border: 1px solid rgba(var(--border-rgb), 0.9);
         border-radius: 6px;
-        background: var(--panel);
+        background: var(--panel-2);
         color: var(--muted);
         font-size: 11px;
         cursor: pointer;

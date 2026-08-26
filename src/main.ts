@@ -23,6 +23,7 @@ import {
   type FirstRunStartupState,
   type GithubStarPromptChoice,
 } from "./firstRunStar";
+import { applyAccentTheme, themeCssColor } from "./theme";
 
 type ProfileInfo = {
   name: string;
@@ -2375,14 +2376,18 @@ function drawMonSpark() {
     if (i === 0) ctx.moveTo(x, y(v));
     else ctx.lineTo(x, y(v));
   });
-  ctx.strokeStyle = "rgba(167, 139, 250, 0.9)";
+  ctx.save();
+  ctx.strokeStyle = themeCssColor("--accent", "white");
+  ctx.globalAlpha = 0.9;
   ctx.lineWidth = 1.2;
   ctx.stroke();
   ctx.lineTo(w, h);
   ctx.lineTo(w - (monHistory.length - 1) * step, h);
   ctx.closePath();
-  ctx.fillStyle = "rgba(167, 139, 250, 0.15)";
+  ctx.fillStyle = themeCssColor("--accent", "white");
+  ctx.globalAlpha = 0.15;
   ctx.fill();
+  ctx.restore();
 }
 
 /// CPU 기분 — 한가하면 느긋, 바쁘면 진지, 뜨거우면 울상
@@ -2681,7 +2686,15 @@ void listen<string>("language-changed", (event) => {
   if (!loginOpen) void render({ immediate: true });
 });
 
-// 시작: 저장된 언어·표시 기능을 먼저 읽고 첫 렌더 — 그렸다 갈아엎는 깜빡임을 피한다
+// 트레이(설정 → 색감)에서 고르면 메인과 캔버스까지 바로 바꾼다.
+let accentThemeFromEvent = false;
+void listen<string>("accent-theme-changed", (event) => {
+  applyAccentTheme(event.payload);
+  accentThemeFromEvent = true;
+  drawMonSpark();
+});
+
+// 시작: 저장된 언어·색감·표시 기능을 먼저 읽고 첫 렌더 — 그렸다 갈아엎는 깜빡임을 피한다
 void (async () => {
   try {
     const saved = await invoke<string>("get_language");
@@ -2689,6 +2702,13 @@ void (async () => {
     if (!langFromEvent) setLang(saved);
   } catch {
     // 설정을 못 읽으면 한국어로 진행
+  }
+  try {
+    const saved = await invoke<string>("get_accent_theme");
+    // 조회 중 트레이에서 새 색을 골랐다면 느린 응답이 그 선택을 덮지 않게 한다.
+    if (!accentThemeFromEvent) applyAccentTheme(saved);
+  } catch {
+    // 설정을 못 읽으면 CSS의 기본 보라색으로 진행
   }
   await loadVisibility();
   applyStaticText();

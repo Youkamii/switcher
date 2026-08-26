@@ -1329,6 +1329,14 @@ fn get_language() -> String {
         .unwrap_or_else(|_| "ko".to_string())
 }
 
+/// 저장된 앱 색감 — 프론트와 메모창이 첫 화면을 그리기 전에 읽는다.
+#[tauri::command]
+fn get_accent_theme() -> String {
+    Env::real()
+        .map(|env| settings::load_accent_theme(&env.store))
+        .unwrap_or_else(|_| settings::DEFAULT_ACCENT_THEME.to_string())
+}
+
 /// 트레이 메뉴를 주어진 언어로 구성한다. 언어가 바뀌면 통째로 다시 만들어 갈아 끼운다.
 /// Windows: 설정 → 언어 서브메뉴(체크 표시). macOS: 언어 변경은 아직 개발 진행중 —
 /// 비활성 항목으로만 알린다 (메뉴바 앱 관례·키체인 경로 검증이 남아 있다).
@@ -1337,7 +1345,7 @@ fn build_tray_menu(
     lang: &str,
 ) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{Menu, MenuItem, Submenu};
-    let [open_l, hide_l, settings_l, language_l, auto_update_l, auto_start_l, black_l, visible_l, display_l, tfsd_l, check_update_l, quit_l] =
+    let [open_l, hide_l, settings_l, language_l, accent_theme_l, auto_update_l, auto_start_l, black_l, visible_l, display_l, tfsd_l, check_update_l, quit_l] =
         settings::tray_labels(lang);
     let show = MenuItem::with_id(app, "show", open_l, true, None::<&str>)?;
     let hide = MenuItem::with_id(app, "hide", hide_l, true, None::<&str>)?;
@@ -1370,6 +1378,33 @@ fn build_tray_menu(
             .collect();
         let language = Submenu::with_id_and_items(app, "language", language_l, true, &lang_refs)?;
         let store = Env::real().map(|env| env.store).ok();
+        let active_theme = store
+            .as_deref()
+            .map(settings::load_accent_theme)
+            .unwrap_or_else(|| settings::DEFAULT_ACCENT_THEME.to_string());
+        let theme_labels = settings::accent_theme_labels(lang);
+        let mut theme_items: Vec<CheckMenuItem<tauri::Wry>> = Vec::new();
+        for ((theme, _), label) in settings::ACCENT_THEMES.into_iter().zip(theme_labels) {
+            theme_items.push(CheckMenuItem::with_id(
+                app,
+                format!("accent:{theme}"),
+                label,
+                true,
+                theme == active_theme,
+                None::<&str>,
+            )?);
+        }
+        let theme_refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = theme_items
+            .iter()
+            .map(|item| item as &dyn tauri::menu::IsMenuItem<tauri::Wry>)
+            .collect();
+        let accent_theme = Submenu::with_id_and_items(
+            app,
+            "accent-theme",
+            accent_theme_l,
+            true,
+            &theme_refs,
+        )?;
         let flag = |key: &str, default: bool| {
             store
                 .as_deref()
@@ -1454,7 +1489,14 @@ fn build_tray_menu(
             "settings",
             settings_l,
             true,
-            &[&language, &visible, &auto_update, &auto_start, &tfsd],
+            &[
+                &language,
+                &accent_theme,
+                &visible,
+                &auto_update,
+                &auto_start,
+                &tfsd,
+            ],
         )?
     };
     // 블랙 모니터 진입점은 표시 기능에서 껐으면 트레이에서도 숨긴다
@@ -2049,6 +2091,28 @@ fn apply_language(app: &tauri::AppHandle, lang: &str) {
     }
     refresh_tray_menu(app, lang);
     let _ = app.emit("language-changed", lang);
+}
+
+/// 색감 변경 적용: 저장 → 트레이 체크 이동 → 열린 모든 웹뷰에 즉시 알림.
+fn apply_accent_theme(app: &tauri::AppHandle, theme: &str) {
+    use tauri::Emitter;
+    if !settings::is_accent_theme_supported(theme) {
+        return;
+    }
+    let env = match Env::real() {
+        Ok(env) => env,
+        Err(e) => {
+            eprintln!("색감 저장 실패: {e}");
+            return;
+        }
+    };
+    if let Err(e) = settings::save_accent_theme(&env.store, theme) {
+        eprintln!("색감 저장 실패: {e}");
+        return;
+    }
+    let lang = settings::load_language(&env.store);
+    refresh_tray_menu(app, &lang);
+    let _ = app.emit("accent-theme-changed", theme);
 }
 
 /// 메모장 내용 읽기 — 파일이 없거나 깨져 있으면 빈 탭 5개.
@@ -2678,6 +2742,9 @@ pub fn run() {
                     id if id.starts_with("lang:") => {
                         apply_language(app, id.trim_start_matches("lang:"));
                     }
+                    id if id.starts_with("accent:") => {
+                        apply_accent_theme(app, id.trim_start_matches("accent:"));
+                    }
                     "toggle-auto-update" => {
                         toggle_flag(app, settings::KEY_AUTO_UPDATE, true);
                     }
@@ -2771,6 +2838,7 @@ pub fn run() {
             initial_view_mode,
             demo_mode,
             get_language,
+            get_accent_theme,
             get_visibility,
             tfsd_toggle,
             github_list,
