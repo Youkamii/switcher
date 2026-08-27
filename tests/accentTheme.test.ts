@@ -11,8 +11,10 @@ import {
 const themeCss = readFileSync(new URL("../src/theme.css", import.meta.url), "utf8");
 const indexHtml = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const memoHtml = readFileSync(new URL("../memo.html", import.meta.url), "utf8");
+const vaultHtml = readFileSync(new URL("../vault.html", import.meta.url), "utf8");
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 const memoSource = readFileSync(new URL("../src/memo.ts", import.meta.url), "utf8");
+const vaultSource = readFileSync(new URL("../src/vault.ts", import.meta.url), "utf8");
 const stylesSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const libSource = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 const settingsSource = readFileSync(
@@ -210,15 +212,16 @@ test("keeps themed monitor series and warning fills distinguishable", () => {
   );
 });
 
-test("wires the native setting into both themed windows", () => {
+test("wires the native setting into every themed window", () => {
   assert.match(indexHtml, /src\/theme\.css/);
   assert.match(memoHtml, /src\/theme\.css/);
+  assert.match(vaultHtml, /src\/theme\.css/);
   assert.match(themeCss, /data-accent-theme="purple"/);
   assert.match(settingsSource, /get_accent_theme|load_accent_theme/);
   assert.match(libSource, /get_accent_theme/);
   assert.match(libSource, /accent-theme-changed/);
 
-  for (const source of [mainSource, memoSource]) {
+  for (const source of [mainSource, memoSource, vaultSource]) {
     assert.match(source, /get_accent_theme/);
     assert.match(source, /accent-theme-changed/);
     assert.match(source, /applyAccentTheme/);

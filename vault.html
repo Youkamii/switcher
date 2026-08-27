@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Switcher Vault</title>
+    <link rel="stylesheet" href="/src/theme.css" />
+    <link rel="stylesheet" href="/src/vault.css" />
+  </head>
+  <body>
+    <div class="vault-shell">
+      <header class="vault-titlebar" data-tauri-drag-region>
+        <div class="vault-heading" data-tauri-drag-region>
+          <span class="vault-mark" aria-hidden="true">◇</span>
+          <span id="vault-title" data-tauri-drag-region>인증정보 이동</span>
+        </div>
+        <button id="vault-close" class="icon-button" type="button" aria-label="닫기">×</button>
+      </header>
+
+      <nav class="vault-tabs" role="tablist" aria-label="인증정보 이동 방식">
+        <button
+          id="export-tab"
+          class="vault-tab active"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="export-panel"
+        >
+          내보내기
+        </button>
+        <button
+          id="import-tab"
+          class="vault-tab"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="import-panel"
+        >
+          가져오기
+        </button>
+      </nav>
+
+      <main>
+        <section id="export-panel" class="vault-panel" role="tabpanel" aria-labelledby="export-tab">
+          <p id="export-intro" class="intro">
+            이 PC에 저장된 프로필 중 옮길 항목을 고르세요. 내보내는 동안 새 Claude 로그인을
+            시작하지 마세요.
+          </p>
+          <div id="profile-list" class="profile-list" aria-busy="true"></div>
+          <p id="export-email-notice" class="privacy-notice">
+            이메일 숨김은 Switcher의 메타정보와 표시에서만 적용됩니다. 토큰 자체의 식별정보까지
+            받는 사람에게 숨길 수는 없습니다.
+          </p>
+          <button id="export-button" class="primary-button" type="button" disabled>
+            암호화 파일 내보내기
+          </button>
+
+          <section id="recovery-result" class="recovery-result" aria-labelledby="recovery-title" hidden>
+            <strong id="recovery-title">복구 코드</strong>
+            <p id="recovery-once" class="warning-copy">
+              파일과 따로 보관한 뒤 복사 또는 보관 완료를 눌러 확인하세요.
+            </p>
+            <div class="code-row">
+              <code id="recovery-code"></code>
+            </div>
+            <div class="recovery-actions">
+              <button id="copy-recovery" class="secondary-button" type="button">복사</button>
+              <button id="confirm-recovery" class="secondary-button" type="button">
+                보관 완료
+              </button>
+            </div>
+          </section>
+
+          <p id="export-status" class="status" role="status" aria-live="polite"></p>
+        </section>
+
+        <section
+          id="import-panel"
+          class="vault-panel"
+          role="tabpanel"
+          aria-labelledby="import-tab"
+          hidden
+        >
+          <p id="import-intro" class="intro">
+            암호화 파일과 별도로 받은 복구 코드가 모두 필요합니다.
+          </p>
+
+          <button id="choose-import-file" class="secondary-button wide-button" type="button">
+            .switcher-vault 파일 선택
+          </button>
+          <p id="import-file-state" class="file-state">선택된 파일 없음</p>
+
+          <label id="recovery-input-label" class="field-label" for="recovery-input">복구 코드</label>
+          <input
+            id="recovery-input"
+            class="secret-input"
+            type="password"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+          />
+
+          <p id="email-notice" class="privacy-notice">
+            이메일 숨김은 Switcher의 메타정보와 표시에서만 적용됩니다. 토큰 자체의 식별정보까지
+            받는 사람에게 숨길 수는 없습니다.
+          </p>
+
+          <button id="import-button" class="primary-button" type="button">
+            새 프로필로 가져오기
+          </button>
+          <p id="import-status" class="status" role="status" aria-live="polite"></p>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="/src/vault.ts"></script>
+  </body>
+</html>

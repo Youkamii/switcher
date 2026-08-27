@@ -13,6 +13,7 @@ mod stats;
 mod tfsd;
 mod update;
 mod usage;
+mod vault;
 
 use accounts::{Env, Provider, Snapshot, SwitchResult};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,9 +51,7 @@ fn cursor_position_in_window(window: &tauri::WebviewWindow) -> Option<tauri::Log
 }
 
 #[cfg(not(target_os = "macos"))]
-fn cursor_position_in_window(
-    window: &tauri::WebviewWindow,
-) -> Option<tauri::LogicalPosition<f64>> {
+fn cursor_position_in_window(window: &tauri::WebviewWindow) -> Option<tauri::LogicalPosition<f64>> {
     let cursor = window.cursor_position().ok()?;
     let pos = window.inner_position().ok()?;
     let scale = window.scale_factor().ok()?;
@@ -98,18 +97,11 @@ struct HitRegion {
     action: Option<(String, String)>,
 }
 
-fn hit_region_at(
-    regions: &[HitRegion],
-    cursor: tauri::LogicalPosition<f64>,
-) -> Option<usize> {
+fn hit_region_at(regions: &[HitRegion], cursor: tauri::LogicalPosition<f64>) -> Option<usize> {
     let mut card_hit = None;
     for (index, region) in regions.iter().enumerate() {
         let [x, y, width, height] = region.rect;
-        if cursor.x < x
-            || cursor.x > x + width
-            || cursor.y < y
-            || cursor.y > y + height
-        {
+        if cursor.x < x || cursor.x > x + width || cursor.y < y || cursor.y > y + height {
             continue;
         }
         // 오래된 카드 좌표가 버튼이나 이동 핸들의 클릭을 가로채면 안 된다.
@@ -286,6 +278,73 @@ fn list_profiles(provider: String) -> Result<Snapshot, String> {
 }
 
 #[tauri::command]
+fn vault_list_profiles(window: tauri::WebviewWindow) -> Result<Vec<vault::VaultProfile>, String> {
+    require_vault_caller(&window)?;
+    vault::list_profiles(&Env::real()?)
+}
+
+fn require_vault_caller(window: &tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() == "vault" {
+        Ok(())
+    } else {
+        Err("인증정보 이동 창에서만 사용할 수 있습니다".into())
+    }
+}
+
+#[tauri::command]
+async fn vault_export(
+    window: tauri::WebviewWindow,
+    path: String,
+    selections: Vec<vault::VaultSelection>,
+) -> Result<vault::VaultExportResult, String> {
+    require_vault_caller(&window)?;
+    // guard를 blocking 작업이 직접 소유해야 WebView reload로 이 Future가 취소돼도
+    // 실제 파일 작업이 끝나기 전에 종료·다음 작업이 열리지 않는다.
+    let operation = vault::begin_operation()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = operation;
+        let result = vault::export(&Env::real()?, std::path::Path::new(&path), selections)?;
+        // 파일이 만들어진 같은 작업 안에서 복구 코드도 보관한다. 호출자가 사라져도
+        // 다음 vault 창이 pending 코드를 다시 받아 표시할 수 있다.
+        vault::hold_recovery_for_delivery(&result.recovery_code)?;
+        Ok(result)
+    })
+    .await
+    .map_err(|_| "인증정보 내보내기 작업이 중단되었습니다".to_string())?
+}
+
+#[tauri::command]
+async fn vault_import(
+    window: tauri::WebviewWindow,
+    path: String,
+    recovery_code: String,
+) -> Result<vault::VaultImportResult, String> {
+    require_vault_caller(&window)?;
+    let operation = vault::begin_operation()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = operation;
+        vault::import(&Env::real()?, std::path::Path::new(&path), recovery_code)
+    })
+    .await
+    .map_err(|_| "인증정보 가져오기 작업이 중단되었습니다".to_string())?
+}
+
+#[tauri::command]
+fn vault_pending_recovery(window: tauri::WebviewWindow) -> Result<Option<String>, String> {
+    require_vault_caller(&window)?;
+    vault::pending_recovery()
+}
+
+#[tauri::command]
+fn vault_ack_recovery_stored(
+    window: tauri::WebviewWindow,
+    recovery_code: String,
+) -> Result<bool, String> {
+    require_vault_caller(&window)?;
+    vault::ack_recovery_stored(recovery_code)
+}
+
+#[tauri::command]
 fn save_profile(provider: String, name: String) -> Result<String, String> {
     // 빈 이름이면 백엔드가 자동 작명한다 — 실제 저장된 이름을 돌려준다
     accounts::save_current(&Env::real()?, Provider::parse(&provider)?, &name)
@@ -333,7 +392,9 @@ fn delete_profile(provider: String, name: String) -> Result<(), String> {
 /// 클램셸 슬립 방지 현재 모드: -1 미지원 · 0 꺼짐 · 1 일회성 · 2 지속
 #[tauri::command]
 fn clamshell_mode() -> i8 {
-    Env::real().map(|env| clamshell::mode(&env.store)).unwrap_or(-1)
+    Env::real()
+        .map(|env| clamshell::mode(&env.store))
+        .unwrap_or(-1)
 }
 
 /// 클램셸 버튼 클릭 — off → 일회성 → 지속 → off 순환.
@@ -350,7 +411,12 @@ async fn clamshell_cycle(app: tauri::AppHandle) -> Result<i8, String> {
 
 #[tauri::command]
 async fn fetch_usage(provider: String, profile: Option<String>) -> Result<usage::Usage, String> {
-    usage::fetch(&Env::real()?, Provider::parse(&provider)?, profile.as_deref()).await
+    usage::fetch(
+        &Env::real()?,
+        Provider::parse(&provider)?,
+        profile.as_deref(),
+    )
+    .await
 }
 
 /// 로그인을 시작하고 사용자가 원하는 브라우저에 붙여넣을 주소를 돌려준다.
@@ -398,8 +464,8 @@ async fn submit_login_code(
     tauri::async_runtime::spawn_blocking(move || {
         login::submit_code(&Env::real()?, &code, generation)
     })
-        .await
-        .map_err(|e| format!("로그인 완료 실패: {e}"))?
+    .await
+    .map_err(|e| format!("로그인 완료 실패: {e}"))?
 }
 
 /// 브라우저 쪽에서 로그인이 끝나기를 기다린다 (코덱스)
@@ -675,7 +741,9 @@ static BLACK_BRIGHTNESS: Mutex<Option<BlackBrightnessSession>> = Mutex::new(None
 
 #[cfg(any(windows, target_os = "macos"))]
 fn black_brightness_path() -> Option<std::path::PathBuf> {
-    Env::real().ok().map(|env| env.store.join("black_brightness.json"))
+    Env::real()
+        .ok()
+        .map(|env| env.store.join("black_brightness.json"))
 }
 
 /// 저장 후 전부 0으로 — DDC 명령이 모니터당 수십~수백 ms라 스레드에서 부른다.
@@ -921,9 +989,7 @@ async fn black_on(app: tauri::AppHandle) -> Result<(), String> {
                     ns_app.activateIgnoringOtherApps(true);
                 }
                 // ESC 해제를 받을 수 있게 첫 오버레이에 키보드 포커스
-                if let Some(first) =
-                    handle.get_webview_window(&format!("black-{session_gen}-0"))
-                {
+                if let Some(first) = handle.get_webview_window(&format!("black-{session_gen}-0")) {
                     let _ = first.set_focus();
                 }
             });
@@ -1203,8 +1269,8 @@ async fn github_star_repository(
 #[tauri::command]
 async fn github_login_start(request_id: String) -> Result<github::GhLoginPrompt, String> {
     let worker_request_id = request_id.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || github::login_start(worker_request_id))
-        .await;
+    let result =
+        tauri::async_runtime::spawn_blocking(move || github::login_start(worker_request_id)).await;
     github::release_login_start(&request_id)?;
     result.map_err(|e| format!("GitHub 로그인 시작 실패: {e}"))?
 }
@@ -1398,13 +1464,8 @@ fn build_tray_menu(
             .iter()
             .map(|item| item as &dyn tauri::menu::IsMenuItem<tauri::Wry>)
             .collect();
-        let accent_theme = Submenu::with_id_and_items(
-            app,
-            "accent-theme",
-            accent_theme_l,
-            true,
-            &theme_refs,
-        )?;
+        let accent_theme =
+            Submenu::with_id_and_items(app, "accent-theme", accent_theme_l, true, &theme_refs)?;
         let flag = |key: &str, default: bool| {
             store
                 .as_deref()
@@ -1436,6 +1497,15 @@ fn build_tray_menu(
             flag(settings::KEY_TFSD, false),
             None::<&str>,
         )?;
+        let vault_label = match lang {
+            "en" => "Transfer credentials…",
+            "ja" => "認証情報を移行…",
+            "zh-CN" => "迁移认证信息…",
+            "zh-TW" => "移轉認證資訊…",
+            "hi" => "प्रमाण-पत्र स्थानांतरित करें…",
+            _ => "인증정보 이동…",
+        };
+        let vault = MenuItem::with_id(app, "vault", vault_label, true, None::<&str>)?;
         // 표시 기능 — 안 쓰는 섹션·기능을 위젯에서 숨긴다 (제품명은 번역하지 않는다)
         let vis_claude = CheckMenuItem::with_id(
             app,
@@ -1482,7 +1552,13 @@ fn build_tray_menu(
             "visible",
             visible_l,
             true,
-            &[&vis_claude, &vis_codex, &vis_github, &vis_black, &vis_display],
+            &[
+                &vis_claude,
+                &vis_codex,
+                &vis_github,
+                &vis_black,
+                &vis_display,
+            ],
         )?;
         Submenu::with_id_and_items(
             app,
@@ -1496,6 +1572,7 @@ fn build_tray_menu(
                 &auto_update,
                 &auto_start,
                 &tfsd,
+                &vault,
             ],
         )?
     };
@@ -1677,8 +1754,13 @@ mod shutdown_cleanup_tests {
 /// 종료로 마지막 입력이 유실되지 않게 blur(즉시 플러시)를 지시하고, 대기와
 /// `then`은 딴 스레드에서 — 이 함수는 UI 스레드에서 불리는데 여기서 자면
 /// eval 전달도 memo_save IPC도 같은 메시지 펌프에 갇힌다 (red-review — 자기 봉쇄)
-fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'static) {
+fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'static) -> bool {
     use tauri::{Emitter, Manager};
+    // 종료 예약과 vault 작업 시작을 같은 잠금에서 직렬화한다. 이 예약 뒤에는
+    // cleanup이 끝날 때까지 새 내보내기·가져오기가 시작될 수 없다.
+    if !vault::try_reserve_shutdown() {
+        return false;
+    }
     // worker가 세션을 등록하기 전인 예약도 종료 정리보다 뒤늦게 시작하지 못하게 한다.
     // 이미 Starting인 worker는 provider completion lock을 쥐고 세션 등록까지 진행하므로,
     // 아래 cancel이 그 뒤를 기다렸다가 정확한 세션을 종료한다.
@@ -1711,6 +1793,7 @@ fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'st
             return;
         };
 
+        vault::release_shutdown_reservation();
         github::unblock_starts_after_failed_shutdown();
         login::unblock_starts_after_failed_shutdown();
         let message = format!(
@@ -1727,6 +1810,7 @@ fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'st
             eprintln!("종료 차단 뒤 메인 창 표시 실패: {dispatch_error}");
         }
     });
+    true
 }
 
 /// 새 버전으로 재시작 — 트레이 "업데이트 확인"이 교체를 마친 뒤 부른다 (사용자
@@ -1739,18 +1823,15 @@ fn restart_into(
     app: &tauri::AppHandle,
     relaunch: std::path::PathBuf,
     replace_target: Option<std::path::PathBuf>,
-) {
+) -> bool {
     let handle = app.clone();
     shutdown_after_flush(app, move || {
         #[cfg(windows)]
         if let Some(target) = replace_target.as_ref() {
-            match update::spawn_windows_update_helper(
-                &relaunch,
-                target,
-                std::process::id(),
-            ) {
+            match update::spawn_windows_update_helper(&relaunch, target, std::process::id()) {
                 Ok(()) => handle.exit(0),
                 Err(error) => {
+                    vault::release_shutdown_reservation();
                     github::unblock_starts_after_failed_shutdown();
                     login::unblock_starts_after_failed_shutdown();
                     eprintln!("업데이트 helper 시작 실패 (앱을 유지합니다): {error}");
@@ -1770,12 +1851,13 @@ fn restart_into(
             Ok(_) => handle.exit(0),
             // 스폰 실패면 앱은 계속 산다 — 교체는 이미 됐으니 다음 실행부터 반영
             Err(e) => {
+                vault::release_shutdown_reservation();
                 github::unblock_starts_after_failed_shutdown();
                 login::unblock_starts_after_failed_shutdown();
                 eprintln!("재시작 실패 (다음 실행부터 새 버전): {e}");
             }
         }
-    });
+    })
 }
 
 /// 업데이트 재시작 핸드셰이크 — 재시작으로 태어난 프로세스는 전임자가 완전히
@@ -1838,8 +1920,12 @@ fn check_update_now(app: &tauri::AppHandle) {
                 // 원래 의미(재시작 시 적용) 그대로다.
                 let _ = handle.emit("update-restarting", version.clone());
                 tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-                restart_into(&handle, relaunch, replace_target);
-                format!(" — v{version} ↻")
+                if restart_into(&handle, relaunch, replace_target) {
+                    format!(" — v{version} ↻")
+                } else {
+                    show_vault_window(&handle);
+                    format!(" — v{version} · 인증정보 이동 완료 후 재시작")
+                }
             }
             Ok(update::UpdateOutcome::Current { version }) => format!(" — ✓ v{version}"),
             Err(e) => {
@@ -1944,8 +2030,7 @@ mod shortcut {
         if lnk.exists() {
             return Ok(());
         }
-        let link =
-            mslnk::ShellLink::new(target).map_err(|e| format!("바로가기 생성 실패: {e}"))?;
+        let link = mslnk::ShellLink::new(target).map_err(|e| format!("바로가기 생성 실패: {e}"))?;
         link.create_lnk(&lnk)
             .map_err(|e| format!("바로가기 저장 실패: {e}"))
     }
@@ -1963,7 +2048,10 @@ mod shortcut {
         #[test]
         fn expands_env_vars() {
             std::env::set_var("SWITCHER_TEST_VAR", "C:\\probe");
-            assert_eq!(expand_env("%SWITCHER_TEST_VAR%\\Desktop"), "C:\\probe\\Desktop");
+            assert_eq!(
+                expand_env("%SWITCHER_TEST_VAR%\\Desktop"),
+                "C:\\probe\\Desktop"
+            );
             assert_eq!(expand_env("no-vars"), "no-vars");
             // 정의되지 않은 변수는 원문 그대로 남긴다
             assert_eq!(expand_env("%UNSET_VAR_XYZ%\\x"), "%UNSET_VAR_XYZ%\\x");
@@ -2002,8 +2090,7 @@ mod autostart {
             .create_subkey(RUN_KEY)
             .map_err(|e| format!("자동 실행 레지스트리 열기 실패: {e}"))?;
         if enabled {
-            let exe =
-                std::env::current_exe().map_err(|e| format!("실행 경로 확인 실패: {e}"))?;
+            let exe = std::env::current_exe().map_err(|e| format!("실행 경로 확인 실패: {e}"))?;
             key.set_value(name, &format!("\"{}\"", exe.display()))
                 .map_err(|e| format!("자동 실행 등록 실패: {e}"))
         } else {
@@ -2232,6 +2319,46 @@ async fn memo_toggle(app: tauri::AppHandle) -> Result<(), String> {
     toggle_aux_window(&app, "memo", "memo.html", 280.0, 340.0)
 }
 
+/// 웹뷰의 직접 hide 권한 대신 이 관문을 쓴다. 프런트 상태가 IPC 오류로 어긋나도
+/// 백엔드에 작업·미확인 복구 코드가 남아 있으면 창을 숨기지 않는다.
+#[tauri::command]
+fn vault_hide(window: tauri::WebviewWindow) -> Result<(), String> {
+    require_vault_caller(&window)?;
+    if vault::operation_busy() {
+        ensure_on_screen(&window);
+        aux_show(&window);
+        return Err(
+            "복구 코드를 보관하거나 인증정보 이동 작업이 끝날 때까지 창을 닫을 수 없습니다".into(),
+        );
+    }
+    window
+        .hide()
+        .map_err(|_| "인증정보 이동 창을 숨길 수 없습니다".to_string())
+}
+
+fn show_vault_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("vault") {
+        ensure_on_screen(&window);
+        aux_show(&window);
+    } else {
+        let _ = toggle_aux_window(app, "vault", "vault.html", 420.0, 560.0);
+    }
+}
+
+fn toggle_vault_window(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    if vault::operation_busy()
+        && app
+            .get_webview_window("vault")
+            .is_some_and(|window| window.is_visible().unwrap_or(false))
+    {
+        show_vault_window(app);
+        return Err("인증정보 이동 작업이 끝날 때까지 창을 닫을 수 없습니다".into());
+    }
+    toggle_aux_window(app, "vault", "vault.html", 420.0, 560.0)
+}
+
 /// 시스템 상태 샘플 — 위젯의 SYSTEM 섹션이 1초 주기로 부른다.
 /// async: 동기 커맨드는 메인 스레드에서 돌아 sysinfo 갱신(수 ms, 볼륨 많으면 더)이
 /// 매초 UI를 버벅이게 했다 (리뷰 #53)
@@ -2387,8 +2514,14 @@ pub fn run() {
             show_main_window(app);
         }))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             use tauri::Manager;
+            if let Ok(env) = Env::real() {
+                if let Err(error) = vault::recover_stale_imports(&env) {
+                    eprintln!("중단된 인증정보 가져오기 복구 실패: {error}");
+                }
+            }
             #[cfg(target_os = "macos")]
             {
                 // 위젯은 Dock·Cmd+Tab에 나오지 않는다 — 트레이(메뉴바)로만 상주
@@ -2458,7 +2591,7 @@ pub fn run() {
                         use tauri::Manager;
                         // 부속 창(메모)도 위젯을 따라다닌다 — CanJoinAllSpaces의
                         // 같은 실측 한계라 같은 보완을 받는다 (숨김 상태는 불변)
-                        for label in ["main", "memo"] {
+                        for label in ["main", "memo", "vault"] {
                             let Some(window) = on_main.get_webview_window(label) else {
                                 continue;
                             };
@@ -2579,6 +2712,9 @@ pub fn run() {
                     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
                     if open.contains("memo") {
                         let _ = toggle_aux_window(&handle, "memo", "memo.html", 280.0, 340.0);
+                    }
+                    if open.contains("vault") {
+                        let _ = toggle_vault_window(&handle);
                     }
                     // 검증 훅: 블랙 모니터를 켠 채 시작 — 해제(ESC·흔들기)는 실제
                     // 경로로 검증한다 (memo·monitor와 같은 SWITCHER_OPEN 계열)
@@ -2735,15 +2871,23 @@ pub fn run() {
                         }
                     }
                     "quit" => {
-                        // 정리(로그인 취소·메모 플러시) 후 종료 — 절차는 shutdown_after_flush 주석 참조
+                        // shutdown_after_flush가 vault 작업 상태와 같은 잠금에서 종료를
+                        // 예약한다. 관찰과 사용 사이에 새 작업이 끼어들 틈을 두지 않는다.
                         let handle = app.clone();
-                        shutdown_after_flush(app, move || handle.exit(0));
+                        if !shutdown_after_flush(app, move || handle.exit(0)) {
+                            // 암호 파일 저장 직후 종료하면 아직 화면에 전달되지 않은 복구
+                            // 코드를 영구히 잃는다. 작업이 끝날 때까지 창을 유지한다.
+                            show_vault_window(app);
+                        }
                     }
                     id if id.starts_with("lang:") => {
                         apply_language(app, id.trim_start_matches("lang:"));
                     }
                     id if id.starts_with("accent:") => {
                         apply_accent_theme(app, id.trim_start_matches("accent:"));
+                    }
+                    "vault" => {
+                        let _ = toggle_vault_window(app);
                     }
                     "toggle-auto-update" => {
                         toggle_flag(app, settings::KEY_AUTO_UPDATE, true);
@@ -2804,16 +2948,24 @@ pub fn run() {
             // 메모창도 닫기=숨기기 — Alt+F4가 창을 파괴하면
             // "창 재사용 + 숨김 전 저장" 계약이 깨진다 (red-review).
             // black-* 오버레이는 black_off가 실제로 닫아야 하므로 제외.
-            if !matches!(window.label(), "main" | "memo") {
+            if !matches!(window.label(), "main" | "memo" | "vault") {
                 return;
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
-                let _ = window.hide();
+                if window.label() != "vault" || !vault::operation_busy() {
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
             list_profiles,
+            vault_list_profiles,
+            vault_export,
+            vault_import,
+            vault_pending_recovery,
+            vault_ack_recovery_stored,
+            vault_hide,
             save_profile,
             switch_profile,
             delete_profile,

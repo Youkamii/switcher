@@ -204,8 +204,37 @@ fn merge_refreshed(provider: Provider, root: &mut Value, resp: &Value) -> Result
 // 밀린다 — 그래서 응답을 먼저 pending 사이드카에 착지시킨 뒤 본 파일을 만지고,
 // 성공하면 사이드카를 지운다. 잔존 사이드카는 다음 기회에 복구를 시도한다.
 
-fn pending_path(cred_path: &Path) -> std::path::PathBuf {
+pub(crate) fn pending_path(cred_path: &Path) -> std::path::PathBuf {
     cred_path.with_extension("json.pending")
+}
+
+/// 내보내기용 읽기 전용 스냅숏. pending 응답이 현재 자격증명의 refresh token에서
+/// 만들어진 것이면 메모리에서만 병합한다. 원본·활성 파일·pending은 절대 쓰거나
+/// 지우지 않는다. 전환의 `apply_pending_rescue`와 같은 병합 규칙을 공유한다.
+pub(crate) fn merge_pending_snapshot(
+    provider: Provider,
+    credential: &[u8],
+    pending: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
+    let Some(pending) = pending else {
+        return Ok(credential.to_vec());
+    };
+    let entry: Value = serde_json::from_slice(pending)
+        .map_err(|_| "갱신 복구 파일 형식이 올바르지 않습니다".to_string())?;
+    let (Some(old_refresh), Some(response)) = (
+        entry.get("old_refresh").and_then(Value::as_str),
+        entry.get("response"),
+    ) else {
+        return Err("갱신 복구 파일 형식이 올바르지 않습니다".into());
+    };
+    let mut current: Value = serde_json::from_slice(credential)
+        .map_err(|_| "저장된 인증정보 형식이 올바르지 않습니다".to_string())?;
+    if extract_refresh_token(provider, &current).as_deref() != Some(old_refresh) {
+        return Ok(credential.to_vec());
+    }
+    merge_refreshed(provider, &mut current, response)?;
+    serde_json::to_vec_pretty(&current)
+        .map_err(|_| "갱신된 인증정보 스냅숏을 만들 수 없습니다".to_string())
 }
 
 fn write_pending(cred_path: &Path, old_refresh: &str, resp: &Value) -> Result<(), String> {
@@ -356,34 +385,45 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
     let _inflight =
         crate::accounts::refresh_begin(crate::accounts::refresh_key(env, provider, name))
             .map_err(|_| FetchErr::Transient)?;
-    if !path.exists() {
-        return Ok(());
-    }
-    if pending_path(&path).exists() {
+    // 가져오기는 MUTATION_LOCK을 쥔 채 marked 최종 폴더를 만들고 commit 또는
+    // rollback한다. 같은 잠금 아래에서 marker와 토큰·meta를 다시 잡아야, 늦게
+    // 시작한 사용량 조회가 아직 원복될 수 있는 리프레시 토큰을 회전시키지 않는다.
+    let (root, meta) = {
         let _guard = MUTATION_LOCK
             .lock()
             .map_err(|_| FetchErr::Msg("내부 잠금 오류".into()))?;
-        apply_pending_rescue(env, provider, name, &path).map_err(FetchErr::Msg)?;
-    }
-    // 잠금을 기다리는 사이 다른 경로가 이미 갱신했으면 끝
-    let root = read_json(&path).map_err(FetchErr::Msg)?;
-    if !token_expiring(provider, &root) {
-        return Ok(());
-    }
-    // 활성 계정 보호는 여기(백엔드)가 강제한다 — 프론트 인자나 list()의 active
-    // 스냅숏에 의존하지 않는다. 활성 계정의 보관함 사본을 회전시키면 실행 중
-    // CLI의 토큰 패밀리와 충돌해 재로그인으로 밀릴 수 있다. 신원을 판정할 수
-    // 없으면(파일 경합 등) 갱신을 보류한다 — 다음 기회에 다시 시도하면 된다.
-    let Some(meta) = read_meta(&env.profiles_dir(provider).join(name)) else {
-        return Ok(());
+        let profile_dir = env.profiles_dir(provider).join(name);
+        if profile_dir
+            .join(crate::accounts::PROFILE_IMPORT_MARKER)
+            .exists()
+            || !path.exists()
+        {
+            return Ok(());
+        }
+        if pending_path(&path).exists() {
+            apply_pending_rescue(env, provider, name, &path).map_err(FetchErr::Msg)?;
+        }
+        // 잠금을 기다리는 사이 다른 경로가 이미 갱신했으면 끝
+        let root = read_json(&path).map_err(FetchErr::Msg)?;
+        if !token_expiring(provider, &root) {
+            return Ok(());
+        }
+        // 활성 계정 보호는 여기(백엔드)가 강제한다 — 프론트 인자나 list()의 active
+        // 스냅숏에 의존하지 않는다. 활성 계정의 보관함 사본을 회전시키면 실행 중
+        // CLI의 토큰 패밀리와 충돌해 재로그인으로 밀릴 수 있다. 신원을 판정할 수
+        // 없으면(파일 경합 등) 갱신을 보류한다 — 다음 기회에 다시 시도하면 된다.
+        let Some(meta) = read_meta(&profile_dir) else {
+            return Ok(());
+        };
+        match live_identity(env, provider) {
+            Ok(Some(live)) if live.id == meta.id => return Ok(()), // 활성 계정 — CLI 소관
+            Ok(Some(_)) => {}
+            Ok(None) if live_cred_exists(env, provider) => return Ok(()),
+            Ok(None) => {}
+            Err(_) => return Ok(()), // 신원 불명 — 보류 (fail-closed)
+        }
+        (root, meta)
     };
-    match live_identity(env, provider) {
-        Ok(Some(live)) if live.id == meta.id => return Ok(()), // 활성 계정 — CLI 소관
-        Ok(Some(_)) => {}
-        Ok(None) if live_cred_exists(env, provider) => return Ok(()),
-        Ok(None) => {}
-        Err(_) => return Ok(()), // 신원 불명 — 보류 (fail-closed)
-    }
     let refresh_token = extract_refresh_token(provider, &root)
         .ok_or_else(|| FetchErr::Msg("토큰 파일에 리프레시 토큰이 없습니다".into()))?;
 
@@ -1939,6 +1979,31 @@ mod tests {
             .unwrap();
         let root = read_json(&dir.join("credentials.json")).unwrap();
         assert_eq!(root.pointer("/claudeAiOauth/accessToken").unwrap(), "a");
+
+        // 가져오기 commit 전 marked 프로필은 만료 토큰과 meta가 모두 있어도
+        // 네트워크 갱신에 쓰지 않는다. rollback될 토큰을 회전시키면 유일본을 잃는다.
+        let marked = env.profiles_dir(Provider::Claude).join("marked");
+        fs::create_dir_all(&marked).unwrap();
+        let marked_cred = marked.join("credentials.json");
+        fs::write(
+            &marked_cred,
+            r#"{"claudeAiOauth":{"accessToken":"old","refreshToken":"never-send","expiresAt":1000}}"#,
+        )
+        .unwrap();
+        fs::write(
+            marked.join("meta.json"),
+            r#"{"id":"marked-id","email":null,"saved_at":1,"hide_email":true}"#,
+        )
+        .unwrap();
+        fs::write(
+            marked.join(crate::accounts::PROFILE_IMPORT_MARKER),
+            b"test-import",
+        )
+        .unwrap();
+        let marked_before = fs::read(&marked_cred).unwrap();
+        rt.block_on(ensure_fresh_profile(&env, Provider::Claude, "marked"))
+            .unwrap();
+        assert_eq!(fs::read(marked_cred).unwrap(), marked_before);
     }
 
     /// 실계정: 비활성 프로필의 expiresAt을 과거로 강제한 뒤 재발급이 실제로 도는지 확인.

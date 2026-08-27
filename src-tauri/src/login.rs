@@ -24,8 +24,8 @@ use std::time::{Duration, Instant};
 use crate::accounts::{
     auto_name, claude_apply_oauth_block, deletion_identity_key, deletion_snapshot,
     ensure_name_not_owned_by_other, find_profile_by_id, identity_from_value, live_identity, now,
-    profile_deleted_after, read_json, refresh_key, write_live_cred, write_profile_parts, Env,
-    LiveIdentity, Provider, MUTATION_LOCK,
+    profile_deleted_after, read_json, read_meta, refresh_key, write_live_cred, write_profile_parts,
+    Env, LiveIdentity, Provider, MUTATION_LOCK,
 };
 
 /// 로그인 링크가 화면에 뜰 때까지 기다리는 시간
@@ -1298,9 +1298,11 @@ fn import_inner(
     if updates_active && provider == Provider::Claude {
         claude_apply_oauth_block(env, &env.profiles_dir(provider).join(&name))?;
     }
+    let hide_email =
+        read_meta(&env.profiles_dir(provider).join(&name)).is_some_and(|meta| meta.hide_email);
     Ok(LoginOutcome {
         profile: name,
-        email: ident.email,
+        email: if hide_email { None } else { ident.email },
         updated_existing,
     })
 }
@@ -1968,6 +1970,52 @@ mod tests {
             .join("newbie")
             .join("oauth_account.json")
             .exists());
+    }
+
+    #[test]
+    fn relogin_keeps_hidden_email_out_of_outcome() {
+        let env = test_env("hidden-email-relogin");
+        let first = env.store.join("_login").join("first");
+        fs::create_dir_all(&first).unwrap();
+        fs::write(
+            first.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"fake-old-token"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            first.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-private","emailAddress":"private@test.dev"}}"#,
+        )
+        .unwrap();
+        let initial = import(&env, Provider::Claude, &first).unwrap();
+
+        let profile_dir = env.profiles_dir(Provider::Claude).join(&initial.profile);
+        let mut meta = read_meta(&profile_dir).unwrap();
+        meta.hide_email = true;
+        crate::accounts::atomic_write(
+            &profile_dir.join("meta.json"),
+            &serde_json::to_vec(&meta).unwrap(),
+        )
+        .unwrap();
+
+        let second = env.store.join("_login").join("second");
+        fs::create_dir_all(&second).unwrap();
+        fs::write(
+            second.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"fake-new-token"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            second.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-private","emailAddress":"private@test.dev"}}"#,
+        )
+        .unwrap();
+
+        let outcome = import(&env, Provider::Claude, &second).unwrap();
+        assert!(outcome.updated_existing);
+        assert_eq!(outcome.profile, initial.profile);
+        assert_eq!(outcome.email, None);
+        assert!(read_meta(&profile_dir).unwrap().hide_email);
     }
 
     #[test]

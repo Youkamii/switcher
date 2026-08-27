@@ -23,9 +23,14 @@ tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 # 중복 실행 방지 — 두 인스턴스가 같은 프로필 토큰을 동시에 회전시키는 사고 차단
 tauri-plugin-single-instance = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
+aes-gcm = "0.10.3"
+argon2 = "0.5.3"
+rand = "0.8.5"
+zeroize = { version = "1.8.1", features = ["derive"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # sync: 토큰 재발급 직렬화(REFRESH_LOCK), time: TFSD 감시 루프의 주기 슬립
 tokio = { version = "1", features = ["sync", "time"] }

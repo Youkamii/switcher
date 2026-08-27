@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "vault",
+  "description": "인증정보 이동 창 — 창 이동과 암호 파일 열기·저장만 허용",
+  "windows": ["vault"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "dialog:allow-open",
+    "dialog:allow-save"
+  ]
+}

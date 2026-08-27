@@ -176,7 +176,8 @@ pub(crate) mod keychain {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("security 실행 실패: {e}"))?;
-        let cmd = format!("add-generic-password -U -a \"{account}\" -s \"{service}\" -X \"{hex}\"\n");
+        let cmd =
+            format!("add-generic-password -U -a \"{account}\" -s \"{service}\" -X \"{hex}\"\n");
         child
             .stdin
             .take()
@@ -220,7 +221,9 @@ pub(crate) mod keychain {
             let payload = br#"{"probe":"not-a-secret"}"#;
             write_item(&svc, &username(), payload).unwrap();
             assert!(item_exists(&svc));
-            let read = read_item(&svc).unwrap().expect("방금 쓴 항목이 있어야 한다");
+            let read = read_item(&svc)
+                .unwrap()
+                .expect("방금 쓴 항목이 있어야 한다");
             assert_eq!(read, payload);
             // 같은 항목 갱신(-U)도 되어야 한다 (전환마다 일어나는 일)
             let payload2 = br#"{"probe":"updated"}"#;
@@ -238,6 +241,10 @@ pub struct Meta {
     pub id: String,
     pub email: Option<String>,
     pub saved_at: u64,
+    /// 이메일은 자격증명 안에도 들어 있을 수 있으므로 보안상 제거되는 값은 아니다.
+    /// Switcher 화면에서만 이메일 대신 프로필 이름을 보이게 하는 표시 설정이다.
+    #[serde(default)]
+    pub hide_email: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -276,6 +283,9 @@ pub struct SwitchResult {
 /// 저장·전환·삭제·임포트는 파일을 옮기는 다단계 작업이라 동시에 두 개가 돌면
 /// 백업과 교체가 교차해 계정이 어긋날 수 있다 — 이 잠금으로 직렬화한다.
 pub(crate) static MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// vault 가져오기가 최종 commit되기 전인 프로필 폴더의 표식. 이 표식이 있으면
+/// 일반 목록·전환·갱신 경로에서 절대 사용하지 않는다.
+pub(crate) const PROFILE_IMPORT_MARKER: &str = ".vault-import-id";
 
 /// 프로필 단위 수명 잠금. 토큰 재발급은 공유 상태(refreshes), 전환·삭제는 배타 상태로
 /// 등록한다. "재발급이 없음을 확인 → 전환/삭제 시작" 사이의 틈까지 같은 잠금 안에서
@@ -316,9 +326,8 @@ pub(crate) fn deletion_identity_key(env: &Env, provider: Provider, id: &str) -> 
 static DELETE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn profile_deletions() -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
-    static CELL: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, u64>>,
-    > = std::sync::OnceLock::new();
+    static CELL: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
+        std::sync::OnceLock::new();
     CELL.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
@@ -378,7 +387,7 @@ impl Drop for RefreshInflightGuard {
     }
 }
 
-struct ProfileExclusiveGuard {
+pub(crate) struct ProfileExclusiveGuard {
     key: String,
 }
 
@@ -402,7 +411,7 @@ impl Drop for ProfileExclusiveGuard {
 
 /// 기존 재발급이 끝날 때까지 기다린 뒤 전환·삭제 권한을 원자적으로 차지한다.
 /// MUTATION_LOCK보다 먼저 얻어야 재발급의 파일 반영과 교착하지 않는다.
-fn profile_exclusive_begin(
+pub(crate) fn profile_exclusive_begin(
     key: String,
     timeout: std::time::Duration,
 ) -> Result<ProfileExclusiveGuard, String> {
@@ -507,11 +516,43 @@ fn atomic_replace_in_parent(path: &Path, data: &[u8], parent: &Path) -> Result<(
         return Err(format!("쓰기 실패 {}: {e}", tmp.display()));
     }
     drop(file);
-    fs::rename(&tmp, path).map_err(|e| {
+    replace_file(&tmp, path).map_err(|e| {
         // 실패 시 평문 토큰이 담긴 임시 파일을 남기지 않는다
         let _ = fs::remove_file(&tmp);
         format!("교체 실패 {}: {e}", path.display())
     })
+}
+
+#[cfg(not(windows))]
+fn replace_file(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    fs::rename(tmp, path)
+}
+
+#[cfg(windows)]
+fn replace_file(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "Kernel32")]
+    extern "system" {
+        fn MoveFileExW(existing: *const u16, new_name: *const u16, flags: u32) -> i32;
+    }
+
+    let existing: Vec<u16> = tmp.as_os_str().encode_wide().chain(Some(0)).collect();
+    let new_name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x0000_0001;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x0000_0008;
+    let ok = unsafe {
+        MoveFileExW(
+            existing.as_ptr(),
+            new_name.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if ok != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 /// 자격증명 정규화 — claude CLI 2.1.223부터(실측 2026-08-07) 맥 키체인 값이
@@ -755,7 +796,7 @@ pub(crate) fn live_identity(env: &Env, provider: Provider) -> Result<Option<Live
 }
 
 /// ~/.claude.json의 oauthAccount 블록 (프로필에 함께 보관해 전환 시 복원)
-fn claude_oauth_block(env: &Env) -> Result<Option<Value>, String> {
+pub(crate) fn claude_oauth_block(env: &Env) -> Result<Option<Value>, String> {
     let path = env.claude_json_path();
     if !path.exists() {
         return Ok(None);
@@ -774,25 +815,109 @@ pub(crate) fn write_profile_parts(
     oauth_block: Option<&Value>,
 ) -> Result<(), String> {
     let dir = env.profiles_dir(provider).join(name);
+    if dir.join(PROFILE_IMPORT_MARKER).exists() {
+        return Err("중단된 인증정보 가져오기를 복구한 뒤 다시 시도하세요".into());
+    }
+    // 토큰 갱신·전환·재로그인은 표시 설정을 바꾸는 작업이 아니다. 기존 메타를
+    // 먼저 읽어 둬 vault 가져오기로 지정한 이메일 숨김이 계속 유지되게 한다.
+    let hide_email = read_meta(&dir).is_some_and(|meta| meta.hide_email);
     // 기존 토큰을 덮어쓰기 전에 한 세대 .bak으로 남긴다 — 잘못된 덮어쓰기의 최후 안전망
     let cred_path = dir.join(provider.credential_file_name());
     if cred_path.exists() {
         let _ = fs::copy(&cred_path, cred_path.with_extension("json.bak"));
     }
-    atomic_write(&cred_path, cred)?;
+    write_profile_bundle_to_dir(&dir, provider, ident, cred, oauth_block, hide_email)
+}
 
-    if let Some(block) = oauth_block {
-        let bytes = serde_json::to_vec_pretty(block).map_err(|e| e.to_string())?;
-        atomic_write(&dir.join("oauth_account.json"), &bytes)?;
+/// 새 프로필 디렉터리에 들어가는 필수 파일 묶음의 단일 쓰기 관문.
+/// 각 파일은 `atomic_write`를 거쳐 Unix 0600과 sync/rename 보장을 그대로 받는다.
+pub(crate) fn write_profile_bundle_to_dir(
+    dir: &Path,
+    provider: Provider,
+    ident: &LiveIdentity,
+    cred: &[u8],
+    oauth_block: Option<&Value>,
+    hide_email: bool,
+) -> Result<(), String> {
+    let oauth_bytes = oauth_block
+        .map(serde_json::to_vec_pretty)
+        .transpose()
+        .map_err(|e| e.to_string())?;
+    write_profile_bundle_bytes_to_dir(
+        dir,
+        provider,
+        ident,
+        cred,
+        oauth_bytes.as_deref(),
+        hide_email,
+    )
+}
+
+/// 이미 검증된 oauthAccount 바이트를 그대로 쓰는 관문. vault 가져오기는 복호화한
+/// 값을 평문 임시 파일에 두지 않고 최종 marked 프로필에 바로 반영할 때 사용한다.
+pub(crate) fn write_profile_bundle_bytes_to_dir(
+    dir: &Path,
+    provider: Provider,
+    ident: &LiveIdentity,
+    cred: &[u8],
+    oauth_bytes: Option<&[u8]>,
+    hide_email: bool,
+) -> Result<(), String> {
+    atomic_write(&dir.join(provider.credential_file_name()), cred)?;
+    if let Some(bytes) = oauth_bytes {
+        atomic_write(&dir.join("oauth_account.json"), bytes)?;
     }
-
     let meta = Meta {
         id: ident.id.clone(),
         email: ident.email.clone(),
         saved_at: now(),
+        hide_email,
     };
     let bytes = serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?;
     atomic_write(&dir.join("meta.json"), &bytes)
+}
+
+fn write_new_private_file(path: &Path, data: &[u8]) -> Result<(), String> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .map_err(|e| format!("새 파일 생성 실패 {}: {e}", path.display()))?;
+    file.write_all(data)
+        .and_then(|_| file.sync_all())
+        .map_err(|e| format!("새 파일 쓰기 실패 {}: {e}", path.display()))
+}
+
+/// vault import 전용. marker로 숨겨진 새 최종 폴더에 곧바로 쓰므로 토큰이 든
+/// `.tmp` 파일을 만들지 않는다. 어느 파일이든 실패하면 journal 복구가 폴더째 지운다.
+pub(crate) fn write_new_marked_profile_bundle_to_dir(
+    dir: &Path,
+    provider: Provider,
+    ident: &LiveIdentity,
+    cred: &[u8],
+    oauth_bytes: Option<&[u8]>,
+    hide_email: bool,
+) -> Result<(), String> {
+    if !dir.join(PROFILE_IMPORT_MARKER).is_file() {
+        return Err("가져오기 안전 표식이 없는 프로필에는 쓸 수 없습니다".into());
+    }
+    write_new_private_file(&dir.join(provider.credential_file_name()), cred)?;
+    if let Some(bytes) = oauth_bytes {
+        write_new_private_file(&dir.join("oauth_account.json"), bytes)?;
+    }
+    let meta = Meta {
+        id: ident.id.clone(),
+        email: ident.email.clone(),
+        saved_at: now(),
+        hide_email,
+    };
+    let bytes = serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?;
+    write_new_private_file(&dir.join("meta.json"), &bytes)
 }
 
 /// 현재 활성 파일들을 지정 이름의 프로필로 저장한다 (덮어쓰기 허용).
@@ -819,8 +944,16 @@ pub(crate) fn ensure_name_not_owned_by_other(
     ident: &LiveIdentity,
 ) -> Result<(), String> {
     let dir = env.profiles_dir(provider).join(name);
+    if dir.join(PROFILE_IMPORT_MARKER).exists() {
+        return Err("중단된 인증정보 가져오기를 복구한 뒤 다시 시도하세요".into());
+    }
     if let Some(meta) = read_meta(&dir) {
         if meta.id != ident.id {
+            if meta.hide_email {
+                return Err(format!(
+                    "'{name}'은 이미 다른 계정의 프로필입니다 — 다른 이름을 쓰세요"
+                ));
+            }
             let owner = meta.email.unwrap_or(meta.id);
             return Err(format!(
                 "'{name}'은 이미 다른 계정({owner})의 프로필입니다 — 다른 이름을 쓰세요"
@@ -836,17 +969,19 @@ pub(crate) fn read_meta(dir: &Path) -> Option<Meta> {
     serde_json::from_str(&text).ok()
 }
 
-fn profile_dirs(env: &Env, provider: Provider) -> Result<Vec<(String, PathBuf)>, String> {
+pub(crate) fn profile_dirs(
+    env: &Env,
+    provider: Provider,
+) -> Result<Vec<(String, PathBuf)>, String> {
     let root = env.profiles_dir(provider);
     if !root.exists() {
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
-    let entries =
-        fs::read_dir(&root).map_err(|e| format!("읽기 실패 {}: {e}", root.display()))?;
+    let entries = fs::read_dir(&root).map_err(|e| format!("읽기 실패 {}: {e}", root.display()))?;
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
+        if path.is_dir() && !path.join(PROFILE_IMPORT_MARKER).exists() {
             out.push((entry.file_name().to_string_lossy().to_string(), path));
         }
     }
@@ -883,7 +1018,11 @@ pub(crate) fn auto_name(env: &Env, provider: Provider, ident: &LiveIdentity) -> 
     };
     let base = {
         let from_email = clean(
-            ident.email.as_deref().and_then(|e| e.split('@').next()).unwrap_or(""),
+            ident
+                .email
+                .as_deref()
+                .and_then(|e| e.split('@').next())
+                .unwrap_or(""),
             20,
         );
         if from_email.is_empty() {
@@ -901,7 +1040,7 @@ pub(crate) fn auto_name(env: &Env, provider: Provider, ident: &LiveIdentity) -> 
     let mut n = 1;
     loop {
         match read_meta(&env.profiles_dir(provider).join(&candidate)) {
-            None => return candidate,                          // 빈 이름
+            None => return candidate,                              // 빈 이름
             Some(meta) if meta.id == ident.id => return candidate, // 이미 이 계정의 프로필
             Some(_) => {
                 n += 1;
@@ -974,6 +1113,9 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
     )?;
     let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     let profile_dir = env.profiles_dir(provider).join(name);
+    if profile_dir.join(PROFILE_IMPORT_MARKER).exists() {
+        return Err("가져오기가 완료되지 않은 프로필이라 전환할 수 없습니다".into());
+    }
     let target_cred = profile_dir.join(provider.credential_file_name());
     // 직전 갱신의 본 파일 쓰기/활성 복구가 실패해 pending이 남았으면, 구토큰을
     // 활성 위치로 복사하기 전에 반드시 복구한다.
@@ -1015,8 +1157,8 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
     }
 
     // 2) 대상 프로필을 활성 위치로 복사
-    let data = fs::read(&target_cred)
-        .map_err(|e| format!("읽기 실패 {}: {e}", target_cred.display()))?;
+    let data =
+        fs::read(&target_cred).map_err(|e| format!("읽기 실패 {}: {e}", target_cred.display()))?;
     write_live_cred(env, provider, &data)?;
     if provider == Provider::Claude {
         claude_apply_oauth_block(env, &profile_dir)?;
@@ -1032,7 +1174,7 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
 pub fn list(env: &Env, provider: Provider) -> Result<Snapshot, String> {
     // 표시용 목록은 신원 읽기가 일시적으로 실패해도 화면 전체를 깨뜨리지 않는다
     // (전환·저장 경로는 여전히 엄격하게 실패한다)
-    let live = live_identity(env, provider).unwrap_or(None);
+    let mut live = live_identity(env, provider).unwrap_or(None);
     let live_id = live.as_ref().map(|l| l.id.clone());
     let mut profiles = Vec::new();
     for (name, dir) in profile_dirs(env, provider)? {
@@ -1044,11 +1186,17 @@ pub fn list(env: &Env, provider: Provider) -> Result<Snapshot, String> {
             let plan_tier = cred
                 .as_ref()
                 .and_then(|root| tier_from_credential(provider, root));
+            let active = live_id.as_deref() == Some(meta.id.as_str());
+            if active && meta.hide_email {
+                if let Some(live) = live.as_mut() {
+                    live.email = None;
+                }
+            }
             profiles.push(ProfileInfo {
-                active: live_id.as_deref() == Some(meta.id.as_str()),
+                active,
                 name,
                 id: meta.id,
-                email: meta.email,
+                email: if meta.hide_email { None } else { meta.email },
                 plan,
                 plan_tier,
                 saved_at: meta.saved_at,
@@ -1191,10 +1339,7 @@ mod tests {
         assert!(live_token(&env).contains("tok-b1"));
         // ~/.claude.json의 oauthAccount도 B로 반영
         let root = read_json(&env.claude_json_path()).unwrap();
-        assert_eq!(
-            root["oauthAccount"]["accountUuid"].as_str(),
-            Some("uuid-b")
-        );
+        assert_eq!(root["oauthAccount"]["accountUuid"].as_str(), Some("uuid-b"));
         // 다른 키는 보존
         assert_eq!(root["numStartups"].as_i64(), Some(1));
 
@@ -1226,7 +1371,10 @@ mod tests {
         switch(&env, Provider::Claude, "second").unwrap();
         let live: Value = serde_json::from_str(&live_token(&env)).unwrap();
         assert_eq!(live.pointer("/claudeAiOauth/accessToken").unwrap(), "new-a");
-        assert_eq!(live.pointer("/claudeAiOauth/refreshToken").unwrap(), "r-new");
+        assert_eq!(
+            live.pointer("/claudeAiOauth/refreshToken").unwrap(),
+            "r-new"
+        );
         assert!(!cred.with_extension("json.pending").exists());
     }
 
@@ -1272,6 +1420,48 @@ mod tests {
     }
 
     #[test]
+    fn hidden_profile_name_collision_does_not_expose_identity() {
+        let env = test_env("hidden-foreign-name");
+        login_claude(&env, "uuid-private", "private@test.dev", "tok-private");
+        save_current(&env, Provider::Claude, "main").unwrap();
+        let dir = env.profiles_dir(Provider::Claude).join("main");
+        let mut meta = read_meta(&dir).unwrap();
+        meta.hide_email = true;
+        atomic_write(&dir.join("meta.json"), &serde_json::to_vec(&meta).unwrap()).unwrap();
+
+        login_claude(&env, "uuid-other", "other@test.dev", "tok-other");
+        let error = save_current(&env, Provider::Claude, "main").unwrap_err();
+        assert!(error.contains("다른 계정"));
+        assert!(!error.contains("private@test.dev"));
+        assert!(!error.contains("uuid-private"));
+    }
+
+    #[test]
+    fn incomplete_import_profile_is_hidden_and_cannot_switch() {
+        let env = test_env("incomplete-import-profile");
+        login_claude(&env, "uuid-active", "active@test.dev", "tok-active");
+        save_current(&env, Provider::Claude, "active").unwrap();
+        login_claude(&env, "uuid-import", "import@test.dev", "tok-import");
+        save_current(&env, Provider::Claude, "incoming").unwrap();
+        let incoming = env.profiles_dir(Provider::Claude).join("incoming");
+        atomic_write(&incoming.join(PROFILE_IMPORT_MARKER), b"fixture-import-id").unwrap();
+
+        let names: Vec<_> = list(&env, Provider::Claude)
+            .unwrap()
+            .profiles
+            .into_iter()
+            .map(|profile| profile.name)
+            .collect();
+        assert!(!names.iter().any(|name| name == "incoming"));
+        let error = switch(&env, Provider::Claude, "incoming").unwrap_err();
+        assert!(error.contains("완료되지 않은 프로필"));
+        assert!(
+            incoming.exists(),
+            "복구 전에는 marked profile을 임의 삭제하지 않는다"
+        );
+    }
+
+    #[test]
     fn switch_refuses_claude_profile_without_account_info() {
         let env = test_env("no-oauth-block");
         login_claude(&env, "uuid-a", "alice@test.dev", "tok-a1");
@@ -1305,10 +1495,9 @@ mod tests {
             Some("Max")
         );
         assert_eq!(tier_from_credential(Provider::Claude, &claude), Some(20));
-        let five: Value = serde_json::from_str(
-            r#"{"claudeAiOauth":{"rateLimitTier":"default_claude_max_5x"}}"#,
-        )
-        .unwrap();
+        let five: Value =
+            serde_json::from_str(r#"{"claudeAiOauth":{"rateLimitTier":"default_claude_max_5x"}}"#)
+                .unwrap();
         assert_eq!(tier_from_credential(Provider::Claude, &five), Some(5));
         let jwt = fake_jwt(
             r#"{"email":"x@test.dev","https://api.openai.com/auth":{"chatgpt_plan_type":"pro"}}"#,
@@ -1398,8 +1587,7 @@ mod tests {
         )
         .unwrap();
         assert!(backed.contains("ctok-a2"));
-        let live =
-            fs::read_to_string(env.live_credential_path(Provider::Codex)).unwrap();
+        let live = fs::read_to_string(env.live_credential_path(Provider::Codex)).unwrap();
         assert!(live.contains("ctok-b1"));
 
         let snap = list(&env, Provider::Codex).unwrap();
@@ -1462,7 +1650,10 @@ mod tests {
         assert_eq!(before_cred, after_cred, "토큰이 보존되어야 한다");
 
         let snap = list(&env, provider).unwrap();
-        assert!(snap.live_saved, "전환 후 활성 계정이 프로필과 매칭되어야 한다");
+        assert!(
+            snap.live_saved,
+            "전환 후 활성 계정이 프로필과 매칭되어야 한다"
+        );
     }
 
     #[test]
@@ -1506,8 +1697,14 @@ mod tests {
         delete(&env, Provider::Claude, "other").unwrap();
         // 삭제된 비활성 계정의 캐시 항목은 정리되고, 활성 계정 항목은 남는다 (#18)
         let cache = read_json(&env.store.join("usage-cache.json")).unwrap();
-        assert!(cache.get("claude:uuid-b").is_none(), "삭제 계정 캐시가 남았다");
-        assert!(cache.get("claude:uuid-a").is_some(), "활성 계정 캐시는 남아야 한다");
+        assert!(
+            cache.get("claude:uuid-b").is_none(),
+            "삭제 계정 캐시가 남았다"
+        );
+        assert!(
+            cache.get("claude:uuid-a").is_some(),
+            "활성 계정 캐시는 남아야 한다"
+        );
 
         delete(&env, Provider::Claude, "main").unwrap();
         assert!(list(&env, Provider::Claude).unwrap().profiles.is_empty());
@@ -1525,15 +1722,17 @@ mod tests {
         let exclusive =
             profile_exclusive_begin(key.clone(), std::time::Duration::from_secs(5)).unwrap();
         assert!(t0.elapsed() < std::time::Duration::from_millis(100));
-        assert!(refresh_begin(key.clone()).is_err(), "배타 작업 중 새 재발급 금지");
+        assert!(
+            refresh_begin(key.clone()).is_err(),
+            "배타 작업 중 새 재발급 금지"
+        );
         drop(exclusive);
 
         let refresh = refresh_begin(key.clone()).unwrap();
         let key2 = key.clone();
         let waiter = std::thread::spawn(move || {
             let t = std::time::Instant::now();
-            let guard =
-                profile_exclusive_begin(key2, std::time::Duration::from_secs(5)).unwrap();
+            let guard = profile_exclusive_begin(key2, std::time::Duration::from_secs(5)).unwrap();
             (t.elapsed(), guard)
         });
         std::thread::sleep(std::time::Duration::from_millis(150));

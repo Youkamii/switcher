@@ -17,6 +17,7 @@ export default defineConfig(async () => ({
         main: "index.html",
         black: "black.html",
         memo: "memo.html",
+        vault: "vault.html",
       },
     },
   },
