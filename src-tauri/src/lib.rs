@@ -58,6 +58,7 @@ fn cursor_position_in_window(window: &tauri::WebviewWindow) -> Option<tauri::Log
     physical_cursor_to_logical(cursor, pos, scale)
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 fn physical_cursor_to_logical(
     cursor: tauri::PhysicalPosition<f64>,
     inner_position: tauri::PhysicalPosition<i32>,
@@ -1157,7 +1158,7 @@ fn black_graceful_dismiss(handle: &tauri::AppHandle, session_gen: u64) {
 
 /// lifecycle 잠금을 가진 호출자만 사용한다. 세대를 먼저 무효화한 뒤 창을 파괴해
 /// 다음 black_on이 같은 label을 재사용하는 동안 이전 close가 끼어들지 못하게 한다.
-fn close_black_overlays_locked(app: &tauri::AppHandle, session_gen: u64) {
+fn close_black_overlays_locked(app: &tauri::AppHandle, _session_gen: u64) {
     use tauri::Manager;
     BLACK_GEN.fetch_add(1, Ordering::Relaxed);
     BLACK_ACTIVE.store(false, Ordering::Relaxed);
@@ -1165,7 +1166,7 @@ fn close_black_overlays_locked(app: &tauri::AppHandle, session_gen: u64) {
     // Windows뿐이라 맥에선 BLACK_BRIGHTNESS가 항상 비어 확정 no-op이었다 (리뷰 #53).
     // 맥의 구버전(1.7.21) 잔재 치유는 시작 시 영속 파일 경로가 따로 맡는다.
     #[cfg(windows)]
-    std::thread::spawn(move || black_restore_brightness(session_gen));
+    std::thread::spawn(move || black_restore_brightness(_session_gen));
     for (label, window) in app.webview_windows() {
         if label.starts_with("black-") {
             let _ = window.destroy();
