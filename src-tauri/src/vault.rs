@@ -1,8 +1,8 @@
 //! 선택한 계정 프로필을 암호화 파일로 옮기는 플랫폼 공통 코어.
 //!
-//! 포맷은 Windows 전용 저장소(DPAPI)에 기대지 않는다. 다음 macOS 단계에서도
-//! 같은 Argon2id + AES-256-GCM 파일을 그대로 읽고 쓸 수 있게 모든 플랫폼 종속
-//! 처리는 `accounts`의 활성 자격증명 관문 뒤에 둔다.
+//! 포맷은 Windows 전용 저장소(DPAPI)나 macOS 키체인 형식에 기대지 않는다.
+//! 같은 Argon2id + AES-256-GCM 파일을 두 OS에서 그대로 읽고 쓸 수 있게 모든
+//! 플랫폼 종속 처리는 `accounts`의 활성 자격증명 관문 뒤에 둔다.
 
 use crate::accounts::{self, Env, Provider, MUTATION_LOCK};
 use aes_gcm::aead::{Aead, KeyInit, Payload as AeadPayload};
@@ -382,7 +382,7 @@ fn ensure_export_destination_is_safe(env: &Env, path: &Path) -> Result<(), Strin
 }
 
 fn path_is_within(path: &Path, root: &Path) -> bool {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         let path = path.to_string_lossy().to_ascii_lowercase();
         let mut root = root.to_string_lossy().to_ascii_lowercase();
@@ -394,19 +394,19 @@ fn path_is_within(path: &Path, root: &Path) -> bool {
                 .strip_prefix(&root)
                 .is_some_and(|rest| rest.starts_with('\\') || rest.starts_with('/'))
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         path.starts_with(root)
     }
 }
 
 fn same_path(left: &Path, right: &Path) -> bool {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     {
         left.to_string_lossy()
             .eq_ignore_ascii_case(&right.to_string_lossy())
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         left == right
     }
@@ -656,11 +656,25 @@ fn read_claude_snapshot_once(env: &Env) -> Result<ClaudeLiveSnapshot, String> {
 /// Claude CLI는 토큰과 oauthAccount를 서로 다른 저장소에 쓴다. 외부 로그인이
 /// 동시에 진행되면 두 세대가 섞일 수 있으므로 두 값이 연속 세 번 같은 때만 쓴다.
 fn read_stable_claude_snapshot(env: &Env) -> Result<ClaudeLiveSnapshot, String> {
-    let mut previous = read_claude_snapshot_once(env)?;
+    read_stable_claude_snapshot_with(
+        || read_claude_snapshot_once(env),
+        || std::thread::sleep(std::time::Duration::from_millis(120)),
+    )
+}
+
+fn read_stable_claude_snapshot_with<R, P>(
+    mut read: R,
+    mut pause: P,
+) -> Result<ClaudeLiveSnapshot, String>
+where
+    R: FnMut() -> Result<ClaudeLiveSnapshot, String>,
+    P: FnMut(),
+{
+    let mut previous = read()?;
     let mut stable_intervals = 0usize;
     for _ in 0..5 {
-        std::thread::sleep(std::time::Duration::from_millis(120));
-        let next = read_claude_snapshot_once(env)?;
+        pause();
+        let next = read()?;
         if previous.credential.as_slice() == next.credential.as_slice()
             && previous.oauth_account == next.oauth_account
         {
@@ -1538,7 +1552,62 @@ mod tests {
     use super::*;
     use crate::accounts::test_support::test_env;
     use crate::accounts::{atomic_write, LiveIdentity};
+    #[cfg(target_os = "macos")]
+    use crate::accounts::ClaudeLiveStore;
     use serde_json::Value;
+
+    #[cfg(target_os = "macos")]
+    static KEYCHAIN_TEST_SEQ: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
+    #[cfg(target_os = "macos")]
+    struct KeychainFixture {
+        service: String,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for KeychainFixture {
+        fn drop(&mut self) {
+            let _ = accounts::keychain::delete_item(&self.service);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn keychain_test_env(tag: &str) -> (Env, KeychainFixture) {
+        use std::sync::atomic::Ordering;
+
+        let mut env = test_env(tag);
+        let sequence = KEYCHAIN_TEST_SEQ.fetch_add(1, Ordering::Relaxed);
+        let service = format!(
+            "switcher-vault-selftest-{}-{sequence}",
+            std::process::id()
+        );
+        let legacy_file = env.live_credential_path(Provider::Claude);
+        env.claude_live = ClaudeLiveStore::Keychain {
+            service: service.clone(),
+            account: accounts::keychain::username(),
+            legacy_file,
+        };
+        (env, KeychainFixture { service })
+    }
+
+    #[cfg(target_os = "macos")]
+    fn write_keychain_fixture(fixture: &KeychainFixture, bytes: &[u8]) {
+        accounts::keychain::write_item(
+            &fixture.service,
+            &accounts::keychain::username(),
+            bytes,
+        )
+        .unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    fn lower_hex(bytes: &[u8]) -> Vec<u8> {
+        bytes
+            .iter()
+            .flat_map(|byte| format!("{byte:02x}").into_bytes())
+            .collect()
+    }
 
     fn jwt(id: &str, email: &str) -> String {
         let payload = URL_SAFE_NO_PAD
@@ -1638,6 +1707,275 @@ mod tests {
         .unwrap();
         atomic_write(&dir.join(IMPORT_MARKER_FILE), import_id.as_bytes()).unwrap();
         dir
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_path_guards_follow_case_insensitive_apfs_semantics() {
+        let store = Path::new("/Users/test/.switcher");
+        assert!(path_is_within(
+            Path::new("/Users/test/.SWITCHER/export.switcher-vault"),
+            store
+        ));
+        assert!(!path_is_within(
+            Path::new("/Users/test/.switcher-backup/export.switcher-vault"),
+            store
+        ));
+        assert!(same_path(
+            Path::new("/Users/test/.CLAUDE/.Credentials.JSON"),
+            Path::new("/Users/test/.claude/.credentials.json")
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_active_claude_export_normalizes_raw_and_hex_keychain_without_mutation() {
+        let (source, keychain) = keychain_test_env("vault-macos-keychain-export");
+        let identity = "mac-keychain-id";
+        let email = "mac-keychain@example.test";
+        add_claude(
+            &source,
+            "active",
+            identity,
+            email,
+            "stale-profile-token",
+        );
+        atomic_write(
+            &source.home.join(".claude.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "oauthAccount": {
+                    "accountUuid": identity,
+                    "emailAddress": email
+                }
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .unwrap();
+
+        let live = br#"{"claudeAiOauth":{"accessToken":"mac-live-keychain-token"}}"#;
+        for (suffix, stored) in [("raw", live.to_vec()), ("hex", lower_hex(live))] {
+            write_keychain_fixture(&keychain, &stored);
+            let before = accounts::keychain::read_item(&keychain.service)
+                .unwrap()
+                .unwrap();
+            let path = vault_path(&source, &format!("keychain-{suffix}.switcher-vault"));
+            let result = export(
+                &source,
+                &path,
+                vec![selection("claude", "active", false)],
+            )
+            .unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "vault 파일은 소유자만 읽고 쓸 수 있어야 한다"
+            );
+            assert_eq!(
+                accounts::keychain::read_item(&keychain.service)
+                    .unwrap()
+                    .unwrap(),
+                before,
+                "내보내기는 키체인 원본을 바꾸면 안 된다"
+            );
+
+            let parsed = decrypt_file(&path, &result.recovery_code).unwrap();
+            let exported = URL_SAFE_NO_PAD
+                .decode(&parsed.payload.entries[0].credential)
+                .unwrap();
+            assert_eq!(exported, live, "{suffix} 키체인 값은 같은 JSON으로 정규화");
+        }
+        let service = keychain.service.clone();
+        drop(keychain);
+        assert!(accounts::keychain::read_item(&service).unwrap().is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_active_claude_export_falls_back_to_legacy_file_without_mutation() {
+        let (source, keychain) = keychain_test_env("vault-macos-legacy-export");
+        let identity = "mac-legacy-id";
+        let email = "mac-legacy@example.test";
+        add_claude(
+            &source,
+            "active",
+            identity,
+            email,
+            "stale-profile-token",
+        );
+        atomic_write(
+            &source.home.join(".claude.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "oauthAccount": {
+                    "accountUuid": identity,
+                    "emailAddress": email
+                }
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .unwrap();
+
+        let legacy = source.live_credential_path(Provider::Claude);
+        let live = br#"{"claudeAiOauth":{"accessToken":"mac-legacy-live-token"}}"#;
+        atomic_write(&legacy, live).unwrap();
+        let before = fs::read(&legacy).unwrap();
+        assert!(
+            accounts::keychain::read_item(&keychain.service)
+                .unwrap()
+                .is_none()
+        );
+
+        let path = vault_path(&source, "legacy.switcher-vault");
+        let result = export(
+            &source,
+            &path,
+            vec![selection("claude", "active", false)],
+        )
+        .unwrap();
+        assert_eq!(fs::read(&legacy).unwrap(), before);
+        assert!(
+            accounts::keychain::read_item(&keychain.service)
+                .unwrap()
+                .is_none(),
+            "legacy 폴백 내보내기가 키체인 항목을 만들면 안 된다"
+        );
+
+        let parsed = decrypt_file(&path, &result.recovery_code).unwrap();
+        let exported = URL_SAFE_NO_PAD
+            .decode(&parsed.payload.entries[0].credential)
+            .unwrap();
+        assert_eq!(exported, live);
+        let service = keychain.service.clone();
+        drop(keychain);
+        assert!(accounts::keychain::read_item(&service).unwrap().is_none());
+    }
+
+    fn claude_snapshot(
+        credential_generation: usize,
+        identity_generation: usize,
+    ) -> ClaudeLiveSnapshot {
+        let id = format!("identity-{identity_generation}");
+        let email = format!("generation-{identity_generation}@example.test");
+        let oauth_account = serde_json::json!({
+            "accountUuid": id,
+            "emailAddress": email
+        });
+        ClaudeLiveSnapshot {
+            credential: Zeroizing::new(
+                format!(
+                    r#"{{"claudeAiOauth":{{"accessToken":"token-{credential_generation}"}}}}"#
+                )
+                .into_bytes(),
+            ),
+            oauth_account,
+            identity: LiveIdentity {
+                id,
+                email: Some(email),
+            },
+        }
+    }
+
+    #[test]
+    fn changing_claude_generations_never_form_an_export_snapshot() {
+        for change_oauth_account in [false, true] {
+            let mut generation = 0usize;
+            let result = read_stable_claude_snapshot_with(
+                || {
+                    generation += 1;
+                    let credential_generation =
+                        if change_oauth_account { 0 } else { generation };
+                    let identity_generation =
+                        if change_oauth_account { generation } else { 0 };
+                    Ok(claude_snapshot(
+                        credential_generation,
+                        identity_generation,
+                    ))
+                },
+                || {},
+            );
+            let error = match result {
+                Ok(_) => panic!("변경 중인 Claude 세대를 안정된 스냅샷으로 받아들이면 안 된다"),
+                Err(error) => error,
+            };
+            assert_eq!(
+                error,
+                "Claude 로그인이 변경되는 중이라 내보내기를 중단했습니다 — 로그인이 끝난 뒤 다시 시도하세요"
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_import_never_writes_active_keychain_or_auth_files() {
+        let source = test_env("vault-macos-import-source");
+        add_claude(
+            &source,
+            "claude-import",
+            "incoming-claude-id",
+            "incoming-claude@example.test",
+            "incoming-claude-token",
+        );
+        add_codex(
+            &source,
+            "codex-import",
+            "incoming-codex-id",
+            "incoming-codex@example.test",
+            "incoming-codex-token",
+        );
+        let path = vault_path(&source, "mac-import.switcher-vault");
+        let exported = export(
+            &source,
+            &path,
+            vec![
+                selection("claude", "claude-import", true),
+                selection("codex", "codex-import", false),
+            ],
+        )
+        .unwrap();
+
+        let (target, keychain) = keychain_test_env("vault-macos-import-target");
+        let keychain_before =
+            br#"{"claudeAiOauth":{"accessToken":"existing-keychain-token"}}"#;
+        write_keychain_fixture(&keychain, keychain_before);
+        let legacy = target.live_credential_path(Provider::Claude);
+        let claude_json = target.home.join(".claude.json");
+        let codex_auth = target.live_credential_path(Provider::Codex);
+        atomic_write(&legacy, b"existing-legacy-claude-file").unwrap();
+        atomic_write(&claude_json, b"existing-claude-account-file").unwrap();
+        atomic_write(&codex_auth, b"existing-codex-auth-file").unwrap();
+        let legacy_before = fs::read(&legacy).unwrap();
+        let claude_json_before = fs::read(&claude_json).unwrap();
+        let codex_before = fs::read(&codex_auth).unwrap();
+
+        let result = import(&target, &path, exported.recovery_code).unwrap();
+        assert_eq!(result.imported, 2);
+        assert_eq!(result.skipped, 0);
+        assert_eq!(
+            accounts::keychain::read_item(&keychain.service)
+                .unwrap()
+                .unwrap(),
+            keychain_before
+        );
+        assert_eq!(fs::read(&legacy).unwrap(), legacy_before);
+        assert_eq!(fs::read(&claude_json).unwrap(), claude_json_before);
+        assert_eq!(fs::read(&codex_auth).unwrap(), codex_before);
+        assert!(
+            target
+                .profiles_dir(Provider::Claude)
+                .join("claude-import/credentials.json")
+                .is_file()
+        );
+        assert!(
+            target
+                .profiles_dir(Provider::Codex)
+                .join("codex-import/auth.json")
+                .is_file()
+        );
+        let service = keychain.service.clone();
+        drop(keychain);
+        assert!(accounts::keychain::read_item(&service).unwrap().is_none());
     }
 
     #[test]
@@ -1939,6 +2277,50 @@ mod tests {
         assert_eq!(
             imported.pointer("/claudeAiOauth/accessToken").unwrap(),
             "live-new-token"
+        );
+    }
+
+    #[test]
+    fn active_codex_export_uses_live_auth_without_mutating_it() {
+        let source = test_env("vault-active-codex-source");
+        add_codex(
+            &source,
+            "active",
+            "live-codex-id",
+            "live-codex@example.test",
+            "stale-profile-token",
+        );
+        let live_auth = serde_json::to_vec(&serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": jwt("live-codex-id", "live-codex@example.test"),
+                "access_token": "current-live-codex-token",
+                "refresh_token": "current-live-codex-refresh",
+                "account_id": "live-codex-id"
+            }
+        }))
+        .unwrap();
+        let live_path = source.live_credential_path(Provider::Codex);
+        atomic_write(&live_path, &live_auth).unwrap();
+
+        let path = vault_path(&source, "active-codex.switcher-vault");
+        let result = export(
+            &source,
+            &path,
+            vec![selection("codex", "active", false)],
+        )
+        .unwrap();
+        assert_eq!(fs::read(&live_path).unwrap(), live_auth);
+        let parsed = decrypt_file(&path, &result.recovery_code).unwrap();
+        let exported: Value = serde_json::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(&parsed.payload.entries[0].credential)
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            exported.pointer("/tokens/access_token").unwrap(),
+            "current-live-codex-token"
         );
     }
 
@@ -2430,10 +2812,10 @@ mod tests {
         assert!(add_raw_total_unit(&mut total, 1).is_err());
     }
 
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     #[test]
-    fn export_replaces_existing_destination_on_windows() {
-        let source = test_env("vault-windows-overwrite");
+    fn export_replaces_existing_destination_on_desktop_platforms() {
+        let source = test_env("vault-desktop-overwrite");
         add_codex(
             &source,
             "codex",
@@ -2448,7 +2830,7 @@ mod tests {
         assert_ne!(fs::read(&path).unwrap(), first_bytes);
         assert_ne!(first.recovery_code, second.recovery_code);
 
-        let target = test_env("vault-windows-overwrite-target");
+        let target = test_env("vault-desktop-overwrite-target");
         assert_eq!(
             import(&target, &path, second.recovery_code)
                 .unwrap()
@@ -2479,6 +2861,27 @@ mod tests {
             let mode = fs::metadata(dir.join(file)).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o600, "{file} mode was {mode:o}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_journal_and_marker_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let target = test_env("vault-private-import-control-files");
+        let (stage_root, import_id) = create_stage_root(&target).unwrap();
+        let record = journal(&import_id, "staging", Provider::Claude, "private");
+        write_import_journal(&stage_root, &record).unwrap();
+        let profile_stage = stage_root.join("claude/private");
+        fs::create_dir_all(&profile_stage).unwrap();
+        let marker = profile_stage.join(IMPORT_MARKER_FILE);
+        accounts::atomic_write(&marker, import_id.as_bytes()).unwrap();
+
+        for path in [stage_root.join(IMPORT_JOURNAL_FILE), marker] {
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "{} mode was {mode:o}", path.display());
+        }
+        assert!(remove_tree_retry(&stage_root));
     }
 
     #[test]

@@ -213,11 +213,20 @@ pub(crate) mod keychain {
     mod tests {
         use super::*;
 
+        struct TestItemGuard(String);
+
+        impl Drop for TestItemGuard {
+            fn drop(&mut self) {
+                let _ = delete_item(&self.0);
+            }
+        }
+
         /// 실제 로그인 키체인에 시험 항목을 왕복시킨다 — security 경유는 팝업 없이
         /// 동작해야 한다 (실측 확인된 전제가 깨지면 이 테스트가 알려준다)
         #[test]
         fn roundtrip_via_security_cli() {
             let svc = format!("switcher-selftest-{}", std::process::id());
+            let _cleanup = TestItemGuard(svc.clone());
             let payload = br#"{"probe":"not-a-secret"}"#;
             write_item(&svc, &username(), payload).unwrap();
             assert!(item_exists(&svc));
