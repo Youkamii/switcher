@@ -358,8 +358,10 @@ async fn switch_profile(
     name: String,
 ) -> Result<SwitchResult, String> {
     let _busy = begin_account_switch()?;
+    let provider = Provider::parse(&provider)?;
     let result = tauri::async_runtime::spawn_blocking(move || {
-        accounts::switch(&Env::real()?, Provider::parse(&provider)?, &name)
+        let env = Env::real()?;
+        accounts::switch(&env, provider, &name)
     })
     .await
     .map_err(|e| format!("계정 전환 실패: {e}"))??;
@@ -411,11 +413,16 @@ async fn clamshell_cycle(app: tauri::AppHandle) -> Result<i8, String> {
 }
 
 #[tauri::command]
-async fn fetch_usage(provider: String, profile: Option<String>) -> Result<usage::Usage, String> {
-    usage::fetch(
+async fn fetch_usage(
+    provider: String,
+    profile: Option<String>,
+    force_retry: Option<bool>,
+) -> Result<usage::Usage, String> {
+    usage::fetch_with_options(
         &Env::real()?,
         Provider::parse(&provider)?,
         profile.as_deref(),
+        force_retry.unwrap_or(false),
     )
     .await
 }
@@ -463,7 +470,10 @@ async fn submit_login_code(
         .parse::<u64>()
         .map_err(|_| "로그인 세션 ID가 올바르지 않습니다")?;
     tauri::async_runtime::spawn_blocking(move || {
-        login::submit_code(&Env::real()?, &code, generation)
+        let env = Env::real()?;
+        let outcome = login::submit_code(&env, &code, generation)?;
+        usage::clear_profile_backoff(&env, Provider::Claude, &outcome.profile);
+        Ok::<_, String>(outcome)
     })
     .await
     .map_err(|e| format!("로그인 완료 실패: {e}"))?
@@ -475,9 +485,14 @@ async fn await_device_login(session_id: String) -> Result<login::LoginOutcome, S
     let generation = session_id
         .parse::<u64>()
         .map_err(|_| "로그인 세션 ID가 올바르지 않습니다")?;
-    tauri::async_runtime::spawn_blocking(move || login::wait_device(&Env::real()?, generation))
-        .await
-        .map_err(|e| format!("로그인 대기 실패: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        let env = Env::real()?;
+        let outcome = login::wait_device(&env, generation)?;
+        usage::clear_profile_backoff(&env, Provider::Codex, &outcome.profile);
+        Ok::<_, String>(outcome)
+    })
+    .await
+    .map_err(|e| format!("로그인 대기 실패: {e}"))?
 }
 
 #[tauri::command]

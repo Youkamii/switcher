@@ -1172,6 +1172,9 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
     if provider == Provider::Claude {
         claude_apply_oauth_block(env, &profile_dir)?;
     }
+    // 인증 세대가 바뀐 계정은 이전 조회 실패의 백오프를 상속하지 않는다.
+    // 이 코어를 쓰는 버튼·고정 모드 더블클릭·TFSD 전환 모두에 동일하게 적용한다 (#122).
+    crate::usage::clear_profile_backoff(env, provider, name);
 
     Ok(SwitchResult {
         backed_up_to,

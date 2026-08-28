@@ -49,6 +49,9 @@ pub struct Usage {
     /// stale일 때 그 수치가 몇 초 전 것인지 — 프론트가 "n시간 전 값" 라벨로 보여준다
     #[serde(default)]
     pub stale_age_secs: Option<u64>,
+    /// 일시 장애 백오프가 남은 시간. 값이 있으면 수동 새로고침으로 즉시 재시도할 수 있다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_secs: Option<u64>,
 }
 
 /// 조회 대상 토큰 파일: 프로필 이름이 있으면 보관함, 없으면 활성 파일.
@@ -642,6 +645,7 @@ fn parse_claude_usage(body: &Value) -> Usage {
         windows,
         stale: false,
         stale_age_secs: None,
+        retry_after_secs: None,
     }
 }
 
@@ -893,6 +897,7 @@ fn parse_codex_usage(body: &Value) -> Usage {
         windows,
         stale: false,
         stale_age_secs: None,
+        retry_after_secs: None,
     }
 }
 
@@ -1130,31 +1135,78 @@ fn backoff() -> &'static std::sync::Mutex<std::collections::HashMap<String, (std
     BACKOFF.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-fn backoff_active(key: &str) -> bool {
-    backoff()
+fn backoff_remaining(key: &str) -> Option<u64> {
+    let mut map = backoff()
         .lock()
-        .ok()
-        .and_then(|map| map.get(key).map(|(until, _)| *until > std::time::Instant::now()))
-        .unwrap_or(false)
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (until, _) = map.get(key).copied()?;
+    let Some(remaining) = until.checked_duration_since(std::time::Instant::now()) else {
+        map.remove(key);
+        return None;
+    };
+    if remaining.is_zero() {
+        map.remove(key);
+        return None;
+    }
+    Some(
+        remaining
+            .as_secs()
+            .saturating_add(u64::from(remaining.subsec_nanos() > 0)),
+    )
 }
 
-fn backoff_bump(key: &str) {
-    if let Ok(mut map) = backoff().lock() {
-        let count = map.get(key).map(|(_, c)| *c).unwrap_or(0) + 1;
-        let secs = (120u64 << (count - 1).min(3)).min(900); // 120·240·480·900
-        map.insert(
-            key.to_string(),
-            (
-                std::time::Instant::now() + std::time::Duration::from_secs(secs),
-                count,
-            ),
-        );
-    }
+#[cfg(test)]
+fn backoff_active(key: &str) -> bool {
+    backoff_remaining(key).is_some()
+}
+
+fn backoff_bump(key: &str) -> u64 {
+    let mut map = backoff()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let count = map.get(key).map(|(_, c)| *c).unwrap_or(0) + 1;
+    let secs = (120u64 << (count - 1).min(3)).min(900); // 120·240·480·900
+    map.insert(
+        key.to_string(),
+        (
+            std::time::Instant::now() + std::time::Duration::from_secs(secs),
+            count,
+        ),
+    );
+    secs
 }
 
 fn backoff_clear(key: &str) {
-    if let Ok(mut map) = backoff().lock() {
-        map.remove(key);
+    backoff()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .remove(key);
+}
+
+/// 로그인·전환이 성공하면 그 프로필 계정의 이전 실패 세대만 폐기한다.
+/// 다른 활성 계정의 백오프까지 지우지 않도록 이름 폴백과 meta의 계정 ID만 대상으로 한다.
+pub(crate) fn clear_profile_backoff(env: &Env, provider: Provider, name: &str) {
+    if crate::accounts::validate_name(name).is_err() {
+        return;
+    }
+    let mut keys = vec![format!("{}:<name:{name}>", provider.dir_name())];
+    if let Some(meta) = read_meta(&env.profiles_dir(provider).join(name)) {
+        keys.push(format!("{}:{}", provider.dir_name(), meta.id));
+    }
+    let mut map = backoff()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for key in keys {
+        map.remove(&key);
+    }
+}
+
+fn waiting_usage(retry_after_secs: u64) -> Usage {
+    Usage {
+        windows: Vec::new(),
+        stale: false,
+        stale_age_secs: None,
+        retry_after_secs: Some(retry_after_secs),
     }
 }
 
@@ -1162,6 +1214,17 @@ pub async fn fetch(
     env: &Env,
     provider: Provider,
     profile: Option<&str>,
+) -> Result<Usage, String> {
+    fetch_with_options(env, provider, profile, false).await
+}
+
+/// force_retry는 사용자가 새로고침 버튼을 직접 눌렀을 때만 true다. 신선한 캐시와
+/// 계정별 단일 실행 문은 그대로 존중하되, 자동 조회용 백오프만 한 번 우회한다.
+pub(crate) async fn fetch_with_options(
+    env: &Env,
+    provider: Provider,
+    profile: Option<&str>,
+    force_retry: bool,
 ) -> Result<Usage, String> {
     // 1) 토큰을 열기 전에 계정 키만 잡아 신선한 메모리/디스크 캐시를 확인한다.
     // macOS 활성 Claude는 이 경로가 `/usr/bin/security`를 전혀 띄우지 않는다.
@@ -1209,9 +1272,10 @@ pub async fn fetch(
         }
         disk_cache_load(env, &key, STALE_MAX)
     };
-    let mark_stale = |(mut usage, age): (Usage, u64)| {
+    let mark_stale = |(mut usage, age): (Usage, u64), retry_after_secs: Option<u64>| {
         usage.stale = true;
         usage.stale_age_secs = Some(age);
+        usage.retry_after_secs = retry_after_secs;
         usage
     };
 
@@ -1220,15 +1284,20 @@ pub async fn fetch(
     let initial_auth = match initial_auth {
         Ok(auth) => auth,
         Err(error) => {
-            return stale_value().map(mark_stale).ok_or(error);
+            return stale_value()
+                .map(|value| mark_stale(value, None))
+                .ok_or(error);
         }
     };
 
-    // 3) 백오프 중이면 API를 부르지 않고 마지막 수치로 버틴다
-    if backoff_active(&key) {
-        return stale_value()
-            .map(mark_stale)
-            .ok_or_else(|| "사용량 조회 대기중".into());
+    // 3) 자동 조회는 백오프 중 API를 부르지 않는다. 사용자가 누른 새로고침만
+    // 이 관문을 한 번 우회하며, 기다려야 한다면 남은 시간을 구조화해 돌려준다.
+    if !force_retry {
+        if let Some(retry_after_secs) = backoff_remaining(&key) {
+            return Ok(stale_value()
+                .map(|value| mark_stale(value, Some(retry_after_secs)))
+                .unwrap_or_else(|| waiting_usage(retry_after_secs)));
+        }
     }
 
     // 4) 실제 조회. 비활성 프로필은 캐시가 없을 때만 재발급을 시도하고 새 토큰을
@@ -1264,7 +1333,7 @@ pub async fn fetch(
         }
         Err(FetchErr::Transient) => {
             // 요청 제한·서버 오류 — 재시도를 자제하고 마지막 수치로 조용히 버틴다
-            backoff_bump(&actual_key);
+            let retry_after_secs = backoff_bump(&actual_key);
             let actual_stale = || -> Option<(Usage, u64)> {
                 if let Ok(map) = cache().lock() {
                     if let Some((at, cached)) = map.get(&actual_key) {
@@ -1275,9 +1344,9 @@ pub async fn fetch(
                 }
                 disk_cache_load(env, &actual_key, STALE_MAX)
             };
-            actual_stale()
-                .map(mark_stale)
-                .ok_or_else(|| "사용량 조회 대기중".into())
+            Ok(actual_stale()
+                .map(|value| mark_stale(value, Some(retry_after_secs)))
+                .unwrap_or_else(|| waiting_usage(retry_after_secs)))
         }
         // 만료 토큰 등 — 하루 안의 마지막 수치가 있으면 나이 라벨과 함께 보여주고,
         // 그마저 없을 때만 원래 에러(전환해 갱신하라는 안내)를 노출한다
@@ -1293,7 +1362,9 @@ pub async fn fetch(
                 None
             }
             .or_else(|| disk_cache_load(env, &actual_key, STALE_MAX));
-            actual_stale.map(mark_stale).ok_or(message)
+            actual_stale
+                .map(|value| mark_stale(value, None))
+                .ok_or(message)
         }
     }
 }
@@ -1445,6 +1516,7 @@ mod tests {
             }],
             stale: false,
             stale_age_secs: None,
+            retry_after_secs: None,
         };
         disk_cache_store(&env, "claude:uuid-snapfb", &usage).unwrap();
 
@@ -1476,6 +1548,7 @@ mod tests {
             }],
             stale: false,
             stale_age_secs: None,
+            retry_after_secs: None,
         };
         disk_cache_store(&env, "claude:acct-1", &usage).unwrap();
         let (loaded, age) = disk_cache_load(&env, "claude:acct-1", STALE_MAX)
@@ -1512,6 +1585,7 @@ mod tests {
                     }],
                     stale: false,
                     stale_age_secs: None,
+                    retry_after_secs: None,
                 };
                 barrier.wait();
                 disk_cache_store(&env, &format!("claude:acct-{i}"), &usage).unwrap();
@@ -1551,6 +1625,7 @@ mod tests {
             }],
             stale: false,
             stale_age_secs: None,
+            retry_after_secs: None,
         };
         disk_cache_store(&env, "claude:uuid-stale", &usage).unwrap();
         let path = disk_cache_path(&env);
@@ -1823,6 +1898,7 @@ mod tests {
             windows: vec![],
             stale: false,
             stale_age_secs: None,
+            retry_after_secs: None,
         };
         disk_cache_store(&env, "claude:uuid-live", &usage).unwrap();
         disk_cache_store(&env, "claude:uuid-gone", &usage).unwrap();
@@ -2055,11 +2131,82 @@ mod tests {
     #[test]
     fn backoff_escalates_and_clears() {
         let key = "test:backoff-key";
+        backoff_clear(key);
         assert!(!backoff_active(key));
-        backoff_bump(key);
+        assert_eq!(backoff_bump(key), 120);
         assert!(backoff_active(key), "첫 거절 후에는 재시도를 자제해야 한다");
+        assert!(matches!(backoff_remaining(key), Some(1..=120)));
         backoff_clear(key);
         assert!(!backoff_active(key), "성공하면 즉시 정상 주기로 돌아온다");
+    }
+
+    /// 자동 조회는 백오프를 지키되 사용자가 누른 새로고침은 즉시 한 번 시도한다.
+    /// 만료 토큰을 써 네트워크 없이도 강제 경로가 관문을 통과했음을 검증한다 (#122).
+    #[test]
+    fn manual_retry_bypasses_backoff_and_wait_exposes_remaining_time() {
+        let env = test_env("manual-backoff-bypass");
+        fs::write(
+            env.live_credential_path(Provider::Claude),
+            r#"{"claudeAiOauth":{"accessToken":"expired","expiresAt":1000}}"#,
+        )
+        .unwrap();
+        fs::write(
+            env.home.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-manual-retry"}}"#,
+        )
+        .unwrap();
+        let key = "claude:uuid-manual-retry";
+        backoff_clear(key);
+        backoff_bump(key);
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let waiting = rt
+            .block_on(fetch_with_options(
+                &env,
+                Provider::Claude,
+                None,
+                false,
+            ))
+            .unwrap();
+        assert!(waiting.windows.is_empty());
+        assert!(matches!(waiting.retry_after_secs, Some(1..=120)));
+
+        let forced = rt
+            .block_on(fetch_with_options(&env, Provider::Claude, None, true))
+            .unwrap_err();
+        assert!(forced.contains("만료"), "강제 재시도가 토큰 검사까지 진행해야 한다");
+        backoff_clear(key);
+    }
+
+    /// 로그인·전환 성공은 해당 프로필의 계정 키만 해제하고 다른 계정의 실패
+    /// 정책에는 영향을 주지 않는다 (#122).
+    #[test]
+    fn auth_change_clears_only_matching_profile_backoff() {
+        let env = test_env("profile-backoff-clear");
+        let profile = env.profiles_dir(Provider::Claude).join("target");
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(
+            profile.join("meta.json"),
+            r#"{"id":"uuid-target","email":null,"saved_at":1}"#,
+        )
+        .unwrap();
+        let account_key = "claude:uuid-target";
+        let name_key = "claude:<name:target>";
+        let other_key = "claude:uuid-other";
+        for key in [account_key, name_key, other_key] {
+            backoff_clear(key);
+            backoff_bump(key);
+        }
+
+        clear_profile_backoff(&env, Provider::Claude, "target");
+
+        assert!(!backoff_active(account_key));
+        assert!(!backoff_active(name_key));
+        assert!(backoff_active(other_key), "다른 계정 백오프는 유지돼야 한다");
+        backoff_clear(other_key);
     }
 
     /// 실계정 토큰으로 실제 엔드포인트를 호출하는 스모크 테스트.
