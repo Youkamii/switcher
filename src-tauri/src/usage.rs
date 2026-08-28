@@ -1136,16 +1136,12 @@ fn backoff() -> &'static std::sync::Mutex<std::collections::HashMap<String, (std
 }
 
 fn backoff_remaining(key: &str) -> Option<u64> {
-    let mut map = backoff()
+    let map = backoff()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let (until, _) = map.get(key).copied()?;
-    let Some(remaining) = until.checked_duration_since(std::time::Instant::now()) else {
-        map.remove(key);
-        return None;
-    };
+    let remaining = until.checked_duration_since(std::time::Instant::now())?;
     if remaining.is_zero() {
-        map.remove(key);
         return None;
     }
     Some(
@@ -2131,11 +2127,32 @@ mod tests {
     #[test]
     fn backoff_escalates_and_clears() {
         let key = "test:backoff-key";
+        let expire = || {
+            let mut map = backoff()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let entry = map.get_mut(key).expect("backoff entry should exist");
+            entry.0 = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap();
+        };
+
         backoff_clear(key);
         assert!(!backoff_active(key));
         assert_eq!(backoff_bump(key), 120);
         assert!(backoff_active(key), "첫 거절 후에는 재시도를 자제해야 한다");
         assert!(matches!(backoff_remaining(key), Some(1..=120)));
+
+        expire();
+        assert!(!backoff_active(key));
+        assert_eq!(backoff_bump(key), 240);
+        expire();
+        assert_eq!(backoff_bump(key), 480);
+        expire();
+        assert_eq!(backoff_bump(key), 900);
+        expire();
+        assert_eq!(backoff_bump(key), 900);
+
         backoff_clear(key);
         assert!(!backoff_active(key), "성공하면 즉시 정상 주기로 돌아온다");
     }
