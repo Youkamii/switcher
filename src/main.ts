@@ -48,23 +48,30 @@ type UsageWindow = {
   resets_at: string | null;
 };
 
-type Usage = { windows: UsageWindow[]; stale?: boolean; stale_age_secs?: number | null };
+type Usage = {
+  windows: UsageWindow[];
+  stale?: boolean;
+  stale_age_secs?: number | null;
+  retry_after_secs?: number | null;
+};
 
 // 빠른 모드 전환이 같은 계정 조회를 겹쳐 시작하지 않게 진행 중 요청을 공유한다.
-// 완료되면 바로 비워 다음 수동 새로고침은 백엔드 캐시/정책에 따라 새로 판정한다.
+// 수동 강제 재시도는 자동 요청과 키를 분리하되, 백엔드의 계정별 gate가 실제 API
+// 호출을 직렬화한다. 완료되면 바로 비워 다음 요청이 최신 정책을 다시 판정한다.
 const usageInflight = new Map<string, Promise<Usage>>();
 
 function fetchUsageShared(
   provider: ProviderId,
   profile: string | null,
   accountId: string,
+  forceRetry: boolean,
 ): Promise<Usage> {
   // 활성 조회의 profile은 항상 null이므로 계정 ID까지 키에 넣어야 전환 직후
   // 새 활성 카드가 이전 계정의 진행 중 요청을 이어받지 않는다.
-  const key = JSON.stringify([provider, accountId]);
+  const key = JSON.stringify([provider, accountId, forceRetry]);
   const existing = usageInflight.get(key);
   if (existing) return existing;
-  const request = invoke<Usage>("fetch_usage", { provider, profile });
+  const request = invoke<Usage>("fetch_usage", { provider, profile, forceRetry });
   usageInflight.set(key, request);
   void request.then(
     () => {
@@ -253,6 +260,12 @@ function staleLabel(usage: Usage): string {
   return t("staleHour", { n: Math.floor(secs / 3600) });
 }
 
+function retryLabel(usage: Usage): string | null {
+  const secs = usage.retry_after_secs;
+  if (secs == null) return null;
+  return t("usageRetry", { n: Math.max(1, Math.ceil(secs / 60)) });
+}
+
 /// 컴팩트용 나이 축약 ("3h 전", "45m 전") — 컴팩트의 축약 표기 관례를 따른다
 function compactStaleAge(secs: number | null | undefined): string {
   if (secs == null) return "";
@@ -297,6 +310,7 @@ async function loadUsage(
   card: HTMLElement,
   profile: string | null,
   accountId: string,
+  forceRetry: boolean,
 ) {
   const box = document.createElement("div");
   box.className = "usage-box";
@@ -307,12 +321,12 @@ async function loadUsage(
   card.appendChild(box);
 
   try {
-    const usage = await fetchUsageShared(provider, profile, accountId);
+    const usage = await fetchUsageShared(provider, profile, accountId, forceRetry);
     box.textContent = "";
     if (usage.windows.length === 0) {
       const empty = document.createElement("div");
       empty.className = "usage-note";
-      empty.textContent = t("noUsage");
+      empty.textContent = retryLabel(usage) ?? t("noUsage");
       box.appendChild(empty);
       return;
     }
@@ -323,16 +337,15 @@ async function loadUsage(
       box.classList.add("stale");
       const overlay = document.createElement("div");
       overlay.className = "stale-overlay";
-      overlay.textContent = staleLabel(usage);
+      const retry = retryLabel(usage);
+      overlay.textContent = retry ? `${staleLabel(usage)} · ${retry}` : staleLabel(usage);
       box.appendChild(overlay);
     }
   } catch (error) {
     box.textContent = "";
-    const message = String(error);
     const note = document.createElement("div");
-    // 보여줄 이전 수치조차 없는 초기 상태의 일시 장애는 작은 안내로만
-    note.className = message.includes("조회 대기중") ? "usage-note" : "usage-error";
-    note.textContent = message;
+    note.className = "usage-error";
+    note.textContent = String(error);
     box.appendChild(note);
   }
   fitHeight();
@@ -342,6 +355,7 @@ function profileCard(
   provider: ProviderId,
   profile: ProfileInfo,
   pending: Promise<unknown>[],
+  forceRetry: boolean,
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = "card" + (profile.active ? " active" : "");
@@ -377,7 +391,9 @@ function profileCard(
 
   // 활성 프로필은 활성 파일(항상 최신 토큰), 비활성은 보관함 토큰으로 조회.
   // 프라미스는 렌더러가 모은다 — 새로고침 때 다 받아진 뒤 한 번에 교체하기 위해
-  pending.push(loadUsage(provider, card, profile.active ? null : profile.name, profile.id));
+  pending.push(
+    loadUsage(provider, card, profile.active ? null : profile.name, profile.id, forceRetry),
+  );
 
   let switching = false;
   const doSwitch = async (disable?: HTMLButtonElement) => {
@@ -952,6 +968,7 @@ async function renderProvider(
   title: string,
   target: DocumentFragment,
   pending: Promise<unknown>[],
+  forceRetry: boolean,
 ) {
   const section = document.createElement("section");
   const heading = document.createElement("h2");
@@ -980,7 +997,7 @@ async function renderProvider(
     }
 
     for (const profile of snap.profiles) {
-      section.appendChild(profileCard(provider, profile, pending));
+      section.appendChild(profileCard(provider, profile, pending, forceRetry));
     }
 
     addAccountButton(provider, section);
@@ -1449,6 +1466,7 @@ function compactCard(
   profile: ProfileInfo,
   minimal: boolean,
   pending: Promise<unknown>[],
+  forceRetry: boolean,
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = "card compact-card" + (profile.active ? " active" : "");
@@ -1493,7 +1511,19 @@ function compactCard(
         provider,
         profile.active ? null : profile.name,
         profile.id,
+        forceRetry,
       );
+      const retry = retryLabel(usage);
+      if (usage.windows.length === 0) {
+        if (retry) {
+          const note = document.createElement("div");
+          note.className = "usage-note";
+          note.textContent = retry;
+          card.appendChild(note);
+          card.title = [card.title, retry].filter(Boolean).join(" · ");
+        }
+        return;
+      }
       if (usage.stale) {
         // 컴팩트에서도 이전 수치임을 숨기지 않는다 — 줄을 흐리고 머리에 나이를 붙인다
         // (미니멀은 붙일 머리가 없으니 줄 흐림만 남는다)
@@ -1501,9 +1531,12 @@ function compactCard(
         if (!minimal) {
           const age = document.createElement("span");
           age.className = "c-stale";
-          age.textContent = compactStaleAge(usage.stale_age_secs);
+          age.textContent = [compactStaleAge(usage.stale_age_secs), retry]
+            .filter(Boolean)
+            .join(" · ");
           head.appendChild(age);
         }
+        if (retry) card.title = [card.title, retry].filter(Boolean).join(" · ");
       }
       for (const win of usage.windows) {
         const row = document.createElement("div");
@@ -1560,6 +1593,7 @@ async function renderProviderCompact(
   target: DocumentFragment,
   minimal: boolean,
   pending: Promise<unknown>[],
+  forceRetry: boolean,
 ) {
   try {
     const snap = await invoke<Snapshot>("list_profiles", { provider });
@@ -1578,7 +1612,9 @@ async function renderProviderCompact(
 
     // 카드 골격은 즉시 붙이고 사용량만 뒤에서 병렬로 채운다. 모드 전환이 네트워크
     // 조회를 기다리며 멎지 않게 하면서, 일반 새로고침은 pending을 기다려 한 번에 바뀐다.
-    const cards = snap.profiles.map((profile) => compactCard(provider, profile, minimal, pending));
+    const cards = snap.profiles.map((profile) =>
+      compactCard(provider, profile, minimal, pending, forceRetry),
+    );
     for (const card of cards) section.appendChild(card);
     target.appendChild(section);
   } catch {
@@ -1589,13 +1625,15 @@ async function renderProviderCompact(
 let renderQueued = false;
 /// 큐된 재요청 중 하나라도 즉시 렌더(상태 변경)였으면 다음 바퀴도 즉시로 돈다
 let queuedImmediate = false;
+/// 큐된 재요청 중 사용자의 수동 새로고침이 하나라도 있으면 백오프 우회를 보존한다
+let queuedForceUsage = false;
 /// 스무스 렌더의 사용량 대기를 즉시 끝내는 스위치 (상태 변경이 끼어들 때)
 let renderAbort: (() => void) | null = null;
 
 /// immediate: 전환·삭제·모드 변경처럼 "지금 상태가 바뀐" 렌더 — 새 목록을 바로
-/// 보여주고 사용량은 교체된 카드에 이어서 채운다. 생략(스무스)은 주기·수동
-/// 새로고침 — 기존 화면을 그대로 둔 채 다 받아진 뒤 한 번에 교체한다.
-async function render(opts?: { immediate?: boolean }) {
+/// 보여주고 사용량은 교체된 카드에 이어서 채운다. forceUsage는 사용자가 직접 누른
+/// 새로고침만 사용하며 자동 조회 백오프를 한 번 우회한다.
+async function render(opts?: { immediate?: boolean; forceUsage?: boolean }) {
   // 선택값을 읽는 동안만 기다린다. 안내 중에는 기본 인터페이스를 먼저 그리고
   // 전체 오버레이로 조작만 막아 앱이 무엇인지 보이는 상태를 유지한다.
   if (startupState === "checking") return;
@@ -1604,17 +1642,21 @@ async function render(opts?: { immediate?: boolean }) {
   if (rendering) {
     renderQueued = true;
     if (opts?.immediate) queuedImmediate = true;
+    if (opts?.forceUsage) queuedForceUsage = true;
     // 진행 중인 스무스 대기는 낡은 버퍼를 기다리는 중 — 즉시 끝내고 다시 그리게
     renderAbort?.();
     return;
   }
   rendering = true;
   let thisImmediate = opts?.immediate ?? false;
+  let thisForceUsage = opts?.forceUsage ?? false;
   try {
     do {
       renderQueued = false;
       thisImmediate = thisImmediate || queuedImmediate;
+      thisForceUsage = thisForceUsage || queuedForceUsage;
       queuedImmediate = false;
+      queuedForceUsage = false;
       // 그리는 도중 모드가 바뀌어도 한 화면은 단일 모드로 —
       // 프로바이더마다 다른 모드로 그려지는 혼종 화면 방지
       const mode = starPromptOpen ? "normal" : viewMode;
@@ -1632,9 +1674,16 @@ async function render(opts?: { immediate?: boolean }) {
           if (!visibility[key] && !starPromptOpen) continue;
           const title = PROVIDERS.find((p) => p.id === key)!.title;
           if (mode !== "normal") {
-            await renderProviderCompact(key, title, buffer, mode === "minimal", pending);
+            await renderProviderCompact(
+              key,
+              title,
+              buffer,
+              mode === "minimal",
+              pending,
+              thisForceUsage,
+            );
           } else {
-            await renderProvider(key, title, buffer, pending);
+            await renderProvider(key, title, buffer, pending, thisForceUsage);
           }
         } else if (key === "github") {
           if (!visibility.github || mode === "minimal") continue;
@@ -1688,6 +1737,7 @@ async function render(opts?: { immediate?: boolean }) {
         drawMonSpark();
       }
       thisImmediate = false;
+      thisForceUsage = false;
     } while (renderQueued);
   } finally {
     rendering = false;
@@ -2116,7 +2166,7 @@ document.getElementById("refresh")!.addEventListener("click", () => {
     toast(t("refreshBusy"), true);
     return;
   }
-  void render();
+  void render({ forceUsage: true });
 });
 window.setInterval(() => {
   if (!userIsBusy()) void render();
