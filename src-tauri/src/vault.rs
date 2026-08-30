@@ -1326,11 +1326,27 @@ fn recover_stale_imports_locked(env: &Env) -> Result<(), String> {
     }
     let entries =
         fs::read_dir(&env.store).map_err(|_| "이전 인증정보 가져오기 상태를 확인할 수 없습니다")?;
+    let mut recovery_error = None;
+    let mut stage_roots = Vec::new();
     for entry in entries {
-        let entry = entry.map_err(|_| "이전 인증정보 가져오기 상태를 확인할 수 없습니다")?;
-        let file_type = entry
-            .file_type()
-            .map_err(|_| "이전 인증정보 가져오기 상태를 확인할 수 없습니다")?;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                recovery_error.get_or_insert_with(|| {
+                    "이전 인증정보 가져오기 상태를 확인할 수 없습니다".to_string()
+                });
+                continue;
+            }
+        };
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(_) => {
+                recovery_error.get_or_insert_with(|| {
+                    "이전 인증정보 가져오기 상태를 확인할 수 없습니다".to_string()
+                });
+                continue;
+            }
+        };
         if !file_type.is_dir() {
             continue;
         }
@@ -1341,9 +1357,18 @@ fn recover_stale_imports_locked(env: &Env) -> Result<(), String> {
         if !valid_import_id(import_id) {
             continue;
         }
-        recover_stage_root(env, &entry.path(), import_id)?;
+        stage_roots.push((entry.path(), import_id.to_string()));
     }
-    Ok(())
+    stage_roots.sort_by(|a, b| a.0.cmp(&b.0));
+    for (stage_root, import_id) in stage_roots {
+        if let Err(error) = recover_stage_root(env, &stage_root, &import_id) {
+            recovery_error.get_or_insert(error);
+        }
+    }
+    match recovery_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 fn recover_stage_root(env: &Env, stage_root: &Path, import_id: &str) -> Result<(), String> {
@@ -1505,8 +1530,9 @@ pub(crate) fn profile_import_blocked(env: &Env, provider: Provider, name: &str) 
         .profiles_dir(provider)
         .join(name)
         .join(IMPORT_MARKER_FILE);
-    if !marker.exists() {
-        return false;
+    match fs::symlink_metadata(&marker) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        Ok(_) | Err(_) => {}
     }
 
     let marker_id = read_bounded_file(&marker, 64)
@@ -1514,12 +1540,14 @@ pub(crate) fn profile_import_blocked(env: &Env, provider: Provider, name: &str) 
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .filter(|import_id| valid_import_id(import_id));
     if let Some(import_id) = marker_id.as_deref() {
-        return !committed_stage_contains(
+        if committed_stage_contains(
             &env.store.join(format!(".vault-import-{import_id}")),
             import_id,
             provider,
             name,
-        );
+        ) {
+            return false;
+        }
     }
 
     let committed = fs::read_dir(&env.store)
@@ -1535,11 +1563,7 @@ pub(crate) fn profile_import_blocked(env: &Env, provider: Provider, name: &str) 
             valid_import_id(import_id)
                 && committed_stage_contains(&entry.path(), import_id, provider, name)
         });
-    if committed {
-        false
-    } else {
-        marker.exists()
-    }
+    !committed
 }
 
 fn marker_matches(marker: &Path, expected: &str) -> bool {
@@ -3211,6 +3235,13 @@ mod tests {
         assert!(!profile_import_blocked(&target, Provider::Claude, "first"));
         assert!(!profile_import_blocked(&target, Provider::Claude, "second"));
 
+        atomic_write(&first_marker, b"000000000000000000000000").unwrap();
+        assert!(
+            !profile_import_blocked(&target, Provider::Claude, "first"),
+            "잘못된 valid marker id가 committed 전체 가시성을 깨면 안 된다"
+        );
+        atomic_write(&first_marker, import_id.as_bytes()).unwrap();
+
         // journal 자체를 읽을 수 없어도 committed 복제본으로 완료 상태와
         // 두 항목의 소속을 판정해야 한다.
         fs::remove_file(stage_root.join(IMPORT_JOURNAL_FILE)).unwrap();
@@ -3242,6 +3273,56 @@ mod tests {
 
         assert!(recover_stale_imports(&target).is_err());
         assert!(stage_root.exists());
+    }
+
+    #[test]
+    fn one_broken_stage_does_not_block_other_stage_recovery() {
+        let target = test_env("vault-independent-stage-recovery");
+        fs::create_dir_all(&target.store).unwrap();
+        let broken_root = target.store.join(".vault-import-000000000000000000000001");
+        fs::create_dir(&broken_root).unwrap();
+        atomic_write(
+            &broken_root.join(IMPORT_JOURNAL_FILE),
+            b"broken journal fixture",
+        )
+        .unwrap();
+
+        let recoverable_id = "000000000000000000000002".to_string();
+        let recoverable_root = target.store.join(format!(".vault-import-{recoverable_id}"));
+        fs::create_dir(&recoverable_root).unwrap();
+        write_import_journal(
+            &recoverable_root,
+            &journal(&recoverable_id, "staging", Provider::Claude, "recoverable"),
+        )
+        .unwrap();
+        let recoverable = add_marked_claude(
+            &target,
+            "recoverable",
+            "recoverable-id",
+            "recoverable@example.test",
+            &recoverable_id,
+        );
+
+        assert!(recover_stale_imports(&target).is_err());
+        assert!(broken_root.exists(), "판단할 수 없는 stage는 보존해야 한다");
+        assert!(
+            !recoverable.exists(),
+            "독립된 staging 프로필은 원복해야 한다"
+        );
+        assert!(!recoverable_root.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_import_marker_is_blocked_fail_closed() {
+        use std::os::unix::fs::symlink;
+
+        let target = test_env("vault-dangling-import-marker");
+        let profile = target.profiles_dir(Provider::Claude).join("partial");
+        fs::create_dir_all(&profile).unwrap();
+        symlink("missing-marker-target", profile.join(IMPORT_MARKER_FILE)).unwrap();
+
+        assert!(profile_import_blocked(&target, Provider::Claude, "partial"));
     }
 
     #[test]
