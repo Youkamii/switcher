@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  reconcileVaultProfileChoices,
   selectedVaultProfiles,
   vaultBoundaryPolicy,
   vaultInteractionLocked,
@@ -39,6 +40,50 @@ test("builds an alias-only export DTO and preserves each email-display choice", 
   ]);
   assert.equal(JSON.stringify(selections).includes("email"), false);
   assert.deepEqual(selectedVaultProfiles([]), []);
+});
+
+test("keeps Vault choices across focus refreshes while replacing live profile state", () => {
+  const previous = [
+    {
+      profile: { provider: "claude", name: "work", active: false },
+      selected: true,
+      hideEmail: false,
+    },
+    {
+      profile: { provider: "codex", name: "removed", active: true },
+      selected: true,
+      hideEmail: true,
+    },
+  ] as const;
+  const profiles = [
+    { provider: "claude", name: "work", active: true },
+    { provider: "codex", name: "new", active: false },
+  ] as const;
+
+  assert.deepEqual(reconcileVaultProfileChoices(profiles, previous), [
+    {
+      profile: profiles[0],
+      selected: true,
+      hideEmail: false,
+    },
+    {
+      profile: profiles[1],
+      selected: false,
+      hideEmail: true,
+    },
+  ]);
+  assert.deepEqual(previous, [
+    {
+      profile: { provider: "claude", name: "work", active: false },
+      selected: true,
+      hideEmail: false,
+    },
+    {
+      profile: { provider: "codex", name: "removed", active: true },
+      selected: true,
+      hideEmail: true,
+    },
+  ]);
 });
 
 test("blocks lifecycle boundaries while busy and keeps recovery available across forced hiding", () => {
@@ -131,7 +176,7 @@ test("uses a dedicated themed two-tab window with accessible status regions", ()
   assert.match(css, /\.vault-panel\[hidden\]/);
 });
 
-test("loads only the alias profile DTO and defaults email hiding on", () => {
+test("loads only the alias profile DTO and reconciles refreshed choices", () => {
   assert.match(
     selectionSource,
     /interface VaultProfile \{\s*provider: string;\s*name: string;\s*active: boolean;/,
@@ -139,7 +184,7 @@ test("loads only the alias profile DTO and defaults email hiding on", () => {
   assert.match(source, /invoke<VaultProfile\[]>\("vault_list_profiles"\)/);
   assert.match(
     source,
-    /choices = profiles\.map\(\(profile\) => \(\{\s*profile,\s*selected: false,\s*hideEmail: true,/,
+    /choices = reconcileVaultProfileChoices\(profiles, choices\)/,
   );
   assert.doesNotMatch(source, /profile\.(?:email|id|accountUuid|organizationUuid)/);
   assert.match(source, /if \(selections\.length === 0\)[\s\S]*?noSelection/);
