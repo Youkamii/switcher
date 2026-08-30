@@ -24,12 +24,12 @@ const packageJson = JSON.parse(
 test("builds an alias-only export DTO and preserves each email-display choice", () => {
   const selections = selectedVaultProfiles([
     {
-      profile: { provider: "claude", name: "work", active: true },
+      profile: { provider: "claude", name: "work", active: true, revision: 1 },
       selected: true,
       hideEmail: true,
     },
     {
-      profile: { provider: "codex", name: "personal", active: false },
+      profile: { provider: "codex", name: "personal", active: false, revision: 2 },
       selected: false,
       hideEmail: false,
     },
@@ -45,19 +45,19 @@ test("builds an alias-only export DTO and preserves each email-display choice", 
 test("keeps Vault choices across focus refreshes while replacing live profile state", () => {
   const previous = [
     {
-      profile: { provider: "claude", name: "work", active: false },
+      profile: { provider: "claude", name: "work", active: false, revision: 7 },
       selected: true,
       hideEmail: false,
     },
     {
-      profile: { provider: "codex", name: "removed", active: true },
+      profile: { provider: "codex", name: "removed", active: true, revision: 3 },
       selected: true,
       hideEmail: true,
     },
   ] as const;
   const profiles = [
-    { provider: "claude", name: "work", active: true },
-    { provider: "codex", name: "new", active: false },
+    { provider: "claude", name: "work", active: true, revision: 7 },
+    { provider: "codex", name: "new", active: false, revision: 1 },
   ] as const;
 
   assert.deepEqual(reconcileVaultProfileChoices(profiles, previous), [
@@ -74,16 +74,39 @@ test("keeps Vault choices across focus refreshes while replacing live profile st
   ]);
   assert.deepEqual(previous, [
     {
-      profile: { provider: "claude", name: "work", active: false },
+      profile: { provider: "claude", name: "work", active: false, revision: 7 },
       selected: true,
       hideEmail: false,
     },
     {
-      profile: { provider: "codex", name: "removed", active: true },
+      profile: { provider: "codex", name: "removed", active: true, revision: 3 },
       selected: true,
       hideEmail: true,
     },
   ]);
+});
+
+test("resets Vault choices when an alias is recreated for a different profile revision", () => {
+  const previous = [
+    {
+      profile: { provider: "claude", name: "work", active: true, revision: 7 },
+      selected: true,
+      hideEmail: false,
+    },
+  ] as const;
+  const profiles = [
+    { provider: "claude", name: "work", active: false, revision: 8 },
+  ] as const;
+
+  assert.deepEqual(reconcileVaultProfileChoices(profiles, previous), [
+    {
+      profile: profiles[0],
+      selected: false,
+      hideEmail: true,
+    },
+  ]);
+  assert.equal(previous[0].selected, true);
+  assert.equal(previous[0].hideEmail, false);
 });
 
 test("blocks lifecycle boundaries while busy and keeps recovery available across forced hiding", () => {
@@ -179,7 +202,7 @@ test("uses a dedicated themed two-tab window with accessible status regions", ()
 test("loads only the alias profile DTO and reconciles refreshed choices", () => {
   assert.match(
     selectionSource,
-    /interface VaultProfile \{\s*provider: string;\s*name: string;\s*active: boolean;/,
+    /interface VaultProfile \{\s*provider: string;\s*name: string;\s*active: boolean;\s*revision: number;/,
   );
   assert.match(source, /invoke<VaultProfile\[]>\("vault_list_profiles"\)/);
   assert.match(
@@ -187,6 +210,7 @@ test("loads only the alias profile DTO and reconciles refreshed choices", () => 
     /choices = reconcileVaultProfileChoices\(profiles, choices\)/,
   );
   assert.doesNotMatch(source, /profile\.(?:email|id|accountUuid|organizationUuid)/);
+  assert.doesNotMatch(selectionSource, /\b(?:email|id|accountUuid|organizationUuid)\s*:/);
   assert.match(source, /if \(selections\.length === 0\)[\s\S]*?noSelection/);
 });
 
