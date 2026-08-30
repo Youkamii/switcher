@@ -38,8 +38,14 @@ sysinfo = { version = "0.39.6", default-features = false, features = ["system", 
 [target.'cfg(windows)'.dependencies]
 # 부팅 시 자동 실행(HKCU Run 키)·바탕화면 실제 경로(User Shell Folders) 조회
 winreg = "0.55"
-# 바탕화면 바로가기(.lnk) 생성 — COM 없이 순수 Rust로 ShellLink 파일을 쓴다
+# 새 .lnk 생성은 mslnk, 기존 링크 속성 보존 갱신은 Windows Shell Link COM을 쓴다
 mslnk = "0.1"
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+] }
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Security",

@@ -69,6 +69,28 @@ pub fn save_flag(store: &Path, key: &str, value: bool) -> Result<(), String> {
     save_value(store, key, Value::Bool(value))
 }
 
+/// 손상된 설정을 기본값으로 오인하지 않고, 키가 없는 상태도 구분해 읽는다.
+pub fn load_flag_checked(store: &Path, key: &str) -> Result<Option<bool>, String> {
+    let Some(value) = read_settings_checked(store)? else {
+        return Ok(None);
+    };
+    let root = value
+        .as_object()
+        .ok_or_else(|| "설정 파일 형식이 올바르지 않습니다".to_string())?;
+    match root.get(key) {
+        Some(value) => value
+            .as_bool()
+            .map(Some)
+            .ok_or_else(|| format!("설정 값 형식이 올바르지 않습니다: {key}")),
+        None => Ok(None),
+    }
+}
+
+/// 손상된 기존 설정을 빈 설정으로 덮지 않고 불리언 값을 저장한다.
+pub fn save_flag_checked(store: &Path, key: &str, value: bool) -> Result<(), String> {
+    save_value_checked(store, key, Value::Bool(value))
+}
+
 /// 선택값이 없거나 알 수 없는 값이면 다시 묻는다.
 pub fn load_github_star_prompt_choice(store: &Path) -> Result<Option<String>, String> {
     let Some(value) = read_settings_checked(store)? else {
@@ -341,6 +363,26 @@ mod tests {
         save_flag(&store, KEY_AUTO_START, true).unwrap();
         assert_eq!(load_language(&store), "en");
         assert!(load_flag(&store, KEY_AUTO_START, false));
+    }
+
+    #[test]
+    fn checked_flag_distinguishes_missing_and_preserves_corrupt_settings() {
+        let store = test_store("checked-flags");
+        assert_eq!(load_flag_checked(&store, "shortcut"), Ok(None));
+        fs::create_dir_all(&store).unwrap();
+        fs::write(settings_path(&store), r#"{"other":true}"#).unwrap();
+        assert_eq!(load_flag_checked(&store, "shortcut"), Ok(None));
+        save_flag_checked(&store, "shortcut", true).unwrap();
+        assert_eq!(load_flag_checked(&store, "shortcut"), Ok(Some(true)));
+        assert!(load_flag(&store, "other", false));
+
+        fs::write(settings_path(&store), "{not json").unwrap();
+        assert!(load_flag_checked(&store, "shortcut").is_err());
+        assert!(save_flag_checked(&store, "shortcut", true).is_err());
+        assert_eq!(
+            fs::read_to_string(settings_path(&store)).unwrap(),
+            "{not json"
+        );
     }
 
     #[test]

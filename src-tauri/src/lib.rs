@@ -1887,7 +1887,58 @@ fn refresh_tray_menu(app: &tauri::AppHandle, lang: &str) {
 /// 바탕화면 바로가기 (Windows) — 첫 실행 때 한 번만 만든다
 #[cfg(windows)]
 mod shortcut {
+    use std::fs;
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use windows::core::{Error as WindowsError, Interface, PCWSTR};
+    use windows::Win32::Foundation::RPC_E_CHANGED_MODE;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED, STGM_READ,
+    };
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FileRenameInfo, GetFileInformationByHandle, SetFileInformationByHandle,
+        BY_HANDLE_FILE_INFORMATION, CREATE_NEW, DELETE, FILE_ATTRIBUTE_NORMAL,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_RENAME_INFO,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    struct ComApartment {
+        uninitialize: bool,
+    }
+
+    impl ComApartment {
+        fn initialize() -> Result<Self, String> {
+            let status = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+            if status.is_ok() {
+                return Ok(Self { uninitialize: true });
+            }
+            if status == RPC_E_CHANGED_MODE {
+                return Ok(Self {
+                    uninitialize: false,
+                });
+            }
+            Err(format!(
+                "바로가기 COM 초기화 실패: {}",
+                WindowsError::from_hresult(status)
+            ))
+        }
+    }
+
+    impl Drop for ComApartment {
+        fn drop(&mut self) {
+            if self.uninitialize {
+                unsafe { CoUninitialize() };
+            }
+        }
+    }
 
     /// 바탕화면 실제 경로 — OneDrive 리디렉션까지 반영된 User Shell Folders 기준
     fn desktop_dir() -> Result<PathBuf, String> {
@@ -1938,101 +1989,628 @@ mod shortcut {
         out
     }
 
-    fn write_in(dir: &Path, target: &Path) -> Result<(), String> {
-        let lnk = dir.join("switcher.lnk");
+    fn wide(path: &Path) -> Vec<u16> {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct FileStamp {
+        volume: u32,
+        index_high: u32,
+        index_low: u32,
+        write_high: u32,
+        write_low: u32,
+        size_high: u32,
+        size_low: u32,
+    }
+
+    pub struct SyncOutcome {
+        created: Option<(PathBuf, FileStamp)>,
+    }
+
+    impl SyncOutcome {
+        pub fn remove_unrecorded_creation(self) -> Result<(), String> {
+            let Some((path, stamp)) = self.created else {
+                return Ok(());
+            };
+            match file_stamp(&path) {
+                Ok(current) if current == stamp => fs::remove_file(&path)
+                    .map_err(|error| format!("기록되지 않은 바로가기 정리 실패: {error}")),
+                Err(_) if !path.exists() => Ok(()),
+                Ok(_) => Err("바로가기가 생성 직후 바뀌어 자동 정리하지 않았습니다".to_string()),
+                Err(error) => Err(error),
+            }
+        }
+    }
+
+    struct ReservedTemp {
+        path: PathBuf,
+        file: Option<std::fs::File>,
+    }
+
+    impl ReservedTemp {
+        fn file(&self) -> Result<&std::fs::File, String> {
+            self.file
+                .as_ref()
+                .ok_or_else(|| "바로가기 임시 파일이 이미 닫혔습니다".to_string())
+        }
+
+        fn sync(&self) -> Result<(), String> {
+            self.file()?
+                .sync_all()
+                .map_err(|error| format!("바로가기 임시 파일 동기화 실패: {error}"))
+        }
+    }
+
+    impl Drop for ReservedTemp {
+        fn drop(&mut self) {
+            drop(self.file.take());
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+
+    fn reserve_temp_with_access(
+        lnk: &Path,
+        suffix: &str,
+        access: u32,
+    ) -> Result<ReservedTemp, String> {
+        let dir = lnk
+            .parent()
+            .ok_or_else(|| "바로가기 임시 경로를 만들 수 없습니다".to_string())?;
+        for _ in 0..100 {
+            let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let candidate = dir.join(format!(
+                ".switcher-{}-{sequence}.lnk.{suffix}",
+                std::process::id(),
+            ));
+            let candidate_wide = wide(&candidate);
+            let handle = unsafe {
+                CreateFileW(
+                    candidate_wide.as_ptr(),
+                    access,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    std::ptr::null(),
+                    CREATE_NEW,
+                    FILE_ATTRIBUTE_NORMAL,
+                    std::ptr::null_mut(),
+                )
+            };
+            if handle != INVALID_HANDLE_VALUE {
+                return Ok(ReservedTemp {
+                    path: candidate,
+                    file: Some(unsafe { std::fs::File::from_raw_handle(handle.cast()) }),
+                });
+            }
+            let error = std::io::Error::last_os_error();
+            match error.kind() {
+                std::io::ErrorKind::AlreadyExists => continue,
+                _ => return Err(format!("바로가기 임시 파일 생성 실패: {error}")),
+            }
+        }
+        Err("바로가기 임시 파일 이름을 확보하지 못했습니다".to_string())
+    }
+
+    fn reserve_temp(lnk: &Path) -> Result<ReservedTemp, String> {
+        reserve_temp_with_access(lnk, "tmp", GENERIC_READ | GENERIC_WRITE | DELETE)
+    }
+
+    fn reserve_staging_temp(lnk: &Path) -> Result<ReservedTemp, String> {
+        reserve_temp_with_access(lnk, "stage", GENERIC_READ | GENERIC_WRITE)
+    }
+
+    fn available_backup_path(lnk: &Path) -> Result<PathBuf, String> {
+        let dir = lnk
+            .parent()
+            .ok_or_else(|| "바로가기 백업 경로를 만들 수 없습니다".to_string())?;
+        for _ in 0..100 {
+            let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let candidate = dir.join(format!(
+                ".switcher-{}-{sequence}.lnk.bak",
+                std::process::id()
+            ));
+            match fs::symlink_metadata(&candidate) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
+                Ok(_) => continue,
+                Err(error) => return Err(format!("바로가기 백업 경로 확인 실패: {error}")),
+            }
+        }
+        Err("바로가기 백업 파일 이름을 확보하지 못했습니다".to_string())
+    }
+
+    fn stamp_from_file(file: &std::fs::File) -> Result<FileStamp, String> {
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        if unsafe {
+            GetFileInformationByHandle(
+                file.as_raw_handle().cast(),
+                &mut info as *mut BY_HANDLE_FILE_INFORMATION,
+            )
+        } == 0
+        {
+            return Err(format!(
+                "바로가기 파일 정보 확인 실패: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err("바로가기 경로가 재분석 지점이어서 갱신하지 않았습니다".to_string());
+        }
+        Ok(FileStamp {
+            volume: info.dwVolumeSerialNumber,
+            index_high: info.nFileIndexHigh,
+            index_low: info.nFileIndexLow,
+            write_high: info.ftLastWriteTime.dwHighDateTime,
+            write_low: info.ftLastWriteTime.dwLowDateTime,
+            size_high: info.nFileSizeHigh,
+            size_low: info.nFileSizeLow,
+        })
+    }
+
+    fn file_stamp(path: &Path) -> Result<FileStamp, String> {
+        let path_wide = wide(path);
+        let handle = unsafe {
+            CreateFileW(
+                path_wide.as_ptr(),
+                GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(format!(
+                "바로가기 파일 정보 열기 실패: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let file = unsafe { std::fs::File::from_raw_handle(handle.cast()) };
+        stamp_from_file(&file)
+    }
+
+    struct LockedLink {
+        file: std::fs::File,
+    }
+
+    fn lock_existing_link(path: &Path, expected: FileStamp) -> Result<Option<LockedLink>, String> {
+        let path_wide = wide(path);
+        let handle = unsafe {
+            CreateFileW(
+                path_wide.as_ptr(),
+                GENERIC_READ | DELETE,
+                FILE_SHARE_READ,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return Ok(None);
+            }
+            return Err(format!("기존 바로가기 잠금 실패: {error}"));
+        }
+        let file = unsafe { std::fs::File::from_raw_handle(handle.cast()) };
+        let actual = stamp_from_file(&file)?;
+        if actual != expected {
+            return Err("바로가기가 갱신 중 바뀌어 교체하지 않았습니다".to_string());
+        }
+        Ok(Some(LockedLink { file }))
+    }
+
+    fn rename_by_handle(
+        file: &std::fs::File,
+        destination: &Path,
+        replace: bool,
+    ) -> Result<(), String> {
+        let destination_wide: Vec<u16> = destination.as_os_str().encode_wide().collect();
+        if destination_wide.is_empty() {
+            return Err("바로가기 교체 경로가 비어 있습니다".to_string());
+        }
+        let byte_len = std::mem::size_of::<FILE_RENAME_INFO>()
+            + destination_wide.len() * std::mem::size_of::<u16>();
+        let word_size = std::mem::size_of::<usize>();
+        let mut buffer = vec![0usize; byte_len.div_ceil(word_size)];
+        let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+        unsafe {
+            (*info).Anonymous.ReplaceIfExists = replace;
+            (*info).RootDirectory = std::ptr::null_mut();
+            (*info).FileNameLength = (destination_wide.len() * std::mem::size_of::<u16>()) as u32;
+            std::ptr::copy_nonoverlapping(
+                destination_wide.as_ptr(),
+                (*info).FileName.as_mut_ptr(),
+                destination_wide.len(),
+            );
+        }
+        let ok = unsafe {
+            SetFileInformationByHandle(
+                file.as_raw_handle().cast(),
+                FileRenameInfo,
+                info.cast(),
+                byte_len as u32,
+            )
+        };
+        if ok != 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error().to_string())
+        }
+    }
+
+    fn copy_staged_link(staging: &ReservedTemp, output: &ReservedTemp) -> Result<(), String> {
+        staging.sync()?;
+        let mut bytes = Vec::new();
+        let mut source = staging.file()?;
+        source
+            .seek(SeekFrom::Start(0))
+            .and_then(|_| source.read_to_end(&mut bytes))
+            .map_err(|error| format!("바로가기 임시 파일 읽기 실패: {error}"))?;
+
+        let target = output.file()?;
+        target
+            .set_len(0)
+            .map_err(|error| format!("바로가기 교체 파일 초기화 실패: {error}"))?;
+        let mut target = target;
+        target
+            .seek(SeekFrom::Start(0))
+            .and_then(|_| target.write_all(&bytes))
+            .map_err(|error| format!("바로가기 교체 파일 쓰기 실패: {error}"))?;
+        output.sync()
+    }
+
+    fn write_new_link(target: &Path, output: &ReservedTemp) -> Result<(), String> {
+        let staging = reserve_staging_temp(&output.path)?;
         let link = mslnk::ShellLink::new(target).map_err(|e| format!("바로가기 생성 실패: {e}"))?;
-        link.create_lnk(&lnk)
-            .map_err(|e| format!("바로가기 저장 실패: {e}"))
+        link.create_lnk(&staging.path)
+            .map_err(|e| format!("바로가기 저장 실패: {e}"))?;
+        copy_staged_link(&staging, output)
     }
 
-    /// dir 안에 switcher.lnk 생성. 이미 있으면 그대로 둔다.
-    fn create_in(dir: &Path, target: &Path) -> Result<(), String> {
-        if dir.join("switcher.lnk").exists() {
-            return Ok(());
+    fn write_refreshed_link(
+        existing: &Path,
+        target: &Path,
+        output: &ReservedTemp,
+    ) -> Result<(), String> {
+        let staging = reserve_staging_temp(&output.path)?;
+        let _com = ComApartment::initialize()?;
+        let link: IShellLinkW = unsafe {
+            CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)
+                .map_err(|error| format!("바로가기 열기 실패: {error}"))?
+        };
+        let persist: IPersistFile = link
+            .cast()
+            .map_err(|error| format!("바로가기 저장 기능 확인 실패: {error}"))?;
+        let existing_wide = wide(existing);
+        let target_wide = wide(target);
+        let output_wide = wide(&staging.path);
+        unsafe {
+            persist
+                .Load(PCWSTR(existing_wide.as_ptr()), STGM_READ)
+                .map_err(|error| format!("기존 바로가기 읽기 실패: {error}"))?;
+            link.SetPath(PCWSTR(target_wide.as_ptr()))
+                .map_err(|error| format!("바로가기 대상 갱신 실패: {error}"))?;
+            persist
+                .Save(PCWSTR(output_wide.as_ptr()), false)
+                .map_err(|error| format!("바로가기 임시 저장 실패: {error}"))?;
         }
-        write_in(dir, target)
+        copy_staged_link(&staging, output)
     }
 
-    /// 사용자가 지우지 않은 기존 바로가기만 현재 실행 파일로 갱신한다.
-    fn refresh_in(dir: &Path, target: &Path) -> Result<(), String> {
-        if !dir.join("switcher.lnk").exists() {
-            return Ok(());
+    fn move_new_link(output: &ReservedTemp, lnk: &Path) -> Result<(), String> {
+        rename_by_handle(output.file()?, lnk, false)
+            .map_err(|error| format!("바로가기 원자 교체 실패: {error}"))
+    }
+
+    fn replace_existing_link(
+        output: &ReservedTemp,
+        lnk: &Path,
+        expected: FileStamp,
+    ) -> Result<bool, String> {
+        let Some(locked) = lock_existing_link(lnk, expected)? else {
+            return Ok(false);
+        };
+        let backup = available_backup_path(lnk)?;
+        rename_by_handle(&locked.file, &backup, false)
+            .map_err(|error| format!("기존 바로가기 백업 이동 실패: {error}"))?;
+        if let Err(error) = rename_by_handle(output.file()?, lnk, false) {
+            return match rename_by_handle(&locked.file, lnk, false) {
+                Ok(()) => Err(format!(
+                    "바로가기 교체 실패로 원래 파일을 복구했습니다: {error}"
+                )),
+                Err(rollback_error) => Err(format!(
+                    "바로가기 교체와 복구가 모두 실패했습니다: {error}; 복구 실패: {rollback_error}; 백업: {}",
+                    backup.display()
+                )),
+            };
         }
-        write_in(dir, target)
+        drop(locked);
+        fs::remove_file(&backup)
+            .map_err(|error| format!("바로가기 교체 백업 정리 실패: {error}"))?;
+        Ok(true)
     }
 
-    /// 바탕화면에 switcher 바로가기 생성 (현재 실행 파일 대상)
-    pub fn create_on_desktop() -> Result<(), String> {
-        let exe = std::env::current_exe().map_err(|e| format!("실행 경로 확인 실패: {e}"))?;
-        create_in(&desktop_dir()?, &exe)
+    /// 기존 링크는 갱신하고, 없을 때는 허용된 첫 실행에서만 만든다.
+    fn sync_in(dir: &Path, target: &Path, create_if_missing: bool) -> Result<SyncOutcome, String> {
+        let lnk = dir.join("switcher.lnk");
+        let metadata = match fs::symlink_metadata(&lnk) {
+            Ok(metadata) => Some(metadata),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("바로가기 상태 확인 실패: {error}")),
+        };
+
+        if metadata.is_none() && !create_if_missing {
+            return Ok(SyncOutcome { created: None });
+        }
+        if metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.file_type().is_symlink())
+        {
+            return Err("바로가기 경로가 심볼릭 링크여서 갱신하지 않았습니다".to_string());
+        }
+
+        let expected = metadata.as_ref().map(|_| file_stamp(&lnk)).transpose()?;
+        let output = reserve_temp(&lnk)?;
+        let result = if metadata.is_some() {
+            write_refreshed_link(&lnk, target, &output)?;
+            output.sync()?;
+            let _ = replace_existing_link(&output, &lnk, expected.unwrap())?;
+            Ok(SyncOutcome { created: None })
+        } else {
+            write_new_link(target, &output)?;
+            output.sync()?;
+            move_new_link(&output, &lnk)?;
+            Ok(SyncOutcome {
+                created: Some((lnk.clone(), file_stamp(&lnk)?)),
+            })
+        };
+        result
     }
 
-    /// 앱이 다른 경로에서 실행됐으면 기존 바로가기 대상을 현재 실행 파일로 맞춘다.
-    pub fn refresh_on_desktop() -> Result<(), String> {
+    pub fn sync_on_desktop(create_if_missing: bool) -> Result<SyncOutcome, String> {
         let exe = std::env::current_exe().map_err(|e| format!("실행 경로 확인 실패: {e}"))?;
-        refresh_in(&desktop_dir()?, &exe)
+        sync_in(&desktop_dir()?, &exe, create_if_missing)
+    }
+
+    pub fn should_create_missing(done: Option<bool>) -> bool {
+        done != Some(true)
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::ffi::OsString;
+        use std::os::windows::ffi::OsStringExt;
+        use windows::Win32::System::Com::STGM_READWRITE;
+        use windows::Win32::UI::Shell::SLGP_RAWPATH;
+
+        fn test_dir(name: &str) -> PathBuf {
+            std::env::temp_dir().join(format!("switcher-lnk-{name}-{}", std::process::id()))
+        }
+
+        fn read_link(path: &Path) -> (PathBuf, String, PathBuf) {
+            let _com = ComApartment::initialize().unwrap();
+            let link: IShellLinkW =
+                unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap() };
+            let persist: IPersistFile = link.cast().unwrap();
+            let path_wide = wide(path);
+            unsafe {
+                persist.Load(PCWSTR(path_wide.as_ptr()), STGM_READ).unwrap();
+            }
+            let mut target = vec![0u16; 32_768];
+            let mut arguments = vec![0u16; 4_096];
+            let mut working_dir = vec![0u16; 32_768];
+            unsafe {
+                link.GetPath(&mut target, std::ptr::null_mut(), SLGP_RAWPATH.0 as u32)
+                    .unwrap();
+                link.GetArguments(&mut arguments).unwrap();
+                link.GetWorkingDirectory(&mut working_dir).unwrap();
+            }
+            let target_len = target.iter().position(|value| *value == 0).unwrap();
+            let arguments_len = arguments.iter().position(|value| *value == 0).unwrap();
+            let working_dir_len = working_dir.iter().position(|value| *value == 0).unwrap();
+            (
+                PathBuf::from(OsString::from_wide(&target[..target_len])),
+                String::from_utf16(&arguments[..arguments_len]).unwrap(),
+                PathBuf::from(OsString::from_wide(&working_dir[..working_dir_len])),
+            )
+        }
+
+        fn set_custom_properties(path: &Path, arguments: &str, working_dir: &Path) {
+            let _com = ComApartment::initialize().unwrap();
+            let link: IShellLinkW =
+                unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap() };
+            let persist: IPersistFile = link.cast().unwrap();
+            let path_wide = wide(path);
+            let arguments_wide: Vec<u16> =
+                arguments.encode_utf16().chain(std::iter::once(0)).collect();
+            let working_dir_wide = wide(working_dir);
+            unsafe {
+                persist
+                    .Load(PCWSTR(path_wide.as_ptr()), STGM_READWRITE)
+                    .unwrap();
+                link.SetArguments(PCWSTR(arguments_wide.as_ptr())).unwrap();
+                link.SetWorkingDirectory(PCWSTR(working_dir_wide.as_ptr()))
+                    .unwrap();
+                persist.Save(PCWSTR(path_wide.as_ptr()), true).unwrap();
+            }
+        }
 
         #[test]
         fn expands_env_vars() {
             std::env::set_var("SWITCHER_TEST_VAR", "C:\\probe");
-            assert_eq!(expand_env("%SWITCHER_TEST_VAR%\\Desktop"), "C:\\probe\\Desktop");
+            assert_eq!(
+                expand_env("%SWITCHER_TEST_VAR%\\Desktop"),
+                "C:\\probe\\Desktop"
+            );
             assert_eq!(expand_env("no-vars"), "no-vars");
             // 정의되지 않은 변수는 원문 그대로 남긴다
             assert_eq!(expand_env("%UNSET_VAR_XYZ%\\x"), "%UNSET_VAR_XYZ%\\x");
         }
 
         #[test]
-        fn creates_lnk_once() {
-            let dir =
-                std::env::temp_dir().join(format!("switcher-lnk-test-{}", std::process::id()));
+        fn creates_only_when_the_completion_marker_is_not_true() {
+            assert!(should_create_missing(None));
+            assert!(should_create_missing(Some(false)));
+            assert!(!should_create_missing(Some(true)));
+        }
+
+        #[test]
+        fn creates_missing_lnk_when_allowed() {
+            let dir = test_dir("create");
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             let exe = std::env::current_exe().unwrap();
-            create_in(&dir, &exe).unwrap();
+            sync_in(&dir, &exe, true).unwrap();
             assert!(dir.join("switcher.lnk").exists());
-            // 이미 있으면 조용히 성공한다
-            create_in(&dir, &exe).unwrap();
+            let (target, _, _) = read_link(&dir.join("switcher.lnk"));
+            assert_eq!(target.canonicalize().unwrap(), exe.canonicalize().unwrap());
             let _ = std::fs::remove_dir_all(&dir);
         }
 
         #[test]
-        fn refreshes_existing_lnk_target() {
-            let dir = std::env::temp_dir()
-                .join(format!("switcher-lnk-refresh-test-{}", std::process::id()));
+        fn refreshes_existing_lnk_and_preserves_arguments() {
+            let dir = test_dir("refresh");
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let old = dir.join("old.exe");
+            let new = dir.join("new.exe");
+            let custom_working_dir = dir.join("custom-workdir");
+            std::fs::write(&old, b"old").unwrap();
+            std::fs::write(&new, b"new").unwrap();
+            std::fs::create_dir_all(&custom_working_dir).unwrap();
+
+            sync_in(&dir, &old, true).unwrap();
+            set_custom_properties(&dir.join("switcher.lnk"), "--keep-me", &custom_working_dir);
+            sync_in(&dir, &new, true).unwrap();
+
+            let (target, arguments, working_dir) = read_link(&dir.join("switcher.lnk"));
+            assert_eq!(target.canonicalize().unwrap(), new.canonicalize().unwrap());
+            assert_eq!(arguments, "--keep-me");
+            assert_eq!(
+                working_dir.canonicalize().unwrap(),
+                custom_working_dir.canonicalize().unwrap()
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn replacing_hard_link_does_not_modify_its_other_name() {
+            let dir = test_dir("hard-link");
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             let old = dir.join("old.exe");
             let new = dir.join("new.exe");
             std::fs::write(&old, b"old").unwrap();
             std::fs::write(&new, b"new").unwrap();
+            sync_in(&dir, &old, true).unwrap();
+            let original = dir.join("original.lnk");
+            std::fs::rename(dir.join("switcher.lnk"), &original).unwrap();
+            std::fs::hard_link(&original, dir.join("switcher.lnk")).unwrap();
 
-            create_in(&dir, &old).unwrap();
-            refresh_in(&dir, &new).unwrap();
+            sync_in(&dir, &new, false).unwrap();
 
-            let bytes = std::fs::read(dir.join("switcher.lnk")).unwrap();
-            let encoded: Vec<u8> = "./new.exe"
-                .encode_utf16()
-                .flat_map(u16::to_le_bytes)
-                .collect();
-            assert!(bytes.windows(encoded.len()).any(|part| part == encoded));
+            let (original_target, _, _) = read_link(&original);
+            let (switcher_target, _, _) = read_link(&dir.join("switcher.lnk"));
+            assert_eq!(
+                original_target.canonicalize().unwrap(),
+                old.canonicalize().unwrap()
+            );
+            assert_eq!(
+                switcher_target.canonicalize().unwrap(),
+                new.canonicalize().unwrap()
+            );
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn reserved_temp_cannot_be_replaced_while_it_is_written() {
+            let dir = test_dir("reserved-temp");
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let output = reserve_temp(&dir.join("switcher.lnk")).unwrap();
+
+            assert!(std::fs::remove_file(&output.path).is_err());
+            assert!(output.path.exists());
+            drop(output);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn first_creation_does_not_overwrite_a_file_that_appeared() {
+            let dir = test_dir("appeared");
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let exe = std::env::current_exe().unwrap();
+            let lnk = dir.join("switcher.lnk");
+            let output = reserve_temp(&lnk).unwrap();
+            write_new_link(&exe, &output).unwrap();
+            output.sync().unwrap();
+            std::fs::write(&lnk, b"user-file").unwrap();
+
+            assert!(move_new_link(&output, &lnk).is_err());
+            assert_eq!(std::fs::read(&lnk).unwrap(), b"user-file");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn restores_a_link_replaced_during_refresh() {
+            let dir = test_dir("replacement-race");
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let old = dir.join("old.exe");
+            let new = dir.join("new.exe");
+            let user = dir.join("user.exe");
+            std::fs::write(&old, b"old").unwrap();
+            std::fs::write(&new, b"new").unwrap();
+            std::fs::write(&user, b"user").unwrap();
+            sync_in(&dir, &old, true).unwrap();
+            let lnk = dir.join("switcher.lnk");
+            let expected = file_stamp(&lnk).unwrap();
+            let output = reserve_temp(&lnk).unwrap();
+            write_refreshed_link(&lnk, &new, &output).unwrap();
+            output.sync().unwrap();
+            let user_link = dir.join("user.lnk");
+            mslnk::ShellLink::new(&user)
+                .unwrap()
+                .create_lnk(&user_link)
+                .unwrap();
+            std::fs::remove_file(&lnk).unwrap();
+            std::fs::rename(user_link, &lnk).unwrap();
+
+            assert!(replace_existing_link(&output, &lnk, expected).is_err());
+            let (target, _, _) = read_link(&lnk);
+            assert_eq!(target.canonicalize().unwrap(), user.canonicalize().unwrap());
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn removes_a_new_link_when_its_marker_cannot_be_recorded() {
+            let dir = test_dir("unrecorded");
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let exe = std::env::current_exe().unwrap();
+
+            sync_in(&dir, &exe, true)
+                .unwrap()
+                .remove_unrecorded_creation()
+                .unwrap();
+
+            assert!(!dir.join("switcher.lnk").exists());
             let _ = std::fs::remove_dir_all(&dir);
         }
 
         #[test]
         fn does_not_recreate_deleted_lnk_when_refreshing() {
-            let dir = std::env::temp_dir()
-                .join(format!("switcher-lnk-deleted-test-{}", std::process::id()));
+            let dir = test_dir("deleted");
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
-            let exe = dir.join("switcher.exe");
-            std::fs::write(&exe, b"exe").unwrap();
 
-            refresh_in(&dir, &exe).unwrap();
+            sync_in(&dir, &dir.join("missing.exe"), false).unwrap();
 
             assert!(!dir.join("switcher.lnk").exists());
             let _ = std::fs::remove_dir_all(&dir);
@@ -2539,6 +3117,11 @@ pub fn run() {
                 }
             });
 
+            // 지난 세션이 블랙 모니터를 켠 채 죽었으면 바로 복원부터 시작한다.
+            // 바탕화면·OneDrive I/O가 느려도 밝기 복구가 뒤에서 기다리지 않게 한다 (#49).
+            #[cfg(any(windows, target_os = "macos"))]
+            std::thread::spawn(black_restore_stale_brightness);
+
             // 부팅 시 자동 실행 (기본 켜짐): 켜져 있으면 시작마다 재등록해
             // exe가 이동·업데이트돼도 자가 치유된다 (맥은 번들 실행일 때만).
             // 꺼짐이면 건드리지 않는다 (해제는 토글에서만).
@@ -2556,17 +3139,33 @@ pub fn run() {
             // 현재 실행 경로로 갱신한다. 사용자가 지웠으면 다시 만들지 않는다.
             #[cfg(windows)]
             if let Ok(env) = Env::real() {
-                if settings::load_flag(&env.store, settings::KEY_SHORTCUT_DONE, false) {
-                    if let Err(e) = shortcut::refresh_on_desktop() {
-                        eprintln!("{e}");
-                    }
-                } else {
-                    match shortcut::create_on_desktop() {
-                        Ok(()) => {
-                            let _ =
-                                settings::save_flag(&env.store, settings::KEY_SHORTCUT_DONE, true);
+                match settings::load_flag_checked(&env.store, settings::KEY_SHORTCUT_DONE) {
+                    Ok(done) => {
+                        let create_if_missing = shortcut::should_create_missing(done);
+                        match shortcut::sync_on_desktop(create_if_missing) {
+                            Ok(outcome) if create_if_missing => {
+                                if let Err(e) = settings::save_flag_checked(
+                                    &env.store,
+                                    settings::KEY_SHORTCUT_DONE,
+                                    true,
+                                ) {
+                                    eprintln!("{e}");
+                                    if let Err(cleanup_error) =
+                                        outcome.remove_unrecorded_creation()
+                                    {
+                                        eprintln!("{cleanup_error}");
+                                    }
+                                }
+                            }
+                            Ok(_) => {}
+                            Err(e) => eprintln!("{e}"),
                         }
-                        Err(e) => eprintln!("{e}"),
+                    }
+                    Err(e) => {
+                        eprintln!("{e}");
+                        if let Err(shortcut_error) = shortcut::sync_on_desktop(false) {
+                            eprintln!("{shortcut_error}");
+                        }
                     }
                 }
             }
@@ -2625,11 +3224,6 @@ pub fn run() {
 
             // TFSD 자동 전환 감시 — 설정이 꺼져 있으면 틱마다 조용히 지나간다
             tfsd::spawn(app.handle().clone());
-
-            // 지난 세션이 블랙 모니터를 켠 채 죽었으면 밝기가 최하로 남아 있다 —
-            // 영속 파일이 있으면 복원하고 지운다 (#49)
-            #[cfg(any(windows, target_os = "macos"))]
-            std::thread::spawn(black_restore_stale_brightness);
 
             // 데모·자가검증용: SWITCHER_OPEN=memo 이면 시작 직후 메모창을 연다
             // (SWITCHER_VIEW·SWITCHER_DEMO와 같은 스크린샷/검증 훅 계열)
