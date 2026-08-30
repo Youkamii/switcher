@@ -1024,6 +1024,7 @@ struct PreparedImport {
 }
 
 const IMPORT_JOURNAL_FILE: &str = "journal.json";
+const IMPORT_COMMITTED_FILE: &str = "committed.json";
 const IMPORT_MARKER_FILE: &str = accounts::PROFILE_IMPORT_MARKER;
 
 #[derive(Serialize, Deserialize)]
@@ -1210,7 +1211,13 @@ where
             "가져오기 완료 상태 기록과 원복에 실패했습니다".into()
         });
     }
-    let cleanup_pending = !cleanup_committed_import(&stage_root, &journal);
+    // journal은 staging→committed 전환의 기준이고, committed 복제본은 marker를
+    // 일부 지운 뒤 journal을 잠시 읽지 못해도 전체 항목을 계속 보이게 한다.
+    let cleanup_pending = if write_committed_import(&stage_root, &journal).is_err() {
+        true
+    } else {
+        !cleanup_committed_import(&stage_root, &journal)
+    };
     Ok(VaultImportResult {
         imported: committed.len(),
         skipped,
@@ -1224,35 +1231,50 @@ fn write_import_journal(stage_root: &Path, journal: &ImportJournal) -> Result<()
         .map_err(|_| "가져오기 기록 저장에 실패했습니다".to_string())
 }
 
+fn write_committed_import(stage_root: &Path, journal: &ImportJournal) -> Result<(), String> {
+    if journal.state != "committed" {
+        return Err("완료되지 않은 가져오기 기록입니다".into());
+    }
+    let bytes =
+        serde_json::to_vec(journal).map_err(|_| "가져오기 완료 기록 생성에 실패했습니다")?;
+    accounts::atomic_write(&stage_root.join(IMPORT_COMMITTED_FILE), &bytes)
+        .map_err(|_| "가져오기 완료 기록 저장에 실패했습니다".to_string())
+}
+
 fn cleanup_committed_import(stage_root: &Path, journal: &ImportJournal) -> bool {
-    let mut all_markers_removed = true;
+    let Some(store) = stage_root.parent() else {
+        return false;
+    };
+    let mut markers = Vec::new();
     for entry in &journal.entries {
         let Ok(provider) = Provider::parse(&entry.provider) else {
-            all_markers_removed = false;
-            continue;
-        };
-        let Some(store) = stage_root.parent() else {
-            all_markers_removed = false;
-            continue;
+            return false;
         };
         let final_dir = store
             .join(provider.dir_name())
             .join("profiles")
             .join(&entry.name);
         let marker = final_dir.join(IMPORT_MARKER_FILE);
-        if marker_matches(&marker, &journal.id) {
-            if !remove_file_retry(&marker) {
-                all_markers_removed = false;
+        match fs::symlink_metadata(&marker) {
+            Ok(metadata)
+                if metadata.file_type().is_file() && marker_matches(&marker, &journal.id) =>
+            {
+                markers.push(marker);
             }
-        } else if marker.exists() {
-            all_markers_removed = false;
+            Ok(_) => return false,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return false,
         }
     }
-    if all_markers_removed {
-        remove_tree_retry(stage_root)
-    } else {
-        false
+
+    // 모든 marker를 먼저 검증해, 뒤쪽 marker 하나가 잠겼다고 앞쪽 항목만
+    // 보이는 중간 상태를 만들지 않는다.
+    for marker in markers {
+        if !remove_file_retry(&marker) {
+            return false;
+        }
     }
+    remove_tree_retry(stage_root)
 }
 
 pub(crate) fn recover_stale_imports(env: &Env) -> Result<(), String> {
@@ -1284,10 +1306,11 @@ fn recover_stale_imports_locked(env: &Env) -> Result<(), String> {
     }
     let entries =
         fs::read_dir(&env.store).map_err(|_| "이전 인증정보 가져오기 상태를 확인할 수 없습니다")?;
-    for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
+    for entry in entries {
+        let entry = entry.map_err(|_| "이전 인증정보 가져오기 상태를 확인할 수 없습니다")?;
+        let file_type = entry
+            .file_type()
+            .map_err(|_| "이전 인증정보 가져오기 상태를 확인할 수 없습니다")?;
         if !file_type.is_dir() {
             continue;
         }
@@ -1304,30 +1327,46 @@ fn recover_stale_imports_locked(env: &Env) -> Result<(), String> {
 }
 
 fn recover_stage_root(env: &Env, stage_root: &Path, import_id: &str) -> Result<(), String> {
-    let journal = read_bounded_file(&stage_root.join(IMPORT_JOURNAL_FILE), 256 * 1024)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<ImportJournal>(&bytes).ok());
-    let Some(journal) = journal else {
-        return if remove_tree_retry(stage_root) {
+    let journal = read_import_record(stage_root, IMPORT_JOURNAL_FILE, import_id, false);
+    let committed = read_import_record(stage_root, IMPORT_COMMITTED_FILE, import_id, true);
+
+    // 복제본은 journal committed 기록 뒤에만 생긴다. 둘이 충돌하거나 journal을
+    // 읽지 못할 때도 이 내구성 있는 완료 기록을 우선한다.
+    if let ImportRecord::Valid(committed) = &committed {
+        return if cleanup_committed_import(stage_root, committed) {
             Ok(())
         } else {
-            Err("이전 가져오기 임시 폴더를 정리하지 못했습니다".into())
-        };
-    };
-    if !valid_import_journal(&journal, import_id) {
-        return if remove_tree_retry(stage_root) {
-            Ok(())
-        } else {
-            Err("이전 가져오기 임시 폴더를 정리하지 못했습니다".into())
+            Err("완료된 가져오기 표식을 정리하지 못했습니다".into())
         };
     }
 
+    let journal = match journal {
+        ImportRecord::Valid(journal) => journal,
+        ImportRecord::Missing if matches!(&committed, ImportRecord::Missing) => {
+            return if remove_tree_retry(stage_root) {
+                Ok(())
+            } else {
+                Err("이전 가져오기 임시 폴더를 정리하지 못했습니다".into())
+            };
+        }
+        ImportRecord::Missing | ImportRecord::Invalid => {
+            return Err("이전 가져오기 기록을 읽을 수 없습니다".into());
+        }
+    };
+
     if journal.state == "committed" {
+        write_committed_import(stage_root, &journal)?;
         return if cleanup_committed_import(stage_root, &journal) {
             Ok(())
         } else {
             Err("완료된 가져오기 표식을 정리하지 못했습니다".into())
         };
+    }
+
+    // staging journal 옆에 읽을 수 없는 committed 파일이 있으면 어느 상태가
+    // 마지막인지 단정할 수 없으므로 원복하지 않고 그대로 보존한다.
+    if matches!(&committed, ImportRecord::Invalid) {
+        return Err("이전 가져오기 완료 기록을 읽을 수 없습니다".into());
     }
 
     let mut rollback_ok = true;
@@ -1376,6 +1415,40 @@ fn valid_import_journal(journal: &ImportJournal, import_id: &str) -> bool {
         })
 }
 
+enum ImportRecord {
+    Missing,
+    Valid(ImportJournal),
+    Invalid,
+}
+
+fn read_import_record(
+    stage_root: &Path,
+    file_name: &str,
+    import_id: &str,
+    committed_only: bool,
+) -> ImportRecord {
+    let path = stage_root.join(file_name);
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return ImportRecord::Missing;
+        }
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) | Err(_) => return ImportRecord::Invalid,
+    }
+    let Ok(bytes) = read_bounded_file(&path, 256 * 1024) else {
+        return ImportRecord::Invalid;
+    };
+    let Ok(journal) = serde_json::from_slice::<ImportJournal>(&bytes) else {
+        return ImportRecord::Invalid;
+    };
+    if !valid_import_journal(&journal, import_id)
+        || (committed_only && journal.state != "committed")
+    {
+        return ImportRecord::Invalid;
+    }
+    ImportRecord::Valid(journal)
+}
+
 fn valid_import_id(import_id: &str) -> bool {
     import_id.len() == 24
         && import_id
@@ -1389,18 +1462,22 @@ fn committed_stage_contains(
     provider: Provider,
     name: &str,
 ) -> bool {
-    let Some(journal) = read_bounded_file(&stage_root.join(IMPORT_JOURNAL_FILE), 256 * 1024)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<ImportJournal>(&bytes).ok())
-    else {
-        return false;
+    let contains = |journal: &ImportJournal| {
+        journal.state == "committed"
+            && journal
+                .entries
+                .iter()
+                .any(|entry| entry.provider == provider.dir_name() && entry.name == name)
     };
-    valid_import_journal(&journal, import_id)
-        && journal.state == "committed"
-        && journal
-            .entries
-            .iter()
-            .any(|entry| entry.provider == provider.dir_name() && entry.name == name)
+    match read_import_record(stage_root, IMPORT_COMMITTED_FILE, import_id, true) {
+        ImportRecord::Valid(committed) => contains(&committed),
+        ImportRecord::Missing | ImportRecord::Invalid => {
+            match read_import_record(stage_root, IMPORT_JOURNAL_FILE, import_id, false) {
+                ImportRecord::Valid(journal) => contains(&journal),
+                ImportRecord::Missing | ImportRecord::Invalid => false,
+            }
+        }
+    }
 }
 
 pub(crate) fn profile_import_blocked(env: &Env, provider: Provider, name: &str) -> bool {
@@ -2928,6 +3005,7 @@ mod tests {
             ],
         };
         write_import_journal(&stage_root, &journal).unwrap();
+        write_committed_import(&stage_root, &journal).unwrap();
         let first = add_marked_claude(
             &target,
             "first",
@@ -2946,10 +3024,14 @@ mod tests {
         let second_marker = second.join(IMPORT_MARKER_FILE);
         fs::remove_file(&second_marker).unwrap();
         fs::create_dir(&second_marker).unwrap();
+        atomic_write(&stage_root.join(IMPORT_JOURNAL_FILE), b"broken journal").unwrap();
 
         assert!(recover_stale_imports(&target).is_err());
         assert!(stage_root.exists());
-        assert!(!first_marker.exists());
+        assert!(
+            first_marker.exists(),
+            "marker를 모두 검증하기 전에 지우면 안 된다"
+        );
         assert!(second_marker.is_dir());
         let visible = accounts::profile_dirs(&target, Provider::Claude)
             .unwrap()
@@ -2957,16 +3039,15 @@ mod tests {
             .map(|(name, _)| name)
             .collect::<Vec<_>>();
         assert_eq!(visible, vec!["first", "second"]);
-        assert!(!profile_import_blocked(
-            &target,
-            Provider::Claude,
-            "first"
-        ));
-        assert!(!profile_import_blocked(
-            &target,
-            Provider::Claude,
-            "second"
-        ));
+        assert!(!profile_import_blocked(&target, Provider::Claude, "first"));
+        assert!(!profile_import_blocked(&target, Provider::Claude, "second"));
+
+        // journal 자체를 읽을 수 없어도 committed 복제본으로 완료 상태와
+        // 두 항목의 소속을 판정해야 한다.
+        fs::remove_file(stage_root.join(IMPORT_JOURNAL_FILE)).unwrap();
+        fs::create_dir(stage_root.join(IMPORT_JOURNAL_FILE)).unwrap();
+        assert!(!profile_import_blocked(&target, Provider::Claude, "first"));
+        assert!(!profile_import_blocked(&target, Provider::Claude, "second"));
 
         let mut waits = Vec::new();
         recover_stale_imports_with_wait(&target, |delay| {
@@ -2981,6 +3062,73 @@ mod tests {
         assert!(first.exists());
         assert!(second.exists());
         assert!(!second_marker.exists());
+        assert!(!stage_root.exists());
+    }
+
+    #[test]
+    fn unreadable_journal_without_committed_copy_is_preserved() {
+        let target = test_env("vault-unreadable-journal");
+        let (stage_root, _) = create_stage_root(&target).unwrap();
+        atomic_write(&stage_root.join(IMPORT_JOURNAL_FILE), b"broken journal").unwrap();
+
+        assert!(recover_stale_imports(&target).is_err());
+        assert!(stage_root.exists());
+    }
+
+    #[test]
+    fn committed_copy_write_failure_returns_cleanup_pending_and_recovers() {
+        let target = test_env("vault-committed-copy-retry");
+        let payload = VaultPayload {
+            format_version: PAYLOAD_VERSION,
+            entries: vec![VaultEntry {
+                provider: "claude".into(),
+                name: "complete".into(),
+                hide_email: false,
+                id: "complete-id".into(),
+                email: Some("complete@example.test".into()),
+                credential: encoded(br#"{"claudeAiOauth":{"accessToken":"fixture-import-token"}}"#),
+                oauth_account: Some(encoded(
+                    br#"{"accountUuid":"complete-id","emailAddress":"complete@example.test"}"#,
+                )),
+            }],
+        };
+        let mut stage_root = None;
+        let result = commit_payload(&target, &payload, |_, _| {
+            let root = fs::read_dir(&target.store)
+                .unwrap()
+                .filter_map(Result::ok)
+                .map(|entry| entry.path())
+                .find(|path| {
+                    path.file_name()
+                        .is_some_and(|name| name.to_string_lossy().starts_with(".vault-import-"))
+                })
+                .unwrap();
+            fs::create_dir(root.join(IMPORT_COMMITTED_FILE)).unwrap();
+            stage_root = Some(root);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            result,
+            VaultImportResult {
+                imported: 1,
+                skipped: 0,
+                cleanup_pending: true,
+            }
+        );
+        let stage_root = stage_root.unwrap();
+        let profile = target.profiles_dir(Provider::Claude).join("complete");
+        assert!(profile.exists());
+        assert!(!profile_import_blocked(
+            &target,
+            Provider::Claude,
+            "complete"
+        ));
+
+        fs::remove_dir(stage_root.join(IMPORT_COMMITTED_FILE)).unwrap();
+        recover_stale_imports(&target).unwrap();
+        assert!(profile.exists());
+        assert!(!profile.join(IMPORT_MARKER_FILE).exists());
         assert!(!stage_root.exists());
     }
 
