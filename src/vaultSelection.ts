@@ -2,6 +2,7 @@ export interface VaultProfile {
   provider: string;
   name: string;
   active: boolean;
+  revision: number;
 }
 
 export interface VaultProfileChoice {
@@ -64,14 +65,14 @@ export function reconcileVaultProfileChoices(
 ): VaultProfileChoice[] {
   const previousByProfile = new Map(
     previousChoices.map((choice) => [
-      `${choice.profile.provider}\u0000${choice.profile.name}`,
+      `${choice.profile.provider}\u0000${choice.profile.name}\u0000${choice.profile.revision}`,
       choice,
     ]),
   );
 
   return profiles.map((profile) => {
     const previous = previousByProfile.get(
-      `${profile.provider}\u0000${profile.name}`,
+      `${profile.provider}\u0000${profile.name}\u0000${profile.revision}`,
     );
     return {
       profile,
