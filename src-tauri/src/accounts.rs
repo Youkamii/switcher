@@ -901,6 +901,41 @@ fn restore_optional_secret_if_unchanged(
     restore_optional_secret(path, data)
 }
 
+fn credential_equivalent(left: &[u8], right: &[u8]) -> bool {
+    let left = Zeroizing::new(normalize_cred(left.to_vec()));
+    let right = Zeroizing::new(normalize_cred(right.to_vec()));
+    match (
+        serde_json::from_slice::<Value>(&left),
+        serde_json::from_slice::<Value>(&right),
+    ) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left.as_slice() == right.as_slice(),
+    }
+}
+
+fn claude_live_matches(env: &Env, applied_data: &[u8]) -> Result<bool, String> {
+    match &env.claude_live {
+        ClaudeLiveStore::File(path) => Ok(read_optional_secret(path)?
+            .as_deref()
+            .is_some_and(|current| credential_equivalent(current, applied_data))),
+        #[cfg(target_os = "macos")]
+        ClaudeLiveStore::Keychain {
+            service,
+            account,
+            legacy_file,
+        } => {
+            let keychain = keychain::read_item(service, account)?.map(Zeroizing::new);
+            let legacy = read_optional_secret(legacy_file)?;
+            Ok(keychain
+                .as_deref()
+                .is_some_and(|current| credential_equivalent(current, applied_data))
+                && legacy
+                    .as_deref()
+                    .is_some_and(|current| credential_equivalent(current, applied_data)))
+        }
+    }
+}
+
 fn restore_claude_live_if_unchanged(
     snapshot: &ClaudeLiveSnapshot,
     applied_data: &[u8],
@@ -917,44 +952,141 @@ fn restore_claude_live_if_unchanged(
             legacy_file,
             legacy_data,
         } => {
-            let keychain_result = match keychain::read_item(service, account) {
-                Ok(Some(current)) if current.as_slice() == applied_data => match keychain_data {
-                    Some(data) => keychain::write_item(service, account, data),
-                    None => keychain::delete_item(service, account),
-                },
-                Ok(_) => Ok(()),
-                Err(error) => Err(error),
-            };
-            let legacy_result = restore_optional_secret_if_unchanged(
-                legacy_file,
-                legacy_data.as_ref(),
-                applied_data,
-            );
-            match (keychain_result, legacy_result) {
-                (Ok(()), Ok(())) => Ok(()),
-                (Err(keychain_error), Ok(())) => Err(keychain_error),
-                (Ok(()), Err(legacy_error)) => Err(legacy_error),
-                (Err(keychain_error), Err(legacy_error)) => {
-                    Err(format!("{keychain_error}; {legacy_error}"))
-                }
+            let current_keychain = keychain::read_item(service, account)?.map(Zeroizing::new);
+            let current_legacy = read_optional_secret(legacy_file)?;
+            let both_still_applied = current_keychain
+                .as_deref()
+                .is_some_and(|current| credential_equivalent(current, applied_data))
+                && current_legacy
+                    .as_deref()
+                    .is_some_and(|current| credential_equivalent(current, applied_data));
+            if !both_still_applied {
+                return Ok(());
             }
+
+            match keychain_data {
+                Some(data) => keychain::write_item(service, account, data)?,
+                None => keychain::delete_item(service, account)?,
+            }
+            if let Err(legacy_error) = restore_optional_secret(legacy_file, legacy_data.as_ref()) {
+                let compensation = keychain::write_item(
+                    service,
+                    account,
+                    current_keychain
+                        .as_deref()
+                        .expect("applied keychain was checked"),
+                );
+                return match compensation {
+                    Ok(()) => Err(legacy_error),
+                    Err(compensation_error) => Err(format!(
+                        "{legacy_error}; 키체인 원복 보상 실패: {compensation_error}"
+                    )),
+                };
+            }
+            Ok(())
         }
     }
 }
 
-fn apply_claude_profile(env: &Env, profile_dir: &Path, data: &[u8]) -> Result<(), String> {
+struct PreparedClaudeOauth {
+    path: PathBuf,
+    before: Option<Zeroizing<Vec<u8>>>,
+    applied: Zeroizing<Vec<u8>>,
+}
+
+fn prepare_claude_oauth_apply(
+    env: &Env,
+    profile_dir: &Path,
+) -> Result<PreparedClaudeOauth, String> {
+    let block = read_json(&profile_dir.join("oauth_account.json"))?;
+    let path = env.claude_json_path();
+    let before = read_optional_secret(&path)?;
+    let mut root = match before.as_deref() {
+        Some(bytes) => serde_json::from_slice(bytes)
+            .map_err(|error| format!("Claude 계정 정보 읽기 실패 {}: {error}", path.display()))?,
+        None => serde_json::json!({}),
+    };
+    let Some(object) = root.as_object_mut() else {
+        return Err(format!(
+            "Claude 계정 정보 형식이 잘못되었습니다: {}",
+            path.display()
+        ));
+    };
+    object.insert("oauthAccount".to_string(), block);
+    let applied = serde_json::to_vec_pretty(&root).map_err(|error| error.to_string())?;
+    Ok(PreparedClaudeOauth {
+        path,
+        before,
+        applied: Zeroizing::new(applied),
+    })
+}
+
+fn apply_prepared_claude_oauth(prepared: &PreparedClaudeOauth) -> Result<(), String> {
+    let current = read_optional_secret(&prepared.path)?;
+    if current.as_deref().map(Vec::as_slice) != prepared.before.as_deref().map(Vec::as_slice) {
+        return Err("Claude 로그인이 전환 중 외부에서 변경되었습니다".into());
+    }
+    atomic_write(&prepared.path, &prepared.applied)
+}
+
+fn restore_prepared_claude_oauth_if_unchanged(
+    prepared: &PreparedClaudeOauth,
+) -> Result<(), String> {
+    restore_optional_secret_if_unchanged(
+        &prepared.path,
+        prepared.before.as_ref(),
+        &prepared.applied,
+    )
+}
+
+fn prepared_claude_oauth_matches(prepared: &PreparedClaudeOauth) -> Result<bool, String> {
+    Ok(read_optional_secret(&prepared.path)?
+        .as_deref()
+        .is_some_and(|current| current == prepared.applied.as_slice()))
+}
+
+fn apply_claude_profile_inner<F>(
+    env: &Env,
+    profile_dir: &Path,
+    data: &[u8],
+    after_credential_write: F,
+) -> Result<(), String>
+where
+    F: FnOnce(),
+{
     let snapshot = snapshot_claude_live(env)?;
-    let applied = write_live_cred(env, Provider::Claude, data)
-        .and_then(|()| claude_apply_oauth_block(env, profile_dir));
+    let oauth = prepare_claude_oauth_apply(env, profile_dir)?;
+    let applied = write_live_cred(env, Provider::Claude, data).and_then(|()| {
+        after_credential_write();
+        if !claude_live_matches(env, data)? {
+            return Err("Claude 로그인이 전환 중 외부에서 변경되었습니다".into());
+        }
+        apply_prepared_claude_oauth(&oauth)?;
+        if !claude_live_matches(env, data)? || !prepared_claude_oauth_matches(&oauth)? {
+            return Err("Claude 로그인이 전환 중 외부에서 변경되었습니다".into());
+        }
+        Ok(())
+    });
     if let Err(apply_error) = applied {
-        return match restore_claude_live_if_unchanged(&snapshot, data) {
-            Ok(()) => Err(apply_error),
-            Err(restore_error) => Err(format!(
-                "{apply_error}; 전환 실패 뒤 활성 인증정보 원복 실패: {restore_error}"
+        let oauth_restore = restore_prepared_claude_oauth_if_unchanged(&oauth);
+        let credential_restore = restore_claude_live_if_unchanged(&snapshot, data);
+        return match (oauth_restore, credential_restore) {
+            (Ok(()), Ok(())) => Err(apply_error),
+            (oauth_result, credential_result) => Err(format!(
+                "{apply_error}; 전환 실패 뒤 활성 정보 원복 실패: {}{}",
+                oauth_result.err().unwrap_or_default(),
+                credential_result
+                    .err()
+                    .map(|error| format!("; {error}"))
+                    .unwrap_or_default()
             )),
         };
     }
     Ok(())
+}
+
+fn apply_claude_profile(env: &Env, profile_dir: &Path, data: &[u8]) -> Result<(), String> {
+    apply_claude_profile_inner(env, profile_dir, data, || {})
 }
 
 /// JWT payload를 디코딩한다 (서명 검증 없음 — 표시용 신원·만료 확인 목적).
@@ -1308,23 +1440,8 @@ pub(crate) fn auto_name(env: &Env, provider: Provider, ident: &LiveIdentity) -> 
 /// 대상 프로필의 oauth_account.json을 ~/.claude.json에 반영한다.
 /// 실행 중인 클로드 세션과의 쓰기 경합 창을 줄이기 위해 반영 직전에 새로 읽는다.
 pub(crate) fn claude_apply_oauth_block(env: &Env, profile_dir: &Path) -> Result<(), String> {
-    let block_path = profile_dir.join("oauth_account.json");
-    let cj = env.claude_json_path();
-    let block = read_json(&block_path)?;
-    let mut root = if cj.exists() {
-        read_json_retry(&cj)?
-    } else {
-        serde_json::json!({})
-    };
-    let Some(obj) = root.as_object_mut() else {
-        return Err(format!(
-            "Claude 계정 정보 형식이 잘못되었습니다: {}",
-            cj.display()
-        ));
-    };
-    obj.insert("oauthAccount".to_string(), block);
-    let bytes = serde_json::to_vec_pretty(&root).map_err(|e| e.to_string())?;
-    atomic_write(&cj, &bytes)
+    let prepared = prepare_claude_oauth_apply(env, profile_dir)?;
+    apply_prepared_claude_oauth(&prepared)
 }
 
 /// 현재 로그인 계정을 이름 붙여 프로필로 저장.
@@ -1742,6 +1859,53 @@ mod tests {
         assert!(backed.contains("tok-a2"), "백업 우선 순서는 유지해야 한다");
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_claude_rollback_is_normalized_and_all_or_nothing() {
+        let mut env = test_env("switch-macos-keychain-atomic-rollback");
+        let service = format!("switcher-switch-atomic-{}", std::process::id());
+        let account = keychain::username();
+        let _guard = MacKeychainGuard {
+            service: service.clone(),
+            account: account.clone(),
+        };
+        let legacy_file = env.live_credential_path(Provider::Claude);
+        fs::create_dir_all(legacy_file.parent().unwrap()).unwrap();
+        let before = br#"{"claudeAiOauth":{"accessToken":"before"}}"#;
+        let applied = br#"{"claudeAiOauth":{"accessToken":"applied"}}"#;
+        keychain::write_item(&service, &account, before).unwrap();
+        fs::write(&legacy_file, before).unwrap();
+        env.claude_live = ClaudeLiveStore::Keychain {
+            service: service.clone(),
+            account: account.clone(),
+            legacy_file: legacy_file.clone(),
+        };
+        let snapshot = snapshot_claude_live(&env).unwrap();
+
+        write_live_cred(&env, Provider::Claude, applied).unwrap();
+        let hex_applied = applied
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        keychain::write_item(&service, &account, hex_applied.as_bytes()).unwrap();
+        restore_claude_live_if_unchanged(&snapshot, applied).unwrap();
+        assert_eq!(
+            keychain::read_item(&service, &account).unwrap().unwrap(),
+            before
+        );
+        assert_eq!(fs::read(&legacy_file).unwrap(), before);
+
+        write_live_cred(&env, Provider::Claude, applied).unwrap();
+        let external = br#"{"claudeAiOauth":{"accessToken":"external"}}"#;
+        keychain::write_item(&service, &account, external).unwrap();
+        restore_claude_live_if_unchanged(&snapshot, applied).unwrap();
+        assert_eq!(
+            keychain::read_item(&service, &account).unwrap().unwrap(),
+            external
+        );
+        assert_eq!(fs::read(&legacy_file).unwrap(), applied);
+    }
+
     #[test]
     fn claude_switch_creates_missing_live_identity_file() {
         let env = test_env("switch-missing-identity");
@@ -1789,6 +1953,39 @@ mod tests {
         restore_claude_live_if_unchanged(&snapshot, target).unwrap();
 
         assert_eq!(fs::read(path).unwrap(), b"external credential fixture");
+    }
+
+    #[test]
+    fn credential_equivalence_accepts_hex_wrapped_json() {
+        let raw = br#"{"claudeAiOauth":{"accessToken":"fixture"}}"#;
+        let hex = raw
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+
+        assert!(credential_equivalent(raw, hex.as_bytes()));
+    }
+
+    #[test]
+    fn claude_switch_rejects_and_preserves_a_concurrent_external_login() {
+        let env = test_env("switch-concurrent-external-login");
+        login_claude(&env, "uuid-b", "bob@test.dev", "tok-b");
+        save_current(&env, Provider::Claude, "second").unwrap();
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a");
+        let profile_dir = env.profiles_dir(Provider::Claude).join("second");
+        let target = fs::read(profile_dir.join("credentials.json")).unwrap();
+
+        let error = apply_claude_profile_inner(&env, &profile_dir, &target, || {
+            login_claude(&env, "uuid-c", "carol@test.dev", "tok-c");
+        })
+        .unwrap_err();
+
+        assert!(error.contains("외부에서 변경되었습니다"));
+        assert!(live_token(&env).contains("tok-c"));
+        assert_eq!(
+            read_json(&env.claude_json_path()).unwrap()["oauthAccount"]["accountUuid"],
+            "uuid-c"
+        );
     }
 
     #[test]
