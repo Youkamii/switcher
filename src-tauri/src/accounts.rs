@@ -325,18 +325,14 @@ mod keychain_arg_tests {
 
     #[test]
     fn keychain_presence_distinguishes_missing_from_access_errors() {
-        assert_eq!(
-            keychain_item_exists_result(true, "", "service").unwrap(),
-            true
-        );
-        assert_eq!(
-            keychain_item_exists_result(
+        assert!(keychain_item_exists_result(true, "", "service").unwrap());
+        assert!(
+            !keychain_item_exists_result(
                 false,
                 "The specified item could not be found in the keychain.",
                 "service",
             )
-            .unwrap(),
-            false
+            .unwrap()
         );
         assert!(
             keychain_item_exists_result(false, "User interaction is not allowed.", "service")
