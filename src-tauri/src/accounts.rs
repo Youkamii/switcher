@@ -11,6 +11,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use zeroize::Zeroizing;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
@@ -715,6 +716,107 @@ pub(crate) fn write_live_cred(env: &Env, provider: Provider, data: &[u8]) -> Res
     }
 }
 
+enum ClaudeLiveSnapshot {
+    File {
+        path: PathBuf,
+        data: Option<Zeroizing<Vec<u8>>>,
+    },
+    #[cfg(target_os = "macos")]
+    Keychain {
+        service: String,
+        account: String,
+        keychain_data: Option<Zeroizing<Vec<u8>>>,
+        legacy_file: PathBuf,
+        legacy_data: Option<Zeroizing<Vec<u8>>>,
+    },
+}
+
+fn read_optional_secret(path: &Path) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+    match fs::read(path) {
+        Ok(data) => Ok(Some(Zeroizing::new(data))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("활성 인증정보 읽기 실패 {}: {error}", path.display())),
+    }
+}
+
+fn snapshot_claude_live(env: &Env) -> Result<ClaudeLiveSnapshot, String> {
+    match &env.claude_live {
+        ClaudeLiveStore::File(path) => Ok(ClaudeLiveSnapshot::File {
+            path: path.clone(),
+            data: read_optional_secret(path)?,
+        }),
+        #[cfg(target_os = "macos")]
+        ClaudeLiveStore::Keychain {
+            service,
+            account,
+            legacy_file,
+        } => Ok(ClaudeLiveSnapshot::Keychain {
+            service: service.clone(),
+            account: account.clone(),
+            keychain_data: keychain::read_item(service)?.map(Zeroizing::new),
+            legacy_file: legacy_file.clone(),
+            legacy_data: read_optional_secret(legacy_file)?,
+        }),
+    }
+}
+
+fn restore_optional_secret(
+    path: &Path,
+    data: Option<&Zeroizing<Vec<u8>>>,
+) -> Result<(), String> {
+    match data {
+        Some(data) => atomic_write(path, data),
+        None => match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("활성 인증정보 제거 실패 {}: {error}", path.display())),
+        },
+    }
+}
+
+fn restore_claude_live(snapshot: &ClaudeLiveSnapshot) -> Result<(), String> {
+    match snapshot {
+        ClaudeLiveSnapshot::File { path, data } => restore_optional_secret(path, data.as_ref()),
+        #[cfg(target_os = "macos")]
+        ClaudeLiveSnapshot::Keychain {
+            service,
+            account,
+            keychain_data,
+            legacy_file,
+            legacy_data,
+        } => {
+            let keychain_result = match keychain_data {
+                Some(data) => keychain::write_item(service, account, data),
+                None => keychain::delete_item(service),
+            };
+            let legacy_result = restore_optional_secret(legacy_file, legacy_data.as_ref());
+            match (keychain_result, legacy_result) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(keychain_error), Ok(())) => Err(keychain_error),
+                (Ok(()), Err(legacy_error)) => Err(legacy_error),
+                (Err(keychain_error), Err(legacy_error)) => {
+                    Err(format!("{keychain_error}; {legacy_error}"))
+                }
+            }
+        }
+    }
+}
+
+fn apply_claude_profile(env: &Env, profile_dir: &Path, data: &[u8]) -> Result<(), String> {
+    let snapshot = snapshot_claude_live(env)?;
+    let applied = write_live_cred(env, Provider::Claude, data)
+        .and_then(|()| claude_apply_oauth_block(env, profile_dir));
+    if let Err(apply_error) = applied {
+        return match restore_claude_live(&snapshot) {
+            Ok(()) => Err(apply_error),
+            Err(restore_error) => Err(format!(
+                "{apply_error}; 전환 실패 뒤 활성 인증정보 원복 실패: {restore_error}"
+            )),
+        };
+    }
+    Ok(())
+}
+
 /// JWT payload를 디코딩한다 (서명 검증 없음 — 표시용 신원·만료 확인 목적).
 pub(crate) fn jwt_payload(token: &str) -> Option<Value> {
     use base64::Engine;
@@ -1168,9 +1270,10 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
     // 2) 대상 프로필을 활성 위치로 복사
     let data =
         fs::read(&target_cred).map_err(|e| format!("읽기 실패 {}: {e}", target_cred.display()))?;
-    write_live_cred(env, provider, &data)?;
     if provider == Provider::Claude {
-        claude_apply_oauth_block(env, &profile_dir)?;
+        apply_claude_profile(env, &profile_dir, &data)?;
+    } else {
+        write_live_cred(env, provider, &data)?;
     }
     // 인증 세대가 바뀐 계정은 이전 조회 실패의 백오프를 상속하지 않는다.
     // 이 코어를 쓰는 버튼·고정 모드 더블클릭·TFSD 전환 모두에 동일하게 적용한다 (#122).
@@ -1359,6 +1462,59 @@ mod tests {
         let active: Vec<_> = snap.profiles.iter().filter(|p| p.active).collect();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].name, "second");
+    }
+
+    #[test]
+    fn claude_switch_rolls_back_live_credential_when_oauth_apply_fails() {
+        let env = test_env("switch-oauth-rollback");
+        login_claude(&env, "uuid-b", "bob@test.dev", "tok-b1");
+        save_current(&env, Provider::Claude, "second").unwrap();
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a1");
+        save_current(&env, Provider::Claude, "main").unwrap();
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a2");
+        fs::write(
+            env.profiles_dir(Provider::Claude)
+                .join("second")
+                .join("oauth_account.json"),
+            b"invalid oauth fixture",
+        )
+        .unwrap();
+        let live_before = fs::read(env.live_credential_path(Provider::Claude)).unwrap();
+        let oauth_before = fs::read(env.claude_json_path()).unwrap();
+
+        assert!(switch(&env, Provider::Claude, "second").is_err());
+
+        assert_eq!(
+            fs::read(env.live_credential_path(Provider::Claude)).unwrap(),
+            live_before
+        );
+        assert_eq!(fs::read(env.claude_json_path()).unwrap(), oauth_before);
+        let backed = fs::read_to_string(
+            env.profiles_dir(Provider::Claude)
+                .join("main")
+                .join("credentials.json"),
+        )
+        .unwrap();
+        assert!(backed.contains("tok-a2"), "백업 우선 순서는 유지해야 한다");
+    }
+
+    #[test]
+    fn claude_switch_removes_new_live_credential_when_apply_fails() {
+        let env = test_env("switch-empty-live-rollback");
+        login_claude(&env, "uuid-b", "bob@test.dev", "tok-b1");
+        save_current(&env, Provider::Claude, "second").unwrap();
+        fs::remove_file(env.live_credential_path(Provider::Claude)).unwrap();
+        fs::write(
+            env.profiles_dir(Provider::Claude)
+                .join("second")
+                .join("oauth_account.json"),
+            b"invalid oauth fixture",
+        )
+        .unwrap();
+
+        assert!(switch(&env, Provider::Claude, "second").is_err());
+
+        assert!(!env.live_credential_path(Provider::Claude).exists());
     }
 
     #[test]
