@@ -1938,22 +1938,39 @@ mod shortcut {
         out
     }
 
-    /// dir 안에 switcher.lnk 생성. 이미 있으면 그대로 둔다.
-    fn create_in(dir: &Path, target: &Path) -> Result<(), String> {
+    fn write_in(dir: &Path, target: &Path) -> Result<(), String> {
         let lnk = dir.join("switcher.lnk");
-        if lnk.exists() {
-            return Ok(());
-        }
-        let link =
-            mslnk::ShellLink::new(target).map_err(|e| format!("바로가기 생성 실패: {e}"))?;
+        let link = mslnk::ShellLink::new(target).map_err(|e| format!("바로가기 생성 실패: {e}"))?;
         link.create_lnk(&lnk)
             .map_err(|e| format!("바로가기 저장 실패: {e}"))
+    }
+
+    /// dir 안에 switcher.lnk 생성. 이미 있으면 그대로 둔다.
+    fn create_in(dir: &Path, target: &Path) -> Result<(), String> {
+        if dir.join("switcher.lnk").exists() {
+            return Ok(());
+        }
+        write_in(dir, target)
+    }
+
+    /// 사용자가 지우지 않은 기존 바로가기만 현재 실행 파일로 갱신한다.
+    fn refresh_in(dir: &Path, target: &Path) -> Result<(), String> {
+        if !dir.join("switcher.lnk").exists() {
+            return Ok(());
+        }
+        write_in(dir, target)
     }
 
     /// 바탕화면에 switcher 바로가기 생성 (현재 실행 파일 대상)
     pub fn create_on_desktop() -> Result<(), String> {
         let exe = std::env::current_exe().map_err(|e| format!("실행 경로 확인 실패: {e}"))?;
         create_in(&desktop_dir()?, &exe)
+    }
+
+    /// 앱이 다른 경로에서 실행됐으면 기존 바로가기 대상을 현재 실행 파일로 맞춘다.
+    pub fn refresh_on_desktop() -> Result<(), String> {
+        let exe = std::env::current_exe().map_err(|e| format!("실행 경로 확인 실패: {e}"))?;
+        refresh_in(&desktop_dir()?, &exe)
     }
 
     #[cfg(test)]
@@ -1980,6 +1997,44 @@ mod shortcut {
             assert!(dir.join("switcher.lnk").exists());
             // 이미 있으면 조용히 성공한다
             create_in(&dir, &exe).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn refreshes_existing_lnk_target() {
+            let dir = std::env::temp_dir()
+                .join(format!("switcher-lnk-refresh-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let old = dir.join("old.exe");
+            let new = dir.join("new.exe");
+            std::fs::write(&old, b"old").unwrap();
+            std::fs::write(&new, b"new").unwrap();
+
+            create_in(&dir, &old).unwrap();
+            refresh_in(&dir, &new).unwrap();
+
+            let bytes = std::fs::read(dir.join("switcher.lnk")).unwrap();
+            let encoded: Vec<u8> = "./new.exe"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes)
+                .collect();
+            assert!(bytes.windows(encoded.len()).any(|part| part == encoded));
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
+        fn does_not_recreate_deleted_lnk_when_refreshing() {
+            let dir = std::env::temp_dir()
+                .join(format!("switcher-lnk-deleted-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let exe = dir.join("switcher.exe");
+            std::fs::write(&exe, b"exe").unwrap();
+
+            refresh_in(&dir, &exe).unwrap();
+
+            assert!(!dir.join("switcher.lnk").exists());
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
@@ -2497,10 +2552,15 @@ pub fn run() {
                 }
             }
 
-            // 첫 실행 시 바탕화면 바로가기 1회 생성 — 사용자가 지우면 다시 만들지 않는다
+            // 첫 실행 시 바탕화면 바로가기를 만들고, 이후에는 파일이 남아 있을 때만
+            // 현재 실행 경로로 갱신한다. 사용자가 지웠으면 다시 만들지 않는다.
             #[cfg(windows)]
             if let Ok(env) = Env::real() {
-                if !settings::load_flag(&env.store, settings::KEY_SHORTCUT_DONE, false) {
+                if settings::load_flag(&env.store, settings::KEY_SHORTCUT_DONE, false) {
+                    if let Err(e) = shortcut::refresh_on_desktop() {
+                        eprintln!("{e}");
+                    }
+                } else {
                     match shortcut::create_on_desktop() {
                         Ok(()) => {
                             let _ =
