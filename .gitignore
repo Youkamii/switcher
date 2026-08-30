@@ -26,6 +26,7 @@ oauth_account.json
 meta.json
 profiles/
 *.token
+*.switcher-vault
 *.switcher-tmp*
 *.json.bak
 

@@ -16,6 +16,7 @@ const selectionSource = readFileSync(
   "utf8",
 );
 const css = readFileSync(new URL("../src/vault.css", import.meta.url), "utf8");
+const gitignore = readFileSync(new URL("../.gitignore", import.meta.url), "utf8");
 const viteConfig = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
 const packageJson = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
@@ -40,6 +41,10 @@ test("binds an export DTO to its opaque revision and preserves each email-displa
   ]);
   assert.equal(JSON.stringify(selections).includes("email"), false);
   assert.deepEqual(selectedVaultProfiles([]), []);
+});
+
+test("keeps exported Vault files out of the public repository", () => {
+  assert.match(gitignore, /^\*\.switcher-vault\s*$/m);
 });
 
 test("keeps Vault choices across focus refreshes while replacing live profile state", () => {
