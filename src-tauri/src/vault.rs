@@ -1056,7 +1056,9 @@ where
     let mut existing_ids: HashSet<(String, String)> = HashSet::new();
     let mut occupied_names: HashSet<(String, String)> = HashSet::new();
     for provider in [Provider::Claude, Provider::Codex] {
-        if let Some(live) = accounts::live_identity(env, provider).unwrap_or(None) {
+        if accounts::live_cred_exists(env, provider) {
+            let live = accounts::live_identity(env, provider)?
+                .ok_or("현재 로그인 계정을 식별할 수 없습니다 (로그인 직후 다시 시도)")?;
             existing_ids.insert((provider.dir_name().to_string(), live.id));
         }
         for (name, dir) in accounts::profile_dirs(env, provider)? {
@@ -2538,17 +2540,26 @@ mod tests {
         );
         atomic_write(
             &target.live_credential_path(Provider::Codex),
-            b"active-file-bytes",
+            &serde_json::to_vec(&serde_json::json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "id_token": jwt("active-codex-id", "active-codex@example.test"),
+                    "access_token": "active-codex-token",
+                    "refresh_token": "active-codex-refresh",
+                    "account_id": "active-codex-id"
+                }
+            }))
+            .unwrap(),
         )
         .unwrap();
         atomic_write(
             &target.home.join(".claude.json"),
-            b"active-claude-json-bytes",
+            br#"{"oauthAccount":{"accountUuid":"active-claude-id","emailAddress":"active-claude@example.test"}}"#,
         )
         .unwrap();
         atomic_write(
             &target.live_credential_path(Provider::Claude),
-            b"active-claude-credential-bytes",
+            br#"{"claudeAiOauth":{"accessToken":"active-claude-token"}}"#,
         )
         .unwrap();
         let codex_before = fs::read(target.live_credential_path(Provider::Codex)).unwrap();
@@ -2665,6 +2676,45 @@ mod tests {
             fs::read(target.live_credential_path(Provider::Codex)).unwrap(),
             before[2]
         );
+    }
+
+    #[test]
+    fn import_rejects_unidentifiable_active_credentials_before_creating_profiles() {
+        let payload = VaultPayload {
+            format_version: PAYLOAD_VERSION,
+            entries: vec![VaultEntry {
+                provider: "codex".into(),
+                name: "incoming".into(),
+                hide_email: false,
+                id: "incoming-id".into(),
+                email: Some("incoming@example.test".into()),
+                credential: encoded(
+                    br#"{"auth_mode":"chatgpt","tokens":{"id_token":"fixture"}}"#,
+                ),
+                oauth_account: None,
+            }],
+        };
+
+        for (tag, active_credential) in [
+            ("vault-invalid-live-identity", b"not-json".as_slice()),
+            (
+                "vault-missing-live-identity",
+                br#"{"auth_mode":"api_key"}"#.as_slice(),
+            ),
+        ] {
+            let target = test_env(tag);
+            atomic_write(
+                &target.live_credential_path(Provider::Codex),
+                active_credential,
+            )
+            .unwrap();
+
+            assert!(commit_payload(&target, &payload, |_, _| Ok(())).is_err());
+            assert!(accounts::profile_dirs(&target, Provider::Codex)
+                .unwrap()
+                .is_empty());
+            assert!(!target.store.exists());
+        }
     }
 
     #[test]
