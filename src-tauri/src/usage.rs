@@ -309,10 +309,17 @@ fn apply_pending_rescue(
                 }
             }
         }
-        Ok(None) if live_cred_exists(env, provider) => {
-            return Err("활성 계정 신원을 확인할 수 없어 갱신 복구를 보류합니다".into());
-        }
-        Ok(None) => {}
+        Ok(None) => match live_cred_exists(env, provider) {
+            Ok(true) => {
+                return Err("활성 계정 신원을 확인할 수 없어 갱신 복구를 보류합니다".into());
+            }
+            Ok(false) => {}
+            Err(error) => {
+                return Err(format!(
+                    "활성 인증정보 확인 실패 — 갱신 복구를 보류합니다: {error}"
+                ));
+            }
+        },
         Err(e) => return Err(format!("활성 계정 확인 실패 — 갱신 복구를 보류합니다: {e}")),
     }
 
@@ -420,8 +427,15 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
         match live_identity(env, provider) {
             Ok(Some(live)) if live.id == meta.id => return Ok(()), // 활성 계정 — CLI 소관
             Ok(Some(_)) => {}
-            Ok(None) if live_cred_exists(env, provider) => return Ok(()),
-            Ok(None) => {}
+            Ok(None) => match live_cred_exists(env, provider) {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(error) => {
+                    return Err(FetchErr::Msg(format!(
+                        "활성 인증정보 확인 실패 — 토큰 갱신을 보류합니다: {error}"
+                    )));
+                }
+            },
             Err(_) => return Ok(()), // 신원 불명 — 보류 (fail-closed)
         }
         (root, meta)
@@ -543,18 +557,28 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
             }
         }
         Ok(Some(_)) => {}
-        Ok(None) if live_cred_exists(env, provider) => {
-            let rescue_error = (!pending_path(&path).exists())
-                .then(|| write_pending(&path, &refresh_token, &body).err())
-                .flatten();
-            return Err(FetchErr::Msg(format!(
-                "활성 계정 신원을 확인할 수 없어 갱신 복구를 보류합니다{}",
-                rescue_error
-                    .map(|error| format!("; 복구 파일 저장 실패: {error}"))
-                    .unwrap_or_default()
-            )));
+        Ok(None) => {
+            let reason = match live_cred_exists(env, provider) {
+                Ok(false) => None,
+                Ok(true) => Some(
+                    "활성 계정 신원을 확인할 수 없어 갱신 복구를 보류합니다".to_string(),
+                ),
+                Err(error) => Some(format!(
+                    "활성 인증정보 확인 실패 — 갱신 복구를 보류합니다: {error}"
+                )),
+            };
+            if let Some(reason) = reason {
+                let rescue_error = (!pending_path(&path).exists())
+                    .then(|| write_pending(&path, &refresh_token, &body).err())
+                    .flatten();
+                return Err(FetchErr::Msg(format!(
+                    "{reason}{}",
+                    rescue_error
+                        .map(|error| format!("; 복구 파일 저장 실패: {error}"))
+                        .unwrap_or_default()
+                )));
+            }
         }
-        Ok(None) => {}
         Err(e) => {
             let rescue_error = (!pending_path(&path).exists())
                 .then(|| write_pending(&path, &refresh_token, &body).err())
