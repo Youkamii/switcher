@@ -447,6 +447,7 @@ async function copyRecoveryCode() {
       setBusy(false);
       return;
     }
+    clearRecoveryResult();
   }
 
   setStatus(exportStatus, vt(copied ? "copied" : "copyFailed"), copied ? "success" : "error");
@@ -459,6 +460,7 @@ async function confirmRecoveryStored() {
   setBusy(true);
   const acknowledged = await acknowledgeStoredRecovery(code);
   recoveryPendingAck = !acknowledged;
+  if (acknowledged) clearRecoveryResult();
   setStatus(
     exportStatus,
     vt(acknowledged ? "recoveryStored" : "recoveryAckFailed"),
