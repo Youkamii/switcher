@@ -109,6 +109,20 @@ impl Env {
 /// macOS 키체인 읽기·쓰기 — claude CLI와 같은 통로(/usr/bin/security)를 쓴다.
 /// 같은 통로라야 항목 접근 ACL이 일치해 허용 팝업 없이 동작한다 (실측 2026-07-29).
 /// 토큰이 프로세스 인자에 노출되지 않도록 쓰기는 `security -i`(stdin) + hex(-X)로 전달한다.
+#[cfg(any(test, target_os = "macos"))]
+fn keychain_find_args<'a>(service: &'a str, account: &'a str, reveal: bool) -> Vec<&'a str> {
+    let mut args = vec!["find-generic-password", "-s", service, "-a", account];
+    if reveal {
+        args.push("-w");
+    }
+    args
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn keychain_delete_args<'a>(service: &'a str, account: &'a str) -> [&'a str; 5] {
+    ["delete-generic-password", "-s", service, "-a", account]
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) mod keychain {
     use std::io::Write;
@@ -140,8 +154,8 @@ pub(crate) mod keychain {
     }
 
     /// 항목이 없으면 Ok(None) — 미로그인은 정상 경로다
-    pub(crate) fn read_item(service: &str) -> Result<Option<Vec<u8>>, String> {
-        let out = run_security(&["find-generic-password", "-s", service, "-w"])?;
+    pub(crate) fn read_item(service: &str, account: &str) -> Result<Option<Vec<u8>>, String> {
+        let out = run_security(&super::keychain_find_args(service, account, true))?;
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
             if err.contains("could not be found") {
@@ -157,9 +171,9 @@ pub(crate) mod keychain {
         Ok(Some(data))
     }
 
-    pub(crate) fn item_exists(service: &str) -> bool {
+    pub(crate) fn item_exists(service: &str, account: &str) -> bool {
         // -w 없이 조회하면 비밀에 접근하지 않고 존재만 확인한다
-        run_security(&["find-generic-password", "-s", service])
+        run_security(&super::keychain_find_args(service, account, false))
             .map(|out| out.status.success())
             .unwrap_or(false)
     }
@@ -198,8 +212,8 @@ pub(crate) mod keychain {
     }
 
     /// 로그인 잔재 청소용 — 항목이 없는 것은 성공이지만 실제 삭제 실패는 호출자에게 알린다.
-    pub(crate) fn delete_item(service: &str) -> Result<(), String> {
-        let out = run_security(&["delete-generic-password", "-s", service])?;
+    pub(crate) fn delete_item(service: &str, account: &str) -> Result<(), String> {
+        let out = run_security(&super::keychain_delete_args(service, account))?;
         if out.status.success() {
             return Ok(());
         }
@@ -214,11 +228,16 @@ pub(crate) mod keychain {
     mod tests {
         use super::*;
 
-        struct TestItemGuard(String);
+        struct TestItemGuard {
+            service: String,
+            accounts: Vec<String>,
+        }
 
         impl Drop for TestItemGuard {
             fn drop(&mut self) {
-                let _ = delete_item(&self.0);
+                for account in &self.accounts {
+                    let _ = delete_item(&self.service, account);
+                }
             }
         }
 
@@ -227,22 +246,61 @@ pub(crate) mod keychain {
         #[test]
         fn roundtrip_via_security_cli() {
             let svc = format!("switcher-selftest-{}", std::process::id());
-            let _cleanup = TestItemGuard(svc.clone());
-            let payload = br#"{"probe":"not-a-secret"}"#;
-            write_item(&svc, &username(), payload).unwrap();
-            assert!(item_exists(&svc));
-            let read = read_item(&svc)
+            let account_a = format!("{}-a", username());
+            let account_b = format!("{}-b", username());
+            let _cleanup = TestItemGuard {
+                service: svc.clone(),
+                accounts: vec![account_a.clone(), account_b.clone()],
+            };
+            let payload_a = br#"{"probe":"account-a"}"#;
+            let payload_b = br#"{"probe":"account-b"}"#;
+            write_item(&svc, &account_a, payload_a).unwrap();
+            write_item(&svc, &account_b, payload_b).unwrap();
+            assert!(item_exists(&svc, &account_a));
+            assert!(item_exists(&svc, &account_b));
+            let read = read_item(&svc, &account_a)
                 .unwrap()
                 .expect("방금 쓴 항목이 있어야 한다");
-            assert_eq!(read, payload);
+            assert_eq!(read, payload_a);
+            assert_eq!(read_item(&svc, &account_b).unwrap().unwrap(), payload_b);
             // 같은 항목 갱신(-U)도 되어야 한다 (전환마다 일어나는 일)
             let payload2 = br#"{"probe":"updated"}"#;
-            write_item(&svc, &username(), payload2).unwrap();
-            assert_eq!(read_item(&svc).unwrap().unwrap(), payload2);
-            delete_item(&svc).unwrap();
-            assert!(!item_exists(&svc));
-            assert!(read_item(&svc).unwrap().is_none(), "삭제 후에는 None");
+            write_item(&svc, &account_a, payload2).unwrap();
+            assert_eq!(read_item(&svc, &account_a).unwrap().unwrap(), payload2);
+            assert_eq!(read_item(&svc, &account_b).unwrap().unwrap(), payload_b);
+            delete_item(&svc, &account_a).unwrap();
+            assert!(!item_exists(&svc, &account_a));
+            assert!(read_item(&svc, &account_a).unwrap().is_none(), "삭제 후에는 None");
+            assert_eq!(read_item(&svc, &account_b).unwrap().unwrap(), payload_b);
         }
+    }
+}
+
+#[cfg(test)]
+mod keychain_arg_tests {
+    use super::*;
+
+    #[test]
+    fn keychain_read_and_delete_scope_to_service_and_account() {
+        assert_eq!(
+            keychain_find_args("service", "account", true),
+            vec![
+                "find-generic-password",
+                "-s",
+                "service",
+                "-a",
+                "account",
+                "-w",
+            ]
+        );
+        assert_eq!(
+            keychain_find_args("service", "account", false),
+            vec!["find-generic-password", "-s", "service", "-a", "account"]
+        );
+        assert_eq!(
+            keychain_delete_args("service", "account"),
+            ["delete-generic-password", "-s", "service", "-a", "account"]
+        );
     }
 }
 
@@ -659,9 +717,9 @@ fn read_live_cred_raw(env: &Env, provider: Provider) -> Result<Vec<u8>, String> 
             #[cfg(target_os = "macos")]
             ClaudeLiveStore::Keychain {
                 service,
+                account,
                 legacy_file,
-                ..
-            } => match keychain::read_item(service)? {
+            } => match keychain::read_item(service, account)? {
                 Some(data) => Ok(data),
                 None if legacy_file.exists() => read_file(legacy_file),
                 None => Err(
@@ -682,9 +740,9 @@ pub(crate) fn live_cred_exists(env: &Env, provider: Provider) -> bool {
             #[cfg(target_os = "macos")]
             ClaudeLiveStore::Keychain {
                 service,
+                account,
                 legacy_file,
-                ..
-            } => keychain::item_exists(service) || legacy_file.exists(),
+            } => keychain::item_exists(service, account) || legacy_file.exists(),
         },
     }
 }
@@ -753,7 +811,7 @@ fn snapshot_claude_live(env: &Env) -> Result<ClaudeLiveSnapshot, String> {
         } => Ok(ClaudeLiveSnapshot::Keychain {
             service: service.clone(),
             account: account.clone(),
-            keychain_data: keychain::read_item(service)?.map(Zeroizing::new),
+            keychain_data: keychain::read_item(service, account)?.map(Zeroizing::new),
             legacy_file: legacy_file.clone(),
             legacy_data: read_optional_secret(legacy_file)?,
         }),
@@ -787,7 +845,7 @@ fn restore_claude_live(snapshot: &ClaudeLiveSnapshot) -> Result<(), String> {
         } => {
             let keychain_result = match keychain_data {
                 Some(data) => keychain::write_item(service, account, data),
-                None => keychain::delete_item(service),
+                None => keychain::delete_item(service, account),
             };
             let legacy_result = restore_optional_secret(legacy_file, legacy_data.as_ref());
             match (keychain_result, legacy_result) {

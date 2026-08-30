@@ -548,8 +548,11 @@ fn pending_cleanup_target(marker: &Path) -> Option<PathBuf> {
 
 fn delete_isolated_keychain(config_dir: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    for service in isolated_keychain_services(config_dir) {
-        crate::accounts::keychain::delete_item(&service)?;
+    {
+        let account = crate::accounts::keychain::username();
+        for service in isolated_keychain_services(config_dir) {
+            crate::accounts::keychain::delete_item(&service, &account)?;
+        }
     }
     #[cfg(not(target_os = "macos"))]
     let _ = config_dir;
@@ -1199,8 +1202,9 @@ fn read_login_result(
     // 맥 클로드는 격리 로그인 토큰이 파일이 아니라 키체인 항목으로 생긴다 (실측)
     #[cfg(target_os = "macos")]
     if cred.is_none() && provider == Provider::Claude {
+        let account = crate::accounts::keychain::username();
         for service in isolated_keychain_services(config_dir) {
-            if let Some(data) = crate::accounts::keychain::read_item(&service)? {
+            if let Some(data) = crate::accounts::keychain::read_item(&service, &account)? {
                 cred = Some(data);
                 break;
             }
