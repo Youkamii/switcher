@@ -686,6 +686,7 @@ async fn get_json(request: reqwest::RequestBuilder) -> Result<Value, FetchErr> {
 struct AuthSnapshot {
     key: String,
     root: Value,
+    backoff_epoch: u64,
 }
 
 /// 캐시 계정 ID와 실제 요청 토큰을 같은 MUTATION_LOCK 스냅숏에서 읽는다.
@@ -719,8 +720,10 @@ fn auth_snapshot(
             (account, root)
         }
     };
+    let key = format!("{}:{account}", provider.dir_name());
     Ok(AuthSnapshot {
-        key: format!("{}:{account}", provider.dir_name()),
+        backoff_epoch: backoff_epoch(&key),
+        key,
         root,
     })
 }
@@ -1096,7 +1099,7 @@ pub(crate) fn purge_account_cache(
     }
     if let Ok(mut map) = backoff().lock() {
         for key in &keys {
-            map.remove(key);
+            invalidate_backoff(map.entry(key.clone()).or_default());
         }
     }
     let path = disk_cache_path(env);
@@ -1127,10 +1130,16 @@ pub(crate) fn purge_account_cache(
 
 /// 일시 장애(429 등) 후의 재시도 자제 시간표 — 거절당한 키는 이 시간 동안
 /// API를 아예 부르지 않는다. 거절이 반복되면 2분→4분→8분→최대 15분으로 늘린다.
-fn backoff() -> &'static std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>>
-{
+#[derive(Clone, Copy, Default)]
+struct BackoffState {
+    until: Option<std::time::Instant>,
+    failure_count: u32,
+    epoch: u64,
+}
+
+fn backoff() -> &'static std::sync::Mutex<std::collections::HashMap<String, BackoffState>> {
     static BACKOFF: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u32)>>,
+        std::sync::Mutex<std::collections::HashMap<String, BackoffState>>,
     > = std::sync::OnceLock::new();
     BACKOFF.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
@@ -1139,7 +1148,7 @@ fn backoff_remaining(key: &str) -> Option<u64> {
     let map = backoff()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let (until, _) = map.get(key).copied()?;
+    let until = map.get(key)?.until?;
     let remaining = until.checked_duration_since(std::time::Instant::now())?;
     if remaining.is_zero() {
         return None;
@@ -1160,23 +1169,60 @@ fn backoff_bump(key: &str) -> u64 {
     let mut map = backoff()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let count = map.get(key).map(|(_, c)| *c).unwrap_or(0) + 1;
-    let secs = (120u64 << (count - 1).min(3)).min(900); // 120·240·480·900
-    map.insert(
-        key.to_string(),
-        (
-            std::time::Instant::now() + std::time::Duration::from_secs(secs),
-            count,
-        ),
-    );
+    bump_backoff(map.entry(key.to_string()).or_default())
+}
+
+fn bump_backoff(state: &mut BackoffState) -> u64 {
+    state.failure_count = state.failure_count.saturating_add(1);
+    let secs = (120u64 << (state.failure_count - 1).min(3)).min(900); // 120·240·480·900
+    state.until = Some(std::time::Instant::now() + std::time::Duration::from_secs(secs));
     secs
 }
 
-fn backoff_clear(key: &str) {
+fn backoff_epoch(key: &str) -> u64 {
     backoff()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(key);
+        .get(key)
+        .map(|state| state.epoch)
+        .unwrap_or(0)
+}
+
+fn backoff_bump_if_epoch(key: &str, expected_epoch: u64) -> Option<u64> {
+    let mut map = backoff()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let state = map.entry(key.to_string()).or_default();
+    if state.epoch != expected_epoch {
+        return None;
+    }
+    Some(bump_backoff(state))
+}
+
+fn invalidate_backoff(state: &mut BackoffState) {
+    state.until = None;
+    state.failure_count = 0;
+    state.epoch = state.epoch.wrapping_add(1);
+}
+
+#[cfg(test)]
+fn backoff_clear(key: &str) {
+    let mut map = backoff()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    invalidate_backoff(map.entry(key.to_string()).or_default());
+}
+
+fn backoff_clear_if_epoch(key: &str, expected_epoch: u64) -> bool {
+    let mut map = backoff()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let state = map.entry(key.to_string()).or_default();
+    if state.epoch != expected_epoch {
+        return false;
+    }
+    invalidate_backoff(state);
+    true
 }
 
 /// 로그인·전환이 성공하면 그 프로필 계정의 이전 실패 세대만 폐기한다.
@@ -1193,7 +1239,7 @@ pub(crate) fn clear_profile_backoff(env: &Env, provider: Provider, name: &str) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     for key in keys {
-        map.remove(&key);
+        invalidate_backoff(map.entry(key).or_default());
     }
 }
 
@@ -1298,38 +1344,47 @@ pub(crate) async fn fetch_with_options(
 
     // 4) 실제 조회. 비활성 프로필은 캐시가 없을 때만 재발급을 시도하고 새 토큰을
     // 다시 스냅숏으로 잡는다. 활성 계정은 위에서 잡은 토큰·키를 끝까지 유지한다.
+    let initial_epoch = initial_auth.backoff_epoch;
     let prepared = match profile {
         Some(_) => request_auth(env, provider, profile).await,
         None => Ok((initial_auth, None)),
     };
-    let (actual_key, result) = match prepared {
+    let (actual_key, request_epoch, result) = match prepared {
         Ok((auth, refresh_err)) => {
             let actual_key = auth.key.clone();
+            let request_epoch = auth.backoff_epoch;
             let result = match provider {
                 Provider::Claude => fetch_claude_attempt(auth, refresh_err).await,
                 Provider::Codex => fetch_codex_attempt(auth, refresh_err).await,
             };
-            (actual_key, result)
+            (actual_key, request_epoch, result)
         }
-        Err(error) => (key.clone(), Err(error)),
+        Err(error) => (key.clone(), initial_epoch, Err(error)),
     };
     match result {
         Ok(usage) => {
-            backoff_clear(&actual_key);
-            if let Ok(mut map) = cache().lock() {
-                map.insert(
-                    actual_key.clone(),
-                    (std::time::Instant::now(), usage.clone()),
-                );
-            }
-            if let Err(e) = disk_cache_store(env, &actual_key, &usage) {
-                eprintln!("사용량 캐시 저장 실패: {e}");
+            if backoff_clear_if_epoch(&actual_key, request_epoch) {
+                if let Ok(mut map) = cache().lock() {
+                    map.insert(
+                        actual_key.clone(),
+                        (std::time::Instant::now(), usage.clone()),
+                    );
+                }
+                if let Err(e) = disk_cache_store(env, &actual_key, &usage) {
+                    eprintln!("사용량 캐시 저장 실패: {e}");
+                }
             }
             Ok(usage)
         }
         Err(FetchErr::Transient) => {
             // 요청 제한·서버 오류 — 재시도를 자제하고 마지막 수치로 조용히 버틴다
-            let retry_after_secs = backoff_bump(&actual_key);
+            let Some(retry_after_secs) = backoff_bump_if_epoch(&actual_key, request_epoch) else {
+                return stale_value()
+                    .map(|value| mark_stale(value, None))
+                    .ok_or_else(|| {
+                        "인증정보가 변경되어 이전 사용량 조회 결과를 무시했습니다".to_string()
+                    });
+            };
             let actual_stale = || -> Option<(Usage, u64)> {
                 if let Ok(map) = cache().lock() {
                     if let Some((at, cached)) = map.get(&actual_key) {
@@ -2132,9 +2187,11 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let entry = map.get_mut(key).expect("backoff entry should exist");
-            entry.0 = std::time::Instant::now()
-                .checked_sub(std::time::Duration::from_secs(1))
-                .unwrap();
+            entry.until = Some(
+                std::time::Instant::now()
+                    .checked_sub(std::time::Duration::from_secs(1))
+                    .unwrap(),
+            );
         };
 
         backoff_clear(key);
@@ -2223,6 +2280,47 @@ mod tests {
         assert!(!backoff_active(account_key));
         assert!(!backoff_active(name_key));
         assert!(backoff_active(other_key), "다른 계정 백오프는 유지돼야 한다");
+        backoff_clear(other_key);
+    }
+
+    #[test]
+    fn stale_request_cannot_restore_backoff_after_auth_change() {
+        let env = test_env("profile-backoff-epoch");
+        let profile = env.profiles_dir(Provider::Claude).join("target");
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(
+            profile.join("meta.json"),
+            r#"{"id":"uuid-target","email":null,"saved_at":1}"#,
+        )
+        .unwrap();
+        fs::write(
+            profile.join("credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"fixture","expiresAt":4102444800000}}"#,
+        )
+        .unwrap();
+
+        let old_request = auth_snapshot(&env, Provider::Claude, Some("target")).unwrap();
+        let other_key = "claude:uuid-other";
+        backoff_clear(other_key);
+        backoff_bump(other_key);
+
+        clear_profile_backoff(&env, Provider::Claude, "target");
+
+        assert_eq!(
+            backoff_bump_if_epoch(&old_request.key, old_request.backoff_epoch),
+            None,
+            "인증 변경 전에 시작한 실패는 백오프를 되살리면 안 된다"
+        );
+        assert!(!backoff_active(&old_request.key));
+        assert!(backoff_active(other_key), "다른 계정 백오프는 유지해야 한다");
+
+        let new_request = auth_snapshot(&env, Provider::Claude, Some("target")).unwrap();
+        assert_eq!(
+            backoff_bump_if_epoch(&new_request.key, new_request.backoff_epoch),
+            Some(120),
+            "인증 변경 뒤 시작한 새 실패는 정상적으로 기록해야 한다"
+        );
+        backoff_clear(&new_request.key);
         backoff_clear(other_key);
     }
 
