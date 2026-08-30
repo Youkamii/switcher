@@ -307,7 +307,7 @@ async fn vault_export(
         let result = vault::export(&Env::real()?, std::path::Path::new(&path), selections)?;
         // 파일이 만들어진 같은 작업 안에서 복구 코드도 보관한다. 호출자가 사라져도
         // 다음 vault 창이 pending 코드를 다시 받아 표시할 수 있다.
-        vault::hold_recovery_for_delivery(&result.recovery_code)?;
+        vault::hold_recovery_for_delivery(result.recovery_code.as_str())?;
         Ok(result)
     })
     .await
@@ -331,7 +331,9 @@ async fn vault_import(
 }
 
 #[tauri::command]
-fn vault_pending_recovery(window: tauri::WebviewWindow) -> Result<Option<String>, String> {
+fn vault_pending_recovery(
+    window: tauri::WebviewWindow,
+) -> Result<Option<vault::RecoveryCode>, String> {
     require_vault_caller(&window)?;
     vault::pending_recovery()
 }
