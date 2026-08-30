@@ -20,12 +20,15 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
+use zeroize::Zeroizing;
 
 use crate::accounts::{
-    auto_name, claude_apply_oauth_block, deletion_identity_key, deletion_snapshot,
-    ensure_name_not_owned_by_other, find_profile_by_id, identity_from_value, live_identity, now,
+    apply_claude_live_update, auto_name, capture_claude_live_update_guard,
+    clear_claude_live_apply_pending, deletion_identity_key, deletion_snapshot,
+    ensure_claude_relogin_profile_identity, ensure_name_not_owned_by_other, find_profile_by_id,
+    identity_from_value, live_identity, mark_claude_live_apply_pending, normalize_cred, now,
     profile_deleted_after, read_json, read_meta, refresh_key, write_live_cred, write_profile_parts,
-    Env, LiveIdentity, Provider, MUTATION_LOCK,
+    write_profile_parts_for_active_relogin, Env, LiveIdentity, Provider, MUTATION_LOCK,
 };
 
 /// 로그인 링크가 화면에 뜰 때까지 기다리는 시간
@@ -1219,6 +1222,14 @@ fn read_login_result(
             Provider::Claude => "로그인이 완료되지 않았습니다 — 처음부터 다시 시도하세요".to_string(),
         });
     };
+    // 구형 macOS Claude CLI는 격리 키체인에 JSON 바이트의 hex 문자열을 남길 수 있다.
+    // 그 표현을 프로필에 그대로 보관하면 신형 CLI가 전환 뒤 로그아웃으로 판정하므로
+    // 프로필 저장 관문에 들어가기 전에 정상 JSON 바이트로 한 번만 정규화한다.
+    let cred = if provider == Provider::Claude {
+        normalize_cred(cred)
+    } else {
+        cred
+    };
     match provider {
         Provider::Claude => {
             let root = read_json(&config_dir.join(".claude.json"))?;
@@ -1272,6 +1283,7 @@ fn import_inner(
     delete_epoch: u64,
 ) -> Result<LoginOutcome, String> {
     let (ident, cred, block) = read_login_result(provider, config_dir)?;
+    let cred = Zeroizing::new(cred);
 
     // 프로필을 실제로 건드리는 구간에서만 잠근다
     let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
@@ -1291,19 +1303,50 @@ fn import_inner(
     }
     // auto_name이 빈 이름을 보장하지만, 불변("다른 계정 토큰을 덮어쓰지 않는다")은 여기서도 지킨다
     ensure_name_not_owned_by_other(env, provider, &name, &ident)?;
-    let updates_active = live_identity(env, provider)?
-        .is_some_and(|live| live.id == ident.id);
-    if updates_active {
+    let updates_active = live_identity(env, provider)?.is_some_and(|live| live.id == ident.id);
+    let active_claude_guard = if updates_active && provider == Provider::Claude {
+        let guard = capture_claude_live_update_guard(env)?;
+        if !guard.belongs_to(&ident.id) {
+            return Err(
+                "Claude 로그인이 재로그인 결과를 적용하기 전에 외부에서 변경되었습니다"
+                    .into(),
+            );
+        }
+        Some(guard)
+    } else {
+        None
+    };
+    if updates_active && provider != Provider::Claude {
         // 같은 활성 계정의 재로그인 결과를 프로필에만 쓰면 다음 전환의 활성 백업이
         // 폐기된 옛 토큰으로 새 토큰을 덮는다. 같은 계정일 때만 활성도 먼저 갱신한다.
         write_live_cred(env, provider, &cred)?;
     }
-    write_profile_parts(env, provider, &name, &ident, &cred, block.as_ref())?;
-    if updates_active && provider == Provider::Claude {
-        claude_apply_oauth_block(env, &env.profiles_dir(provider).join(&name))?;
+    let profile_dir = env.profiles_dir(provider).join(&name);
+    let repairs_pending_claude = provider == Provider::Claude
+        && crate::accounts::claude_live_apply_pending(&profile_dir)?;
+    if active_claude_guard.is_some() || repairs_pending_claude {
+        // 소유권 meta를 sidecar보다 먼저 확정한다. bundle 쓰기 중 crash가 나도
+        // 다른 계정이 같은 자동 이름을 차지하지 못하고 동일 계정만 이어서 복구한다.
+        ensure_claude_relogin_profile_identity(env, &name, &ident)?;
+        if !repairs_pending_claude {
+            mark_claude_live_apply_pending(&profile_dir)?;
+        }
+        write_profile_parts_for_active_relogin(
+            env,
+            provider,
+            &name,
+            &ident,
+            &cred,
+            block.as_ref(),
+        )?;
+    } else {
+        write_profile_parts(env, provider, &name, &ident, &cred, block.as_ref())?;
     }
-    let hide_email =
-        read_meta(&env.profiles_dir(provider).join(&name)).is_some_and(|meta| meta.hide_email);
+    if let Some(expected) = active_claude_guard.as_ref() {
+        apply_claude_live_update(env, &profile_dir, &cred, expected)?;
+        clear_claude_live_apply_pending(&profile_dir)?;
+    }
+    let hide_email = read_meta(&profile_dir).is_some_and(|meta| meta.hide_email);
     Ok(LoginOutcome {
         profile: name,
         email: if hide_email { None } else { ident.email },
@@ -1697,6 +1740,19 @@ mod tests {
 
     static START_REQUEST_TEST_LOCK: Mutex<()> = Mutex::new(());
 
+    #[cfg(target_os = "macos")]
+    struct TestKeychainGuard {
+        service: String,
+        account: String,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for TestKeychainGuard {
+        fn drop(&mut self) {
+            let _ = crate::accounts::keychain::delete_item(&self.service, &self.account);
+        }
+    }
+
     #[cfg(windows)]
     const TASKKILL_TREE_ROLE: &str = "SWITCHER_TASKKILL_TREE_ROLE";
     #[cfg(windows)]
@@ -1950,11 +2006,8 @@ mod tests {
         let env = test_env("claude-import");
         let cfg = env.store.join("_login").join("t1");
         fs::create_dir_all(&cfg).unwrap();
-        fs::write(
-            cfg.join(".credentials.json"),
-            r#"{"claudeAiOauth":{"accessToken":"new-tok"}}"#,
-        )
-        .unwrap();
+        let raw_credential = br#"{"claudeAiOauth":{"accessToken":"new-tok"}}"#;
+        fs::write(cfg.join(".credentials.json"), raw_credential).unwrap();
         fs::write(
             cfg.join(".claude.json"),
             r#"{"oauthAccount":{"accountUuid":"uuid-new","emailAddress":"newbie@test.dev"}}"#,
@@ -1974,6 +2027,57 @@ mod tests {
             .join("newbie")
             .join("oauth_account.json")
             .exists());
+        assert_eq!(
+            fs::read(
+                env.profiles_dir(Provider::Claude)
+                    .join("newbie")
+                    .join("credentials.json")
+            )
+            .unwrap(),
+            raw_credential,
+            "raw JSON 자격증명은 바이트를 바꾸지 않아야 한다"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn imports_hex_isolated_keychain_result_as_raw_json() {
+        let env = test_env("claude-hex-import");
+        let cfg = env.store.join("_login").join("hex");
+        fs::create_dir_all(&cfg).unwrap();
+        let raw_credential = br#"{"claudeAiOauth":{"accessToken":"hex-login-token"}}"#;
+        let hex_credential = raw_credential
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let service = isolated_keychain_services(&cfg)
+            .into_iter()
+            .next()
+            .expect("격리 키체인 서비스 후보가 있어야 한다");
+        let account = crate::accounts::keychain::username();
+        crate::accounts::keychain::write_item(&service, &account, hex_credential.as_bytes())
+            .unwrap();
+        fs::write(
+            cfg.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-hex","emailAddress":"hex-user@test.dev"}}"#,
+        )
+        .unwrap();
+
+        let outcome = import(&env, Provider::Claude, &cfg).unwrap();
+        let saved = fs::read(
+            env.profiles_dir(Provider::Claude)
+                .join(&outcome.profile)
+                .join("credentials.json"),
+        )
+        .unwrap();
+
+        assert_eq!(saved, raw_credential);
+        assert!(
+            crate::accounts::keychain::read_item(&service, &account)
+                .unwrap()
+                .is_none(),
+            "가져오기 뒤 격리 키체인 항목도 정리돼야 한다"
+        );
     }
 
     #[test]
@@ -2020,6 +2124,244 @@ mod tests {
         assert_eq!(outcome.profile, initial.profile);
         assert_eq!(outcome.email, None);
         assert!(read_meta(&profile_dir).unwrap().hide_email);
+    }
+
+    #[test]
+    fn relogin_of_active_claude_account_clears_recovery_marker_after_full_update() {
+        let env = test_env("active-relogin-clears-recovery");
+        fs::write(
+            env.live_credential_path(Provider::Claude),
+            r#"{"claudeAiOauth":{"accessToken":"old-active-token"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            env.home.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-active","emailAddress":"active@test.dev"}}"#,
+        )
+        .unwrap();
+        let marker = env.store.join(".claude-switch-recovery-required");
+        crate::accounts::atomic_write(&marker, b"switch-recovery-v1\n").unwrap();
+
+        let cfg = env.store.join("_login").join("active-relogin");
+        fs::create_dir_all(&cfg).unwrap();
+        let fresh = br#"{"claudeAiOauth":{"accessToken":"fresh-active-token"}}"#;
+        fs::write(cfg.join(".credentials.json"), fresh).unwrap();
+        fs::write(
+            cfg.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-active","emailAddress":"active@test.dev"}}"#,
+        )
+        .unwrap();
+
+        let outcome = import(&env, Provider::Claude, &cfg).unwrap();
+
+        assert_eq!(outcome.profile, "active");
+        assert!(!marker.exists());
+        assert_eq!(
+            crate::accounts::read_live_cred(&env, Provider::Claude).unwrap(),
+            fresh
+        );
+    }
+
+    #[test]
+    fn adversarial_recovery_relogin_with_no_live_credential_preserves_fresh_profile() {
+        let env = test_env("active-relogin-recovery-no-live");
+        fs::write(
+            env.home.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-active","emailAddress":"active@test.dev"}}"#,
+        )
+        .unwrap();
+        let marker = env.store.join(".claude-switch-recovery-required");
+        crate::accounts::atomic_write(&marker, b"switch-recovery-v1\n").unwrap();
+        assert!(!env.live_credential_path(Provider::Claude).exists());
+
+        let cfg = env.store.join("_login").join("active-recovery-no-live");
+        fs::create_dir_all(&cfg).unwrap();
+        let fresh = br#"{"claudeAiOauth":{"accessToken":"fresh-after-missing-live"}}"#;
+        fs::write(cfg.join(".credentials.json"), fresh).unwrap();
+        fs::write(
+            cfg.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-active","emailAddress":"active@test.dev"}}"#,
+        )
+        .unwrap();
+
+        let outcome = import(&env, Provider::Claude, &cfg).unwrap();
+        let profile_dir = env.profiles_dir(Provider::Claude).join(&outcome.profile);
+
+        assert_eq!(outcome.profile, "active");
+        assert!(!marker.exists());
+        assert!(!profile_dir.join(".claude-live-apply-pending").exists());
+        assert_eq!(fs::read(profile_dir.join("credentials.json")).unwrap(), fresh);
+        assert_eq!(
+            crate::accounts::read_live_cred(&env, Provider::Claude).unwrap(),
+            fresh
+        );
+    }
+
+    #[test]
+    fn active_relogin_must_not_claim_pending_profile_owned_by_another_identity() {
+        let env = test_env("active-relogin-pending-owner-collision");
+        let orphan = env.profiles_dir(Provider::Claude).join("shared");
+        fs::create_dir_all(&orphan).unwrap();
+        let protected_a = br#"{"claudeAiOauth":{"accessToken":"protected-a"}}"#;
+        crate::accounts::atomic_write(&orphan.join("credentials.json"), protected_a).unwrap();
+        crate::accounts::atomic_write(
+            &orphan.join("oauth_account.json"),
+            br#"{"accountUuid":"uuid-a","emailAddress":"shared@a.test"}"#,
+        )
+        .unwrap();
+        mark_claude_live_apply_pending(&orphan).unwrap();
+        assert!(!orphan.join("meta.json").exists());
+
+        fs::write(
+            env.live_credential_path(Provider::Claude),
+            r#"{"claudeAiOauth":{"accessToken":"old-b"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            env.home.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-b","emailAddress":"shared@b.test"}}"#,
+        )
+        .unwrap();
+        let cfg = env.store.join("_login").join("pending-owner-b");
+        fs::create_dir_all(&cfg).unwrap();
+        fs::write(
+            cfg.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"fresh-b"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            cfg.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-b","emailAddress":"shared@b.test"}}"#,
+        )
+        .unwrap();
+
+        let outcome = import(&env, Provider::Claude, &cfg).unwrap();
+
+        assert_eq!(outcome.profile, "shared-2");
+        assert_eq!(fs::read(orphan.join("credentials.json")).unwrap(), protected_a);
+        assert!(!orphan.join("meta.json").exists());
+        assert!(crate::accounts::claude_live_apply_pending(&orphan).unwrap());
+        assert_eq!(
+            read_meta(&env.profiles_dir(Provider::Claude).join("shared-2"))
+                .unwrap()
+                .id,
+            "uuid-b"
+        );
+    }
+
+    #[test]
+    fn same_identity_relogin_repairs_metadata_free_pending_profile_after_live_changes() {
+        let env = test_env("pending-owner-same-account-repair");
+        let profile_dir = env.profiles_dir(Provider::Claude).join("alice");
+        fs::create_dir_all(&profile_dir).unwrap();
+        crate::accounts::atomic_write(
+            &profile_dir.join("credentials.json"),
+            br#"{"claudeAiOauth":{"accessToken":"incomplete-a"}}"#,
+        )
+        .unwrap();
+        crate::accounts::atomic_write(
+            &profile_dir.join("oauth_account.json"),
+            br#"{"accountUuid":"uuid-a","emailAddress":"alice@old.test"}"#,
+        )
+        .unwrap();
+        mark_claude_live_apply_pending(&profile_dir).unwrap();
+        assert!(!profile_dir.join("meta.json").exists());
+
+        let live_b = br#"{"claudeAiOauth":{"accessToken":"external-b"}}"#;
+        fs::write(env.live_credential_path(Provider::Claude), live_b).unwrap();
+        fs::write(
+            env.home.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-b","emailAddress":"bob@test.dev"}}"#,
+        )
+        .unwrap();
+        let cfg = env.store.join("_login").join("pending-owner-a-repair");
+        fs::create_dir_all(&cfg).unwrap();
+        let fresh_a = br#"{"claudeAiOauth":{"accessToken":"fresh-a"}}"#;
+        fs::write(cfg.join(".credentials.json"), fresh_a).unwrap();
+        fs::write(
+            cfg.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-a","emailAddress":"alice@new.test"}}"#,
+        )
+        .unwrap();
+
+        let outcome = import(&env, Provider::Claude, &cfg).unwrap();
+
+        assert_eq!(outcome.profile, "alice");
+        assert!(outcome.updated_existing);
+        assert_eq!(read_meta(&profile_dir).unwrap().id, "uuid-a");
+        assert_eq!(fs::read(profile_dir.join("credentials.json")).unwrap(), fresh_a);
+        assert_eq!(fs::read(env.live_credential_path(Provider::Claude)).unwrap(), live_b);
+        assert_eq!(
+            read_json(&env.home.join(".claude.json")).unwrap()["oauthAccount"]["accountUuid"],
+            "uuid-b"
+        );
+        assert!(crate::accounts::claude_live_apply_pending(&profile_dir).unwrap());
+
+        let switched = crate::accounts::switch(&env, Provider::Claude, "alice").unwrap();
+        assert_eq!(switched.backed_up_to, None);
+        assert_eq!(
+            crate::accounts::read_live_cred(&env, Provider::Claude).unwrap(),
+            fresh_a
+        );
+        assert!(!crate::accounts::claude_live_apply_pending(&profile_dir).unwrap());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn active_claude_relogin_never_writes_when_recovery_journal_preflight_fails() {
+        let mut env = test_env("active-relogin-marker-preflight");
+        let legacy = env.live_credential_path(Provider::Claude);
+        let old_credential = br#"{"claudeAiOauth":{"accessToken":"old-active-token"}}"#;
+        fs::write(&legacy, old_credential).unwrap();
+        fs::write(
+            env.home.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-active","emailAddress":"active@test.dev"}}"#,
+        )
+        .unwrap();
+
+        let service = format!("switcher-login-journal-preflight-{}", std::process::id());
+        let account = crate::accounts::keychain::username();
+        let _keychain = TestKeychainGuard {
+            service: service.clone(),
+            account: account.clone(),
+        };
+        crate::accounts::keychain::write_item(&service, &account, old_credential).unwrap();
+        env.claude_live = crate::accounts::ClaudeLiveStore::Keychain {
+            service: service.clone(),
+            account: account.clone(),
+            legacy_file: legacy.clone(),
+        };
+
+        let marker = env.store.join(".claude-switch-recovery-required");
+        fs::create_dir_all(&marker).unwrap();
+        let cfg = env.store.join("_login").join("active-preflight");
+        fs::create_dir_all(&cfg).unwrap();
+        fs::write(
+            cfg.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"must-not-apply"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            cfg.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-active","emailAddress":"active@test.dev"}}"#,
+        )
+        .unwrap();
+
+        let error = import(&env, Provider::Claude, &cfg).unwrap_err();
+
+        assert!(error.contains("복구 표식이 손상"));
+        assert_eq!(
+            crate::accounts::keychain::read_item(&service, &account)
+                .unwrap()
+                .unwrap(),
+            old_credential
+        );
+        assert_eq!(fs::read(&legacy).unwrap(), old_credential);
+        assert!(marker.is_dir());
+        assert!(!env
+            .profiles_dir(Provider::Claude)
+            .join("active")
+            .exists());
     }
 
     #[test]

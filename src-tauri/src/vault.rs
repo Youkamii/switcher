@@ -292,13 +292,31 @@ struct ClaudeLiveSnapshot {
     identity: accounts::LiveIdentity,
 }
 
+/// Vault는 활성 자격증명이 있는데 신원만 식별하지 못한 상태를 "비활성"으로
+/// 취급하면 안 된다. 그러면 목록에서 저장 프로필이 비활성으로 보이고, 내보내기가
+/// 최신 활성 자격증명 대신 오래된 저장본을 조용히 담을 수 있다.
+fn identifiable_live_identity(
+    env: &Env,
+    provider: Provider,
+) -> Result<Option<accounts::LiveIdentity>, String> {
+    if !accounts::live_cred_exists(env, provider)? {
+        return Ok(None);
+    }
+    accounts::live_identity(env, provider)?.map_or_else(
+        || Err("현재 로그인 계정을 식별할 수 없습니다 (로그인 직후 다시 시도)".into()),
+        |identity| Ok(Some(identity)),
+    )
+}
+
 pub fn list_profiles(env: &Env) -> Result<Vec<VaultProfile>, String> {
     let mut result = Vec::new();
     for provider in [Provider::Claude, Provider::Codex] {
-        let live_id = accounts::live_identity(env, provider)
-            .unwrap_or(None)
-            .map(|identity| identity.id);
-        for (name, dir) in accounts::profile_dirs(env, provider)? {
+        let profile_dirs = accounts::profile_dirs(env, provider)?;
+        if profile_dirs.is_empty() {
+            continue;
+        }
+        let live_id = identifiable_live_identity(env, provider)?.map(|identity| identity.id);
+        for (name, dir) in profile_dirs {
             if accounts::validate_name(&name).is_err() {
                 continue;
             }
@@ -536,7 +554,7 @@ fn capture_entries(env: &Env, selections: &[VaultSelection]) -> Result<Vec<Vault
                     selection.name
                 ));
             }
-            let live = accounts::live_identity(env, provider)?;
+            let live = identifiable_live_identity(env, provider)?;
             let active = live.as_ref().is_some_and(|identity| identity.id == meta.id);
             let stable_claude = if active && provider == Provider::Claude {
                 let snapshot = read_stable_claude_snapshot(env)?;
@@ -1109,12 +1127,18 @@ where
     let _mutation = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     recover_stale_imports_locked(env)?;
 
+    let mut payload_providers = Vec::new();
+    for entry in &payload.entries {
+        let provider = Provider::parse(&entry.provider).map_err(|_| CRYPTO_ERROR.to_string())?;
+        if !payload_providers.contains(&provider) {
+            payload_providers.push(provider);
+        }
+    }
+
     let mut existing_ids: HashSet<(String, String)> = HashSet::new();
     let mut occupied_names: HashSet<(String, String)> = HashSet::new();
-    for provider in [Provider::Claude, Provider::Codex] {
-        if accounts::live_cred_exists(env, provider)? {
-            let live = accounts::live_identity(env, provider)?
-                .ok_or("현재 로그인 계정을 식별할 수 없습니다 (로그인 직후 다시 시도)")?;
+    for provider in payload_providers {
+        if let Some(live) = identifiable_live_identity(env, provider)? {
             existing_ids.insert((provider.dir_name().to_string(), live.id));
         }
         for (name, dir) in accounts::profile_dirs(env, provider)? {
@@ -2050,6 +2074,102 @@ mod tests {
     }
 
     #[test]
+    fn list_and_export_fail_closed_when_live_credential_identity_is_unknown() {
+        for (tag, live_credential) in [
+            ("missing-identity", br#"{"auth_mode":"api_key"}"#.as_slice()),
+            ("invalid-identity", b"not-json".as_slice()),
+        ] {
+            let env = test_env(&format!("vault-export-{tag}"));
+            add_codex(
+                &env,
+                "stored",
+                "stored-id",
+                "stored@example.test",
+                "stored-token",
+            );
+            atomic_write(
+                &env.live_credential_path(Provider::Codex),
+                live_credential,
+            )
+            .unwrap();
+
+            assert!(
+                list_profiles(&env).is_err(),
+                "{tag}: 목록이 알 수 없는 활성 신원을 비활성으로 표시하면 안 된다"
+            );
+
+            let path = vault_path(&env, &format!("{tag}.switcher-vault"));
+            assert!(
+                export(
+                    &env,
+                    &path,
+                    vec![selection(&env, "codex", "stored", false)],
+                )
+                .is_err(),
+                "{tag}: 저장 프로필을 활성 자격증명 대신 내보내면 안 된다"
+            );
+            assert!(!path.exists());
+        }
+    }
+
+    #[test]
+    fn claude_switch_recovery_marker_blocks_vault_list_and_export() {
+        let env = test_env("vault-blocked-by-claude-recovery");
+        add_claude(
+            &env,
+            "stored",
+            "stored-id",
+            "stored@example.test",
+            "stored-token",
+        );
+        atomic_write(
+            &env.store.join(".claude-switch-recovery-required"),
+            b"switch-recovery-v1\n",
+        )
+        .unwrap();
+
+        let list_error = list_profiles(&env).unwrap_err();
+        assert!(list_error.contains("복구가 필요"));
+
+        let path = vault_path(&env, "blocked.switcher-vault");
+        let export_error = export(
+            &env,
+            &path,
+            vec![selection(&env, "claude", "stored", false)],
+        )
+        .unwrap_err();
+        assert!(export_error.contains("복구가 필요"));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn claude_live_apply_pending_blocks_vault_list_and_export() {
+        let env = test_env("vault-blocked-by-live-apply-pending");
+        add_claude(
+            &env,
+            "stored",
+            "stored-id",
+            "stored@example.test",
+            "fresh-protected-token",
+        );
+        let profile_dir = env.profiles_dir(Provider::Claude).join("stored");
+        crate::accounts::mark_claude_live_apply_pending(&profile_dir).unwrap();
+
+        let list_error = list_profiles(&env).unwrap_err();
+        assert!(list_error.contains("복구가 필요"));
+
+        let path = vault_path(&env, "pending-live-apply.switcher-vault");
+        let export_error = export(
+            &env,
+            &path,
+            vec![selection(&env, "claude", "stored", false)],
+        )
+        .unwrap_err();
+        assert!(export_error.contains("복구가 필요"));
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn export_rejects_an_alias_replaced_after_selection() {
         let env = test_env("vault-profile-replaced-after-selection");
         add_claude(
@@ -2060,13 +2180,23 @@ mod tests {
             "selected-token",
         );
         let selected = selection(&env, "claude", "work", false);
-        add_claude(
-            &env,
-            "work",
-            "replacement-identity",
-            "replacement@example.test",
-            "replacement-token",
-        );
+        // 정상 저장 관문은 다른 계정의 프로필 덮어쓰기를 거부한다. 여기서는
+        // 선택 직후 외부 프로세스가 파일을 바꾼 상황을 직접 합성한다.
+        accounts::write_profile_bundle_to_dir(
+            &env.profiles_dir(Provider::Claude).join("work"),
+            Provider::Claude,
+            &LiveIdentity {
+                id: "replacement-identity".into(),
+                email: Some("replacement@example.test".into()),
+            },
+            br#"{"claudeAiOauth":{"accessToken":"replacement-token"}}"#,
+            Some(&serde_json::json!({
+                "accountUuid": "replacement-identity",
+                "emailAddress": "replacement@example.test"
+            })),
+            false,
+        )
+        .unwrap();
 
         let error = export(
             &env,
@@ -2094,6 +2224,45 @@ mod tests {
             Path::new("/Users/test/.CLAUDE/.Credentials.JSON"),
             Path::new("/Users/test/.claude/.credentials.json")
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_list_and_export_fail_closed_when_keychain_identity_is_missing() {
+        let (source, keychain) = keychain_test_env("vault-macos-keychain-without-identity");
+        add_claude(
+            &source,
+            "stored",
+            "stored-id",
+            "stored@example.test",
+            "stored-token",
+        );
+        let live = br#"{"claudeAiOauth":{"accessToken":"keychain-live-token"}}"#;
+        write_keychain_fixture(&keychain, live);
+        assert!(!source.home.join(".claude.json").exists());
+
+        assert!(list_profiles(&source).is_err());
+        let path = vault_path(&source, "missing-identity.switcher-vault");
+        assert!(export(
+            &source,
+            &path,
+            vec![selection(&source, "claude", "stored", false)],
+        )
+        .is_err());
+        assert!(!path.exists());
+        assert_eq!(
+            accounts::keychain::read_item(&keychain.service, &keychain.account)
+                .unwrap()
+                .unwrap(),
+            live
+        );
+
+        let service = keychain.service.clone();
+        let account = keychain.account.clone();
+        drop(keychain);
+        assert!(accounts::keychain::read_item(&service, &account)
+            .unwrap()
+            .is_none());
     }
 
     #[cfg(target_os = "macos")]
@@ -2316,9 +2485,30 @@ mod tests {
         let legacy = target.live_credential_path(Provider::Claude);
         let claude_json = target.home.join(".claude.json");
         let codex_auth = target.live_credential_path(Provider::Codex);
-        atomic_write(&legacy, b"existing-legacy-claude-file").unwrap();
-        atomic_write(&claude_json, b"existing-claude-account-file").unwrap();
-        atomic_write(&codex_auth, b"existing-codex-auth-file").unwrap();
+        atomic_write(
+            &legacy,
+            br#"{"claudeAiOauth":{"accessToken":"existing-legacy-claude-token"}}"#,
+        )
+        .unwrap();
+        atomic_write(
+            &claude_json,
+            br#"{"oauthAccount":{"accountUuid":"existing-claude-id","emailAddress":"existing-claude@example.test"}}"#,
+        )
+        .unwrap();
+        atomic_write(
+            &codex_auth,
+            &serde_json::to_vec(&serde_json::json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "id_token": jwt("existing-codex-id", "existing-codex@example.test"),
+                    "access_token": "existing-codex-token",
+                    "refresh_token": "existing-codex-refresh",
+                    "account_id": "existing-codex-id"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
         let legacy_before = fs::read(&legacy).unwrap();
         let claude_json_before = fs::read(&claude_json).unwrap();
         let codex_before = fs::read(&codex_auth).unwrap();
@@ -3049,6 +3239,72 @@ mod tests {
                 .is_empty());
             assert!(!target.store.exists());
         }
+    }
+
+    #[test]
+    fn codex_only_import_ignores_unidentifiable_claude_live_credentials() {
+        let target = test_env("vault-codex-only-ignores-broken-claude");
+        let claude_credential =
+            br#"{"claudeAiOauth":{"accessToken":"unrelated-claude-token"}}"#;
+        let broken_claude_identity = b"broken-claude-account";
+        atomic_write(
+            &target.live_credential_path(Provider::Claude),
+            claude_credential,
+        )
+        .unwrap();
+        atomic_write(
+            &target.home.join(".claude.json"),
+            broken_claude_identity,
+        )
+        .unwrap();
+
+        let payload = VaultPayload {
+            format_version: PAYLOAD_VERSION,
+            entries: vec![VaultEntry {
+                provider: "codex".into(),
+                name: "incoming".into(),
+                hide_email: false,
+                id: "incoming-id".into(),
+                email: Some("incoming@example.test".into()),
+                credential: encoded(
+                    &serde_json::to_vec(&serde_json::json!({
+                        "auth_mode": "chatgpt",
+                        "tokens": {
+                            "id_token": jwt("incoming-id", "incoming@example.test"),
+                            "access_token": "incoming-token",
+                            "refresh_token": "incoming-refresh",
+                            "account_id": "incoming-id"
+                        }
+                    }))
+                    .unwrap(),
+                ),
+                oauth_account: None,
+            }],
+        };
+        validate_payload(&payload).unwrap();
+
+        let result = commit_payload(&target, &payload, |_, _| Ok(())).unwrap();
+
+        assert_eq!(
+            result,
+            VaultImportResult {
+                imported: 1,
+                skipped: 0,
+                cleanup_pending: false,
+            }
+        );
+        assert!(target
+            .profiles_dir(Provider::Codex)
+            .join("incoming/auth.json")
+            .is_file());
+        assert_eq!(
+            fs::read(target.live_credential_path(Provider::Claude)).unwrap(),
+            claude_credential
+        );
+        assert_eq!(
+            fs::read(target.home.join(".claude.json")).unwrap(),
+            broken_claude_identity
+        );
     }
 
     #[test]

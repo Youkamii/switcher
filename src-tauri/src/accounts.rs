@@ -197,9 +197,11 @@ pub(crate) mod keychain {
 
     pub(crate) fn write_item(service: &str, account: &str, data: &[u8]) -> Result<(), String> {
         use std::fmt::Write as _;
-        let mut hex = String::with_capacity(data.len() * 2);
+        // security의 대화형 입력 형식 때문에 hex 문자열이 필요하지만, 토큰 복사본이
+        // 프로세스 메모리에 필요 이상 오래 남지 않도록 사용 직후 zeroize한다.
+        let mut hex = zeroize::Zeroizing::new(String::with_capacity(data.len() * 2));
         for b in data {
-            let _ = write!(hex, "{b:02x}");
+            let _ = write!(&mut *hex, "{b:02x}");
         }
         let mut child = Command::new("/usr/bin/security")
             .arg("-i")
@@ -208,8 +210,10 @@ pub(crate) mod keychain {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("security 실행 실패: {e}"))?;
-        let cmd =
-            format!("add-generic-password -U -a \"{account}\" -s \"{service}\" -X \"{hex}\"\n");
+        let cmd = zeroize::Zeroizing::new(format!(
+            "add-generic-password -U -a \"{account}\" -s \"{service}\" -X \"{}\"\n",
+            hex.as_str()
+        ));
         child
             .stdin
             .take()
@@ -391,6 +395,14 @@ pub(crate) static MUTATION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(()
 /// vault 가져오기가 최종 commit되기 전인 프로필 폴더의 표식. 이 표식이 있으면
 /// 일반 목록·전환·갱신 경로에서 절대 사용하지 않는다.
 pub(crate) const PROFILE_IMPORT_MARKER: &str = ".vault-import-id";
+/// macOS Claude의 키체인·전달 파일이 혼합된 채 원복되지 못했음을 나타낸다.
+/// 비밀이나 계정 식별자는 넣지 않고, 명시적인 전환/재로그인 복구가 끝날 때까지
+/// 일반 읽기·저장·내보내기 경로를 fail-closed로 막는다.
+const CLAUDE_RECOVERY_MARKER: &str = ".claude-switch-recovery-required";
+/// 활성 Claude 재로그인의 새 토큰을 프로필에 보관했지만 live Keychain/파일과
+/// oauthAccount에 아직 완전히 적용하지 못했음을 나타낸다. 이 표식이 있는 프로필은
+/// 다음 활성 백업·갱신·Vault 내보내기로 절대 덮지 않는다.
+const CLAUDE_LIVE_APPLY_PENDING: &str = ".claude-live-apply-pending";
 
 /// 프로필 단위 수명 잠금. 토큰 재발급은 공유 상태(refreshes), 전환·삭제는 배타 상태로
 /// 등록한다. "재발급이 없음을 확인 → 전환/삭제 시작" 사이의 틈까지 같은 잠금 안에서
@@ -572,8 +584,37 @@ pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("경로 오류: {}", path.display()))?;
+    let mut newly_created = Vec::new();
+    let mut cursor = parent;
+    while !cursor.exists() {
+        newly_created.push(cursor.to_path_buf());
+        let Some(next) = cursor.parent() else {
+            break;
+        };
+        cursor = next;
+    }
     fs::create_dir_all(parent).map_err(|e| format!("폴더 생성 실패 {}: {e}", parent.display()))?;
+    sync_created_directory_entries(&newly_created)
+        .map_err(|e| format!("폴더 생성 확정 실패 {}: {e}", parent.display()))?;
     atomic_replace_in_parent(path, data, parent)
+}
+
+#[cfg(unix)]
+fn sync_created_directory_entries(created: &[PathBuf]) -> std::io::Result<()> {
+    // deepest → highest 순서로 새 디렉터리와 그 부모를 함께 fsync한다. 그래야
+    // 새 프로필 폴더 자체가 crash 뒤 사라져 "백업 후 전환" 순서가 역전되지 않는다.
+    for directory in created {
+        fs::File::open(directory)?.sync_all()?;
+        if let Some(parent) = directory.parent() {
+            fs::File::open(parent)?.sync_all()?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn sync_created_directory_entries(_created: &[PathBuf]) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// 이미 존재하는 프로필 폴더 안에만 쓴다. 삭제와 경합했을 때 `create_dir_all`로
@@ -625,7 +666,15 @@ fn atomic_replace_in_parent(path: &Path, data: &[u8], parent: &Path) -> Result<(
         // 실패 시 평문 토큰이 담긴 임시 파일을 남기지 않는다
         let _ = fs::remove_file(&tmp);
         format!("교체 실패 {}: {e}", path.display())
-    })
+    })?;
+    // 파일 자체를 fsync한 뒤 rename만 하고 끝내면 전원/OS crash에서 디렉터리
+    // 엔트리만 되돌아갈 수 있다. 저널 표식보다 자격증명·프로필 파일이 먼저
+    // 사라지는 역전이 없도록 같은 상위 디렉터리까지 영속화한다.
+    #[cfg(unix)]
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|e| format!("교체 확정 실패 {}: {e}", path.display()))?;
+    Ok(())
 }
 
 #[cfg(not(windows))]
@@ -737,9 +786,191 @@ fn read_json_retry(path: &Path) -> Result<Value, String> {
     Err(last_err)
 }
 
+fn claude_recovery_marker_path(env: &Env) -> PathBuf {
+    env.store.join(CLAUDE_RECOVERY_MARKER)
+}
+
+fn claude_live_apply_pending_path(profile_dir: &Path) -> PathBuf {
+    profile_dir.join(CLAUDE_LIVE_APPLY_PENDING)
+}
+
+/// 손상된 sidecar도 정상 프로필로 열지 않는다.
+pub(crate) fn claude_live_apply_pending(profile_dir: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(claude_live_apply_pending_path(profile_dir)) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+        Ok(_) => Err(
+            "Claude 재로그인 적용 복구 표식이 손상되어 안전하게 진행할 수 없습니다"
+                .into(),
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err("Claude 재로그인 적용 복구 상태를 확인할 수 없습니다".into()),
+    }
+}
+
+fn any_claude_live_apply_pending(env: &Env) -> Result<bool, String> {
+    let root = env.profiles_dir(Provider::Claude);
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err("Claude 재로그인 적용 복구 상태를 확인할 수 없습니다".into()),
+    };
+    for entry in entries {
+        let entry =
+            entry.map_err(|_| "Claude 재로그인 적용 복구 상태를 확인할 수 없습니다")?;
+        let file_type = entry
+            .file_type()
+            .map_err(|_| "Claude 재로그인 적용 복구 상태를 확인할 수 없습니다")?;
+        if file_type.is_symlink() {
+            return Err(
+                "Claude 프로필 폴더가 심볼릭 링크라 복구 상태를 안전하게 확인할 수 없습니다"
+                    .into(),
+            );
+        }
+        if file_type.is_dir() && claude_live_apply_pending(&entry.path())? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+pub(crate) fn mark_claude_live_apply_pending(profile_dir: &Path) -> Result<(), String> {
+    atomic_write(
+        &claude_live_apply_pending_path(profile_dir),
+        b"live-apply-pending-v1\n",
+    )
+    .map_err(|_| "Claude 새 로그인 정보를 안전하게 보호하지 못했습니다".to_string())
+}
+
+pub(crate) fn clear_claude_live_apply_pending(profile_dir: &Path) -> Result<(), String> {
+    let path = claude_live_apply_pending_path(profile_dir);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => return Err("Claude 재로그인 적용 복구 표식이 손상되었습니다".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            mark_claude_live_apply_pending(profile_dir)?;
+            return Err("Claude 재로그인 적용 복구 표식이 예상보다 먼저 사라졌습니다".into());
+        }
+        Err(_) => return Err("Claude 재로그인 적용 복구 표식을 확인할 수 없습니다".into()),
+    }
+    fs::remove_file(&path)
+        .map_err(|_| "Claude 재로그인 적용 복구 표식을 해제하지 못했습니다".to_string())?;
+    #[cfg(unix)]
+    if fs::File::open(profile_dir)
+        .and_then(|directory| directory.sync_all())
+        .is_err()
+    {
+        mark_claude_live_apply_pending(profile_dir)?;
+        return Err("Claude 재로그인 적용 복구 표식 해제를 디스크에 확정하지 못했습니다".into());
+    }
+    match claude_live_apply_pending(profile_dir) {
+        Ok(false) => Ok(()),
+        Ok(true) => Err("다른 Claude 재로그인 복구 작업이 감지되었습니다".into()),
+        Err(error) => Err(error),
+    }
+}
+
+fn claude_uses_keychain_store(env: &Env) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        matches!(&env.claude_live, ClaudeLiveStore::Keychain { .. })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = env;
+        false
+    }
+}
+
+/// 손상된 표식(디렉터리·심볼릭 링크)이나 메타데이터 오류도 정상 상태로 간주하지 않는다.
+fn claude_recovery_required(env: &Env) -> Result<bool, String> {
+    match fs::symlink_metadata(claude_recovery_marker_path(env)) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+        Ok(_) => Err("Claude 계정 전환 복구 표식이 손상되어 안전하게 진행할 수 없습니다".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err("Claude 계정 전환 복구 상태를 확인할 수 없습니다".into()),
+    }
+}
+
+fn sync_recovery_marker_parent(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let parent = path
+            .parent()
+            .ok_or_else(|| "Claude 복구 표식 상위 위치를 확인할 수 없습니다".to_string())?;
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| "Claude 복구 표식 위치를 디스크에 동기화하지 못했습니다".into())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
+fn mark_claude_recovery_required(path: &Path) -> Result<(), String> {
+    atomic_write(path, b"switch-recovery-v1\n")
+        .map_err(|_| "Claude 계정 전환 복구 상태를 안전하게 기록하지 못했습니다".to_string())?;
+    sync_recovery_marker_parent(path)
+}
+
+pub(crate) fn ensure_claude_recovery_not_required(
+    env: &Env,
+    provider: Provider,
+) -> Result<(), String> {
+    if provider == Provider::Claude
+        && (claude_recovery_required(env)? || any_claude_live_apply_pending(env)?)
+    {
+        return Err(
+            "Claude 계정 전환 복구가 필요합니다 — 사용량 조회·저장·내보내기를 중단했습니다. 보류된 프로필을 다시 선택하거나 같은 계정으로 재로그인하세요"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn clear_claude_recovery_marker(env: &Env) -> Result<(), String> {
+    let path = claude_recovery_marker_path(env);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Ok(_) => {
+            return Err("Claude 계정 전환 복구 표식이 손상되어 자동으로 해제할 수 없습니다".into())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // 성공 확인 전에 표식이 사라진 경우 다시 세워 일반 경로가 열리지 않게 한다.
+            mark_claude_recovery_required(&path)?;
+            return Err("Claude 계정 전환 복구 표식이 예상보다 먼저 사라졌습니다".into());
+        }
+        Err(_) => return Err("Claude 계정 전환 복구 표식을 확인할 수 없습니다".into()),
+    }
+    fs::remove_file(&path)
+        .map_err(|_| "Claude 계정 전환은 완료됐지만 복구 표식을 해제하지 못했습니다".to_string())?;
+    if sync_recovery_marker_parent(&path).is_err() {
+        // 삭제가 디렉터리에 영속화되지 않았으면 성공으로 열지 않는다. 표식을 다시
+        // 기록해 다음 시작에서도 recovery mode가 유지되도록 한다.
+        mark_claude_recovery_required(&path)?;
+        return Err("Claude 계정 전환 복구 표식 해제를 디스크에 확정하지 못했습니다".into());
+    }
+    match claude_recovery_required(env) {
+        Ok(false) => Ok(()),
+        Ok(true) => Err("다른 Claude 복구 작업이 감지되어 일반 접근을 계속 차단합니다".into()),
+        Err(error) => Err(error),
+    }
+}
+
 /// 활성 자격증명 읽기 — 코덱스는 항상 파일, 클로드는 저장소(파일/키체인)에 따른다.
 /// 키체인 모드에서 항목이 없으면 구버전 파일로 폴백한다 (키체인 미사용 환경 대응).
 pub(crate) fn read_live_cred(env: &Env, provider: Provider) -> Result<Vec<u8>, String> {
+    ensure_claude_recovery_not_required(env, provider)?;
+    let mut credential = read_live_cred_unchecked(env, provider)?;
+    if let Err(error) = ensure_claude_recovery_not_required(env, provider) {
+        credential.zeroize();
+        return Err(error);
+    }
+    Ok(credential)
+}
+
+fn read_live_cred_unchecked(env: &Env, provider: Provider) -> Result<Vec<u8>, String> {
     read_live_cred_raw(env, provider).map(normalize_cred)
 }
 
@@ -780,6 +1011,13 @@ fn credential_path_exists(path: &Path) -> Result<bool, String> {
 
 /// 활성 자격증명이 존재하는가 (전환·저장 가능 여부 판단)
 pub(crate) fn live_cred_exists(env: &Env, provider: Provider) -> Result<bool, String> {
+    ensure_claude_recovery_not_required(env, provider)?;
+    let exists = live_cred_exists_unchecked(env, provider)?;
+    ensure_claude_recovery_not_required(env, provider)?;
+    Ok(exists)
+}
+
+fn live_cred_exists_unchecked(env: &Env, provider: Provider) -> Result<bool, String> {
     match provider {
         Provider::Codex => credential_path_exists(&env.live_credential_path(Provider::Codex)),
         Provider::Claude => match &env.claude_live {
@@ -857,6 +1095,7 @@ enum ClaudeLiveSnapshot {
         keychain_data: Option<Zeroizing<Vec<u8>>>,
         legacy_file: PathBuf,
         legacy_data: Option<Zeroizing<Vec<u8>>>,
+        recovery_marker: PathBuf,
     },
 }
 
@@ -885,6 +1124,7 @@ fn snapshot_claude_live(env: &Env) -> Result<ClaudeLiveSnapshot, String> {
             keychain_data: keychain::read_item(service, account)?.map(Zeroizing::new),
             legacy_file: legacy_file.clone(),
             legacy_data: read_optional_secret(legacy_file)?,
+            recovery_marker: claude_recovery_marker_path(env),
         }),
     }
 }
@@ -968,6 +1208,7 @@ fn claude_live_matches_snapshot(snapshot: &ClaudeLiveSnapshot) -> Result<bool, S
             keychain_data,
             legacy_file,
             legacy_data,
+            ..
         } => {
             let current_keychain = keychain::read_item(service, account)?.map(Zeroizing::new);
             let current_legacy = read_optional_secret(legacy_file)?;
@@ -1020,37 +1261,54 @@ fn restore_claude_live_if_unchanged(
             keychain_data,
             legacy_file,
             legacy_data,
+            recovery_marker,
         } => {
             let current_keychain = keychain::read_item(service, account)?.map(Zeroizing::new);
             let current_legacy = read_optional_secret(legacy_file)?;
-            let both_still_applied_or_consumed = current_keychain
+            let keychain_still_applied = current_keychain
                 .as_deref()
-                .is_some_and(|current| credential_equivalent(current, applied_data))
-                && current_legacy
-                    .as_deref()
-                    .is_none_or(|current| credential_equivalent(current, applied_data));
-            if !both_still_applied_or_consumed {
+                .is_some_and(|current| credential_equivalent(current, applied_data));
+            let legacy_still_applied = current_legacy
+                .as_deref()
+                .is_some_and(|current| credential_equivalent(current, applied_data));
+
+            // 두 저장소가 모두 우리가 쓴 값이면 한 거래처럼 이전 스냅샷으로 되돌린다.
+            // 신형 Claude CLI가 전달용 파일을 이미 소비(삭제)한 경우도 동일한 거래다.
+            if keychain_still_applied && (legacy_still_applied || current_legacy.is_none()) {
+                match keychain_data {
+                    Some(data) => keychain::write_item(service, account, data)?,
+                    None => keychain::delete_item(service, account)?,
+                }
+                if let Err(legacy_error) =
+                    restore_optional_secret(legacy_file, legacy_data.as_ref())
+                {
+                    let compensation = keychain::write_item(
+                        service,
+                        account,
+                        current_keychain
+                            .as_deref()
+                            .expect("applied keychain was checked"),
+                    );
+                    return match compensation {
+                        Ok(()) => Err(legacy_error),
+                        Err(compensation_error) => Err(format!(
+                            "{legacy_error}; 키체인 원복 보상 실패: {compensation_error}"
+                        )),
+                    };
+                }
                 return Ok(());
             }
 
-            match keychain_data {
-                Some(data) => keychain::write_item(service, account, data)?,
-                None => keychain::delete_item(service, account)?,
-            }
-            if let Err(legacy_error) = restore_optional_secret(legacy_file, legacy_data.as_ref()) {
-                let compensation = keychain::write_item(
-                    service,
-                    account,
-                    current_keychain
-                        .as_deref()
-                        .expect("applied keychain was checked"),
+            // 한쪽만 우리가 쓴 값이면 다른 프로세스가 두 저장소 사이에서 로그인
+            // 상태를 바꾼 것이다. macOS 키체인과 일반 파일에는 값 기반 CAS가 없어
+            // 지금 삭제/복원하면 이 확인 직후 들어온 외부 값을 지울 수 있다.
+            // 어느 쪽도 건드리지 않고 사용자가 안정된 상태에서 재시도하게 한다.
+            if keychain_still_applied || legacy_still_applied {
+                mark_claude_recovery_required(recovery_marker)?;
+                return Err(
+                    "Claude 인증정보 원복 충돌: 외부 로그인 변경을 보존하기 위해 자동 원복을 중단했습니다 — Claude를 닫고 다시 시도하세요"
+                        .into(),
                 );
-                return match compensation {
-                    Ok(()) => Err(legacy_error),
-                    Err(compensation_error) => Err(format!(
-                        "{legacy_error}; 키체인 원복 보상 실패: {compensation_error}"
-                    )),
-                };
             }
             Ok(())
         }
@@ -1176,6 +1434,35 @@ fn expected_live_profile_matches(
     Ok(true)
 }
 
+fn expected_claude_apply_guard_matches(
+    env: &Env,
+    expected: &ClaudeApplyGuard,
+    recovery_mode: bool,
+) -> Result<bool, String> {
+    let credential_matches = match expected.credential.as_deref() {
+        Some(expected_credential) => {
+            let current = Zeroizing::new(if recovery_mode {
+                read_live_cred_unchecked(env, Provider::Claude)?
+            } else {
+                read_live_cred(env, Provider::Claude)?
+            });
+            credential_equivalent(&current, expected_credential)
+        }
+        None => {
+            let exists = if recovery_mode {
+                live_cred_exists_unchecked(env, Provider::Claude)?
+            } else {
+                live_cred_exists(env, Provider::Claude)?
+            };
+            !exists
+        }
+    };
+    if !credential_matches {
+        return Ok(false);
+    }
+    Ok(claude_oauth_block(env)? == expected.oauth_block)
+}
+
 fn apply_claude_profile_inner<B, A>(
     env: &Env,
     profile_dir: &Path,
@@ -1188,17 +1475,88 @@ where
     B: FnOnce(),
     A: FnOnce(),
 {
-    if !expected_live_profile_matches(env, Provider::Claude, expected_before)? {
+    apply_claude_profile_inner_mode(
+        env,
+        profile_dir,
+        data,
+        expected_before,
+        false,
+        false,
+        before_credential_write,
+        after_credential_write,
+    )
+}
+
+fn apply_claude_profile_inner_mode<B, A>(
+    env: &Env,
+    profile_dir: &Path,
+    data: &[u8],
+    expected_before: Option<&LiveProfileSnapshot>,
+    recovery_mode: bool,
+    journaled: bool,
+    before_credential_write: B,
+    after_credential_write: A,
+) -> Result<(), String>
+where
+    B: FnOnce(),
+    A: FnOnce(),
+{
+    let expected_guard = match expected_before {
+        Some(snapshot) => ClaudeApplyGuard::from_snapshot(snapshot),
+        None => capture_missing_claude_apply_guard(env, recovery_mode)?,
+    };
+    apply_claude_profile_inner_mode_guard(
+        env,
+        profile_dir,
+        data,
+        &expected_guard,
+        recovery_mode,
+        journaled,
+        before_credential_write,
+        after_credential_write,
+    )
+}
+
+fn apply_claude_profile_inner_mode_guard<B, A>(
+    env: &Env,
+    profile_dir: &Path,
+    data: &[u8],
+    expected_before: &ClaudeApplyGuard,
+    recovery_mode: bool,
+    journaled: bool,
+    before_credential_write: B,
+    after_credential_write: A,
+) -> Result<(), String>
+where
+    B: FnOnce(),
+    A: FnOnce(),
+{
+    let expected_matches = |env: &Env| {
+        expected_claude_apply_guard_matches(env, expected_before, recovery_mode)
+    };
+    if !expected_matches(env)? {
         return Err("Claude 로그인이 전환 중 외부에서 변경되었습니다".into());
     }
     let snapshot = snapshot_claude_live(env)?;
     let oauth = prepare_claude_oauth_apply(env, profile_dir)?;
+    let marker = claude_recovery_marker_path(env);
+    let mut journal_started = false;
     let applied = (|| {
         before_credential_write();
-        if !expected_live_profile_matches(env, Provider::Claude, expected_before)?
-            || !claude_live_matches_snapshot(&snapshot)?
-        {
+        if !expected_matches(env)? || !claude_live_matches_snapshot(&snapshot)? {
             return Err("Claude 로그인이 전환 중 외부에서 변경되었습니다".into());
+        }
+        // 준비·외부 변경 검사가 모두 끝난 뒤, 첫 활성 쓰기 직전에만 저널을
+        // 영속화한다. 이보다 앞선 실패는 활성 상태를 전혀 건드리지 않았으므로
+        // 다음 정상 전환에서 최신 토큰을 다시 백업할 수 있어야 한다.
+        if journaled {
+            mark_claude_recovery_required(&marker)?;
+            journal_started = true;
+            // marker 파일·부모 fsync 동안 외부 CLI 로그인이 끝날 수 있다. 실제
+            // Keychain 쓰기 직전에 한 번 더 확인해 그 큰 I/O 창을 닫는다.
+            if !expected_matches(env)? || !claude_live_matches_snapshot(&snapshot)? {
+                return Err("Claude 로그인이 전환 중 외부에서 변경되었습니다".into());
+            }
         }
         write_live_cred(env, Provider::Claude, data)?;
         after_credential_write();
@@ -1214,10 +1572,18 @@ where
     if let Err(apply_error) = applied {
         let oauth_restore = restore_prepared_claude_oauth_if_unchanged(&oauth);
         let credential_restore = restore_claude_live_if_unchanged(&snapshot, data);
-        let restore_errors = [oauth_restore.err(), credential_restore.err()]
+        let mut restore_errors = [oauth_restore.err(), credential_restore.err()]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
+        // 첫 활성 쓰기 직전 저널이 세워진 뒤에는 원복 성공 여부와 관계없이
+        // 표식을 유지한다. 외부 writer와의 값 기반 CAS가 없는 macOS 키체인에서
+        // 혼합 상태를 정상으로 오인하지 않게 하는 최종 fail-closed 관문이다.
+        if journal_started {
+            if let Err(marker_error) = mark_claude_recovery_required(&marker) {
+                restore_errors.push(marker_error);
+            }
+        }
         return if restore_errors.is_empty() {
             Err(apply_error)
         } else {
@@ -1227,7 +1593,11 @@ where
             ))
         };
     }
-    Ok(())
+    if journaled {
+        clear_claude_recovery_marker(env)
+    } else {
+        Ok(())
+    }
 }
 
 fn apply_claude_profile(
@@ -1237,6 +1607,79 @@ fn apply_claude_profile(
     expected_before: Option<&LiveProfileSnapshot>,
 ) -> Result<(), String> {
     apply_claude_profile_inner(env, profile_dir, data, expected_before, || {}, || {})
+}
+
+fn apply_claude_profile_recovery(
+    env: &Env,
+    profile_dir: &Path,
+    data: &[u8],
+    expected_before: Option<&LiveProfileSnapshot>,
+) -> Result<(), String> {
+    apply_claude_profile_inner_mode(
+        env,
+        profile_dir,
+        data,
+        expected_before,
+        true,
+        true,
+        || {},
+        || {},
+    )
+}
+
+fn apply_claude_profile_journaled(
+    env: &Env,
+    profile_dir: &Path,
+    data: &[u8],
+    expected_before: Option<&LiveProfileSnapshot>,
+) -> Result<(), String> {
+    apply_claude_profile_recovery(env, profile_dir, data, expected_before)
+}
+
+fn apply_claude_profile_journaled_guard(
+    env: &Env,
+    profile_dir: &Path,
+    data: &[u8],
+    expected_before: &ClaudeApplyGuard,
+) -> Result<(), String> {
+    apply_claude_profile_inner_mode_guard(
+        env,
+        profile_dir,
+        data,
+        expected_before,
+        true,
+        true,
+        || {},
+        || {},
+    )
+}
+
+/// 같은 활성 Claude 계정의 격리 재로그인 결과를 적용한다. 키체인 다중 저장소나
+/// 기존 recovery mode에서는 저널을 유지하고, 파일 단일 저장소에서도 전환과 같은
+/// expected guard·조건부 원복·적용 후 안정성 검사를 공유한다.
+pub(crate) fn apply_claude_live_update(
+    env: &Env,
+    profile_dir: &Path,
+    data: &[u8],
+    expected_before: &ClaudeApplyGuard,
+) -> Result<(), String> {
+    if claude_uses_keychain_store(env)
+        || claude_recovery_required(env)?
+        || claude_live_apply_pending(profile_dir)?
+    {
+        apply_claude_profile_journaled_guard(env, profile_dir, data, expected_before)
+    } else {
+        apply_claude_profile_inner_mode_guard(
+            env,
+            profile_dir,
+            data,
+            expected_before,
+            false,
+            false,
+            || {},
+            || {},
+        )
+    }
 }
 
 fn apply_codex_profile_inner<B, A>(
@@ -1400,10 +1843,77 @@ pub(crate) fn write_profile_parts(
     cred: &[u8],
     oauth_block: Option<&Value>,
 ) -> Result<(), String> {
+    write_profile_parts_mode(env, provider, name, ident, cred, oauth_block, false)
+}
+
+/// active relogin만 자기 pending sidecar가 있는 프로필을 새 로그인 결과로 갱신할
+/// 수 있다. 그 밖의 백업·Vault 경로는 보호된 fresh credential을 덮지 못한다.
+pub(crate) fn write_profile_parts_for_active_relogin(
+    env: &Env,
+    provider: Provider,
+    name: &str,
+    ident: &LiveIdentity,
+    cred: &[u8],
+    oauth_block: Option<&Value>,
+) -> Result<(), String> {
+    write_profile_parts_mode(env, provider, name, ident, cred, oauth_block, true)
+}
+
+/// active 재로그인용 sidecar보다 먼저 프로필 소유권을 영속화한다. 이 순서가
+/// 지켜져야 bundle 쓰기 중 crash가 나도 다른 계정이 같은 자동 이름을 차지해
+/// fresh credential을 덮지 못하고, 같은 계정의 다음 재로그인이 복구할 수 있다.
+pub(crate) fn ensure_claude_relogin_profile_identity(
+    env: &Env,
+    name: &str,
+    ident: &LiveIdentity,
+) -> Result<(), String> {
+    let dir = env.profiles_dir(Provider::Claude).join(name);
+    if crate::vault::profile_import_blocked(env, Provider::Claude, name) {
+        return Err("중단된 인증정보 가져오기를 복구한 뒤 다시 시도하세요".into());
+    }
+    if let Some(owner) = profile_owner_identity(&dir, Provider::Claude)? {
+        if owner.id != ident.id {
+            return Err(format!(
+                "'{name}'은 이미 다른 Claude 계정의 프로필입니다 — 다른 이름을 쓰세요"
+            ));
+        }
+    }
+    if read_meta_checked(&dir)?.is_some() {
+        return Ok(());
+    }
+    let meta = Meta {
+        id: ident.id.clone(),
+        email: ident.email.clone(),
+        saved_at: now(),
+        hide_email: false,
+    };
+    let bytes = serde_json::to_vec_pretty(&meta).map_err(|error| error.to_string())?;
+    atomic_write(&dir.join("meta.json"), &bytes)
+}
+
+fn write_profile_parts_mode(
+    env: &Env,
+    provider: Provider,
+    name: &str,
+    ident: &LiveIdentity,
+    cred: &[u8],
+    oauth_block: Option<&Value>,
+    allow_live_apply_pending: bool,
+) -> Result<(), String> {
     let dir = env.profiles_dir(provider).join(name);
     if crate::vault::profile_import_blocked(env, provider, name) {
         return Err("중단된 인증정보 가져오기를 복구한 뒤 다시 시도하세요".into());
     }
+    if provider == Provider::Claude
+        && !allow_live_apply_pending
+        && claude_live_apply_pending(&dir)?
+    {
+        return Err(
+            "새 Claude 로그인 정보의 활성 적용이 보류되어 이 프로필을 덮을 수 없습니다 — 이 프로필을 다시 선택하거나 같은 계정으로 재로그인하세요"
+                .into(),
+        );
+    }
+    ensure_name_not_owned_by_other(env, provider, name, ident)?;
     // 토큰 갱신·전환·재로그인은 표시 설정을 바꾸는 작업이 아니다. 기존 메타를
     // 먼저 읽어 둬 vault 가져오기로 지정한 이메일 숨김이 계속 유지되게 한다.
     let hide_email = read_meta(&dir).is_some_and(|meta| meta.hide_email);
@@ -1506,15 +2016,46 @@ pub(crate) fn write_new_marked_profile_bundle_to_dir(
     write_new_private_file(&dir.join("meta.json"), &bytes)
 }
 
-struct LiveProfileSnapshot {
+pub(crate) struct LiveProfileSnapshot {
     credential: Zeroizing<Vec<u8>>,
     oauth_block: Option<Value>,
     identity: Option<LiveIdentity>,
 }
 
+pub(crate) struct ClaudeApplyGuard {
+    credential: Option<Zeroizing<Vec<u8>>>,
+    oauth_block: Option<Value>,
+    identity: Option<LiveIdentity>,
+}
+
+impl ClaudeApplyGuard {
+    fn from_snapshot(snapshot: &LiveProfileSnapshot) -> Self {
+        Self {
+            credential: Some(Zeroizing::new(snapshot.credential.as_slice().to_vec())),
+            oauth_block: snapshot.oauth_block.clone(),
+            identity: snapshot.identity.clone(),
+        }
+    }
+
+    pub(crate) fn belongs_to(&self, id: &str) -> bool {
+        self.identity.as_ref().is_some_and(|identity| identity.id == id)
+    }
+}
+
 fn read_claude_profile_snapshot_once(env: &Env) -> Result<LiveProfileSnapshot, String> {
+    read_claude_profile_snapshot_once_mode(env, false)
+}
+
+fn read_claude_profile_snapshot_once_mode(
+    env: &Env,
+    recovery_mode: bool,
+) -> Result<LiveProfileSnapshot, String> {
     let oauth_before = claude_oauth_block(env)?;
-    let credential = Zeroizing::new(read_live_cred(env, Provider::Claude)?);
+    let credential = Zeroizing::new(if recovery_mode {
+        read_live_cred_unchecked(env, Provider::Claude)?
+    } else {
+        read_live_cred(env, Provider::Claude)?
+    });
     let oauth_after = claude_oauth_block(env)?;
     if oauth_before != oauth_after {
         return Err("Claude 로그인이 변경되는 중이라 현재 계정 저장을 중단했습니다".into());
@@ -1585,6 +2126,100 @@ fn capture_live_profile(env: &Env, provider: Provider) -> Result<LiveProfileSnap
     }
 }
 
+fn capture_claude_recovery_guard(env: &Env) -> Result<LiveProfileSnapshot, String> {
+    read_stable_claude_profile_snapshot_with(
+        || read_claude_profile_snapshot_once_mode(env, true),
+        || {
+            if !cfg!(test) {
+                std::thread::sleep(std::time::Duration::from_millis(120));
+            }
+        },
+    )
+}
+
+fn read_missing_claude_apply_guard_once(
+    env: &Env,
+    recovery_mode: bool,
+) -> Result<ClaudeApplyGuard, String> {
+    let oauth_before = claude_oauth_block(env)?;
+    let credential_exists = if recovery_mode {
+        live_cred_exists_unchecked(env, Provider::Claude)?
+    } else {
+        live_cred_exists(env, Provider::Claude)?
+    };
+    let oauth_after = claude_oauth_block(env)?;
+    if credential_exists || oauth_before != oauth_after {
+        return Err("Claude 로그인이 변경되는 중이라 적용을 중단했습니다".into());
+    }
+    let identity = oauth_after.as_ref().and_then(|oauth| {
+        identity_from_value(
+            Provider::Claude,
+            &serde_json::json!({ "oauthAccount": oauth }),
+        )
+    });
+    Ok(ClaudeApplyGuard {
+        credential: None,
+        oauth_block: oauth_after,
+        identity,
+    })
+}
+
+fn capture_missing_claude_apply_guard(
+    env: &Env,
+    recovery_mode: bool,
+) -> Result<ClaudeApplyGuard, String> {
+    let mut previous = read_missing_claude_apply_guard_once(env, recovery_mode)?;
+    let mut stable_intervals = 0usize;
+    for _ in 0..5 {
+        if !cfg!(test) {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+        }
+        let next = read_missing_claude_apply_guard_once(env, recovery_mode)?;
+        if previous.oauth_block == next.oauth_block {
+            stable_intervals += 1;
+            if stable_intervals >= 2 {
+                return Ok(next);
+            }
+        } else {
+            stable_intervals = 0;
+        }
+        previous = next;
+    }
+    Err("Claude 로그인이 변경되는 중이라 적용을 중단했습니다".into())
+}
+
+fn capture_claude_apply_guard(
+    env: &Env,
+    recovery_mode: bool,
+) -> Result<ClaudeApplyGuard, String> {
+    let credential_exists = if recovery_mode {
+        live_cred_exists_unchecked(env, Provider::Claude)?
+    } else {
+        live_cred_exists(env, Provider::Claude)?
+    };
+    if credential_exists {
+        let snapshot = if recovery_mode {
+            capture_claude_recovery_guard(env)?
+        } else {
+            capture_live_profile(env, Provider::Claude)?
+        };
+        Ok(ClaudeApplyGuard::from_snapshot(&snapshot))
+    } else {
+        capture_missing_claude_apply_guard(env, recovery_mode)
+    }
+}
+
+/// 격리 재로그인이 같은 활성 Claude 계정을 갱신하기 전에 잡는 optimistic guard.
+/// 이미 복구 표식이 있으면 일반 읽기는 의도적으로 막혀 있으므로, 사용자가 같은
+/// 계정으로 재로그인해 수렴시킬 수 있도록 unchecked 안정 스냅숏을 사용한다.
+pub(crate) fn capture_claude_live_update_guard(
+    env: &Env,
+) -> Result<ClaudeApplyGuard, String> {
+    let recovery_mode =
+        claude_recovery_required(env)? || any_claude_live_apply_pending(env)?;
+    capture_claude_apply_guard(env, recovery_mode)
+}
+
 /// 한 번에 읽은 활성 계정 스냅숏을 지정 이름의 프로필로 저장한다 (덮어쓰기 허용).
 fn write_profile_snapshot(
     env: &Env,
@@ -1614,18 +2249,40 @@ pub(crate) fn ensure_name_not_owned_by_other(
     if crate::vault::profile_import_blocked(env, provider, name) {
         return Err("중단된 인증정보 가져오기를 복구한 뒤 다시 시도하세요".into());
     }
-    if let Some(meta) = read_meta(&dir) {
-        if meta.id != ident.id {
-            if meta.hide_email {
+    let metadata = match fs::symlink_metadata(&dir) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "프로필 소유권 확인 실패 {}: {error}",
+                dir.display()
+            ))
+        }
+    };
+    if let Some(metadata) = metadata.as_ref() {
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+            return Err(format!(
+                "'{name}' 프로필 경로가 안전한 폴더가 아니라 덮어쓸 수 없습니다"
+            ));
+        }
+    }
+    if let Some(owner) = profile_owner_identity(&dir, provider)? {
+        if owner.id != ident.id {
+            let hidden = read_meta_checked(&dir)?.is_some_and(|meta| meta.hide_email);
+            if hidden {
                 return Err(format!(
                     "'{name}'은 이미 다른 계정의 프로필입니다 — 다른 이름을 쓰세요"
                 ));
             }
-            let owner = meta.email.unwrap_or(meta.id);
+            let owner = owner.email.unwrap_or(owner.id);
             return Err(format!(
                 "'{name}'은 이미 다른 계정({owner})의 프로필입니다 — 다른 이름을 쓰세요"
             ));
         }
+    } else if metadata.is_some() {
+        return Err(format!(
+            "'{name}' 프로필의 소유 계정을 확인할 수 없어 덮어쓸 수 없습니다"
+        ));
     }
     Ok(())
 }
@@ -1634,6 +2291,76 @@ pub(crate) fn read_meta(dir: &Path) -> Option<Meta> {
     let path = dir.join("meta.json");
     let text = fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+fn read_meta_checked(dir: &Path) -> Result<Option<Meta>, String> {
+    let path = dir.join("meta.json");
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_file() => {
+            let bytes = fs::read(&path)
+                .map_err(|error| format!("프로필 정보 읽기 실패 {}: {error}", path.display()))?;
+            serde_json::from_slice(&bytes)
+                .map(Some)
+                .map_err(|error| format!("프로필 정보 형식 오류 {}: {error}", path.display()))
+        }
+        Ok(_) => Err(format!(
+            "프로필 정보 경로가 안전한 파일이 아닙니다: {}",
+            path.display()
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "프로필 정보 확인 실패 {}: {error}",
+            path.display()
+        )),
+    }
+}
+
+/// meta가 아직 쓰이지 않은 중단 프로필도 oauthAccount를 소유권 증거로 사용한다.
+/// pending인데 어느 쪽으로도 계정을 식별하지 못하면 덮어쓰기보다 실패를 택한다.
+fn profile_owner_identity(
+    dir: &Path,
+    provider: Provider,
+) -> Result<Option<LiveIdentity>, String> {
+    if let Some(meta) = read_meta_checked(dir)? {
+        return Ok(Some(LiveIdentity {
+            id: meta.id,
+            email: meta.email,
+        }));
+    }
+    if provider != Provider::Claude {
+        return Ok(None);
+    }
+    let pending = claude_live_apply_pending(dir)?;
+    let oauth_path = dir.join("oauth_account.json");
+    let oauth = match fs::symlink_metadata(&oauth_path) {
+        Ok(metadata) if metadata.file_type().is_file() => Some(read_json(&oauth_path)?),
+        Ok(_) => {
+            return Err(format!(
+                "Claude 프로필 계정 정보 경로가 안전한 파일이 아닙니다: {}",
+                oauth_path.display()
+            ))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "Claude 프로필 계정 정보 확인 실패 {}: {error}",
+                oauth_path.display()
+            ))
+        }
+    };
+    let owner = oauth.as_ref().and_then(|oauth| {
+        identity_from_value(
+            Provider::Claude,
+            &serde_json::json!({ "oauthAccount": oauth }),
+        )
+    });
+    if pending && owner.is_none() {
+        return Err(
+            "보류된 Claude 프로필의 소유 계정을 확인할 수 없어 안전하게 복구할 수 없습니다"
+                .into(),
+        );
+    }
+    Ok(owner)
 }
 
 pub(crate) fn profile_dirs(
@@ -1646,10 +2373,20 @@ pub(crate) fn profile_dirs(
     }
     let mut out = Vec::new();
     let entries = fs::read_dir(&root).map_err(|e| format!("읽기 실패 {}: {e}", root.display()))?;
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("프로필 목록 읽기 실패: {error}"))?;
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if path.is_dir() && !crate::vault::profile_import_blocked(env, provider, &name) {
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("프로필 경로 확인 실패 {}: {error}", path.display()))?;
+        if file_type.is_symlink() {
+            return Err(format!(
+                "프로필 폴더가 심볼릭 링크라 안전하게 열 수 없습니다: {}",
+                path.display()
+            ));
+        }
+        if file_type.is_dir() && !crate::vault::profile_import_blocked(env, provider, &name) {
             out.push((name, path));
         }
     }
@@ -1663,8 +2400,8 @@ pub(crate) fn find_profile_by_id(
     id: &str,
 ) -> Result<Option<String>, String> {
     for (name, dir) in profile_dirs(env, provider)? {
-        if let Some(meta) = read_meta(&dir) {
-            if meta.id == id {
+        if let Some(owner) = profile_owner_identity(&dir, provider)? {
+            if owner.id == id {
                 return Ok(Some(name));
             }
         }
@@ -1707,10 +2444,13 @@ pub(crate) fn auto_name(env: &Env, provider: Provider, ident: &LiveIdentity) -> 
     let mut candidate = base.clone();
     let mut n = 1;
     loop {
-        match read_meta(&env.profiles_dir(provider).join(&candidate)) {
-            None => return candidate,                              // 빈 이름
-            Some(meta) if meta.id == ident.id => return candidate, // 이미 이 계정의 프로필
-            Some(_) => {
+        let candidate_dir = env.profiles_dir(provider).join(&candidate);
+        match fs::symlink_metadata(&candidate_dir) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return candidate,
+            Ok(_) if read_meta(&candidate_dir).is_some_and(|meta| meta.id == ident.id) => {
+                return candidate;
+            }
+            Ok(_) | Err(_) => {
                 n += 1;
                 if n > 99 {
                     return format!("account-{}", now());
@@ -1719,13 +2459,6 @@ pub(crate) fn auto_name(env: &Env, provider: Provider, ident: &LiveIdentity) -> 
             }
         }
     }
-}
-
-/// 대상 프로필의 oauth_account.json을 ~/.claude.json에 반영한다.
-/// 실행 중인 클로드 세션과의 쓰기 경합 창을 줄이기 위해 반영 직전에 새로 읽는다.
-pub(crate) fn claude_apply_oauth_block(env: &Env, profile_dir: &Path) -> Result<(), String> {
-    let prepared = prepare_claude_oauth_apply(env, profile_dir)?;
-    apply_prepared_claude_oauth(&prepared)
 }
 
 /// 현재 로그인 계정을 이름 붙여 프로필로 저장.
@@ -1773,13 +2506,26 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
     )?;
     let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     let profile_dir = env.profiles_dir(provider).join(name);
+    let live_apply_pending =
+        provider == Provider::Claude && claude_live_apply_pending(&profile_dir)?;
+    let root_recovery = provider == Provider::Claude && claude_recovery_required(env)?;
+    if provider == Provider::Claude
+        && any_claude_live_apply_pending(env)?
+        && !live_apply_pending
+    {
+        return Err(
+            "새 Claude 로그인 정보의 활성 적용이 보류되어 있습니다 — 보류된 프로필을 선택하거나 같은 계정으로 재로그인하세요"
+                .into(),
+        );
+    }
+    let recovery_mode = root_recovery || live_apply_pending;
     if crate::vault::profile_import_blocked(env, provider, name) {
         return Err("가져오기가 완료되지 않은 프로필이라 전환할 수 없습니다".into());
     }
     let target_cred = profile_dir.join(provider.credential_file_name());
     // 직전 갱신의 본 파일 쓰기/활성 복구가 실패해 pending이 남았으면, 구토큰을
     // 활성 위치로 복사하기 전에 반드시 복구한다.
-    crate::usage::rescue_pending_profile_locked(env, provider, name)?;
+    crate::usage::rescue_pending_profile_locked(env, provider, name, !recovery_mode)?;
     if !target_cred.exists() {
         return Err(format!("프로필 '{name}'에 저장된 토큰이 없습니다"));
     }
@@ -1789,6 +2535,26 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
         return Err(format!(
             "프로필 '{name}'에는 계정 정보가 없어 전환할 수 없습니다 (구조용 백업) — 해당 계정으로 CLI 로그인 후 다시 저장하세요"
         ));
+    }
+
+    if recovery_mode {
+        // 혼합 상태는 어떤 계정의 최신 상태인지 증명할 수 없으므로 절대 프로필에
+        // 백업하지 않는다. 현재 상태는 외부 변경 감지용 optimistic guard로만 읽고,
+        // 사용자가 고른 완전한 프로필을 세 활성 저장소에 다시 적용해 수렴시킨다.
+        let recovery_guard = capture_claude_apply_guard(env, true)?;
+        let data = Zeroizing::new(normalize_cred(
+            fs::read(&target_cred)
+                .map_err(|e| format!("읽기 실패 {}: {e}", target_cred.display()))?,
+        ));
+        apply_claude_profile_journaled_guard(env, &profile_dir, &data, &recovery_guard)?;
+        if live_apply_pending {
+            clear_claude_live_apply_pending(&profile_dir)?;
+        }
+        crate::usage::clear_profile_backoff(env, provider, name);
+        return Ok(SwitchResult {
+            backed_up_to: None,
+            switched_to: name.to_string(),
+        });
     }
 
     // 1) 백업 — 현재 활성 계정을 자기 프로필(없으면 자동 생성)에 저장
@@ -1821,12 +2587,21 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
     };
 
     // 2) 대상 프로필을 활성 위치로 복사
-    let data = Zeroizing::new(
-        fs::read(&target_cred)
-            .map_err(|e| format!("읽기 실패 {}: {e}", target_cred.display()))?,
-    );
+    let data =
+        fs::read(&target_cred).map_err(|e| format!("읽기 실패 {}: {e}", target_cred.display()))?;
+    let data = Zeroizing::new(if provider == Provider::Claude {
+        normalize_cred(data)
+    } else {
+        data
+    });
     if provider == Provider::Claude {
-        apply_claude_profile(env, &profile_dir, &data, live_snapshot.as_ref())?;
+        if claude_uses_keychain_store(env) {
+            // 이 표식이 macOS 다중 저장소 전환의 작은 transaction journal이다.
+            // 기록에 실패하면 첫 자격증명 쓰기 전에 중단하고, 성공한 전환만 해제한다.
+            apply_claude_profile_journaled(env, &profile_dir, &data, live_snapshot.as_ref())?;
+        } else {
+            apply_claude_profile(env, &profile_dir, &data, live_snapshot.as_ref())?;
+        }
     } else {
         apply_codex_profile(env, &data, live_snapshot.as_ref())?;
     }
@@ -1843,8 +2618,13 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
 /// 프로필 목록 + 현재 로그인 계정 상태
 pub fn list(env: &Env, provider: Provider) -> Result<Snapshot, String> {
     // 표시용 목록은 신원 읽기가 일시적으로 실패해도 화면 전체를 깨뜨리지 않는다
-    // (전환·저장 경로는 여전히 엄격하게 실패한다)
-    let mut live = live_identity(env, provider).unwrap_or(None);
+    // (전환·저장 경로는 여전히 엄격하게 실패한다). 단, 복구 중인 Claude의
+    // oauthAccount는 혼합 상태의 일부라 활성 계정 판정에 쓰지 않는다. 프로필은
+    // 계속 보여 사용자가 복구 대상을 직접 선택할 수 있게 한다.
+    let mut live = match ensure_claude_recovery_not_required(env, provider) {
+        Ok(()) => live_identity(env, provider).unwrap_or(None),
+        Err(_) => None,
+    };
     let live_id = live.as_ref().map(|l| l.id.clone());
     let mut profiles = Vec::new();
     for (name, dir) in profile_dirs(env, provider)? {
@@ -1895,6 +2675,12 @@ pub fn delete(env: &Env, provider: Provider, name: &str) -> Result<(), String> {
     }
     if crate::vault::profile_import_blocked(env, provider, name) {
         return Err("가져오기가 완료되지 않은 프로필이라 삭제할 수 없습니다".into());
+    }
+    if provider == Provider::Claude && claude_live_apply_pending(&dir)? {
+        return Err(
+            "새 Claude 로그인 정보의 활성 적용이 보류된 프로필은 삭제할 수 없습니다 — 먼저 이 프로필을 선택해 복구하세요"
+                .into(),
+        );
     }
     // 삭제 전에 계정 id를 붙잡아 둔다 — 사용량 캐시 정리(잔존 항목 무기한 축적 방지)용
     let meta_id = read_meta(&dir).map(|m| m.id);
@@ -1977,6 +2763,15 @@ mod tests {
         fs::read_to_string(env.live_credential_path(Provider::Claude)).unwrap()
     }
 
+    fn profile_bundle_bytes(env: &Env, name: &str) -> [Vec<u8>; 3] {
+        let dir = env.profiles_dir(Provider::Claude).join(name);
+        [
+            fs::read(dir.join("credentials.json")).unwrap(),
+            fs::read(dir.join("oauth_account.json")).unwrap(),
+            fs::read(dir.join("meta.json")).unwrap(),
+        ]
+    }
+
     #[test]
     fn credential_presence_errors_do_not_become_logged_out() {
         let mut env = test_env("credential-presence-error");
@@ -2050,6 +2845,33 @@ mod tests {
     }
 
     #[test]
+    fn claude_switch_normalizes_existing_hex_profile_before_live_write() {
+        let env = test_env("switch-existing-hex-profile");
+        login_claude(&env, "uuid-b", "bob@test.dev", "tok-b1");
+        save_current(&env, Provider::Claude, "second").unwrap();
+        let target_path = env
+            .profiles_dir(Provider::Claude)
+            .join("second")
+            .join("credentials.json");
+        let target_raw = fs::read(&target_path).unwrap();
+        let target_hex = target_raw
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        fs::write(&target_path, target_hex).unwrap();
+
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a1");
+        save_current(&env, Provider::Claude, "main").unwrap();
+        switch(&env, Provider::Claude, "second").unwrap();
+
+        assert_eq!(
+            fs::read(env.live_credential_path(Provider::Claude)).unwrap(),
+            target_raw,
+            "기존 hex 프로필도 활성 위치에는 raw JSON으로 써야 한다"
+        );
+    }
+
+    #[test]
     fn claude_switch_rolls_back_live_credential_when_oauth_apply_fails() {
         let env = test_env("switch-oauth-rollback");
         login_claude(&env, "uuid-b", "bob@test.dev", "tok-b1");
@@ -2104,7 +2926,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_claude_switch_restores_keychain_and_legacy_file_on_apply_failure() {
+    fn macos_claude_switch_does_not_enter_recovery_on_prewrite_failure() {
         let mut env = test_env("switch-macos-keychain-rollback");
         login_claude(&env, "uuid-b", "bob@test.dev", "tok-b1");
         save_current(&env, Provider::Claude, "second").unwrap();
@@ -2137,6 +2959,14 @@ mod tests {
 
         assert!(switch(&env, Provider::Claude, "second").is_err());
 
+        assert!(
+            !claude_recovery_marker_path(&env).exists(),
+            "첫 활성 쓰기 전 준비 실패는 정상 상태를 복구 모드로 오인하면 안 된다"
+        );
+        assert_eq!(
+            read_live_cred(&env, Provider::Claude).unwrap(),
+            keychain_before
+        );
         assert_eq!(
             keychain::read_item(&service, &account).unwrap().unwrap(),
             keychain_before
@@ -2154,7 +2984,51 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn macos_claude_rollback_is_normalized_and_all_or_nothing() {
+    fn macos_normal_switch_uses_and_clears_recovery_journal() {
+        let mut env = test_env("switch-macos-journal-success");
+        login_claude(&env, "uuid-b", "bob@test.dev", "tok-b");
+        save_current(&env, Provider::Claude, "second").unwrap();
+        let target = fs::read(
+            env.profiles_dir(Provider::Claude)
+                .join("second")
+                .join("credentials.json"),
+        )
+        .unwrap();
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a");
+        save_current(&env, Provider::Claude, "main").unwrap();
+
+        let service = format!("switcher-switch-journal-success-{}", std::process::id());
+        let account = keychain::username();
+        let _guard = MacKeychainGuard {
+            service: service.clone(),
+            account: account.clone(),
+        };
+        let legacy_file = env.live_credential_path(Provider::Claude);
+        keychain::write_item(&service, &account, &fs::read(&legacy_file).unwrap()).unwrap();
+        env.claude_live = ClaudeLiveStore::Keychain {
+            service: service.clone(),
+            account: account.clone(),
+            legacy_file: legacy_file.clone(),
+        };
+
+        let result = switch(&env, Provider::Claude, "second").unwrap();
+
+        assert_eq!(result.backed_up_to.as_deref(), Some("main"));
+        assert!(!claude_recovery_marker_path(&env).exists());
+        assert_eq!(
+            keychain::read_item(&service, &account).unwrap().unwrap(),
+            target
+        );
+        assert_eq!(fs::read(&legacy_file).unwrap(), target);
+        assert_eq!(
+            read_json(&env.claude_json_path()).unwrap()["oauthAccount"]["accountUuid"],
+            "uuid-b"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_claude_rollback_normalizes_and_fails_closed_on_mixed_changes() {
         let mut env = test_env("switch-macos-keychain-atomic-rollback");
         let service = format!("switcher-switch-atomic-{}", std::process::id());
         let account = keychain::username();
@@ -2200,12 +3074,449 @@ mod tests {
         write_live_cred(&env, Provider::Claude, applied).unwrap();
         let external = br#"{"claudeAiOauth":{"accessToken":"external"}}"#;
         keychain::write_item(&service, &account, external).unwrap();
-        restore_claude_live_if_unchanged(&snapshot, applied).unwrap();
+        let error = restore_claude_live_if_unchanged(&snapshot, applied).unwrap_err();
+        assert!(error.contains("원복 충돌"));
+        assert!(error.contains("다시 시도"));
         assert_eq!(
             keychain::read_item(&service, &account).unwrap().unwrap(),
             external
         );
         assert_eq!(fs::read(&legacy_file).unwrap(), applied);
+
+        // 키체인이 외부에서 삭제됐어도 확인 뒤 파일을 지우는 동안 다른 writer가
+        // 새 값을 넣을 수 있다. stale 가능성을 알리되 파일 자체는 보존한다.
+        write_live_cred(&env, Provider::Claude, applied).unwrap();
+        keychain::delete_item(&service, &account).unwrap();
+        let error = restore_claude_live_if_unchanged(&snapshot, applied).unwrap_err();
+        assert!(error.contains("원복 충돌"));
+        assert!(keychain::read_item(&service, &account).unwrap().is_none());
+        assert_eq!(fs::read(&legacy_file).unwrap(), applied);
+
+        // 반대로 파일만 외부에서 바뀐 경우도 CAS 없는 키체인을 삭제하지 않는다.
+        write_live_cred(&env, Provider::Claude, applied).unwrap();
+        let external_file = br#"{"claudeAiOauth":{"accessToken":"external-file"}}"#;
+        fs::write(&legacy_file, external_file).unwrap();
+        let error = restore_claude_live_if_unchanged(&snapshot, applied).unwrap_err();
+        assert!(error.contains("원복 충돌"));
+        assert_eq!(
+            keychain::read_item(&service, &account).unwrap().unwrap(),
+            applied
+        );
+        assert_eq!(fs::read(&legacy_file).unwrap(), external_file);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_mixed_rollback_marker_blocks_reads_and_switch_retry_converges_without_backup() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut env = test_env("switch-macos-persistent-recovery");
+        login_claude(&env, "uuid-b", "bob@test.dev", "tok-b");
+        save_current(&env, Provider::Claude, "second").unwrap();
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a");
+        save_current(&env, Provider::Claude, "main").unwrap();
+
+        let main_before = profile_bundle_bytes(&env, "main");
+        let second_before = profile_bundle_bytes(&env, "second");
+
+        let service = format!("switcher-switch-recovery-{}", std::process::id());
+        let account = keychain::username();
+        let _guard = MacKeychainGuard {
+            service: service.clone(),
+            account: account.clone(),
+        };
+        let legacy_file = env.live_credential_path(Provider::Claude);
+        let active_a = fs::read(&legacy_file).unwrap();
+        keychain::write_item(&service, &account, &active_a).unwrap();
+        env.claude_live = ClaudeLiveStore::Keychain {
+            service: service.clone(),
+            account: account.clone(),
+            legacy_file: legacy_file.clone(),
+        };
+
+        let live_before_apply = snapshot_claude_live(&env).unwrap();
+        let target_b = fs::read(
+            env.profiles_dir(Provider::Claude)
+                .join("second")
+                .join("credentials.json"),
+        )
+        .unwrap();
+        write_live_cred(&env, Provider::Claude, &target_b).unwrap();
+        // keychain=A, legacy=B가 되어 원복 conflict를 재현한다.
+        keychain::write_item(&service, &account, &active_a).unwrap();
+        let error = restore_claude_live_if_unchanged(&live_before_apply, &target_b).unwrap_err();
+        assert!(error.contains("원복 충돌"));
+
+        let marker = claude_recovery_marker_path(&env);
+        assert_eq!(fs::read(&marker).unwrap(), b"switch-recovery-v1\n");
+        assert_eq!(
+            fs::metadata(&marker).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        // 새 프로세스가 같은 홈·store를 연 것처럼 Env를 다시 만들어도 차단은 유지된다.
+        let restarted = Env {
+            home: env.home.clone(),
+            store: env.store.clone(),
+            claude_live: ClaudeLiveStore::Keychain {
+                service: service.clone(),
+                account: account.clone(),
+                legacy_file: legacy_file.clone(),
+            },
+        };
+        assert!(claude_recovery_required(&restarted).unwrap());
+        let read_error = read_live_cred(&restarted, Provider::Claude).unwrap_err();
+        assert!(read_error.contains("복구가 필요"));
+        assert!(live_cred_exists(&restarted, Provider::Claude).is_err());
+        assert!(save_current(&restarted, Provider::Claude, "must-not-save").is_err());
+        assert!(!restarted
+            .profiles_dir(Provider::Claude)
+            .join("must-not-save")
+            .exists());
+
+        let result = switch(&restarted, Provider::Claude, "second").unwrap();
+        assert_eq!(result.backed_up_to, None);
+        assert!(!marker.exists());
+        assert!(!claude_recovery_required(&restarted).unwrap());
+        assert_eq!(
+            keychain::read_item(&service, &account).unwrap().unwrap(),
+            target_b
+        );
+        assert_eq!(fs::read(&legacy_file).unwrap(), target_b);
+        assert_eq!(
+            read_json(&restarted.claude_json_path()).unwrap()["oauthAccount"]["accountUuid"],
+            "uuid-b"
+        );
+        assert_eq!(profile_bundle_bytes(&restarted, "main"), main_before);
+        assert_eq!(profile_bundle_bytes(&restarted, "second"), second_before);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_recovery_marker_can_apply_target_when_all_live_credentials_are_missing() {
+        let mut env = test_env("switch-macos-recovery-from-empty");
+        login_claude(&env, "uuid-b", "bob@test.dev", "tok-b");
+        save_current(&env, Provider::Claude, "second").unwrap();
+        let target = fs::read(
+            env.profiles_dir(Provider::Claude)
+                .join("second")
+                .join("credentials.json"),
+        )
+        .unwrap();
+
+        let service = format!("switcher-switch-recovery-empty-{}", std::process::id());
+        let account = keychain::username();
+        let _guard = MacKeychainGuard {
+            service: service.clone(),
+            account: account.clone(),
+        };
+        let legacy_file = env.live_credential_path(Provider::Claude);
+        let _ = fs::remove_file(&legacy_file);
+        keychain::delete_item(&service, &account).unwrap();
+        env.claude_live = ClaudeLiveStore::Keychain {
+            service: service.clone(),
+            account: account.clone(),
+            legacy_file: legacy_file.clone(),
+        };
+        mark_claude_recovery_required(&claude_recovery_marker_path(&env)).unwrap();
+
+        let result = switch(&env, Provider::Claude, "second").unwrap();
+
+        assert_eq!(result.backed_up_to, None);
+        assert!(!claude_recovery_required(&env).unwrap());
+        assert_eq!(
+            keychain::read_item(&service, &account).unwrap().unwrap(),
+            target
+        );
+        assert_eq!(fs::read(&legacy_file).unwrap(), target);
+    }
+
+    #[test]
+    fn missing_recovery_marker_during_clear_is_recreated_fail_closed() {
+        let env = test_env("recovery-marker-clear-missing");
+        let error = clear_claude_recovery_marker(&env).unwrap_err();
+
+        assert!(error.contains("예상보다 먼저 사라졌습니다"));
+        assert!(claude_recovery_required(&env).unwrap());
+        assert!(read_live_cred(&env, Provider::Claude).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_claude_profile_cannot_hide_a_pending_recovery_marker() {
+        use std::os::unix::fs::symlink;
+
+        let env = test_env("pending-profile-symlink");
+        let outside = env.home.join("outside-pending-profile");
+        fs::create_dir_all(&outside).unwrap();
+        mark_claude_live_apply_pending(&outside).unwrap();
+        let profiles = env.profiles_dir(Provider::Claude);
+        fs::create_dir_all(&profiles).unwrap();
+        symlink(&outside, profiles.join("linked")).unwrap();
+
+        let gate = ensure_claude_recovery_not_required(&env, Provider::Claude).unwrap_err();
+        assert!(gate.contains("심볼릭 링크"));
+        let listing = profile_dirs(&env, Provider::Claude).unwrap_err();
+        assert!(listing.contains("심볼릭 링크"));
+    }
+
+    #[test]
+    fn recovery_switch_merges_pending_target_without_reading_blocked_live_state() {
+        let env = test_env("recovery-marker-pending-target");
+        login_claude(&env, "uuid-b", "bob@test.dev", "old-a");
+        let old = br#"{"claudeAiOauth":{"accessToken":"old-a","refreshToken":"r-old","expiresAt":1000}}"#;
+        fs::write(env.live_credential_path(Provider::Claude), old).unwrap();
+        save_current(&env, Provider::Claude, "second").unwrap();
+
+        let target = env
+            .profiles_dir(Provider::Claude)
+            .join("second")
+            .join("credentials.json");
+        let pending = serde_json::json!({
+            "old_refresh": "r-old",
+            "response": {
+                "access_token": "new-a",
+                "refresh_token": "r-new",
+                "expires_in": 28_800
+            },
+            "saved_at": now()
+        });
+        fs::write(
+            crate::usage::pending_path(&target),
+            serde_json::to_vec(&pending).unwrap(),
+        )
+        .unwrap();
+        mark_claude_recovery_required(&claude_recovery_marker_path(&env)).unwrap();
+
+        // 혼합 상태의 oauthAccount를 자동 전환의 활성 판정에 쓰면 안 되지만,
+        // 사용자가 복구 대상을 고를 수 있도록 저장 프로필은 계속 보여야 한다.
+        let recovering = list(&env, Provider::Claude).unwrap();
+        assert!(recovering.live.is_none());
+        assert!(recovering.profiles.iter().all(|profile| !profile.active));
+        assert_eq!(recovering.profiles.len(), 1);
+
+        let result = switch(&env, Provider::Claude, "second").unwrap();
+
+        assert_eq!(result.backed_up_to, None);
+        assert!(!claude_recovery_marker_path(&env).exists());
+        assert!(!crate::usage::pending_path(&target).exists());
+        let profile = read_json(&target).unwrap();
+        let live: Value = serde_json::from_slice(
+            &read_live_cred(&env, Provider::Claude).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(profile.pointer("/claudeAiOauth/accessToken").unwrap(), "new-a");
+        assert_eq!(profile.pointer("/claudeAiOauth/refreshToken").unwrap(), "r-new");
+        assert_eq!(live.pointer("/claudeAiOauth/accessToken").unwrap(), "new-a");
+        assert_eq!(live.pointer("/claudeAiOauth/refreshToken").unwrap(), "r-new");
+    }
+
+    #[test]
+    fn recovery_marker_preflight_failure_never_starts_live_apply() {
+        let env = test_env("recovery-marker-preflight-failure");
+        login_claude(&env, "uuid-b", "bob@test.dev", "tok-b");
+        save_current(&env, Provider::Claude, "second").unwrap();
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a");
+        let expected = capture_live_profile(&env, Provider::Claude).unwrap();
+        let profile_dir = env.profiles_dir(Provider::Claude).join("second");
+        let target = fs::read(profile_dir.join("credentials.json")).unwrap();
+        let credential_before = fs::read(env.live_credential_path(Provider::Claude)).unwrap();
+        let oauth_before = fs::read(env.claude_json_path()).unwrap();
+        fs::create_dir_all(claude_recovery_marker_path(&env)).unwrap();
+
+        let error = apply_claude_profile_journaled(&env, &profile_dir, &target, Some(&expected))
+            .unwrap_err();
+
+        assert!(error.contains("안전하게 기록하지 못했습니다"));
+        assert!(!error.contains(&env.store.display().to_string()));
+        assert_eq!(
+            fs::read(env.live_credential_path(Provider::Claude)).unwrap(),
+            credential_before
+        );
+        assert_eq!(fs::read(env.claude_json_path()).unwrap(), oauth_before);
+        assert!(claude_recovery_marker_path(&env).is_dir());
+    }
+
+    #[test]
+    fn journal_is_not_created_when_final_external_change_guard_fails() {
+        let env = test_env("recovery-journal-after-final-guard");
+        login_claude(&env, "uuid-b", "bob@test.dev", "tok-b");
+        save_current(&env, Provider::Claude, "second").unwrap();
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a");
+        let expected = capture_live_profile(&env, Provider::Claude).unwrap();
+        let profile_dir = env.profiles_dir(Provider::Claude).join("second");
+        let target = fs::read(profile_dir.join("credentials.json")).unwrap();
+
+        let error = apply_claude_profile_inner_mode(
+            &env,
+            &profile_dir,
+            &target,
+            Some(&expected),
+            true,
+            true,
+            || login_claude(&env, "uuid-c", "carol@test.dev", "tok-c"),
+            || {},
+        )
+        .unwrap_err();
+
+        assert!(error.contains("외부에서 변경되었습니다"));
+        assert!(live_token(&env).contains("tok-c"));
+        assert_eq!(
+            read_json(&env.claude_json_path()).unwrap()["oauthAccount"]["accountUuid"],
+            "uuid-c"
+        );
+        assert!(
+            !claude_recovery_marker_path(&env).exists(),
+            "첫 활성 쓰기 전 guard 실패는 복구 표식을 남기면 안 된다"
+        );
+    }
+
+    #[test]
+    fn active_claude_relogin_preserves_external_login_after_guard_snapshot() {
+        let env = test_env("active-relogin-external-login");
+        login_claude(&env, "uuid-a", "alice@test.dev", "old-a");
+        let expected = capture_claude_live_update_guard(&env).unwrap();
+        let ident = LiveIdentity {
+            id: "uuid-a".into(),
+            email: Some("alice@test.dev".into()),
+        };
+        let fresh = br#"{"claudeAiOauth":{"accessToken":"fresh-a"}}"#;
+        let oauth = serde_json::json!({
+            "accountUuid": "uuid-a",
+            "emailAddress": "alice@test.dev"
+        });
+        let profile_dir = env.profiles_dir(Provider::Claude).join("alice");
+        ensure_claude_relogin_profile_identity(&env, "alice", &ident).unwrap();
+        mark_claude_live_apply_pending(&profile_dir).unwrap();
+        write_profile_parts_for_active_relogin(
+            &env,
+            Provider::Claude,
+            "alice",
+            &ident,
+            fresh,
+            Some(&oauth),
+        )
+        .unwrap();
+
+        // 격리 로그인 결과를 프로필에 안전하게 보관한 직후 외부 CLI가 다른
+        // 계정으로 로그인해도 그 새 활성 상태를 덮지 않아야 한다.
+        login_claude(&env, "uuid-b", "bob@test.dev", "external-b");
+        let error = apply_claude_live_update(&env, &profile_dir, fresh, &expected).unwrap_err();
+
+        assert!(error.contains("외부에서 변경되었습니다"));
+        assert!(live_token(&env).contains("external-b"));
+        assert_eq!(
+            read_json(&env.claude_json_path()).unwrap()["oauthAccount"]["accountUuid"],
+            "uuid-b"
+        );
+        assert_eq!(fs::read(profile_dir.join("credentials.json")).unwrap(), fresh);
+        assert!(!claude_recovery_marker_path(&env).exists());
+        assert!(claude_live_apply_pending(&profile_dir).unwrap());
+    }
+
+    #[test]
+    fn missing_live_guard_rejects_oauth_change_after_capture() {
+        let env = test_env("missing-live-guard-oauth-change");
+        fs::write(
+            env.claude_json_path(),
+            r#"{"oauthAccount":{"accountUuid":"uuid-a","emailAddress":"alice@test.dev"}}"#,
+        )
+        .unwrap();
+        assert!(!env.live_credential_path(Provider::Claude).exists());
+        let expected = capture_claude_live_update_guard(&env).unwrap();
+        assert!(expected.belongs_to("uuid-a"));
+
+        let ident = LiveIdentity {
+            id: "uuid-a".into(),
+            email: Some("alice@test.dev".into()),
+        };
+        let fresh = br#"{"claudeAiOauth":{"accessToken":"fresh-a"}}"#;
+        let oauth = serde_json::json!({
+            "accountUuid": "uuid-a",
+            "emailAddress": "alice@test.dev"
+        });
+        let profile_dir = env.profiles_dir(Provider::Claude).join("alice");
+        ensure_claude_relogin_profile_identity(&env, "alice", &ident).unwrap();
+        mark_claude_live_apply_pending(&profile_dir).unwrap();
+        write_profile_parts_for_active_relogin(
+            &env,
+            Provider::Claude,
+            "alice",
+            &ident,
+            fresh,
+            Some(&oauth),
+        )
+        .unwrap();
+
+        // credential은 계속 없는 상태지만 외부 CLI가 oauthAccount만 B로 바꿨다.
+        // "없음"만 기억한 guard라면 이 변경을 놓치고 B를 덮어쓰게 된다.
+        fs::write(
+            env.claude_json_path(),
+            r#"{"oauthAccount":{"accountUuid":"uuid-b","emailAddress":"bob@test.dev"}}"#,
+        )
+        .unwrap();
+        let error = apply_claude_live_update(&env, &profile_dir, fresh, &expected).unwrap_err();
+
+        assert!(error.contains("외부에서 변경되었습니다"));
+        assert!(!env.live_credential_path(Provider::Claude).exists());
+        assert_eq!(
+            read_json(&env.claude_json_path()).unwrap()["oauthAccount"]["accountUuid"],
+            "uuid-b"
+        );
+        assert_eq!(fs::read(profile_dir.join("credentials.json")).unwrap(), fresh);
+        assert!(claude_live_apply_pending(&profile_dir).unwrap());
+    }
+
+    #[test]
+    fn adversarial_marker_create_failure_must_not_let_next_backup_erase_fresh_relogin() {
+        let env = test_env("active-relogin-marker-create-failure");
+        login_claude(&env, "uuid-a", "alice@test.dev", "old-live-token");
+        save_current(&env, Provider::Claude, "alice").unwrap();
+        let expected = capture_claude_live_update_guard(&env).unwrap();
+        let profile_dir = env.profiles_dir(Provider::Claude).join("alice");
+        let ident = LiveIdentity {
+            id: "uuid-a".into(),
+            email: Some("alice@test.dev".into()),
+        };
+        let fresh = br#"{"claudeAiOauth":{"accessToken":"only-fresh-relogin-copy"}}"#;
+        let oauth = serde_json::json!({
+            "accountUuid": "uuid-a",
+            "emailAddress": "alice@test.dev"
+        });
+        mark_claude_live_apply_pending(&profile_dir).unwrap();
+        write_profile_parts_for_active_relogin(
+            &env,
+            Provider::Claude,
+            "alice",
+            &ident,
+            fresh,
+            Some(&oauth),
+        )
+        .unwrap();
+
+        // guard 스냅숏과 profile 저장 뒤 root journal 위치가 일시적으로 망가져
+        // 첫 live write 전에 실패하는 상황을 합성한다.
+        fs::create_dir_all(claude_recovery_marker_path(&env)).unwrap();
+        assert!(
+            apply_claude_live_update(&env, &profile_dir, fresh, &expected).is_err()
+        );
+        assert_eq!(fs::read(profile_dir.join("credentials.json")).unwrap(), fresh);
+        assert!(live_token(&env).contains("old-live-token"));
+        assert!(claude_live_apply_pending(&profile_dir).unwrap());
+
+        // 파일시스템 장애가 풀린 다음 일반 전환이 들어와도 old live를 먼저
+        // 백업해 fresh profile을 지우지 않고, pending target을 복구 모드로 적용한다.
+        fs::remove_dir(claude_recovery_marker_path(&env)).unwrap();
+        let recovering = list(&env, Provider::Claude).unwrap();
+        assert!(recovering.live.is_none());
+        assert!(recovering.profiles.iter().all(|profile| !profile.active));
+        let result = switch(&env, Provider::Claude, "alice").unwrap();
+
+        assert_eq!(result.backed_up_to, None);
+        assert_eq!(fs::read(profile_dir.join("credentials.json")).unwrap(), fresh);
+        assert_eq!(read_live_cred(&env, Provider::Claude).unwrap(), fresh);
+        assert!(!claude_live_apply_pending(&profile_dir).unwrap());
+        assert!(!claude_recovery_marker_path(&env).exists());
     }
 
     #[cfg(target_os = "macos")]

@@ -283,7 +283,7 @@ pub fn spawn(app: tauri::AppHandle) {
                     } => {
                         // 수동 전환과 같은 전역 문을 먼저 잡는다. 사람이 전환을 끝낸
                         // 직후 TFSD가 옛 평가 결과로 다시 덮는 경합을 막는다.
-                        let Ok(_busy) = crate::begin_account_switch() else {
+                        let Ok(busy) = crate::begin_account_switch() else {
                             continue;
                         };
                         // 평가·대기 사이 사용자가 TFSD를 껐으면 전환하지 않는다.
@@ -304,6 +304,9 @@ pub fn spawn(app: tauri::AppHandle) {
                         // 파일·키체인 작업이라 블로킹 풀에서
                         let target_owned = target.clone();
                         let switched = tauri::async_runtime::spawn_blocking(move || {
+                            // 상위 async task가 취소돼도 blocking 전환은 계속될 수 있다.
+                            // 실제 worker가 guard를 끝까지 소유해야 종료/수동 전환이 못 끼어든다.
+                            let _busy = busy;
                             let env = Env::real()?;
                             accounts::switch(&env, provider, &target_owned).map(|_| ())
                         })

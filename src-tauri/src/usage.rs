@@ -9,8 +9,9 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 use crate::accounts::{
-    atomic_write, atomic_write_existing_parent, identity_from_value, jwt_payload, live_cred_exists,
-    live_identity, now, read_json, read_live_cred, read_meta, Env, Provider, MUTATION_LOCK,
+    atomic_write, atomic_write_existing_parent, ensure_claude_recovery_not_required,
+    identity_from_value, jwt_payload, live_cred_exists, live_identity, now, read_json,
+    read_live_cred, read_meta, Env, Provider, MUTATION_LOCK,
 };
 use serde::Deserialize;
 
@@ -270,6 +271,7 @@ fn apply_pending_rescue(
     provider: Provider,
     name: &str,
     cred_path: &Path,
+    repair_live: bool,
 ) -> Result<(), String> {
     let side = pending_path(cred_path);
     if !side.exists() {
@@ -293,34 +295,38 @@ fn apply_pending_rescue(
         atomic_write_existing_parent(cred_path, &bytes)?;
     }
 
-    // POST 도중 이 프로필이 활성화된 뒤 활성 위치 쓰기만 실패한 경우도 복구한다.
-    match live_identity(env, provider) {
-        Ok(Some(live)) => {
-            let profile_dir = env.profiles_dir(provider).join(name);
-            let meta = read_meta(&profile_dir)
-                .ok_or("프로필 정보가 없어 갱신 복구를 보류합니다")?;
-            if live.id == meta.id {
-                let live_holds_rotated_out = live_holds_refresh(env, provider, old_refresh)
-                    .map_err(|e| format!("활성 계정 확인 실패 — 갱신 복구를 보류합니다: {e}"))?;
-                if live_holds_rotated_out {
-                    let bytes = serde_json::to_vec_pretty(&current)
-                        .map_err(|e| format!("갱신 토큰 직렬화 실패: {e}"))?;
-                    crate::accounts::write_live_cred(env, provider, &bytes)?;
+    if repair_live {
+        // POST 도중 이 프로필이 활성화된 뒤 활성 위치 쓰기만 실패한 경우도 복구한다.
+        match live_identity(env, provider) {
+            Ok(Some(live)) => {
+                let profile_dir = env.profiles_dir(provider).join(name);
+                let meta = read_meta(&profile_dir)
+                    .ok_or("프로필 정보가 없어 갱신 복구를 보류합니다")?;
+                if live.id == meta.id {
+                    let live_holds_rotated_out = live_holds_refresh(env, provider, old_refresh)
+                        .map_err(|e| {
+                            format!("활성 계정 확인 실패 — 갱신 복구를 보류합니다: {e}")
+                        })?;
+                    if live_holds_rotated_out {
+                        let bytes = serde_json::to_vec_pretty(&current)
+                            .map_err(|e| format!("갱신 토큰 직렬화 실패: {e}"))?;
+                        crate::accounts::write_live_cred(env, provider, &bytes)?;
+                    }
                 }
             }
+            Ok(None) => match live_cred_exists(env, provider) {
+                Ok(true) => {
+                    return Err("활성 계정 신원을 확인할 수 없어 갱신 복구를 보류합니다".into());
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    return Err(format!(
+                        "활성 인증정보 확인 실패 — 갱신 복구를 보류합니다: {error}"
+                    ));
+                }
+            },
+            Err(e) => return Err(format!("활성 계정 확인 실패 — 갱신 복구를 보류합니다: {e}")),
         }
-        Ok(None) => match live_cred_exists(env, provider) {
-            Ok(true) => {
-                return Err("활성 계정 신원을 확인할 수 없어 갱신 복구를 보류합니다".into());
-            }
-            Ok(false) => {}
-            Err(error) => {
-                return Err(format!(
-                    "활성 인증정보 확인 실패 — 갱신 복구를 보류합니다: {error}"
-                ));
-            }
-        },
-        Err(e) => return Err(format!("활성 계정 확인 실패 — 갱신 복구를 보류합니다: {e}")),
     }
 
     std::fs::remove_file(&side)
@@ -332,12 +338,13 @@ pub(crate) fn rescue_pending_profile_locked(
     env: &Env,
     provider: Provider,
     name: &str,
+    repair_live: bool,
 ) -> Result<(), String> {
     let cred = env
         .profiles_dir(provider)
         .join(name)
         .join(provider.credential_file_name());
-    apply_pending_rescue(env, provider, name, &cred)
+    apply_pending_rescue(env, provider, name, &cred, repair_live)
 }
 
 /// 재발급 응답(access_token·refresh_token·expires_in)을 기존 claudeAiOauth 블록에
@@ -380,6 +387,14 @@ static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// 경합을 피하고, 활성 계정은 CLI가 스스로 갱신하기 때문이다.
 /// (예외 하나: POST 도중 그 프로필로 전환된 경우의 사후 복구 — 함수 끝 참조)
 async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Result<(), FetchErr> {
+    let profile_dir = env.profiles_dir(provider).join(name);
+    if provider == Provider::Claude
+        && crate::accounts::claude_live_apply_pending(&profile_dir).map_err(FetchErr::Msg)?
+    {
+        return Err(FetchErr::Msg(
+            "활성 적용을 복구 중인 Claude 프로필은 갱신할 수 없습니다".into(),
+        ));
+    }
     let path = credential_path(env, provider, Some(name))?;
     if !path.exists() {
         return Ok(()); // 이후 조회 단계가 기존 방식대로 안내한다
@@ -406,11 +421,19 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
             .lock()
             .map_err(|_| FetchErr::Msg("내부 잠금 오류".into()))?;
         let profile_dir = env.profiles_dir(provider).join(name);
+        if provider == Provider::Claude
+            && crate::accounts::claude_live_apply_pending(&profile_dir)
+                .map_err(FetchErr::Msg)?
+        {
+            return Err(FetchErr::Msg(
+                "활성 적용을 복구 중인 Claude 프로필은 갱신할 수 없습니다".into(),
+            ));
+        }
         if crate::vault::profile_import_blocked(env, provider, name) || !path.exists() {
             return Ok(());
         }
         if pending_path(&path).exists() {
-            apply_pending_rescue(env, provider, name, &path).map_err(FetchErr::Msg)?;
+            apply_pending_rescue(env, provider, name, &path, true).map_err(FetchErr::Msg)?;
         }
         // 잠금을 기다리는 사이 다른 경로가 이미 갱신했으면 끝
         let root = read_json(&path).map_err(FetchErr::Msg)?;
@@ -495,7 +518,7 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
     if extract_refresh_token(provider, &current).as_deref() != Some(refresh_token.as_str()) {
         // 프로필은 더 새것이어도 활성 위치가 회전 전 토큰을 들고 있을 수 있다.
         // 공용 복구 관문이 그 경우까지 확인한 뒤에만 pending을 지운다.
-        apply_pending_rescue(env, provider, name, &path).map_err(FetchErr::Msg)?;
+        apply_pending_rescue(env, provider, name, &path, true).map_err(FetchErr::Msg)?;
         return Ok(());
     }
     if let Err(merge_error) = merge_refreshed(provider, &mut current, &body) {
@@ -724,6 +747,12 @@ fn auth_snapshot(
         Some(name) => {
             if crate::vault::profile_import_blocked(env, provider, name) {
                 return Err("가져오기가 완료되지 않은 프로필은 조회할 수 없습니다".into());
+            }
+            let profile_dir = env.profiles_dir(provider).join(name);
+            if provider == Provider::Claude
+                && crate::accounts::claude_live_apply_pending(&profile_dir)?
+            {
+                return Err("활성 적용을 복구 중인 Claude 프로필은 조회할 수 없습니다".into());
             }
             let path = credential_path(env, provider, Some(name))?;
             let root = read_json(&path)?;
@@ -1294,6 +1323,46 @@ pub(crate) async fn fetch_with_options(
     profile: Option<&str>,
     force_retry: bool,
 ) -> Result<Usage, String> {
+    // 저장 프로필 조회는 복구 대상을 고르는 데 필요하지만, 활성 Claude 조회는
+    // 복구 표식이 있는 동안 캐시조차 신뢰하면 안 된다. 앞뒤로 확인해 조회 도중
+    // 전환이 중단된 경우에도 성공 값이 TFSD 등 자동 동작으로 새지 않게 한다.
+    match profile {
+        None => ensure_claude_recovery_not_required(env, provider)?,
+        Some(name) if provider == Provider::Claude => {
+            crate::accounts::validate_name(name)?;
+            if crate::accounts::claude_live_apply_pending(
+                &env.profiles_dir(provider).join(name),
+            )? {
+                return Err(
+                    "활성 적용을 복구 중인 Claude 프로필은 조회할 수 없습니다".into(),
+                );
+            }
+        }
+        Some(_) => {}
+    }
+    let result = fetch_with_options_inner(env, provider, profile, force_retry).await;
+    match profile {
+        None => ensure_claude_recovery_not_required(env, provider)?,
+        Some(name) if provider == Provider::Claude => {
+            if crate::accounts::claude_live_apply_pending(
+                &env.profiles_dir(provider).join(name),
+            )? {
+                return Err(
+                    "활성 적용을 복구 중인 Claude 프로필은 조회할 수 없습니다".into(),
+                );
+            }
+        }
+        Some(_) => {}
+    }
+    result
+}
+
+async fn fetch_with_options_inner(
+    env: &Env,
+    provider: Provider,
+    profile: Option<&str>,
+    force_retry: bool,
+) -> Result<Usage, String> {
     // 1) 토큰을 열기 전에 계정 키만 잡아 신선한 메모리/디스크 캐시를 확인한다.
     // macOS 활성 Claude는 이 경로가 `/usr/bin/security`를 전혀 띄우지 않는다.
     let preliminary_key = auth_key_snapshot(env, provider, profile)
@@ -1613,6 +1682,95 @@ mod tests {
     }
 
     #[test]
+    fn recovery_marker_blocks_fresh_active_usage_cache() {
+        let env = test_env("recovery-marker-fresh-cache");
+        fs::create_dir_all(&env.store).unwrap();
+        fs::write(
+            env.live_credential_path(Provider::Claude),
+            r#"{"claudeAiOauth":{"accessToken":"fixture"}}"#,
+        )
+        .unwrap();
+        fs::write(
+            env.home.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-marker-cache","emailAddress":"m@test.dev"}}"#,
+        )
+        .unwrap();
+        let cached = Usage {
+            windows: vec![UsageWindow {
+                key: "session".into(),
+                label: "5 Hours".into(),
+                percent: 95.0,
+                resets_at: None,
+            }],
+            stale: false,
+            stale_age_secs: None,
+            retry_after_secs: None,
+        };
+        disk_cache_store(&env, "claude:uuid-marker-cache", &cached).unwrap();
+        fs::write(
+            env.store.join(".claude-switch-recovery-required"),
+            b"switch-recovery-v1\n",
+        )
+        .unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let error = rt
+            .block_on(fetch(&env, Provider::Claude, None))
+            .unwrap_err();
+
+        assert!(error.contains("복구가 필요"));
+    }
+
+    #[test]
+    fn live_apply_pending_blocks_fresh_profile_usage_cache() {
+        let env = test_env("live-apply-pending-profile-cache");
+        let profile_dir = env.profiles_dir(Provider::Claude).join("pending");
+        let ident = crate::accounts::LiveIdentity {
+            id: "uuid-pending-cache".into(),
+            email: Some("pending@test.dev".into()),
+        };
+        let oauth = serde_json::json!({
+            "accountUuid": "uuid-pending-cache",
+            "emailAddress": "pending@test.dev"
+        });
+        crate::accounts::write_profile_parts(
+            &env,
+            Provider::Claude,
+            "pending",
+            &ident,
+            br#"{"claudeAiOauth":{"accessToken":"fresh-pending"}}"#,
+            Some(&oauth),
+        )
+        .unwrap();
+        let cached = Usage {
+            windows: vec![UsageWindow {
+                key: "session".into(),
+                label: "5 Hours".into(),
+                percent: 88.0,
+                resets_at: None,
+            }],
+            stale: false,
+            stale_age_secs: None,
+            retry_after_secs: None,
+        };
+        disk_cache_store(&env, "claude:uuid-pending-cache", &cached).unwrap();
+        crate::accounts::mark_claude_live_apply_pending(&profile_dir).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let error = rt
+            .block_on(fetch(&env, Provider::Claude, Some("pending")))
+            .unwrap_err();
+
+        assert!(error.contains("활성 적용을 복구 중"));
+    }
+
+    #[test]
     fn disk_cache_roundtrip_and_expiry() {
         let env = test_env("disk-cache");
         fs::create_dir_all(&env.store).unwrap();
@@ -1851,7 +2009,7 @@ mod tests {
         write_pending(&cred, "r-old", &resp).unwrap();
         assert!(pending_path(&cred).exists());
 
-        apply_pending_rescue(&env, Provider::Claude, "p", &cred).unwrap();
+        apply_pending_rescue(&env, Provider::Claude, "p", &cred, true).unwrap();
         let root = read_json(&cred).unwrap();
         assert_eq!(root.pointer("/claudeAiOauth/accessToken").unwrap(), "new-a");
         assert_eq!(root.pointer("/claudeAiOauth/refreshToken").unwrap(), "r-new");
@@ -1862,7 +2020,7 @@ mod tests {
         let stale_resp: Value =
             serde_json::from_str(r#"{"access_token":"zzz","expires_in":1}"#).unwrap();
         write_pending(&cred, "r-departed", &stale_resp).unwrap();
-        apply_pending_rescue(&env, Provider::Claude, "p", &cred).unwrap();
+        apply_pending_rescue(&env, Provider::Claude, "p", &cred, true).unwrap();
         let root = read_json(&cred).unwrap();
         assert_eq!(
             root.pointer("/claudeAiOauth/accessToken").unwrap(),
@@ -1910,7 +2068,7 @@ mod tests {
         .unwrap();
         write_pending(&cred, "r-old", &resp).unwrap();
 
-        apply_pending_rescue(&env, Provider::Claude, "p", &cred).unwrap();
+        apply_pending_rescue(&env, Provider::Claude, "p", &cred, true).unwrap();
         let profile = read_json(&cred).unwrap();
         let live: Value = serde_json::from_slice(&read_live_cred(&env, Provider::Claude).unwrap())
             .unwrap();

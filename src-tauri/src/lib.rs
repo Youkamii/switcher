@@ -26,7 +26,7 @@ use std::sync::Mutex;
 /// 타이틀바 버튼·이동 핸들(action 없는 영역)만 예외로 마우스를 받는다.
 static CLICK_THROUGH_MODE: AtomicBool = AtomicBool::new(false);
 static HIT_REGIONS: Mutex<Vec<HitRegion>> = Mutex::new(Vec::new());
-static ACCOUNT_SWITCHING: AtomicBool = AtomicBool::new(false);
+static APP_LIFECYCLE: LifecycleInterlock = LifecycleInterlock::new();
 
 #[cfg(target_os = "macos")]
 fn cursor_position_in_window(window: &tauri::WebviewWindow) -> Option<tauri::LogicalPosition<f64>> {
@@ -73,19 +73,174 @@ fn physical_cursor_to_logical(
     ))
 }
 
-struct AccountSwitchGuard;
+#[derive(Default)]
+struct LifecycleState {
+    account_switching: bool,
+    shutdown_reserved: bool,
+}
 
-impl Drop for AccountSwitchGuard {
-    fn drop(&mut self) {
-        ACCOUNT_SWITCHING.store(false, Ordering::SeqCst);
+struct LifecycleInterlock {
+    state: Mutex<LifecycleState>,
+}
+
+impl LifecycleInterlock {
+    const fn new() -> Self {
+        Self {
+            state: Mutex::new(LifecycleState {
+                account_switching: false,
+                shutdown_reserved: false,
+            }),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, LifecycleState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn begin_account_switch(&self) -> Result<AccountSwitchGuard<'_>, String> {
+        let mut state = self.lock();
+        if state.shutdown_reserved {
+            return Err("앱 종료 또는 업데이트 재시작을 준비 중입니다".into());
+        }
+        if state.account_switching {
+            return Err("다른 계정으로 전환 중입니다".into());
+        }
+        state.account_switching = true;
+        Ok(AccountSwitchGuard { lifecycle: self })
+    }
+
+    /// 계정 전환 시작과 종료 예약을 같은 잠금 아래 직렬화한다. `reserve`도 잠금을
+    /// 쥔 채 실행해 Vault 예약 뒤 계정 전환이 끼어드는 TOCTOU를 만들지 않는다.
+    fn try_reserve_shutdown(&self, reserve: impl FnOnce() -> bool) -> bool {
+        let mut state = self.lock();
+        if state.account_switching || state.shutdown_reserved || !reserve() {
+            return false;
+        }
+        state.shutdown_reserved = true;
+        true
+    }
+
+    fn release_shutdown(&self, release: impl FnOnce()) {
+        let mut state = self.lock();
+        if !state.shutdown_reserved {
+            return;
+        }
+        // Vault 예약을 먼저 풀고 lifecycle 표시를 마지막에 내린다. 이 잠금을 기다리던
+        // 계정 전환은 두 예약이 모두 풀린 뒤에만 시작한다.
+        release();
+        state.shutdown_reserved = false;
+    }
+
+    fn finish_account_switch(&self) {
+        self.lock().account_switching = false;
     }
 }
 
-fn begin_account_switch() -> Result<AccountSwitchGuard, String> {
-    if ACCOUNT_SWITCHING.swap(true, Ordering::SeqCst) {
-        Err("다른 계정으로 전환 중입니다".into())
-    } else {
-        Ok(AccountSwitchGuard)
+struct AccountSwitchGuard<'a> {
+    lifecycle: &'a LifecycleInterlock,
+}
+
+impl Drop for AccountSwitchGuard<'_> {
+    fn drop(&mut self) {
+        self.lifecycle.finish_account_switch();
+    }
+}
+
+fn begin_account_switch() -> Result<AccountSwitchGuard<'static>, String> {
+    APP_LIFECYCLE.begin_account_switch()
+}
+
+fn try_reserve_shutdown() -> bool {
+    APP_LIFECYCLE.try_reserve_shutdown(vault::try_reserve_shutdown)
+}
+
+fn release_shutdown_reservation() {
+    APP_LIFECYCLE.release_shutdown(vault::release_shutdown_reservation);
+}
+
+#[cfg(test)]
+mod lifecycle_interlock_tests {
+    use super::LifecycleInterlock;
+    use std::cell::Cell;
+
+    #[test]
+    fn account_switch_blocks_shutdown_until_guard_drops() {
+        let lifecycle = LifecycleInterlock::new();
+        let switching = lifecycle.begin_account_switch().unwrap();
+        let reserve_calls = Cell::new(0);
+
+        assert!(!lifecycle.try_reserve_shutdown(|| {
+            reserve_calls.set(reserve_calls.get() + 1);
+            true
+        }));
+        assert_eq!(reserve_calls.get(), 0);
+
+        drop(switching);
+        assert!(lifecycle.try_reserve_shutdown(|| {
+            reserve_calls.set(reserve_calls.get() + 1);
+            true
+        }));
+        assert_eq!(reserve_calls.get(), 1);
+    }
+
+    #[test]
+    fn shutdown_blocks_switch_and_duplicate_reservation_until_release() {
+        let lifecycle = LifecycleInterlock::new();
+        assert!(lifecycle.try_reserve_shutdown(|| true));
+        assert_eq!(
+            lifecycle.begin_account_switch().err().as_deref(),
+            Some("앱 종료 또는 업데이트 재시작을 준비 중입니다")
+        );
+
+        let duplicate_calls = Cell::new(0);
+        assert!(!lifecycle.try_reserve_shutdown(|| {
+            duplicate_calls.set(duplicate_calls.get() + 1);
+            true
+        }));
+        assert_eq!(duplicate_calls.get(), 0);
+
+        let release_calls = Cell::new(0);
+        lifecycle.release_shutdown(|| release_calls.set(release_calls.get() + 1));
+        assert_eq!(release_calls.get(), 1);
+        assert!(lifecycle.begin_account_switch().is_ok());
+    }
+
+    #[test]
+    fn failed_vault_reservation_does_not_poison_lifecycle() {
+        let lifecycle = LifecycleInterlock::new();
+        assert!(!lifecycle.try_reserve_shutdown(|| false));
+        assert!(lifecycle.begin_account_switch().is_ok());
+
+        let release_calls = Cell::new(0);
+        lifecycle.release_shutdown(|| release_calls.set(release_calls.get() + 1));
+        assert_eq!(release_calls.get(), 0);
+    }
+
+    #[test]
+    fn worker_owned_guard_blocks_shutdown_until_worker_finishes() {
+        let lifecycle = LifecycleInterlock::new();
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        let (finish_tx, finish_rx) = std::sync::mpsc::sync_channel(1);
+
+        std::thread::scope(|scope| {
+            let busy = lifecycle.begin_account_switch().unwrap();
+            let worker = scope.spawn(move || {
+                let _busy = busy;
+                started_tx.send(()).unwrap();
+                finish_rx.recv().unwrap();
+            });
+            started_rx.recv().unwrap();
+
+            assert!(lifecycle.begin_account_switch().is_err());
+            assert!(!lifecycle.try_reserve_shutdown(|| true));
+
+            finish_tx.send(()).unwrap();
+            worker.join().unwrap();
+        });
+
+        assert!(lifecycle.begin_account_switch().is_ok());
     }
 }
 
@@ -359,9 +514,12 @@ async fn switch_profile(
     provider: String,
     name: String,
 ) -> Result<SwitchResult, String> {
-    let _busy = begin_account_switch()?;
     let provider = Provider::parse(&provider)?;
+    let busy = begin_account_switch()?;
     let result = tauri::async_runtime::spawn_blocking(move || {
+        // IPC Future는 WebView reload로 취소될 수 있지만 spawn_blocking 작업은 계속된다.
+        // 실제 전환 worker가 guard를 소유해야 종료/다른 전환이 먼저 시작하지 않는다.
+        let _busy = busy;
         let env = Env::real()?;
         accounts::switch(&env, provider, &name)
     })
@@ -1247,8 +1405,11 @@ async fn github_list() -> github::GithubSnapshot {
 /// GitHub 활성 계정 전환 (gh auth switch + setup-git)
 #[tauri::command]
 async fn github_switch(name: String) -> Result<(), String> {
-    let _busy = begin_account_switch()?;
-    tauri::async_runtime::spawn_blocking(move || github::switch(&name))
+    let busy = begin_account_switch()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _busy = busy;
+        github::switch(&name)
+    })
         .await
         .map_err(|e| format!("GitHub 전환 작업 실패: {e}"))?
 }
@@ -1776,7 +1937,7 @@ fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'st
     use tauri::{Emitter, Manager};
     // 종료 예약과 vault 작업 시작을 같은 잠금에서 직렬화한다. 이 예약 뒤에는
     // cleanup이 끝날 때까지 새 내보내기·가져오기가 시작될 수 없다.
-    if !vault::try_reserve_shutdown() {
+    if !try_reserve_shutdown() {
         return false;
     }
     // worker가 세션을 등록하기 전인 예약도 종료 정리보다 뒤늦게 시작하지 못하게 한다.
@@ -1811,7 +1972,7 @@ fn shutdown_after_flush(app: &tauri::AppHandle, then: impl FnOnce() + Send + 'st
             return;
         };
 
-        vault::release_shutdown_reservation();
+        release_shutdown_reservation();
         github::unblock_starts_after_failed_shutdown();
         login::unblock_starts_after_failed_shutdown();
         let message = format!(
@@ -1849,7 +2010,7 @@ fn restart_into(
             match update::spawn_windows_update_helper(&relaunch, target, std::process::id()) {
                 Ok(()) => handle.exit(0),
                 Err(error) => {
-                    vault::release_shutdown_reservation();
+                    release_shutdown_reservation();
                     github::unblock_starts_after_failed_shutdown();
                     login::unblock_starts_after_failed_shutdown();
                     eprintln!("업데이트 helper 시작 실패 (앱을 유지합니다): {error}");
@@ -1869,7 +2030,7 @@ fn restart_into(
             Ok(_) => handle.exit(0),
             // 스폰 실패면 앱은 계속 산다 — 교체는 이미 됐으니 다음 실행부터 반영
             Err(e) => {
-                vault::release_shutdown_reservation();
+                release_shutdown_reservation();
                 github::unblock_starts_after_failed_shutdown();
                 login::unblock_starts_after_failed_shutdown();
                 eprintln!("재시작 실패 (다음 실행부터 새 버전): {e}");
