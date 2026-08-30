@@ -123,6 +123,20 @@ fn keychain_delete_args<'a>(service: &'a str, account: &'a str) -> [&'a str; 5] 
     ["delete-generic-password", "-s", service, "-a", account]
 }
 
+#[cfg(any(test, target_os = "macos"))]
+fn keychain_item_exists_result(success: bool, stderr: &str, service: &str) -> Result<bool, String> {
+    if success {
+        Ok(true)
+    } else if stderr.contains("could not be found") {
+        Ok(false)
+    } else {
+        Err(format!(
+            "키체인 항목 확인 실패 ({service}): {}",
+            stderr.trim()
+        ))
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub(crate) mod keychain {
     use std::io::Write;
@@ -171,11 +185,14 @@ pub(crate) mod keychain {
         Ok(Some(data))
     }
 
-    pub(crate) fn item_exists(service: &str, account: &str) -> bool {
+    pub(crate) fn item_exists(service: &str, account: &str) -> Result<bool, String> {
         // -w 없이 조회하면 비밀에 접근하지 않고 존재만 확인한다
-        run_security(&super::keychain_find_args(service, account, false))
-            .map(|out| out.status.success())
-            .unwrap_or(false)
+        let out = run_security(&super::keychain_find_args(service, account, false))?;
+        super::keychain_item_exists_result(
+            out.status.success(),
+            &String::from_utf8_lossy(&out.stderr),
+            service,
+        )
     }
 
     pub(crate) fn write_item(service: &str, account: &str, data: &[u8]) -> Result<(), String> {
@@ -256,8 +273,8 @@ pub(crate) mod keychain {
             let payload_b = br#"{"probe":"account-b"}"#;
             write_item(&svc, &account_a, payload_a).unwrap();
             write_item(&svc, &account_b, payload_b).unwrap();
-            assert!(item_exists(&svc, &account_a));
-            assert!(item_exists(&svc, &account_b));
+            assert!(item_exists(&svc, &account_a).unwrap());
+            assert!(item_exists(&svc, &account_b).unwrap());
             let read = read_item(&svc, &account_a)
                 .unwrap()
                 .expect("방금 쓴 항목이 있어야 한다");
@@ -269,8 +286,11 @@ pub(crate) mod keychain {
             assert_eq!(read_item(&svc, &account_a).unwrap().unwrap(), payload2);
             assert_eq!(read_item(&svc, &account_b).unwrap().unwrap(), payload_b);
             delete_item(&svc, &account_a).unwrap();
-            assert!(!item_exists(&svc, &account_a));
-            assert!(read_item(&svc, &account_a).unwrap().is_none(), "삭제 후에는 None");
+            assert!(!item_exists(&svc, &account_a).unwrap());
+            assert!(
+                read_item(&svc, &account_a).unwrap().is_none(),
+                "삭제 후에는 None"
+            );
             assert_eq!(read_item(&svc, &account_b).unwrap().unwrap(), payload_b);
         }
     }
@@ -300,6 +320,27 @@ mod keychain_arg_tests {
         assert_eq!(
             keychain_delete_args("service", "account"),
             ["delete-generic-password", "-s", "service", "-a", "account"]
+        );
+    }
+
+    #[test]
+    fn keychain_presence_distinguishes_missing_from_access_errors() {
+        assert_eq!(
+            keychain_item_exists_result(true, "", "service").unwrap(),
+            true
+        );
+        assert_eq!(
+            keychain_item_exists_result(
+                false,
+                "The specified item could not be found in the keychain.",
+                "service",
+            )
+            .unwrap(),
+            false
+        );
+        assert!(
+            keychain_item_exists_result(false, "User interaction is not allowed.", "service")
+                .is_err()
         );
     }
 }
@@ -721,28 +762,44 @@ fn read_live_cred_raw(env: &Env, provider: Provider) -> Result<Vec<u8>, String> 
                 legacy_file,
             } => match keychain::read_item(service, account)? {
                 Some(data) => Ok(data),
-                None if legacy_file.exists() => read_file(legacy_file),
-                None => Err(
-                    "클로드 로그인 정보가 없습니다 (키체인에 항목 없음) — 먼저 claude에서 로그인하세요"
-                        .into(),
-                ),
+                None => {
+                    if credential_path_exists(legacy_file)? {
+                        read_file(legacy_file)
+                    } else {
+                        Err(
+                            "클로드 로그인 정보가 없습니다 (키체인에 항목 없음) — 먼저 claude에서 로그인하세요"
+                                .into(),
+                        )
+                    }
+                }
             },
         },
     }
 }
 
+fn credential_path_exists(path: &Path) -> Result<bool, String> {
+    path.try_exists()
+        .map_err(|error| format!("활성 인증정보 확인 실패 {}: {error}", path.display()))
+}
+
 /// 활성 자격증명이 존재하는가 (전환·저장 가능 여부 판단)
-pub(crate) fn live_cred_exists(env: &Env, provider: Provider) -> bool {
+pub(crate) fn live_cred_exists(env: &Env, provider: Provider) -> Result<bool, String> {
     match provider {
-        Provider::Codex => env.live_credential_path(Provider::Codex).exists(),
+        Provider::Codex => credential_path_exists(&env.live_credential_path(Provider::Codex)),
         Provider::Claude => match &env.claude_live {
-            ClaudeLiveStore::File(path) => path.exists(),
+            ClaudeLiveStore::File(path) => credential_path_exists(path),
             #[cfg(target_os = "macos")]
             ClaudeLiveStore::Keychain {
                 service,
                 account,
                 legacy_file,
-            } => keychain::item_exists(service, account) || legacy_file.exists(),
+            } => {
+                if keychain::item_exists(service, account)? {
+                    Ok(true)
+                } else {
+                    credential_path_exists(legacy_file)
+                }
+            }
         },
     }
 }
@@ -1276,7 +1333,7 @@ pub(crate) fn claude_apply_oauth_block(env: &Env, profile_dir: &Path) -> Result<
 pub fn save_current(env: &Env, provider: Provider, name: &str) -> Result<String, String> {
     // 변이 함수가 스스로 잠근다 — 호출자가 잠금을 잊을 수 없게 (관례 단일화)
     let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
-    if !live_cred_exists(env, provider) {
+    if !live_cred_exists(env, provider)? {
         return Err("로그인 정보가 없습니다 — 먼저 해당 CLI에서 로그인하세요".into());
     }
     let ident = live_identity(env, provider)?
@@ -1332,7 +1389,7 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
 
     // 1) 백업 — 현재 활성 계정을 자기 프로필(없으면 자동 생성)에 저장
     let mut backed_up_to = None;
-    if live_cred_exists(env, provider) {
+    if live_cred_exists(env, provider)? {
         match live_identity(env, provider)? {
             Some(live) => {
                 let back_name = match find_profile_by_id(env, provider, &live.id)? {
@@ -1508,6 +1565,20 @@ mod tests {
 
     fn live_token(env: &Env) -> String {
         fs::read_to_string(env.live_credential_path(Provider::Claude)).unwrap()
+    }
+
+    #[test]
+    fn credential_presence_errors_do_not_become_logged_out() {
+        let mut env = test_env("credential-presence-error");
+        env.claude_live = ClaudeLiveStore::File(PathBuf::from("invalid\0credential"));
+
+        assert!(live_cred_exists(&env, Provider::Claude).is_err());
+        let error = save_current(&env, Provider::Claude, "must-not-exist").unwrap_err();
+        assert!(error.contains("활성 인증정보 확인 실패"));
+        assert!(!env
+            .profiles_dir(Provider::Claude)
+            .join("must-not-exist")
+            .exists());
     }
 
     #[test]
@@ -1994,7 +2065,7 @@ mod tests {
     /// CI에서는 돌지 않는다: `cargo test -- --ignored` 로만 실행.
     fn real_self_switch(provider: Provider) {
         let env = Env::real().unwrap();
-        if !live_cred_exists(&env, provider) {
+        if !live_cred_exists(&env, provider).expect("활성 인증정보 존재 확인 실패") {
             panic!("로그인 정보가 없어 실환경 검증 불가");
         }
         let before_cred = read_live_cred(&env, provider).unwrap();

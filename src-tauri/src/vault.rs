@@ -1077,7 +1077,7 @@ where
     let mut existing_ids: HashSet<(String, String)> = HashSet::new();
     let mut occupied_names: HashSet<(String, String)> = HashSet::new();
     for provider in [Provider::Claude, Provider::Codex] {
-        if accounts::live_cred_exists(env, provider) {
+        if accounts::live_cred_exists(env, provider)? {
             let live = accounts::live_identity(env, provider)?
                 .ok_or("현재 로그인 계정을 식별할 수 없습니다 (로그인 직후 다시 시도)")?;
             existing_ids.insert((provider.dir_name().to_string(), live.id));
@@ -2946,6 +2946,32 @@ mod tests {
                 .is_empty());
             assert!(!target.store.exists());
         }
+    }
+
+    #[test]
+    fn import_rejects_active_credential_presence_errors_before_creating_profiles() {
+        let payload = VaultPayload {
+            format_version: PAYLOAD_VERSION,
+            entries: vec![VaultEntry {
+                provider: "claude".into(),
+                name: "incoming".into(),
+                hide_email: false,
+                id: "incoming-id".into(),
+                email: Some("incoming@example.test".into()),
+                credential: encoded(br#"{"claudeAiOauth":{"accessToken":"fixture"}}"#),
+                oauth_account: Some(encoded(
+                    br#"{"accountUuid":"incoming-id","emailAddress":"incoming@example.test"}"#,
+                )),
+            }],
+        };
+        let mut target = test_env("vault-live-presence-error");
+        target.claude_live =
+            accounts::ClaudeLiveStore::File(PathBuf::from("invalid\0active-credential"));
+
+        let error = commit_payload(&target, &payload, |_, _| Ok(())).unwrap_err();
+
+        assert!(error.contains("활성 인증정보 확인 실패"));
+        assert!(!target.store.exists());
     }
 
     #[test]
