@@ -1356,8 +1356,10 @@ where
 }
 
 fn recover_stale_imports_locked(env: &Env) -> Result<(), String> {
-    if !env.store.is_dir() {
-        return Ok(());
+    match fs::metadata(&env.store) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Ok(_) | Err(_) => return Err("이전 인증정보 가져오기 상태를 확인할 수 없습니다".into()),
     }
     let entries =
         fs::read_dir(&env.store).map_err(|_| "이전 인증정보 가져오기 상태를 확인할 수 없습니다")?;
@@ -1455,23 +1457,17 @@ fn recover_stage_root(env: &Env, stage_root: &Path, import_id: &str) -> Result<(
             .map_err(|_| "이전 가져오기 기록이 올바르지 않습니다")?;
         let final_dir = env.profiles_dir(provider).join(&entry.name);
         let marker = final_dir.join(IMPORT_MARKER_FILE);
-        if marker_matches(&marker, &journal.id) {
-            rollback_ok &= remove_import_profile_retry(&final_dir, &journal.id);
-        } else if marker.exists() {
-            // 표식은 있는데 읽지 못하거나 다른 값이면 이 journal을 지워선 안 된다.
-            rollback_ok = false;
-        } else if final_dir.is_dir()
-            && fs::read_dir(&final_dir)
-                .map(|mut entries| entries.next().is_none())
-                .unwrap_or(false)
-        {
-            // marker를 마지막에 지운 직후 process가 죽으면 빈 최종 폴더만 남는다.
-            // 이 한 경우만 소유권 표식 없이도 안전하게 정리할 수 있다.
-            rollback_ok &= remove_empty_dir_retry(&final_dir);
-        } else if final_dir.exists() {
-            // 표식 없는 비어 있지 않은 폴더는 이 journal 소유인지 증명할 수 없다.
-            // 폴더와 소유권 기록을 모두 보존해 다음 복구에서 다시 판단하게 한다.
-            rollback_ok = false;
+        match import_marker_state(&marker, &journal.id) {
+            ImportMarkerState::Matches => {
+                rollback_ok &= remove_import_profile_retry(&final_dir, &journal.id);
+            }
+            ImportMarkerState::Other => {
+                // 표식은 있는데 읽지 못하거나 다른 값이면 이 journal을 지워선 안 된다.
+                rollback_ok = false;
+            }
+            ImportMarkerState::Missing => {
+                rollback_ok &= remove_unmarked_empty_profile_retry(&final_dir);
+            }
         }
     }
     if rollback_ok {
@@ -1607,10 +1603,23 @@ fn marker_matches(marker: &Path, expected: &str) -> bool {
         .is_some_and(|bytes| bytes == expected.as_bytes())
 }
 
-fn remove_file_retry(path: &Path) -> bool {
-    if !path.exists() {
-        return true;
+enum ImportMarkerState {
+    Missing,
+    Matches,
+    Other,
+}
+
+fn import_marker_state(marker: &Path, expected: &str) -> ImportMarkerState {
+    match fs::symlink_metadata(marker) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => ImportMarkerState::Missing,
+        Ok(metadata) if metadata.file_type().is_file() && marker_matches(marker, expected) => {
+            ImportMarkerState::Matches
+        }
+        Ok(_) | Err(_) => ImportMarkerState::Other,
     }
+}
+
+fn remove_file_retry(path: &Path) -> bool {
     for attempt in 0..4 {
         match fs::remove_file(path) {
             Ok(()) => return true,
@@ -1627,8 +1636,10 @@ fn remove_file_retry(path: &Path) -> bool {
 /// rollback 대상 프로필은 marker를 마지막까지 남겨 일반 목록·전환에서 숨긴다.
 /// Windows에서 토큰 파일이 잠겨 삭제가 실패해도 marker가 먼저 사라지지 않는다.
 fn remove_import_profile_retry(path: &Path, import_id: &str) -> bool {
-    if !path.exists() {
-        return true;
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+        Ok(metadata) if metadata.file_type().is_dir() => {}
+        Ok(_) | Err(_) => return false,
     }
     let marker = path.join(IMPORT_MARKER_FILE);
     if !marker_matches(&marker, import_id) {
@@ -1713,6 +1724,27 @@ fn directory_contains_only_import_marker(path: &Path) -> bool {
     saw_marker
 }
 
+fn remove_unmarked_empty_profile_retry(path: &Path) -> bool {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+        Ok(metadata) if metadata.file_type().is_dir() => match fs::read_dir(path) {
+            Ok(mut entries) => match entries.next() {
+                None => {
+                    // marker를 마지막에 지운 직후 process가 죽으면 빈 최종 폴더만 남는다.
+                    // 이 한 경우만 소유권 표식 없이도 안전하게 정리할 수 있다.
+                    remove_empty_dir_retry(path)
+                }
+                Some(_) => false,
+            },
+            // 표식 없는 비어 있지 않거나 읽을 수 없는 폴더는 이 journal 소유인지
+            // 증명할 수 없다. 기록을 보존해 다음 복구에서 재시도한다.
+            Err(_) => false,
+        },
+        // 파일 종류나 존재 여부를 확실히 확인하지 못하면 부재로 간주하지 않는다.
+        Ok(_) | Err(_) => false,
+    }
+}
+
 fn remove_empty_dir_retry(path: &Path) -> bool {
     for attempt in 0..4 {
         match fs::remove_dir(path) {
@@ -1728,9 +1760,6 @@ fn remove_empty_dir_retry(path: &Path) -> bool {
 }
 
 fn remove_tree_retry(path: &Path) -> bool {
-    if !path.exists() {
-        return true;
-    }
     for attempt in 0..4 {
         match fs::remove_dir_all(path) {
             Ok(()) => return true,
@@ -3323,6 +3352,42 @@ mod tests {
 
         assert!(recover_stale_imports(&target).is_err());
         assert!(stage_root.exists());
+    }
+
+    #[test]
+    fn invalid_path_errors_preserve_recovery_state() {
+        let invalid_path = Path::new("\0");
+        assert_ne!(
+            fs::symlink_metadata(invalid_path).unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert!(!remove_file_retry(invalid_path));
+        assert!(!remove_import_profile_retry(
+            invalid_path,
+            "000000000000000000000000"
+        ));
+        assert!(!remove_unmarked_empty_profile_retry(invalid_path));
+        assert!(!remove_tree_retry(invalid_path));
+
+        let mut target = test_env("vault-invalid-recovery-path");
+        let (stage_root, import_id) = create_stage_root(&target).unwrap();
+        write_import_journal(
+            &stage_root,
+            &journal(&import_id, "staging", Provider::Claude, "partial"),
+        )
+        .unwrap();
+        let journal_path = stage_root.join(IMPORT_JOURNAL_FILE);
+
+        target.store = PathBuf::from("\0");
+        assert!(recover_stale_imports_locked(&target).is_err());
+        assert!(recover_stage_root(&target, &stage_root, &import_id).is_err());
+        assert!(stage_root.exists(), "경로 오류 때 stage를 지우면 안 된다");
+        assert!(
+            journal_path.exists(),
+            "경로 오류 때 journal을 지우면 안 된다"
+        );
+
+        fs::remove_dir_all(stage_root).unwrap();
     }
 
     #[test]
