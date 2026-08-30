@@ -251,6 +251,7 @@ async function restorePendingRecovery() {
     if (!code) {
       recoveryPendingAck = false;
       if (wasPendingAck && recoveryCode.textContent) {
+        clearRecoveryResult();
         setStatus(exportStatus, vt("recoveryRestored"), "success");
       }
       return;

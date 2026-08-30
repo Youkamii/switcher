@@ -163,6 +163,11 @@ test("keeps recovery pending until the user copies or explicitly confirms storag
   assert.ok(restoreFlow.indexOf("showRecoveryResult(code)") >= 0);
   assert.doesNotMatch(restoreFlow, /acknowledgeStoredRecovery/);
   assert.match(restoreFlow, /catch \{\s*recoveryPendingAck = true;/);
+  assert.match(
+    restoreFlow,
+    /if \(!code\) \{[\s\S]*?recoveryPendingAck = false;[\s\S]*?clearRecoveryResult\(\);/,
+    "a backend ACK that outlived its response must clear the stale displayed code",
+  );
 
   const copyFlow = source.slice(
     source.indexOf("async function copyRecoveryCode"),

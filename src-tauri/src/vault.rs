@@ -12,7 +12,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use rand::rngs::OsRng;
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 use std::collections::hash_map::RandomState;
 use std::collections::HashSet;
 use std::fs;
@@ -120,14 +120,14 @@ pub(crate) fn hold_recovery_for_delivery(recovery_code: &str) -> Result<(), Stri
     Ok(())
 }
 
-pub(crate) fn pending_recovery() -> Result<Option<String>, String> {
+pub(crate) fn pending_recovery() -> Result<Option<RecoveryCode>, String> {
     OPERATION_STATE
         .lock()
         .map(|state| {
             state
                 .pending_recovery
                 .as_ref()
-                .map(|code| code.as_str().to_owned())
+                .map(|code| RecoveryCode::new(code.as_str().to_owned()))
         })
         .map_err(|_| "내부 잠금 오류".to_string())
 }
@@ -165,9 +165,44 @@ pub struct VaultProfile {
     pub revision: u64,
 }
 
+pub struct RecoveryCode(Zeroizing<String>);
+
+impl RecoveryCode {
+    fn new(code: String) -> Self {
+        Self(Zeroizing::new(code))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl PartialEq for RecoveryCode {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for RecoveryCode {}
+
+impl std::fmt::Debug for RecoveryCode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted]")
+    }
+}
+
+impl Serialize for RecoveryCode {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
 #[derive(Serialize, PartialEq, Eq)]
 pub struct VaultExportResult {
-    pub recovery_code: String,
+    pub recovery_code: RecoveryCode,
     pub exported: usize,
 }
 
@@ -371,7 +406,7 @@ pub fn export(
         .map_err(|_| "암호화 파일을 저장할 수 없습니다".to_string())?;
 
     Ok(VaultExportResult {
-        recovery_code: URL_SAFE_NO_PAD.encode(&recovery_secret[..]),
+        recovery_code: RecoveryCode::new(URL_SAFE_NO_PAD.encode(&recovery_secret[..])),
         exported,
     })
 }
@@ -2085,7 +2120,7 @@ mod tests {
                 "내보내기는 키체인 원본을 바꾸면 안 된다"
             );
 
-            let parsed = decrypt_file(&path, &result.recovery_code).unwrap();
+            let parsed = decrypt_file(&path, result.recovery_code.as_str()).unwrap();
             let exported = URL_SAFE_NO_PAD
                 .decode(&parsed.payload.entries[0].credential)
                 .unwrap();
@@ -2150,7 +2185,7 @@ mod tests {
             "legacy 폴백 내보내기가 키체인 항목을 만들면 안 된다"
         );
 
-        let parsed = decrypt_file(&path, &result.recovery_code).unwrap();
+        let parsed = decrypt_file(&path, result.recovery_code.as_str()).unwrap();
         let exported = URL_SAFE_NO_PAD
             .decode(&parsed.payload.entries[0].credential)
             .unwrap();
@@ -2259,7 +2294,7 @@ mod tests {
         let claude_json_before = fs::read(&claude_json).unwrap();
         let codex_before = fs::read(&codex_auth).unwrap();
 
-        let result = import(&target, &path, exported.recovery_code).unwrap();
+        let result = import(&target, &path, exported.recovery_code.as_str().to_owned()).unwrap();
         assert_eq!(result.imported, 2);
         assert_eq!(result.skipped, 0);
         assert_eq!(
@@ -2303,7 +2338,11 @@ mod tests {
         drop(guard);
 
         assert!(operation_busy());
-        assert_eq!(pending_recovery().unwrap().as_deref(), Some(code.as_str()));
+        let pending = pending_recovery().unwrap();
+        assert_eq!(
+            pending.as_ref().map(RecoveryCode::as_str),
+            Some(code.as_str())
+        );
         assert!(begin_operation().is_err());
         assert!(!ack_recovery_stored(URL_SAFE_NO_PAD.encode([8u8; 32])).unwrap());
         assert!(operation_busy());
@@ -2326,6 +2365,17 @@ mod tests {
         assert!(!try_reserve_shutdown());
         drop(guard);
         assert!(!operation_busy());
+    }
+
+    #[test]
+    fn recovery_code_serializes_without_exposing_debug_output() {
+        let code = RecoveryCode::new("fixture-recovery-code".to_string());
+
+        assert_eq!(
+            serde_json::to_string(&code).unwrap(),
+            r#""fixture-recovery-code""#
+        );
+        assert_eq!(format!("{code:?}"), "[redacted]");
     }
 
     #[test]
@@ -2355,7 +2405,7 @@ mod tests {
         assert_eq!(exported.exported, 1);
 
         let target = test_env("vault-roundtrip-target");
-        let imported = import(&target, &path, exported.recovery_code).unwrap();
+        let imported = import(&target, &path, exported.recovery_code.as_str().to_owned()).unwrap();
         assert_eq!(
             imported,
             VaultImportResult {
@@ -2427,13 +2477,13 @@ mod tests {
         *tampered.last_mut().unwrap() ^= 1;
         atomic_write(&path, &tampered).unwrap();
         assert_eq!(
-            import(&target, &path, result.recovery_code.clone()).unwrap_err(),
+            import(&target, &path, result.recovery_code.as_str().to_owned()).unwrap_err(),
             CRYPTO_ERROR
         );
 
         atomic_write(&path, &original[..original.len() - 3]).unwrap();
         assert_eq!(
-            import(&target, &path, result.recovery_code).unwrap_err(),
+            import(&target, &path, result.recovery_code.as_str().to_owned()).unwrap_err(),
             CRYPTO_ERROR
         );
     }
@@ -2466,7 +2516,7 @@ mod tests {
         let before = kdf_call_count();
         let target = test_env("vault-kdf-bomb-target");
         assert_eq!(
-            import(&target, &path, result.recovery_code).unwrap_err(),
+            import(&target, &path, result.recovery_code.as_str().to_owned()).unwrap_err(),
             CRYPTO_ERROR
         );
         assert_eq!(kdf_call_count(), before);
@@ -2602,7 +2652,7 @@ mod tests {
         .unwrap();
 
         let target = test_env("vault-active-target");
-        import(&target, &path, result.recovery_code).unwrap();
+        import(&target, &path, result.recovery_code.as_str().to_owned()).unwrap();
         let imported: Value = serde_json::from_slice(
             &fs::read(
                 target
@@ -2649,7 +2699,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(fs::read(&live_path).unwrap(), live_auth);
-        let parsed = decrypt_file(&path, &result.recovery_code).unwrap();
+        let parsed = decrypt_file(&path, result.recovery_code.as_str()).unwrap();
         let exported: Value = serde_json::from_slice(
             &URL_SAFE_NO_PAD
                 .decode(&parsed.payload.entries[0].credential)
@@ -2719,7 +2769,7 @@ mod tests {
         }
 
         let target = test_env("vault-pending-target");
-        import(&target, &path, result.recovery_code).unwrap();
+        import(&target, &path, result.recovery_code.as_str().to_owned()).unwrap();
         let imported: Value = serde_json::from_slice(
             &fs::read(
                 target
@@ -2822,7 +2872,7 @@ mod tests {
         let claude_credential_before =
             fs::read(target.live_credential_path(Provider::Claude)).unwrap();
 
-        let imported = import(&target, &path, result.recovery_code).unwrap();
+        let imported = import(&target, &path, result.recovery_code.as_str().to_owned()).unwrap();
         assert_eq!(
             imported,
             VaultImportResult {
@@ -2904,7 +2954,7 @@ mod tests {
             fs::read(target.live_credential_path(Provider::Codex)).unwrap(),
         ];
 
-        let imported = import(&target, &path, exported.recovery_code).unwrap();
+        let imported = import(&target, &path, exported.recovery_code.as_str().to_owned()).unwrap();
 
         assert_eq!(
             imported,
@@ -3510,7 +3560,7 @@ mod tests {
 
         let target = test_env("vault-desktop-overwrite-target");
         assert_eq!(
-            import(&target, &path, second.recovery_code)
+            import(&target, &path, second.recovery_code.as_str().to_owned())
                 .unwrap()
                 .imported,
             1
@@ -3538,7 +3588,7 @@ mod tests {
         )
         .unwrap();
         let target = test_env("vault-unix-mode-target");
-        import(&target, &path, exported.recovery_code).unwrap();
+        import(&target, &path, exported.recovery_code.as_str().to_owned()).unwrap();
         let dir = target.profiles_dir(Provider::Claude).join("claude");
         for file in ["credentials.json", "oauth_account.json", "meta.json"] {
             let mode = fs::metadata(dir.join(file)).unwrap().permissions().mode() & 0o777;
@@ -3590,7 +3640,7 @@ mod tests {
         assert!(!error.contains(&wrong));
         assert!(!error.contains("never-echo-token-value"));
         assert!(!error.contains("hidden@example.test"));
-        assert!(!result.recovery_code.is_empty());
+        assert!(!result.recovery_code.as_str().is_empty());
     }
 
     #[test]
