@@ -1056,6 +1056,9 @@ where
     let mut existing_ids: HashSet<(String, String)> = HashSet::new();
     let mut occupied_names: HashSet<(String, String)> = HashSet::new();
     for provider in [Provider::Claude, Provider::Codex] {
+        if let Some(live) = accounts::live_identity(env, provider).unwrap_or(None) {
+            existing_ids.insert((provider.dir_name().to_string(), live.id));
+        }
         for (name, dir) in accounts::profile_dirs(env, provider)? {
             occupied_names.insert(name_key(provider, &name));
             if let Some(meta) = accounts::read_meta(&dir) {
@@ -2491,6 +2494,93 @@ mod tests {
         assert_eq!(
             fs::read(target.live_credential_path(Provider::Claude)).unwrap(),
             claude_credential_before
+        );
+    }
+
+    #[test]
+    fn import_skips_unsaved_live_identities_without_activating_them() {
+        let source = test_env("vault-live-identity-source");
+        add_claude(
+            &source,
+            "claude-incoming",
+            "claude-live-id",
+            "claude-live@example.test",
+            "claude-incoming-token",
+        );
+        add_codex(
+            &source,
+            "codex-incoming",
+            "codex-live-id",
+            "codex-live@example.test",
+            "codex-incoming-token",
+        );
+        let path = vault_path(&source, "live-identities.switcher-vault");
+        let exported = export(
+            &source,
+            &path,
+            vec![
+                selection("claude", "claude-incoming", false),
+                selection("codex", "codex-incoming", false),
+            ],
+        )
+        .unwrap();
+
+        let target = test_env("vault-live-identity-target");
+        let claude_live = br#"{"claudeAiOauth":{"accessToken":"claude-live-token"}}"#;
+        let claude_account = br#"{"oauthAccount":{"accountUuid":"claude-live-id","emailAddress":"claude-live@example.test"}}"#;
+        let codex_live = serde_json::to_vec(&serde_json::json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "id_token": jwt("codex-live-id", "codex-live@example.test"),
+                "access_token": "codex-live-token",
+                "refresh_token": "codex-live-refresh",
+                "account_id": "codex-live-id"
+            }
+        }))
+        .unwrap();
+        atomic_write(
+            &target.live_credential_path(Provider::Claude),
+            claude_live,
+        )
+        .unwrap();
+        atomic_write(&target.home.join(".claude.json"), claude_account).unwrap();
+        atomic_write(
+            &target.live_credential_path(Provider::Codex),
+            &codex_live,
+        )
+        .unwrap();
+        let before = [
+            fs::read(target.live_credential_path(Provider::Claude)).unwrap(),
+            fs::read(target.home.join(".claude.json")).unwrap(),
+            fs::read(target.live_credential_path(Provider::Codex)).unwrap(),
+        ];
+
+        let imported = import(&target, &path, exported.recovery_code).unwrap();
+
+        assert_eq!(
+            imported,
+            VaultImportResult {
+                imported: 0,
+                skipped: 2,
+                cleanup_pending: false,
+            }
+        );
+        for provider in [Provider::Claude, Provider::Codex] {
+            let snapshot = accounts::list(&target, provider).unwrap();
+            assert!(snapshot.profiles.is_empty());
+            assert!(!snapshot.live_saved);
+        }
+        assert_eq!(
+            fs::read(target.live_credential_path(Provider::Claude)).unwrap(),
+            before[0]
+        );
+        assert_eq!(
+            fs::read(target.home.join(".claude.json")).unwrap(),
+            before[1]
+        );
+        assert_eq!(
+            fs::read(target.live_credential_path(Provider::Codex)).unwrap(),
+            before[2]
         );
     }
 
