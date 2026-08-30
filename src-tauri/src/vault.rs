@@ -1741,12 +1741,13 @@ mod tests {
     #[cfg(target_os = "macos")]
     struct KeychainFixture {
         service: String,
+        account: String,
     }
 
     #[cfg(target_os = "macos")]
     impl Drop for KeychainFixture {
         fn drop(&mut self) {
-            let _ = accounts::keychain::delete_item(&self.service);
+            let _ = accounts::keychain::delete_item(&self.service, &self.account);
         }
     }
 
@@ -1760,20 +1761,21 @@ mod tests {
             "switcher-vault-selftest-{}-{sequence}",
             std::process::id()
         );
+        let account = accounts::keychain::username();
         let legacy_file = env.live_credential_path(Provider::Claude);
         env.claude_live = ClaudeLiveStore::Keychain {
             service: service.clone(),
-            account: accounts::keychain::username(),
+            account: account.clone(),
             legacy_file,
         };
-        (env, KeychainFixture { service })
+        (env, KeychainFixture { service, account })
     }
 
     #[cfg(target_os = "macos")]
     fn write_keychain_fixture(fixture: &KeychainFixture, bytes: &[u8]) {
         accounts::keychain::write_item(
             &fixture.service,
-            &accounts::keychain::username(),
+            &fixture.account,
             bytes,
         )
         .unwrap();
@@ -1996,7 +1998,7 @@ mod tests {
         let live = br#"{"claudeAiOauth":{"accessToken":"mac-live-keychain-token"}}"#;
         for (suffix, stored) in [("raw", live.to_vec()), ("hex", lower_hex(live))] {
             write_keychain_fixture(&keychain, &stored);
-            let before = accounts::keychain::read_item(&keychain.service)
+            let before = accounts::keychain::read_item(&keychain.service, &keychain.account)
                 .unwrap()
                 .unwrap();
             let path = vault_path(&source, &format!("keychain-{suffix}.switcher-vault"));
@@ -2013,7 +2015,7 @@ mod tests {
                 "vault 파일은 소유자만 읽고 쓸 수 있어야 한다"
             );
             assert_eq!(
-                accounts::keychain::read_item(&keychain.service)
+                accounts::keychain::read_item(&keychain.service, &keychain.account)
                     .unwrap()
                     .unwrap(),
                 before,
@@ -2027,8 +2029,11 @@ mod tests {
             assert_eq!(exported, live, "{suffix} 키체인 값은 같은 JSON으로 정규화");
         }
         let service = keychain.service.clone();
+        let account = keychain.account.clone();
         drop(keychain);
-        assert!(accounts::keychain::read_item(&service).unwrap().is_none());
+        assert!(accounts::keychain::read_item(&service, &account)
+            .unwrap()
+            .is_none());
     }
 
     #[cfg(target_os = "macos")]
@@ -2062,7 +2067,7 @@ mod tests {
         atomic_write(&legacy, live).unwrap();
         let before = fs::read(&legacy).unwrap();
         assert!(
-            accounts::keychain::read_item(&keychain.service)
+            accounts::keychain::read_item(&keychain.service, &keychain.account)
                 .unwrap()
                 .is_none()
         );
@@ -2076,7 +2081,7 @@ mod tests {
         .unwrap();
         assert_eq!(fs::read(&legacy).unwrap(), before);
         assert!(
-            accounts::keychain::read_item(&keychain.service)
+            accounts::keychain::read_item(&keychain.service, &keychain.account)
                 .unwrap()
                 .is_none(),
             "legacy 폴백 내보내기가 키체인 항목을 만들면 안 된다"
@@ -2088,8 +2093,11 @@ mod tests {
             .unwrap();
         assert_eq!(exported, live);
         let service = keychain.service.clone();
+        let account = keychain.account.clone();
         drop(keychain);
-        assert!(accounts::keychain::read_item(&service).unwrap().is_none());
+        assert!(accounts::keychain::read_item(&service, &account)
+            .unwrap()
+            .is_none());
     }
 
     fn claude_snapshot(
@@ -2193,7 +2201,7 @@ mod tests {
         assert_eq!(result.imported, 2);
         assert_eq!(result.skipped, 0);
         assert_eq!(
-            accounts::keychain::read_item(&keychain.service)
+            accounts::keychain::read_item(&keychain.service, &keychain.account)
                 .unwrap()
                 .unwrap(),
             keychain_before
@@ -2214,8 +2222,11 @@ mod tests {
                 .is_file()
         );
         let service = keychain.service.clone();
+        let account = keychain.account.clone();
         drop(keychain);
-        assert!(accounts::keychain::read_item(&service).unwrap().is_none());
+        assert!(accounts::keychain::read_item(&service, &account)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
