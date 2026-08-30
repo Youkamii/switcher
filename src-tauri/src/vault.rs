@@ -1258,6 +1258,24 @@ pub(crate) fn recover_stale_imports(env: &Env) -> Result<(), String> {
     recover_stale_imports_locked(env)
 }
 
+pub(crate) fn recover_stale_imports_with_wait<F>(env: &Env, mut wait: F) -> Result<(), String>
+where
+    F: FnMut(std::time::Duration),
+{
+    let mut last_error = match recover_stale_imports(env) {
+        Ok(()) => return Ok(()),
+        Err(error) => error,
+    };
+    for delay_ms in [250, 1_000, 4_000, 15_000] {
+        wait(std::time::Duration::from_millis(delay_ms));
+        match recover_stale_imports(env) {
+            Ok(()) => return Ok(()),
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
+}
+
 fn recover_stale_imports_locked(env: &Env) -> Result<(), String> {
     if !env.store.is_dir() {
         return Ok(());
@@ -1275,11 +1293,7 @@ fn recover_stale_imports_locked(env: &Env) -> Result<(), String> {
         let Some(import_id) = name.strip_prefix(".vault-import-") else {
             continue;
         };
-        if import_id.len() != 24
-            || !import_id
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        {
+        if !valid_import_id(import_id) {
             continue;
         }
         recover_stage_root(env, &entry.path(), import_id)?;
@@ -1358,6 +1372,75 @@ fn valid_import_journal(journal: &ImportJournal, import_id: &str) -> bool {
         && journal.entries.iter().all(|entry| {
             Provider::parse(&entry.provider).is_ok() && accounts::validate_name(&entry.name).is_ok()
         })
+}
+
+fn valid_import_id(import_id: &str) -> bool {
+    import_id.len() == 24
+        && import_id
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn committed_stage_contains(
+    stage_root: &Path,
+    import_id: &str,
+    provider: Provider,
+    name: &str,
+) -> bool {
+    let Some(journal) = read_bounded_file(&stage_root.join(IMPORT_JOURNAL_FILE), 256 * 1024)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<ImportJournal>(&bytes).ok())
+    else {
+        return false;
+    };
+    valid_import_journal(&journal, import_id)
+        && journal.state == "committed"
+        && journal
+            .entries
+            .iter()
+            .any(|entry| entry.provider == provider.dir_name() && entry.name == name)
+}
+
+pub(crate) fn profile_import_blocked(env: &Env, provider: Provider, name: &str) -> bool {
+    let marker = env
+        .profiles_dir(provider)
+        .join(name)
+        .join(IMPORT_MARKER_FILE);
+    if !marker.exists() {
+        return false;
+    }
+
+    let marker_id = read_bounded_file(&marker, 64)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .filter(|import_id| valid_import_id(import_id));
+    if let Some(import_id) = marker_id.as_deref() {
+        return !committed_stage_contains(
+            &env.store.join(format!(".vault-import-{import_id}")),
+            import_id,
+            provider,
+            name,
+        );
+    }
+
+    let committed = fs::read_dir(&env.store)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            let import_name = entry.file_name().to_string_lossy().to_string();
+            let Some(import_id) = import_name.strip_prefix(".vault-import-") else {
+                return false;
+            };
+            valid_import_id(import_id)
+                && committed_stage_contains(&entry.path(), import_id, provider, name)
+        });
+    if committed {
+        false
+    } else {
+        marker.exists()
+    }
 }
 
 fn marker_matches(marker: &Path, expected: &str) -> bool {
@@ -2765,42 +2848,78 @@ mod tests {
     }
 
     #[test]
-    fn committed_marker_cleanup_failure_stays_hidden_and_retries_safely() {
+    fn committed_marker_cleanup_failure_stays_visible_and_retries_safely() {
         let target = test_env("vault-marker-cleanup-retry");
         let (stage_root, import_id) = create_stage_root(&target).unwrap();
-        let journal = journal(&import_id, "committed", Provider::Claude, "complete");
+        let journal = ImportJournal {
+            version: 1,
+            id: import_id.clone(),
+            state: "committed".into(),
+            entries: vec![
+                ImportJournalEntry {
+                    provider: Provider::Claude.dir_name().into(),
+                    name: "first".into(),
+                },
+                ImportJournalEntry {
+                    provider: Provider::Claude.dir_name().into(),
+                    name: "second".into(),
+                },
+            ],
+        };
         write_import_journal(&stage_root, &journal).unwrap();
-        let final_dir = target.profiles_dir(Provider::Claude).join("complete");
-        accounts::write_profile_bundle_to_dir(
-            &final_dir,
-            Provider::Claude,
-            &LiveIdentity {
-                id: "complete-id".into(),
-                email: Some("complete@example.test".into()),
-            },
-            br#"{"claudeAiOauth":{"accessToken":"fixture-token"}}"#,
-            Some(&serde_json::json!({
-                "accountUuid": "complete-id",
-                "emailAddress": "complete@example.test"
-            })),
-            false,
-        )
-        .unwrap();
-        let marker = final_dir.join(IMPORT_MARKER_FILE);
-        fs::create_dir(&marker).unwrap();
+        let first = add_marked_claude(
+            &target,
+            "first",
+            "first-id",
+            "first@example.test",
+            &import_id,
+        );
+        let second = add_marked_claude(
+            &target,
+            "second",
+            "second-id",
+            "second@example.test",
+            &import_id,
+        );
+        let first_marker = first.join(IMPORT_MARKER_FILE);
+        let second_marker = second.join(IMPORT_MARKER_FILE);
+        fs::remove_file(&second_marker).unwrap();
+        fs::create_dir(&second_marker).unwrap();
 
         assert!(recover_stale_imports(&target).is_err());
         assert!(stage_root.exists());
-        assert!(accounts::profile_dirs(&target, Provider::Claude)
+        assert!(!first_marker.exists());
+        assert!(second_marker.is_dir());
+        let visible = accounts::profile_dirs(&target, Provider::Claude)
             .unwrap()
-            .is_empty());
-        assert!(final_dir.exists());
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+        assert_eq!(visible, vec!["first", "second"]);
+        assert!(!profile_import_blocked(
+            &target,
+            Provider::Claude,
+            "first"
+        ));
+        assert!(!profile_import_blocked(
+            &target,
+            Provider::Claude,
+            "second"
+        ));
 
-        fs::remove_dir(&marker).unwrap();
-        atomic_write(&marker, import_id.as_bytes()).unwrap();
-        recover_stale_imports(&target).unwrap();
-        assert!(final_dir.exists());
-        assert!(!marker.exists());
+        let mut waits = Vec::new();
+        recover_stale_imports_with_wait(&target, |delay| {
+            waits.push(delay);
+            if waits.len() == 1 {
+                fs::remove_dir(&second_marker).unwrap();
+                atomic_write(&second_marker, import_id.as_bytes()).unwrap();
+            }
+        })
+        .unwrap();
+        assert_eq!(waits, vec![std::time::Duration::from_millis(250)]);
+        assert!(first.exists());
+        assert!(second.exists());
+        assert!(!second_marker.exists());
         assert!(!stage_root.exists());
     }
 
