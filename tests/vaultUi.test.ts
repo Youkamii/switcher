@@ -170,12 +170,22 @@ test("keeps recovery pending until the user copies or explicitly confirms storag
   );
   assert.match(copyFlow, /if \(copied && recoveryPendingAck\)/);
   assert.match(copyFlow, /await acknowledgeStoredRecovery\(code\)/);
+  assert.match(
+    copyFlow,
+    /recoveryPendingAck = !acknowledged;\s*if \(!acknowledged\) \{[\s\S]*?return;\s*\}\s*clearRecoveryResult\(\);/,
+    "copy must retain the displayed code on failed ACK and clear it after a successful ACK",
+  );
   const confirmFlow = source.slice(
     source.indexOf("async function confirmRecoveryStored"),
     source.indexOf("async function chooseVaultFile"),
   );
   assert.match(confirmFlow, /await acknowledgeStoredRecovery\(code\)/);
   assert.match(confirmFlow, /recoveryPendingAck = !acknowledged/);
+  assert.match(
+    confirmFlow,
+    /recoveryPendingAck = !acknowledged;\s*if \(acknowledged\) clearRecoveryResult\(\);/,
+    "manual confirmation must clear only after a successful ACK",
+  );
   assert.match(html, /id="confirm-recovery"/);
   assert.match(
     source,
