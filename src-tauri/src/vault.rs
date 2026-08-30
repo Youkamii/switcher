@@ -13,11 +13,13 @@ use base64::Engine;
 use rand::rngs::OsRng;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use std::collections::hash_map::RandomState;
 use std::collections::HashSet;
 use std::fs;
+use std::hash::BuildHasher;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 const MAGIC: &[u8; 8] = b"SWVAULT\0";
@@ -32,6 +34,7 @@ const PENDING_MAX_BYTES: usize = 4 * 1024 * 1024;
 const RAW_TOTAL_MAX_BYTES: usize = 16 * 1024 * 1024;
 const MAX_ENTRIES: usize = 256;
 const TAG_BYTES: usize = 16;
+const JS_SAFE_U64_MASK: u64 = (1 << 53) - 1;
 
 const ARGON_MEMORY_KIB: u32 = 65_536;
 const ARGON_ITERATIONS: u32 = 3;
@@ -51,6 +54,8 @@ static OPERATION_STATE: Mutex<OperationState> = Mutex::new(OperationState {
     pending_recovery: None,
     shutdown_reserved: false,
 });
+
+static PROFILE_REVISION_HASHER: LazyLock<RandomState> = LazyLock::new(RandomState::new);
 
 pub(crate) struct OperationGuard;
 
@@ -156,6 +161,7 @@ pub struct VaultProfile {
     pub provider: String,
     pub name: String,
     pub active: bool,
+    pub revision: u64,
 }
 
 #[derive(Serialize, PartialEq, Eq)]
@@ -273,10 +279,17 @@ pub fn list_profiles(env: &Env) -> Result<Vec<VaultProfile>, String> {
                 provider: provider.dir_name().to_string(),
                 name,
                 active: live_id.as_deref() == Some(meta.id.as_str()),
+                revision: profile_revision(provider, &meta.id),
             });
         }
     }
     Ok(result)
+}
+
+fn profile_revision(provider: Provider, id: &str) -> u64 {
+    // RandomState의 키는 프로세스마다 새로 생긴다. 원본 id를 프론트에 내보내지
+    // 않으면서 같은 실행 안에서만 identity 교체를 구분한다.
+    PROFILE_REVISION_HASHER.hash_one((provider.dir_name(), id)) & JS_SAFE_U64_MASK
 }
 
 pub fn export(
@@ -1874,6 +1887,68 @@ mod tests {
         .unwrap();
         atomic_write(&dir.join(IMPORT_MARKER_FILE), import_id.as_bytes()).unwrap();
         dir
+    }
+
+    #[test]
+    fn vault_profile_revision_is_stable_opaque_and_identity_specific() {
+        let env = test_env("vault-profile-revision");
+        add_claude(
+            &env,
+            "first",
+            "first-private-id",
+            "first-private@example.test",
+            "first-token",
+        );
+        add_claude(
+            &env,
+            "second",
+            "second-private-id",
+            "second-private@example.test",
+            "second-token",
+        );
+
+        let first_read = list_profiles(&env).unwrap();
+        let second_read = list_profiles(&env).unwrap();
+        let revision = |profiles: &[VaultProfile], name: &str| {
+            profiles
+                .iter()
+                .find(|profile| profile.name == name)
+                .unwrap()
+                .revision
+        };
+        assert_eq!(
+            revision(&first_read, "first"),
+            revision(&second_read, "first")
+        );
+        assert_ne!(
+            revision(&first_read, "first"),
+            revision(&first_read, "second")
+        );
+        assert!(first_read
+            .iter()
+            .all(|profile| profile.revision <= JS_SAFE_U64_MASK));
+
+        let serialized = serde_json::to_string(&first_read).unwrap();
+        for private in [
+            "first-private-id",
+            "second-private-id",
+            "first-private@example.test",
+            "second-private@example.test",
+        ] {
+            assert!(!serialized.contains(private));
+        }
+        for profile in serde_json::to_value(&first_read)
+            .unwrap()
+            .as_array()
+            .unwrap()
+        {
+            let fields = profile.as_object().unwrap();
+            assert_eq!(fields.len(), 4);
+            assert!(fields.contains_key("provider"));
+            assert!(fields.contains_key("name"));
+            assert!(fields.contains_key("active"));
+            assert!(fields.contains_key("revision"));
+        }
     }
 
     #[cfg(target_os = "macos")]
