@@ -1904,7 +1904,7 @@ mod tests {
         let expired = fake_jwt(r#"{"exp":1000}"#);
         fs::write(
             env.live_credential_path(Provider::Codex),
-            format!(r#"{{"tokens":{{"access_token":"live","refresh_token":"lr","account_id":"acct-act"}}}}"#),
+            r#"{"tokens":{"access_token":"live","refresh_token":"lr","account_id":"acct-act"}}"#,
         )
         .unwrap();
         let dir = env.profiles_dir(Provider::Codex).join("me");
