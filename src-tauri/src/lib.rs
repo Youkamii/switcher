@@ -2534,8 +2534,18 @@ pub fn run() {
         .setup(|app| {
             use tauri::Manager;
             if let Ok(env) = Env::real() {
-                if let Err(error) = vault::recover_stale_imports(&env) {
-                    eprintln!("중단된 인증정보 가져오기 복구 실패: {error}");
+                if vault::recover_stale_imports(&env).is_err() {
+                    std::thread::spawn(|| {
+                        let Ok(env) = Env::real() else {
+                            return;
+                        };
+                        if let Err(error) = vault::recover_stale_imports_with_wait(
+                            &env,
+                            std::thread::sleep,
+                        ) {
+                            eprintln!("중단된 인증정보 가져오기 복구 실패: {error}");
+                        }
+                    });
                 }
             }
             #[cfg(target_os = "macos")]

@@ -377,6 +377,9 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
     if !path.exists() {
         return Ok(()); // 이후 조회 단계가 기존 방식대로 안내한다
     }
+    if crate::vault::profile_import_blocked(env, provider, name) {
+        return Ok(());
+    }
     let has_pending = pending_path(&path).exists();
     // 흔한 경로(만료 전 + 복구 없음)는 잠금 없이 싸게 통과
     if !has_pending && !token_expiring(provider, &read_json(&path).map_err(FetchErr::Msg)?) {
@@ -396,11 +399,7 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
             .lock()
             .map_err(|_| FetchErr::Msg("내부 잠금 오류".into()))?;
         let profile_dir = env.profiles_dir(provider).join(name);
-        if profile_dir
-            .join(crate::accounts::PROFILE_IMPORT_MARKER)
-            .exists()
-            || !path.exists()
-        {
+        if crate::vault::profile_import_blocked(env, provider, name) || !path.exists() {
             return Ok(());
         }
         if pending_path(&path).exists() {
@@ -699,6 +698,9 @@ fn auth_snapshot(
     let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     let (account, root) = match profile {
         Some(name) => {
+            if crate::vault::profile_import_blocked(env, provider, name) {
+                return Err("가져오기가 완료되지 않은 프로필은 조회할 수 없습니다".into());
+            }
             let path = credential_path(env, provider, Some(name))?;
             let root = read_json(&path)?;
             let account = read_meta(&env.profiles_dir(provider).join(name))

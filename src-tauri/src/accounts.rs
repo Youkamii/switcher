@@ -926,7 +926,7 @@ pub(crate) fn write_profile_parts(
     oauth_block: Option<&Value>,
 ) -> Result<(), String> {
     let dir = env.profiles_dir(provider).join(name);
-    if dir.join(PROFILE_IMPORT_MARKER).exists() {
+    if crate::vault::profile_import_blocked(env, provider, name) {
         return Err("중단된 인증정보 가져오기를 복구한 뒤 다시 시도하세요".into());
     }
     // 토큰 갱신·전환·재로그인은 표시 설정을 바꾸는 작업이 아니다. 기존 메타를
@@ -1055,7 +1055,7 @@ pub(crate) fn ensure_name_not_owned_by_other(
     ident: &LiveIdentity,
 ) -> Result<(), String> {
     let dir = env.profiles_dir(provider).join(name);
-    if dir.join(PROFILE_IMPORT_MARKER).exists() {
+    if crate::vault::profile_import_blocked(env, provider, name) {
         return Err("중단된 인증정보 가져오기를 복구한 뒤 다시 시도하세요".into());
     }
     if let Some(meta) = read_meta(&dir) {
@@ -1092,8 +1092,9 @@ pub(crate) fn profile_dirs(
     let entries = fs::read_dir(&root).map_err(|e| format!("읽기 실패 {}: {e}", root.display()))?;
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() && !path.join(PROFILE_IMPORT_MARKER).exists() {
-            out.push((entry.file_name().to_string_lossy().to_string(), path));
+        let name = entry.file_name().to_string_lossy().to_string();
+        if path.is_dir() && !crate::vault::profile_import_blocked(env, provider, &name) {
+            out.push((name, path));
         }
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -1224,7 +1225,7 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
     )?;
     let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     let profile_dir = env.profiles_dir(provider).join(name);
-    if profile_dir.join(PROFILE_IMPORT_MARKER).exists() {
+    if crate::vault::profile_import_blocked(env, provider, name) {
         return Err("가져오기가 완료되지 않은 프로필이라 전환할 수 없습니다".into());
     }
     let target_cred = profile_dir.join(provider.credential_file_name());
@@ -1337,6 +1338,9 @@ pub fn delete(env: &Env, provider: Provider, name: &str) -> Result<(), String> {
     let dir = env.profiles_dir(provider).join(name);
     if !dir.exists() {
         return Err(format!("프로필 '{name}'이 없습니다"));
+    }
+    if crate::vault::profile_import_blocked(env, provider, name) {
+        return Err("가져오기가 완료되지 않은 프로필이라 삭제할 수 없습니다".into());
     }
     // 삭제 전에 계정 id를 붙잡아 둔다 — 사용량 캐시 정리(잔존 항목 무기한 축적 방지)용
     let meta_id = read_meta(&dir).map(|m| m.id);
