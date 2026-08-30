@@ -152,6 +152,7 @@ pub(crate) fn ack_recovery_stored(recovery_code: String) -> Result<bool, String>
 pub struct VaultSelection {
     pub provider: String,
     pub name: String,
+    pub revision: u64,
     #[serde(default)]
     pub hide_email: bool,
 }
@@ -494,6 +495,12 @@ fn capture_entries(env: &Env, selections: &[VaultSelection]) -> Result<Vec<Vault
             let dir = env.profiles_dir(provider).join(&selection.name);
             let meta = accounts::read_meta(&dir)
                 .ok_or_else(|| format!("프로필 '{}'을 찾을 수 없습니다", selection.name))?;
+            if profile_revision(provider, &meta.id) != selection.revision {
+                return Err(format!(
+                    "프로필 '{}'이 선택한 뒤 변경되었습니다 — 목록을 새로 확인하세요",
+                    selection.name
+                ));
+            }
             let live = accounts::live_identity(env, provider)?;
             let active = live.as_ref().is_some_and(|identity| identity.id == meta.id);
             let stable_claude = if active && provider == Provider::Claude {
@@ -1834,10 +1841,13 @@ mod tests {
         .unwrap();
     }
 
-    fn selection(provider: &str, name: &str, hide_email: bool) -> VaultSelection {
+    fn selection(env: &Env, provider: &str, name: &str, hide_email: bool) -> VaultSelection {
+        let parsed_provider = Provider::parse(provider).unwrap();
+        let meta = accounts::read_meta(&env.profiles_dir(parsed_provider).join(name)).unwrap();
         VaultSelection {
             provider: provider.into(),
             name: name.into(),
+            revision: profile_revision(parsed_provider, &meta.id),
             hide_email,
         }
     }
@@ -1951,6 +1961,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn export_rejects_an_alias_replaced_after_selection() {
+        let env = test_env("vault-profile-replaced-after-selection");
+        add_claude(
+            &env,
+            "work",
+            "selected-identity",
+            "selected@example.test",
+            "selected-token",
+        );
+        let selected = selection(&env, "claude", "work", false);
+        add_claude(
+            &env,
+            "work",
+            "replacement-identity",
+            "replacement@example.test",
+            "replacement-token",
+        );
+
+        let error = export(
+            &env,
+            &vault_path(&env, "replaced.switcher-vault"),
+            vec![selected],
+        )
+        .unwrap_err();
+
+        assert!(error.contains("선택한 뒤 변경되었습니다"));
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn macos_path_guards_follow_case_insensitive_apfs_semantics() {
@@ -2005,7 +2044,7 @@ mod tests {
             let result = export(
                 &source,
                 &path,
-                vec![selection("claude", "active", false)],
+                vec![selection(&source, "claude", "active", false)],
             )
             .unwrap();
             use std::os::unix::fs::PermissionsExt;
@@ -2076,7 +2115,7 @@ mod tests {
         let result = export(
             &source,
             &path,
-            vec![selection("claude", "active", false)],
+            vec![selection(&source, "claude", "active", false)],
         )
         .unwrap();
         assert_eq!(fs::read(&legacy).unwrap(), before);
@@ -2177,15 +2216,14 @@ mod tests {
             &source,
             &path,
             vec![
-                selection("claude", "claude-import", true),
-                selection("codex", "codex-import", false),
+                selection(&source, "claude", "claude-import", true),
+                selection(&source, "codex", "codex-import", false),
             ],
         )
         .unwrap();
 
         let (target, keychain) = keychain_test_env("vault-macos-import-target");
-        let keychain_before =
-            br#"{"claudeAiOauth":{"accessToken":"existing-keychain-token"}}"#;
+        let keychain_before = br#"{"claudeAiOauth":{"accessToken":"existing-keychain-token"}}"#;
         write_keychain_fixture(&keychain, keychain_before);
         let legacy = target.live_credential_path(Provider::Claude);
         let claude_json = target.home.join(".claude.json");
@@ -2284,7 +2322,12 @@ mod tests {
             "fake-token-two",
         );
         let path = vault_path(&source, "selected.switcher-vault");
-        let exported = export(&source, &path, vec![selection("claude", "one", true)]).unwrap();
+        let exported = export(
+            &source,
+            &path,
+            vec![selection(&source, "claude", "one", true)],
+        )
+        .unwrap();
         assert_eq!(exported.exported, 1);
 
         let target = test_env("vault-roundtrip-target");
@@ -2345,7 +2388,12 @@ mod tests {
             "fake-access-secret",
         );
         let path = vault_path(&source, "crypto.switcher-vault");
-        let result = export(&source, &path, vec![selection("codex", "codex", false)]).unwrap();
+        let result = export(
+            &source,
+            &path,
+            vec![selection(&source, "codex", "codex", false)],
+        )
+        .unwrap();
         let target = test_env("vault-crypto-errors-target");
         let wrong = URL_SAFE_NO_PAD.encode([7u8; 32]);
         assert_eq!(import(&target, &path, wrong).unwrap_err(), CRYPTO_ERROR);
@@ -2377,7 +2425,12 @@ mod tests {
             "fake-secret-kdf",
         );
         let path = vault_path(&source, "bomb.switcher-vault");
-        let result = export(&source, &path, vec![selection("claude", "claude", false)]).unwrap();
+        let result = export(
+            &source,
+            &path,
+            vec![selection(&source, "claude", "claude", false)],
+        )
+        .unwrap();
         let mut bytes = fs::read(&path).unwrap();
         let needle = b"\"memory_kib\":65536";
         let position = bytes
@@ -2406,7 +2459,12 @@ mod tests {
             "fixture-access",
         );
         let path = vault_path(&source, "code-shape.switcher-vault");
-        export(&source, &path, vec![selection("codex", "codex", false)]).unwrap();
+        export(
+            &source,
+            &path,
+            vec![selection(&source, "codex", "codex", false)],
+        )
+        .unwrap();
 
         let before = kdf_call_count();
         let target = test_env("vault-code-shape-target");
@@ -2433,7 +2491,7 @@ mod tests {
         export(
             &source,
             &path,
-            vec![selection("claude", "distinct-profile", true)],
+            vec![selection(&source, "claude", "distinct-profile", true)],
         )
         .unwrap();
         let bytes = fs::read(path).unwrap();
@@ -2467,7 +2525,7 @@ mod tests {
         let error = export(
             &source,
             &profile_credential,
-            vec![selection("claude", "protected", false)],
+            vec![selection(&source, "claude", "protected", false)],
         )
         .unwrap_err();
         assert_eq!(error, "인증정보 원본 폴더 밖의 다른 위치를 선택하세요");
@@ -2482,7 +2540,7 @@ mod tests {
         assert!(export(
             &source,
             &source.live_credential_path(Provider::Codex),
-            vec![selection("claude", "protected", false)],
+            vec![selection(&source, "claude", "protected", false)],
         )
         .is_err());
         assert_eq!(
@@ -2512,7 +2570,12 @@ mod tests {
         )
         .unwrap();
         let path = vault_path(&source, "active.switcher-vault");
-        let result = export(&source, &path, vec![selection("claude", "active", false)]).unwrap();
+        let result = export(
+            &source,
+            &path,
+            vec![selection(&source, "claude", "active", false)],
+        )
+        .unwrap();
 
         let target = test_env("vault-active-target");
         import(&target, &path, result.recovery_code).unwrap();
@@ -2558,7 +2621,7 @@ mod tests {
         let result = export(
             &source,
             &path,
-            vec![selection("codex", "active", false)],
+            vec![selection(&source, "codex", "active", false)],
         )
         .unwrap();
         assert_eq!(fs::read(&live_path).unwrap(), live_auth);
@@ -2621,7 +2684,12 @@ mod tests {
             .map(|path| fs::read(path).unwrap())
             .collect();
         let path = vault_path(&source, "pending.switcher-vault");
-        let result = export(&source, &path, vec![selection("claude", "active", false)]).unwrap();
+        let result = export(
+            &source,
+            &path,
+            vec![selection(&source, "claude", "active", false)],
+        )
+        .unwrap();
         for (path, expected) in source_paths.iter().zip(&before) {
             assert_eq!(&fs::read(path).unwrap(), expected);
         }
@@ -2650,7 +2718,7 @@ mod tests {
         assert!(export(
             &source,
             &vault_path(&source, "pending-failure.switcher-vault"),
-            vec![selection("claude", "active", false)],
+            vec![selection(&source, "claude", "active", false)],
         )
         .is_err());
         for (path, expected) in source_paths.iter().zip(&failure_before) {
@@ -2680,8 +2748,8 @@ mod tests {
             &source,
             &path,
             vec![
-                selection("codex", "same", false),
-                selection("claude", "duplicate", false),
+                selection(&source, "codex", "same", false),
+                selection(&source, "claude", "duplicate", false),
             ],
         )
         .unwrap();
@@ -2776,8 +2844,8 @@ mod tests {
             &source,
             &path,
             vec![
-                selection("claude", "claude-incoming", false),
-                selection("codex", "codex-incoming", false),
+                selection(&source, "claude", "claude-incoming", false),
+                selection(&source, "codex", "codex-incoming", false),
             ],
         )
         .unwrap();
@@ -3317,9 +3385,19 @@ mod tests {
             "fixture-token",
         );
         let path = vault_path(&source, "replace.switcher-vault");
-        let first = export(&source, &path, vec![selection("codex", "codex", false)]).unwrap();
+        let first = export(
+            &source,
+            &path,
+            vec![selection(&source, "codex", "codex", false)],
+        )
+        .unwrap();
         let first_bytes = fs::read(&path).unwrap();
-        let second = export(&source, &path, vec![selection("codex", "codex", false)]).unwrap();
+        let second = export(
+            &source,
+            &path,
+            vec![selection(&source, "codex", "codex", false)],
+        )
+        .unwrap();
         assert_ne!(fs::read(&path).unwrap(), first_bytes);
         assert_ne!(first.recovery_code, second.recovery_code);
 
@@ -3346,7 +3424,12 @@ mod tests {
             "fixture-token",
         );
         let path = vault_path(&source, "mode.switcher-vault");
-        let exported = export(&source, &path, vec![selection("claude", "claude", false)]).unwrap();
+        let exported = export(
+            &source,
+            &path,
+            vec![selection(&source, "claude", "claude", false)],
+        )
+        .unwrap();
         let target = test_env("vault-unix-mode-target");
         import(&target, &path, exported.recovery_code).unwrap();
         let dir = target.profiles_dir(Provider::Claude).join("claude");
@@ -3388,7 +3471,12 @@ mod tests {
             "never-echo-token-value",
         );
         let path = vault_path(&source, "secret-error.switcher-vault");
-        let result = export(&source, &path, vec![selection("claude", "profile", true)]).unwrap();
+        let result = export(
+            &source,
+            &path,
+            vec![selection(&source, "claude", "profile", true)],
+        )
+        .unwrap();
         let target = test_env("vault-errors-secret-target");
         let wrong = "this-recovery-code-must-never-appear".to_string();
         let error = import(&target, &path, wrong.clone()).unwrap_err();

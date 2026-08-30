@@ -14,6 +14,7 @@ export interface VaultProfileChoice {
 export interface VaultSelection {
   provider: string;
   name: string;
+  revision: number;
   hideEmail: boolean;
 }
 
@@ -55,6 +56,7 @@ export function selectedVaultProfiles(
     .map(({ profile, hideEmail }) => ({
       provider: profile.provider,
       name: profile.name,
+      revision: profile.revision,
       hideEmail,
     }));
 }

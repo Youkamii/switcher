@@ -21,7 +21,7 @@ const packageJson = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 ) as { dependencies?: Record<string, string> };
 
-test("builds an alias-only export DTO and preserves each email-display choice", () => {
+test("binds an export DTO to its opaque revision and preserves each email-display choice", () => {
   const selections = selectedVaultProfiles([
     {
       profile: { provider: "claude", name: "work", active: true, revision: 1 },
@@ -36,7 +36,7 @@ test("builds an alias-only export DTO and preserves each email-display choice", 
   ]);
 
   assert.deepEqual(selections, [
-    { provider: "claude", name: "work", hideEmail: true },
+    { provider: "claude", name: "work", revision: 1, hideEmail: true },
   ]);
   assert.equal(JSON.stringify(selections).includes("email"), false);
   assert.deepEqual(selectedVaultProfiles([]), []);
