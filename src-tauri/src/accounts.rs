@@ -774,9 +774,26 @@ fn restore_optional_secret(
     }
 }
 
-fn restore_claude_live(snapshot: &ClaudeLiveSnapshot) -> Result<(), String> {
+fn restore_optional_secret_if_unchanged(
+    path: &Path,
+    data: Option<&Zeroizing<Vec<u8>>>,
+    applied_data: &[u8],
+) -> Result<(), String> {
+    let current = read_optional_secret(path)?;
+    if current.as_deref().map(Vec::as_slice) != Some(applied_data) {
+        return Ok(());
+    }
+    restore_optional_secret(path, data)
+}
+
+fn restore_claude_live_if_unchanged(
+    snapshot: &ClaudeLiveSnapshot,
+    applied_data: &[u8],
+) -> Result<(), String> {
     match snapshot {
-        ClaudeLiveSnapshot::File { path, data } => restore_optional_secret(path, data.as_ref()),
+        ClaudeLiveSnapshot::File { path, data } => {
+            restore_optional_secret_if_unchanged(path, data.as_ref(), applied_data)
+        }
         #[cfg(target_os = "macos")]
         ClaudeLiveSnapshot::Keychain {
             service,
@@ -785,11 +802,19 @@ fn restore_claude_live(snapshot: &ClaudeLiveSnapshot) -> Result<(), String> {
             legacy_file,
             legacy_data,
         } => {
-            let keychain_result = match keychain_data {
-                Some(data) => keychain::write_item(service, account, data),
-                None => keychain::delete_item(service),
+            let keychain_result = match keychain::read_item(service) {
+                Ok(Some(current)) if current.as_slice() == applied_data => match keychain_data {
+                    Some(data) => keychain::write_item(service, account, data),
+                    None => keychain::delete_item(service),
+                },
+                Ok(_) => Ok(()),
+                Err(error) => Err(error),
             };
-            let legacy_result = restore_optional_secret(legacy_file, legacy_data.as_ref());
+            let legacy_result = restore_optional_secret_if_unchanged(
+                legacy_file,
+                legacy_data.as_ref(),
+                applied_data,
+            );
             match (keychain_result, legacy_result) {
                 (Ok(()), Ok(())) => Ok(()),
                 (Err(keychain_error), Ok(())) => Err(keychain_error),
@@ -807,7 +832,7 @@ fn apply_claude_profile(env: &Env, profile_dir: &Path, data: &[u8]) -> Result<()
     let applied = write_live_cred(env, Provider::Claude, data)
         .and_then(|()| claude_apply_oauth_block(env, profile_dir));
     if let Err(apply_error) = applied {
-        return match restore_claude_live(&snapshot) {
+        return match restore_claude_live_if_unchanged(&snapshot, data) {
             Ok(()) => Err(apply_error),
             Err(restore_error) => Err(format!(
                 "{apply_error}; 전환 실패 뒤 활성 인증정보 원복 실패: {restore_error}"
@@ -1170,13 +1195,17 @@ pub(crate) fn auto_name(env: &Env, provider: Provider, ident: &LiveIdentity) -> 
 pub(crate) fn claude_apply_oauth_block(env: &Env, profile_dir: &Path) -> Result<(), String> {
     let block_path = profile_dir.join("oauth_account.json");
     let cj = env.claude_json_path();
-    if !block_path.exists() || !cj.exists() {
-        return Ok(());
-    }
     let block = read_json(&block_path)?;
-    let mut root = read_json_retry(&cj)?;
+    let mut root = if cj.exists() {
+        read_json_retry(&cj)?
+    } else {
+        serde_json::json!({})
+    };
     let Some(obj) = root.as_object_mut() else {
-        return Ok(());
+        return Err(format!(
+            "Claude 계정 정보 형식이 잘못되었습니다: {}",
+            cj.display()
+        ));
     };
     obj.insert("oauthAccount".to_string(), block);
     let bytes = serde_json::to_vec_pretty(&root).map_err(|e| e.to_string())?;
@@ -1519,6 +1548,55 @@ mod tests {
         assert!(switch(&env, Provider::Claude, "second").is_err());
 
         assert!(!env.live_credential_path(Provider::Claude).exists());
+    }
+
+    #[test]
+    fn claude_switch_creates_missing_live_identity_file() {
+        let env = test_env("switch-missing-identity");
+        login_claude(&env, "uuid-b", "bob@test.dev", "tok-b1");
+        save_current(&env, Provider::Claude, "second").unwrap();
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a1");
+        fs::remove_file(env.claude_json_path()).unwrap();
+
+        switch(&env, Provider::Claude, "second").unwrap();
+
+        let root = read_json(&env.claude_json_path()).unwrap();
+        assert_eq!(root["oauthAccount"]["accountUuid"], "uuid-b");
+        assert_eq!(root["oauthAccount"]["emailAddress"], "bob@test.dev");
+    }
+
+    #[test]
+    fn claude_switch_rejects_non_object_identity_and_restores_credential() {
+        let env = test_env("switch-non-object-identity");
+        login_claude(&env, "uuid-b", "bob@test.dev", "tok-b1");
+        save_current(&env, Provider::Claude, "second").unwrap();
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a1");
+        let live_before = fs::read(env.live_credential_path(Provider::Claude)).unwrap();
+        fs::write(env.claude_json_path(), b"[]").unwrap();
+
+        assert!(switch(&env, Provider::Claude, "second").is_err());
+
+        assert_eq!(
+            fs::read(env.live_credential_path(Provider::Claude)).unwrap(),
+            live_before
+        );
+        assert_eq!(fs::read(env.claude_json_path()).unwrap(), b"[]");
+    }
+
+    #[test]
+    fn claude_restore_preserves_credential_changed_after_target_write() {
+        let env = test_env("switch-conditional-rollback");
+        let path = env.live_credential_path(Provider::Claude);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"old credential fixture").unwrap();
+        let snapshot = snapshot_claude_live(&env).unwrap();
+        let target = b"target credential fixture";
+        fs::write(&path, target).unwrap();
+        fs::write(&path, b"external credential fixture").unwrap();
+
+        restore_claude_live_if_unchanged(&snapshot, target).unwrap();
+
+        assert_eq!(fs::read(path).unwrap(), b"external credential fixture");
     }
 
     #[test]
