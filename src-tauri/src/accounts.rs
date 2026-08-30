@@ -1478,6 +1478,19 @@ mod tests {
     use super::test_support::{fake_jwt, test_env};
     use super::*;
 
+    #[cfg(target_os = "macos")]
+    struct MacKeychainGuard {
+        service: String,
+        account: String,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for MacKeychainGuard {
+        fn drop(&mut self) {
+            let _ = keychain::delete_item(&self.service, &self.account);
+        }
+    }
+
     fn login_claude(env: &Env, uuid: &str, email: &str, token: &str) {
         fs::write(
             env.home.join(".claude").join(".credentials.json"),
@@ -1606,6 +1619,56 @@ mod tests {
         assert!(switch(&env, Provider::Claude, "second").is_err());
 
         assert!(!env.live_credential_path(Provider::Claude).exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_claude_switch_restores_keychain_and_legacy_file_on_apply_failure() {
+        let mut env = test_env("switch-macos-keychain-rollback");
+        login_claude(&env, "uuid-b", "bob@test.dev", "tok-b1");
+        save_current(&env, Provider::Claude, "second").unwrap();
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a2");
+        fs::write(
+            env.profiles_dir(Provider::Claude)
+                .join("second")
+                .join("oauth_account.json"),
+            b"invalid oauth fixture",
+        )
+        .unwrap();
+
+        let service = format!("switcher-switch-rollback-{}", std::process::id());
+        let account = keychain::username();
+        let _guard = MacKeychainGuard {
+            service: service.clone(),
+            account: account.clone(),
+        };
+        keychain::delete_item(&service, &account).unwrap();
+        let legacy_file = env.live_credential_path(Provider::Claude);
+        let legacy_before = fs::read(&legacy_file).unwrap();
+        keychain::write_item(&service, &account, &legacy_before).unwrap();
+        env.claude_live = ClaudeLiveStore::Keychain {
+            service: service.clone(),
+            account: account.clone(),
+            legacy_file: legacy_file.clone(),
+        };
+        let keychain_before = keychain::read_item(&service, &account).unwrap().unwrap();
+        let oauth_before = fs::read(env.claude_json_path()).unwrap();
+
+        assert!(switch(&env, Provider::Claude, "second").is_err());
+
+        assert_eq!(
+            keychain::read_item(&service, &account).unwrap().unwrap(),
+            keychain_before
+        );
+        assert_eq!(fs::read(&legacy_file).unwrap(), legacy_before);
+        assert_eq!(fs::read(env.claude_json_path()).unwrap(), oauth_before);
+        let backed = fs::read_to_string(
+            env.profiles_dir(Provider::Claude)
+                .join("alice")
+                .join("credentials.json"),
+        )
+        .unwrap();
+        assert!(backed.contains("tok-a2"), "백업 우선 순서는 유지해야 한다");
     }
 
     #[test]
