@@ -4,6 +4,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { currentLang, setLang } from "./i18n";
 import { applyAccentTheme } from "./theme";
 import {
+  reconcileVaultProfileChoices,
   selectedVaultProfiles,
   vaultBoundaryPolicy,
   vaultInteractionLocked,
@@ -362,14 +363,9 @@ async function loadProfiles() {
   exportButton.disabled = true;
   try {
     const profiles = await invoke<VaultProfile[]>("vault_list_profiles");
-    choices = profiles.map((profile) => ({
-      profile,
-      selected: false,
-      hideEmail: true,
-    }));
+    choices = reconcileVaultProfileChoices(profiles, choices);
     renderProfiles();
   } catch {
-    choices = [];
     profileList.setAttribute("aria-busy", "false");
     profileList.textContent = vt("loadProfilesFailed");
     exportButton.disabled = true;

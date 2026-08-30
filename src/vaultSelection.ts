@@ -57,3 +57,26 @@ export function selectedVaultProfiles(
       hideEmail,
     }));
 }
+
+export function reconcileVaultProfileChoices(
+  profiles: readonly VaultProfile[],
+  previousChoices: readonly VaultProfileChoice[],
+): VaultProfileChoice[] {
+  const previousByProfile = new Map(
+    previousChoices.map((choice) => [
+      `${choice.profile.provider}\u0000${choice.profile.name}`,
+      choice,
+    ]),
+  );
+
+  return profiles.map((profile) => {
+    const previous = previousByProfile.get(
+      `${profile.provider}\u0000${profile.name}`,
+    );
+    return {
+      profile,
+      selected: previous?.selected ?? false,
+      hideEmail: previous?.hideEmail ?? true,
+    };
+  });
+}
