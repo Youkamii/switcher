@@ -240,6 +240,18 @@ pub struct Meta {
     pub saved_at: u64,
 }
 
+/// 서버가 알려준 구독 정보 (프로필 폴더의 plan.json). 토큰 파일의 subscriptionType·
+/// rateLimitTier는 로그인 시점 스냅숏이라 Max 5x→20x 업그레이드가 반영되지 않는다 —
+/// 사용량 조회가 /api/oauth/profile로 확인한 값을 여기 두고 표시에서 우선한다.
+/// 별도 파일인 이유: 전환 때 활성 토큰을 백업하면 credentials.json이 다시 옛 티어로
+/// 덮이지만 이 파일은 살아남는다.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PlanOverride {
+    pub plan: Option<String>,
+    pub tier: Option<u32>,
+    pub checked_at: u64,
+}
+
 #[derive(Serialize, Clone)]
 pub struct LiveIdentity {
     pub id: String,
@@ -738,7 +750,61 @@ fn tier_from_credential(provider: Provider, root: &Value) -> Option<u32> {
         return None;
     }
     let tier = root.pointer("/claudeAiOauth/rateLimitTier")?.as_str()?;
+    tier_from_rate_limit_tier(tier)
+}
+
+/// rateLimitTier 문자열 → Max 배수 ("default_claude_max_20x" → 20, "default_claude_pro" → None)
+pub(crate) fn tier_from_rate_limit_tier(tier: &str) -> Option<u32> {
     tier.strip_suffix('x')?.rsplit('_').next()?.parse().ok()
+}
+
+fn plan_override_path(dir: &Path) -> PathBuf {
+    dir.join("plan.json")
+}
+
+pub(crate) fn read_plan_override(dir: &Path) -> Option<PlanOverride> {
+    let text = fs::read_to_string(plan_override_path(dir)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// 계정 ID가 같은 프로필 폴더들 (같은 계정을 두 이름으로 저장했을 수도 있다)
+fn profile_dirs_for_account(env: &Env, provider: Provider, account_id: &str) -> Vec<PathBuf> {
+    profile_dirs(env, provider)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(_, dir)| (read_meta(&dir)?.id == account_id).then_some(dir))
+        .collect()
+}
+
+/// 그 계정의 구독 정보를 max_age_secs 안에 확인한 적이 있으면 true — 프로필 폴더가
+/// 하나도 없으면(저장 안 된 활성 계정) 기록할 곳이 없으니 조회를 건너뛰도록 true.
+pub(crate) fn plan_override_fresh(
+    env: &Env,
+    provider: Provider,
+    account_id: &str,
+    max_age_secs: u64,
+) -> bool {
+    let dirs = profile_dirs_for_account(env, provider, account_id);
+    if dirs.is_empty() {
+        return true;
+    }
+    let cutoff = now().saturating_sub(max_age_secs);
+    dirs.iter()
+        .all(|dir| read_plan_override(dir).is_some_and(|p| p.checked_at >= cutoff))
+}
+
+/// 계정 ID가 같은 모든 프로필 폴더에 구독 정보를 기록한다.
+pub(crate) fn write_plan_override(
+    env: &Env,
+    provider: Provider,
+    account_id: &str,
+    plan: &PlanOverride,
+) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(plan).map_err(|e| e.to_string())?;
+    for dir in profile_dirs_for_account(env, provider, account_id) {
+        atomic_write_existing_parent(&plan_override_path(&dir), &bytes)?;
+    }
+    Ok(())
 }
 
 /// 현재 로그인된 계정의 신원. 파일이 없거나 식별 불가면 Ok(None).
@@ -1038,12 +1104,16 @@ pub fn list(env: &Env, provider: Provider) -> Result<Snapshot, String> {
     for (name, dir) in profile_dirs(env, provider)? {
         if let Some(meta) = read_meta(&dir) {
             let cred = read_json(&dir.join(provider.credential_file_name())).ok();
-            let plan = cred
+            // 서버 확인값(plan.json)이 있으면 토큰 파일의 로그인 시점 값보다 우선한다
+            let override_ = read_plan_override(&dir);
+            let plan = override_
                 .as_ref()
-                .and_then(|root| plan_from_credential(provider, root));
-            let plan_tier = cred
+                .and_then(|p| p.plan.clone())
+                .or_else(|| cred.as_ref().and_then(|root| plan_from_credential(provider, root)));
+            let plan_tier = override_
                 .as_ref()
-                .and_then(|root| tier_from_credential(provider, root));
+                .and_then(|p| p.tier)
+                .or_else(|| cred.as_ref().and_then(|root| tier_from_credential(provider, root)));
             profiles.push(ProfileInfo {
                 active: live_id.as_deref() == Some(meta.id.as_str()),
                 name,
@@ -1321,6 +1391,47 @@ mod tests {
             plan_from_credential(Provider::Codex, &codex).as_deref(),
             Some("Pro")
         );
+    }
+
+    #[test]
+    fn plan_override_beats_credential_tier_and_survives_resave() {
+        let env = test_env("plan-override");
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a1");
+        // 로그인 시점 토큰 파일은 5x라고 말한다
+        let cred_path = env.live_credential_path(Provider::Claude);
+        fs::write(
+            &cred_path,
+            r#"{"claudeAiOauth":{"accessToken":"tok-a1","subscriptionType":"max","rateLimitTier":"default_claude_max_5x"}}"#,
+        )
+        .unwrap();
+        save_current(&env, Provider::Claude, "main").unwrap();
+        let snap = list(&env, Provider::Claude).unwrap();
+        assert_eq!(snap.profiles[0].plan_tier, Some(5));
+        // 아직 확인한 적 없으므로 동기화 대상
+        assert!(!plan_override_fresh(&env, Provider::Claude, "uuid-a", 600));
+        // 모르는 계정은 기록할 곳이 없어 건너뛴다
+        assert!(plan_override_fresh(&env, Provider::Claude, "uuid-zzz", 600));
+
+        write_plan_override(
+            &env,
+            Provider::Claude,
+            "uuid-a",
+            &PlanOverride {
+                plan: Some("Max".into()),
+                tier: Some(20),
+                checked_at: now(),
+            },
+        )
+        .unwrap();
+        assert!(plan_override_fresh(&env, Provider::Claude, "uuid-a", 600));
+        let snap = list(&env, Provider::Claude).unwrap();
+        assert_eq!(snap.profiles[0].plan_tier, Some(20), "서버 확인값이 우선");
+        assert_eq!(snap.profiles[0].plan.as_deref(), Some("Max"));
+
+        // 다시 저장(전환 백업과 같은 경로)해도 토큰 파일이 5x로 덮일 뿐 override는 남는다
+        save_current(&env, Provider::Claude, "main").unwrap();
+        let snap = list(&env, Provider::Claude).unwrap();
+        assert_eq!(snap.profiles[0].plan_tier, Some(20));
     }
 
     #[test]
