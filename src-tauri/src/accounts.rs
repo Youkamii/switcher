@@ -801,10 +801,14 @@ pub(crate) fn write_plan_override(
     plan: &PlanOverride,
 ) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(plan).map_err(|e| e.to_string())?;
+    // 한 폴더가 그 사이 삭제돼도(delete와 경합) 나머지 폴더에는 계속 기록한다
+    let mut first_err = None;
     for dir in profile_dirs_for_account(env, provider, account_id) {
-        atomic_write_existing_parent(&plan_override_path(&dir), &bytes)?;
+        if let Err(e) = atomic_write_existing_parent(&plan_override_path(&dir), &bytes) {
+            first_err.get_or_insert(e);
+        }
     }
-    Ok(())
+    first_err.map_or(Ok(()), Err)
 }
 
 /// 현재 로그인된 계정의 신원. 파일이 없거나 식별 불가면 Ok(None).
@@ -1110,10 +1114,12 @@ pub fn list(env: &Env, provider: Provider) -> Result<Snapshot, String> {
                 .as_ref()
                 .and_then(|p| p.plan.clone())
                 .or_else(|| cred.as_ref().and_then(|root| plan_from_credential(provider, root)));
-            let plan_tier = override_
-                .as_ref()
-                .and_then(|p| p.tier)
-                .or_else(|| cred.as_ref().and_then(|root| tier_from_credential(provider, root)));
+            // 배수는 plan.json이 있으면 그 값이 최종이다 (None 포함) — Max→Pro 다운그레이드
+            // 때 서버가 배수를 안 주는데 토큰 파일의 옛 5x로 되돌아가면 "Pro 5"가 된다
+            let plan_tier = match override_.as_ref() {
+                Some(p) => p.tier,
+                None => cred.as_ref().and_then(|root| tier_from_credential(provider, root)),
+            };
             profiles.push(ProfileInfo {
                 active: live_id.as_deref() == Some(meta.id.as_str()),
                 name,
@@ -1432,6 +1438,22 @@ mod tests {
         save_current(&env, Provider::Claude, "main").unwrap();
         let snap = list(&env, Provider::Claude).unwrap();
         assert_eq!(snap.profiles[0].plan_tier, Some(20));
+
+        // Max→Pro 다운그레이드: 서버가 배수를 안 주면(None) 토큰 파일의 옛 5x로 되돌아가지 않는다
+        write_plan_override(
+            &env,
+            Provider::Claude,
+            "uuid-a",
+            &PlanOverride {
+                plan: Some("Pro".into()),
+                tier: None,
+                checked_at: now(),
+            },
+        )
+        .unwrap();
+        let snap = list(&env, Provider::Claude).unwrap();
+        assert_eq!(snap.profiles[0].plan.as_deref(), Some("Pro"));
+        assert_eq!(snap.profiles[0].plan_tier, None, "plan.json의 None이 최종");
     }
 
     #[test]

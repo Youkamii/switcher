@@ -1291,14 +1291,6 @@ pub async fn fetch(
     match result {
         Ok(usage) => {
             backoff_clear(&actual_key);
-            if let (Some(token), Some(account_id)) = (
-                plan_token.as_deref(),
-                actual_key
-                    .strip_prefix("claude:")
-                    .filter(|id| !id.starts_with('<')),
-            ) {
-                sync_claude_plan(env, token, account_id).await;
-            }
             if let Ok(mut map) = cache().lock() {
                 map.insert(
                     actual_key.clone(),
@@ -1307,6 +1299,17 @@ pub async fn fetch(
             }
             if let Err(e) = disk_cache_store(env, &actual_key, &usage) {
                 eprintln!("사용량 캐시 저장 실패: {e}");
+            }
+            // 티어 동기화는 캐시를 채운 뒤, 계정 게이트를 풀고 나서 — 프로필 API가
+            // 느려도(최대 10초) 같은 계정의 다른 조회가 문 앞에서 기다리지 않게 한다
+            drop(_request);
+            if let (Some(token), Some(account_id)) = (
+                plan_token.as_deref(),
+                actual_key
+                    .strip_prefix("claude:")
+                    .filter(|id| !id.starts_with('<')),
+            ) {
+                sync_claude_plan(env, token, account_id).await;
             }
             Ok(usage)
         }
