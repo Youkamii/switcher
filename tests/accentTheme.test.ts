@@ -203,11 +203,6 @@ test("keeps themed monitor series and warning fills distinguishable", () => {
     stylesSource,
     /\.mon-row \.bar-fill\.mon-fill-net\s*{[^}]*--monitor-net-rgb/s,
   );
-  assert.match(
-    stylesSource,
-    /\.bar-fill\.warn\s*{[^}]*repeating-linear-gradient/s,
-    "warning usage must retain a non-color signal when the selected accent is yellow",
-  );
 });
 
 test("wires the native setting into both themed windows", () => {

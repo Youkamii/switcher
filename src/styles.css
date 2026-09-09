@@ -1061,12 +1061,7 @@ body.minimal .dock-tray button {
 }
 
 .bar-fill.warn {
-  background-color: var(--warn);
-  background-image: repeating-linear-gradient(
-    135deg,
-    rgba(var(--separator-rgb), 0.38) 0 2px,
-    transparent 2px 4px
-  );
+  background: var(--warn);
 }
 
 .bar-fill.danger {
