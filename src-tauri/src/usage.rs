@@ -2,6 +2,9 @@
 //!
 //! 클로드: GET https://api.anthropic.com/api/oauth/usage
 //!   (Authorization: Bearer <accessToken> + anthropic-beta: oauth-2025-04-20)
+//! 클로드 구독 티어: GET https://api.anthropic.com/api/oauth/profile
+//!   (organization.rate_limit_tier — 토큰 파일의 rateLimitTier는 로그인 시점 값이라
+//!   Max 5x→20x 업그레이드가 반영되지 않는다. 사용량 조회에 얹어 동기화한다.)
 //! 토큰 값은 절대 로그·에러 메시지에 싣지 않는다.
 
 use serde::Serialize;
@@ -10,11 +13,13 @@ use std::path::{Path, PathBuf};
 
 use crate::accounts::{
     atomic_write, atomic_write_existing_parent, identity_from_value, jwt_payload, live_cred_exists,
-    live_identity, now, read_json, read_live_cred, read_meta, Env, Provider, MUTATION_LOCK,
+    live_identity, now, read_json, read_live_cred, read_meta, tier_from_rate_limit_tier, Env,
+    PlanOverride, Provider, MUTATION_LOCK,
 };
 use serde::Deserialize;
 
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+const CLAUDE_PROFILE_URL: &str = "https://api.anthropic.com/api/oauth/profile";
 const CLAUDE_OAUTH_BETA: &str = "oauth-2025-04-20";
 const CODEX_USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
 
@@ -735,6 +740,86 @@ async fn request_auth(
     Ok((auth, refresh_err))
 }
 
+/// 프로필 응답에서 구독 이름·Max 배수를 뽑는다. organization_type "claude_max" → "Max",
+/// rate_limit_tier "default_claude_max_20x" → 20. 둘 다 없으면 None (덮어쓰지 않는다).
+fn plan_from_profile_body(body: &Value) -> Option<PlanOverride> {
+    let org = body.get("organization")?;
+    let tier = org
+        .get("rate_limit_tier")
+        .and_then(|v| v.as_str())
+        .and_then(tier_from_rate_limit_tier);
+    let capitalize = |p: &str| {
+        let mut chars = p.chars();
+        match chars.next() {
+            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            None => String::new(),
+        }
+    };
+    let plan = org
+        .get("organization_type")
+        .and_then(|v| v.as_str())
+        .and_then(|t| t.strip_prefix("claude_"))
+        .filter(|p| !p.is_empty())
+        .map(capitalize)
+        .or_else(|| {
+            let account = body.get("account")?;
+            if account.get("has_claude_max")?.as_bool()? {
+                Some("Max".to_string())
+            } else if account.get("has_claude_pro")?.as_bool()? {
+                Some("Pro".to_string())
+            } else {
+                None
+            }
+        });
+    if tier.is_none() && plan.is_none() {
+        return None;
+    }
+    Some(PlanOverride {
+        plan,
+        tier,
+        checked_at: now(),
+    })
+}
+
+/// 같은 계정을 다시 묻지 않는 최소 간격 — 사용량은 1분 캐시지만 구독 티어는 그렇게
+/// 자주 바뀌지 않는다.
+const PLAN_SYNC_INTERVAL_SECS: u64 = 10 * 60;
+
+/// 사용량 조회에 성공한 토큰으로 구독 티어를 함께 확인해 프로필에 기록한다.
+/// 실패는 조용히 넘긴다 — 표시용 정보이고 다음 조회가 다시 시도한다.
+async fn sync_claude_plan(env: &Env, token: &str, account_id: &str) {
+    if crate::accounts::plan_override_fresh(
+        env,
+        Provider::Claude,
+        account_id,
+        PLAN_SYNC_INTERVAL_SECS,
+    ) {
+        return;
+    }
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    else {
+        return;
+    };
+    let Ok(body) = get_json(
+        client
+            .get(CLAUDE_PROFILE_URL)
+            .bearer_auth(token)
+            .header("anthropic-beta", CLAUDE_OAUTH_BETA),
+    )
+    .await
+    else {
+        return;
+    };
+    let Some(plan) = plan_from_profile_body(&body) else {
+        return;
+    };
+    if let Err(e) = crate::accounts::write_plan_override(env, Provider::Claude, account_id, &plan) {
+        eprintln!("구독 티어 기록 실패: {e}");
+    }
+}
+
 async fn fetch_claude_attempt(
     auth: AuthSnapshot,
     refresh_err: Option<FetchErr>,
@@ -1197,20 +1282,33 @@ pub async fn fetch(
         Some(_) => request_auth(env, provider, profile).await,
         None => Ok((initial_auth, None)),
     };
-    let (actual_key, result) = match prepared {
+    let (actual_key, plan_token, result) = match prepared {
         Ok((auth, refresh_err)) => {
             let actual_key = auth.key.clone();
+            // 티어 동기화용 — 사용량 조회가 성공한 뒤 같은 토큰으로 프로필을 한 번 더 묻는다
+            let plan_token = match provider {
+                Provider::Claude => claude_access_token_from_root(&auth.root).ok(),
+                Provider::Codex => None,
+            };
             let result = match provider {
                 Provider::Claude => fetch_claude_attempt(auth, refresh_err).await,
                 Provider::Codex => fetch_codex_attempt(auth, refresh_err).await,
             };
-            (actual_key, result)
+            (actual_key, plan_token, result)
         }
-        Err(error) => (key.clone(), Err(error)),
+        Err(error) => (key.clone(), None, Err(error)),
     };
     match result {
         Ok(usage) => {
             backoff_clear(&actual_key);
+            if let (Some(token), Some(account_id)) = (
+                plan_token.as_deref(),
+                actual_key
+                    .strip_prefix("claude:")
+                    .filter(|id| !id.starts_with('<')),
+            ) {
+                sync_claude_plan(env, token, account_id).await;
+            }
             if let Ok(mut map) = cache().lock() {
                 map.insert(
                     actual_key.clone(),
@@ -1350,6 +1448,29 @@ mod tests {
         assert_eq!(usage.windows[1].label, "5 Hours");
         assert_eq!(usage.windows[2].key, "model:GPT-Test-Model");
         assert_eq!(usage.windows[2].label, "GPT-Test-Model");
+    }
+
+    #[test]
+    fn plan_is_parsed_from_profile_body() {
+        let body: Value = serde_json::from_str(
+            r#"{"account":{"has_claude_max":true,"has_claude_pro":false},
+                "organization":{"organization_type":"claude_max","rate_limit_tier":"default_claude_max_20x"}}"#,
+        )
+        .unwrap();
+        let plan = plan_from_profile_body(&body).unwrap();
+        assert_eq!(plan.plan.as_deref(), Some("Max"));
+        assert_eq!(plan.tier, Some(20));
+        // organization_type이 없어도 account 플래그로 이름을 보충한다
+        let body: Value = serde_json::from_str(
+            r#"{"account":{"has_claude_max":false,"has_claude_pro":true},
+                "organization":{"rate_limit_tier":"default_claude_pro"}}"#,
+        )
+        .unwrap();
+        let plan = plan_from_profile_body(&body).unwrap();
+        assert_eq!(plan.plan.as_deref(), Some("Pro"));
+        assert_eq!(plan.tier, None);
+        // 아무 정보도 없으면 None — 기존 표시를 덮어쓰지 않는다
+        assert!(plan_from_profile_body(&serde_json::json!({"organization":{}})).is_none());
     }
 
     #[test]
