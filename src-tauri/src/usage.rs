@@ -837,18 +837,8 @@ fn parse_codex_usage(body: &Value) -> Usage {
     if let Some(w) = body.pointer("/rate_limit/secondary_window") {
         push_codex_window(&mut windows, "secondary", None, w);
     }
-    if let Some(extra) = body.get("additional_rate_limits").and_then(|v| v.as_array()) {
-        for item in extra {
-            let name = item
-                .get("limit_name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("Model");
-            if let Some(w) = item.pointer("/rate_limit/primary_window") {
-                // 모델별 한도는 모델 이름만 표시
-                push_codex_window(&mut windows, &format!("model:{name}"), Some(name), w);
-            }
-        }
-    }
+    // additional_rate_limits(모델별 한도, 예: GPT-5.3-Codex-Spark)는 표시하지 않는다 —
+    // 쓴 적 없는 모델 창이 컴팩트 라벨 "gp"로 계속 떠서 혼란만 준다 (사용자 지시).
     Usage {
         windows,
         stale: false,
@@ -1343,13 +1333,13 @@ mod tests {
         )
         .unwrap();
         let usage = parse_codex_usage(&body);
-        assert_eq!(usage.windows.len(), 3);
+        // 모델별 한도(additional_rate_limits)는 버린다 — 기본 창 둘만 남는다
+        assert_eq!(usage.windows.len(), 2);
         assert_eq!(usage.windows[0].key, "primary");
         assert_eq!(usage.windows[0].label, "Weekly");
         assert_eq!(usage.windows[0].percent, 30.0);
         assert_eq!(usage.windows[1].label, "5 Hours");
-        assert_eq!(usage.windows[2].key, "model:GPT-Test-Model");
-        assert_eq!(usage.windows[2].label, "GPT-Test-Model");
+        assert!(usage.windows.iter().all(|w| !w.key.starts_with("model:")));
     }
 
     #[test]
