@@ -5,8 +5,12 @@
 </h1>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/switcher-widget"><img src="https://img.shields.io/npm/v/switcher-widget?style=flat-square&color=CB3837" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/switcher-widget"><img src="https://img.shields.io/npm/v/switcher-widget?style=flat-square&color=CB3837&label=npm" alt="npm version" /></a>
+  <a href="https://www.npmjs.com/package/switcher-widget"><img src="https://img.shields.io/npm/dm/switcher-widget?style=flat-square&color=8B5CF6&label=downloads" alt="npm downloads" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/Youkamii/switcher?style=flat-square&color=22C55E" alt="MIT License" /></a>
+  <img src="https://img.shields.io/badge/Windows-x64-0078D4?style=flat-square&logo=windows&logoColor=white" alt="Windows x64" />
+  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-000000?style=flat-square&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
+  <img src="https://img.shields.io/badge/server-none-475569?style=flat-square" alt="No relay server" />
   <!-- <a href="https://github.com/Youkamii/switcher/stargazers"><img src="https://img.shields.io/github/stars/Youkamii/switcher?style=flat-square&color=F59E0B" alt="GitHub stars" /></a> -->
 </p>
 
@@ -16,11 +20,12 @@
 </p>
 
 <p align="center">
-  <a href="#30초-설치"><strong>30초 설치</strong></a> ·
-  <a href="#주요-기능">주요 기능</a> ·
-  <a href="#지원-범위와-배포">지원 범위</a> ·
-  <a href="#데이터와-보안">데이터와 보안</a> ·
-  <a href="#개발과-기여">기여하기</a>
+  <a href="#-30초-설치"><strong>30초 설치</strong></a> ·
+  <a href="#-주요-기능">주요 기능</a> ·
+  <a href="#-조작-치트시트">조작 치트시트</a> ·
+  <a href="#-지원-범위와-배포">지원 범위</a> ·
+  <a href="#-데이터와-보안">데이터와 보안</a> ·
+  <a href="#-개발과-기여">기여하기</a>
 </p>
 
 <p align="center">
@@ -32,7 +37,36 @@
   <a href="docs/README.hi.md">हिन्दी</a>
 </p>
 
-## 30초 설치
+<br />
+
+<table align="center">
+  <tr>
+    <td align="center" width="200">
+      <h3>⚡</h3>
+      <strong>한 번에 전환</strong><br />
+      <sub>현재 인증을 백업하고<br />선택한 프로필을 활성화</sub>
+    </td>
+    <td align="center" width="200">
+      <h3>◉</h3>
+      <strong>한도를 한눈에</strong><br />
+      <sub>비활성 계정까지<br />사용량·리셋 시간 표시</sub>
+    </td>
+    <td align="center" width="200">
+      <h3>🚗</h3>
+      <strong>TFSD 자율주행</strong><br />
+      <sub>90%에 닿으면 가장<br />넉넉한 계정으로 자동 전환</sub>
+    </td>
+    <td align="center" width="200">
+      <h3>↗</h3>
+      <strong>화면 위에 상주</strong><br />
+      <sub>클릭 통과·투명도로<br />작업 화면을 가리지 않음</sub>
+    </td>
+  </tr>
+</table>
+
+<br />
+
+## ⚡ 30초 설치
 
 Node.js 18 이상에서 아래 두 줄이면 끝입니다.
 
@@ -44,11 +78,11 @@ switcher
 첫 실행 때 설치한 npm 패키지와 **같은 버전**의 공식 릴리스 파일을 내려받습니다. 사용하려는 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 또는 [Codex CLI](https://github.com/openai/codex)는 별도로 설치되어 있어야 합니다.
 
 <p align="center">
-  <a href="https://github.com/Youkamii/switcher/releases/download/v1.8.5/switcher-win-x64-latest.zip"><strong>Windows x64 다운로드</strong></a>
-  &nbsp;&nbsp;·&nbsp;&nbsp;
-  <a href="https://github.com/Youkamii/switcher/releases/download/v1.8.5/switcher-mac-arm64-latest.zip"><strong>macOS Apple Silicon 다운로드</strong></a>
-  &nbsp;&nbsp;·&nbsp;&nbsp;
-  <a href="https://github.com/Youkamii/switcher/releases/tag/v1.8.5">다운로드 보관함</a>
+  <a href="https://github.com/Youkamii/switcher/releases/download/v1.8.5/switcher-win-x64-latest.zip"><img src="https://img.shields.io/badge/⬇%20Windows%20x64-다운로드-0078D4?style=for-the-badge" alt="Windows x64 다운로드" /></a>
+  &nbsp;
+  <a href="https://github.com/Youkamii/switcher/releases/download/v1.8.5/switcher-mac-arm64-latest.zip"><img src="https://img.shields.io/badge/⬇%20macOS%20Apple%20Silicon-다운로드-000000?style=for-the-badge" alt="macOS Apple Silicon 다운로드" /></a>
+  &nbsp;
+  <a href="https://github.com/Youkamii/switcher/releases/tag/v1.8.5"><img src="https://img.shields.io/badge/📦%20다운로드%20보관함-모든%20버전-475569?style=for-the-badge" alt="다운로드 보관함" /></a>
 </p>
 
 <p align="center">
@@ -57,36 +91,27 @@ switcher
   <sub>전체 제어 화면부터 폭 120px 미니 위젯까지, 필요한 만큼만 남깁니다.</sub>
 </p>
 
-## 한 번 로그인하고, 계속 바꾸세요
+## 🔁 한 번 로그인하고, 계속 바꾸세요
 
 Claude Code와 Codex CLI는 한 번에 한 계정만 활성화합니다. 계정이 여러 개면 한도가 찰 때마다 로그아웃하고 브라우저 인증을 다시 거쳐야 하고, 어느 계정에 여유가 남았는지도 따로 확인해야 합니다.
 
 switcher는 CLI가 쓰는 로컬 인증 저장소를 계정별로 관리합니다. 로그인은 계정마다 한 번만 하고, 그다음부터는 위젯에서 전환합니다.
 
-<table>
-  <tr>
-    <td width="33%" valign="top">
-      <strong>⚡ 한 번에 전환</strong><br /><br />
-      현재 인증을 먼저 백업한 뒤 선택한 프로필을 활성화합니다. 새 터미널부터 바로 적용됩니다.
-    </td>
-    <td width="33%" valign="top">
-      <strong>◉ 한도를 한눈에</strong><br /><br />
-      활성·비활성 계정의 사용량, 구독 등급, 실제 리셋까지 남은 시간을 함께 보여 줍니다.
-    </td>
-    <td width="33%" valign="top">
-      <strong>↗ 화면 위에 상주</strong><br /><br />
-      전체·컴팩트·미니멀 모드와 클릭 통과를 조합해 작업 화면을 가리지 않습니다.
-    </td>
-  </tr>
-</table>
+| | 손으로 전환할 때 | switcher |
+| --- | --- | --- |
+| 계정 바꾸기 | 로그아웃 → 브라우저 인증 → 코드 붙여넣기 | 카드 더블클릭 한 번 |
+| 남은 한도 확인 | 계정마다 직접 로그인해서 확인 | 비활성 계정까지 한 화면에 |
+| 한도 도달 | 작업이 멈추고 나서 알게 됨 | TFSD가 90%에서 미리 갈아탐 |
+| 로그인 횟수 | 전환할 때마다 | 계정당 한 번 |
 
-## 주요 기능
+## 🧩 주요 기능
 
 ### 계정 전환과 자동 사용량 갱신
 
 - **Claude Code · Codex CLI** 프로필을 같은 화면에서 추가·삭제·전환
-- 공급자가 제공하는 **5시간·주간·모델별 사용량 창**과 리셋 시간 표시
+- 공급자가 제공하는 **5시간·주간 사용량 창**과 리셋 시간 표시
 - 비활성 프로필도 토큰을 갱신해 사용량을 계속 업데이트
+- Claude 구독 등급과 **Max 배수(5x·20x)를 서버 기준으로 동기화** — 업그레이드해도 다시 로그인할 필요 없음
 - Type 1은 버튼, Type 2·3은 카드 더블클릭으로 전환
 - 이메일과 GitHub 계정명을 흐리는 화면 공유용 가리기
 
@@ -119,7 +144,15 @@ Type 2의 리셋 시간은 좁은 폭에 맞춰 압축됩니다. 24시간 미만
 
 Type 2·3의 빈 영역은 클릭과 드래그가 뒤 창으로 통과합니다. 최저 투명도에서는 사용량 그래프만 남겨 편집기 위에 겹칠 수 있습니다.
 
-### TFSD 자율주행
+<details>
+<summary><strong>🎬 전환 데모 보기</strong> — 카드 더블클릭 전환과 클릭 통과 (GIF, 약 9MB)</summary>
+<br />
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/demo.gif" width="420" alt="위젯 모드 데모 — 계정 카드 더블클릭 전환, 빈 영역은 뒤 창으로 클릭 통과" />
+</p>
+</details>
+
+### 🚗 TFSD 자율주행
 
 TFSD(Token Full Self-Driving)는 활성 계정의 사용량 창 중 하나가 90%에 도달하면, **모든 사용량 창에 여유가 있는 프로필 중 가장 넉넉한 곳**으로 자동 전환합니다.
 
@@ -129,7 +162,7 @@ TFSD(Token Full Self-Driving)는 활성 계정의 사용량 창 중 하나가 90
       <img src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/tfsd.png" width="340" alt="TFSD가 켜져 활성 카드에 T 워터마크가 표시된 화면" />
     </td>
     <td width="58%" valign="middle">
-      <strong>🚗 켜 두면 알아서 다음 계정으로</strong><br /><br />
+      <strong>켜 두면 알아서 다음 계정으로</strong><br /><br />
       · 창 아래 도구 독(손잡이를 눌러 펼침) 또는 트레이 설정에서 켜기<br />
       · 활성 카드의 T 워터마크로 상태 확인<br />
       · 90%를 넘긴 창들이 모두 30분 안에 리셋되면 전환하지 않고 대기<br />
@@ -138,9 +171,22 @@ TFSD(Token Full Self-Driving)는 활성 계정의 사용량 창 중 하나가 90
   </tr>
 </table>
 
+```mermaid
+flowchart LR
+    A([활성 계정 사용량 갱신]) --> B{창 하나라도<br/>90% 이상?}
+    B -- 아니오 --> A
+    B -- 예 --> C{넘긴 창이 모두<br/>30분 안에 리셋?}
+    C -- 예 --> W([대기]) --> A
+    C -- 아니오 --> D{모든 창에 여유 있는<br/>프로필이 있나?}
+    D -- 없음 --> W
+    D -- 있음 --> E([가장 넉넉한 프로필로 전환])
+    E --> A
+    U([사용자가 직접 전환]) -.-> X([TFSD 해제])
+```
+
 전환 기록은 `~/.switcher/tfsd-history.log`에 남습니다. 기록에는 프로필 이름이나 이메일이 평문으로 포함될 수 있습니다.
 
-### 작업을 끊지 않는 화면 도구
+### 🖥️ 작업을 끊지 않는 화면 도구
 
 **블랙 모니터**는 화면을 검은 오버레이로 덮습니다. 커서를 움직이면 주변만 연기처럼 걷히고, 마우스를 1~2초 세게 흔들거나 `Esc`를 누르면 해제됩니다. Windows는 DDC/CI 밝기 조절을 지원하는 모니터의 하드웨어 밝기도 함께 낮춥니다. macOS는 오버레이만 사용하며 전체 화면 앱이 열린 별도 Space는 덮지 못합니다.
 
@@ -171,6 +217,7 @@ TFSD(Token Full Self-Driving)는 활성 계정의 사용량 창 중 하나가 90
 | 사용량과 TFSD | 비활성 계정까지 갱신, 90%에서 자동 전환 | ✓ | ✓ |
 | GitHub 전환 | `gh` 계정 전환과 HTTPS Git 인증 연결 | ✓ | ✓ |
 | 클릭 통과·투명도 | 위젯 아래 앱을 그대로 조작 | ✓ | ✓ |
+| 앱 색감 | 6종 액센트 테마 | ✓ | ✓ |
 | DISPLAY | DDC/CI 외장 모니터 | ✓ | — |
 | DISPLAY | 내장 디스플레이 밝기 | — | ✓ |
 | 블랙 모니터 | 오버레이, 흔들기·`Esc` 해제 | 모든 모니터 | 전체 화면 Space 제외 |
@@ -192,7 +239,21 @@ TFSD(Token Full Self-Driving)는 활성 계정의 사용량 창 중 하나가 90
 
 [GitHub CLI](https://cli.github.com)에 로그인된 `github.com` 계정을 전환합니다. HTTPS 리모트를 위해 `gh auth setup-git`을 사용하므로 GitHub CLI의 전역 HTTPS 자격증명 연결에도 반영됩니다. SSH 리모트, `git config user.name/email`, VS Code·Copilot 로그인은 바뀌지 않습니다. GitHub Enterprise 호스트는 현재 대상이 아닙니다.
 
-## 처음 설정하기
+## 🎛️ 조작 치트시트
+
+| 하고 싶은 것 | 방법 |
+| --- | --- |
+| 보기 모드 바꾸기 | 오른쪽 위 **Type** 버튼으로 Type 1 → 2 → 3 순환 |
+| 계정 전환 | Type 1은 카드의 버튼, Type 2·3은 **카드 더블클릭** |
+| 섹션 순서 바꾸기 | Type 1에서 섹션 제목을 끌어서 배치 |
+| 위젯 아래 창 조작 | Type 2·3의 빈 영역은 클릭·드래그가 뒤로 통과 |
+| TFSD 켜기 | 창 아래 손잡이를 눌러 도구 독을 펼치거나 트레이 설정 |
+| 블랙 모니터 해제 | 마우스를 1~2초 세게 흔들거나 `Esc` |
+| 클램셸 모드 | ☕ 한 번은 다음 덮개 열림까지, 두 번은 계속 유지 |
+| 화면 공유용 가리기 | 이메일·GitHub 계정명 흐리기 켜기 |
+| 완전히 종료 | 트레이 메뉴의 **종료** (창 닫기는 종료가 아님) |
+
+## 🚀 처음 설정하기
 
 ### Claude · Codex 계정 추가
 
@@ -208,7 +269,7 @@ Codex 장치 코드 인증이 꺼져 있으면 로그인할 수 없습니다. �
 
 [GitHub CLI](https://cli.github.com)가 설치되어 있으면 GITHUB 섹션이 나타납니다. **+ 계정 추가**를 누르고 브라우저에서 장치 코드를 승인하세요.
 
-## 데이터와 보안
+## 🔐 데이터와 보안
 
 switcher 전용 계정 중계 서버는 없습니다. 앱은 로컬 CLI 인증 저장소를 읽고 쓰며, 사용량 조회와 토큰 갱신은 Anthropic 또는 OpenAI의 서비스에 직접 요청합니다. GitHub 인증은 `gh`가 관리하고, 업데이트는 GitHub Releases에서 받습니다.
 
@@ -226,6 +287,13 @@ switcher 전용 계정 중계 서버는 없습니다. 앱은 로컬 CLI 인증 �
 
 계정 전환 순서는 일부러 고정되어 있습니다.
 
+```mermaid
+flowchart LR
+    L[(활성 인증<br/>CLI가 자동 갱신)] -- ① 먼저 백업 --> P1[(현재 프로필)]
+    P2[(선택한 프로필)] -- ② 그다음 복사 --> L
+    L --> T([새 터미널부터 적용])
+```
+
 1. 현재 활성 인증을 현재 프로필에 먼저 백업
 2. 선택한 프로필을 활성 위치로 복사
 
@@ -233,7 +301,7 @@ switcher 전용 계정 중계 서버는 없습니다. 앱은 로컬 CLI 인증 �
 
 대화 기록, 메모리, 프로젝트 설정은 인증 파일과 별개라 계정을 바꿔도 그대로 유지됩니다. 이미 실행 중인 Claude Code·Codex 세션은 시작할 때 읽은 인증을 계속 쓸 수 있으므로, 전환 후 새 터미널 세션을 여는 것이 가장 확실합니다.
 
-## 지원 범위와 배포
+## 📦 지원 범위와 배포
 
 | 대상 | 공식 배포 파일 | 상태 |
 | --- | --- | --- |
@@ -258,9 +326,9 @@ switcher 전용 계정 중계 서버는 없습니다. 앱은 로컬 CLI 인증 �
 - 창을 닫아도 앱은 종료되지 않습니다. 완전히 끄려면 트레이 메뉴의 **종료**를 사용하세요.
 - 자동 업데이트는 새 버전을 받아 다음 실행부터 적용합니다.
 - 트레이의 **업데이트 확인**은 적용 뒤 앱을 자동으로 다시 시작합니다.
-- 언어, 자동 업데이트, 자동 실행, TFSD, 표시할 섹션을 트레이 설정에서 바꿀 수 있습니다.
+- 언어, 자동 업데이트, 자동 실행, TFSD, 앱 색감, 표시할 섹션을 트레이 설정에서 바꿀 수 있습니다.
 
-## 문제 해결
+## 🩺 문제 해결
 
 <details>
 <summary><strong>Windows 또는 macOS에서 처음 실행이 차단됩니다</strong></summary>
@@ -298,7 +366,7 @@ ChatGPT 계정에서 장치 코드 인증을 켜야 합니다. 개인 계정은 
 삭제는 보관함 사본만 지우고 로그인 자체는 남깁니다. 계정을 전환할 때 현재 로그인 계정을 자동 백업하므로 활성 계정 프로필은 다음 전환 때 다시 생길 수 있습니다. 완전히 정리하려면 먼저 다른 계정으로 전환한 뒤 삭제하세요.
 </details>
 
-## 개발과 기여
+## 🛠️ 개발과 기여
 
 이제 정식 오픈소스입니다. 작은 버그 수정, 문서 보완, 번역, 플랫폼 실기기 검증까지 모두 환영합니다.
 
@@ -330,7 +398,7 @@ npm run tauri dev
 [Pull Request 보기](https://github.com/Youkamii/switcher/pulls) ·
 [macOS 실기기 검증 체크리스트](docs/MAC_VALIDATION_PROMPT.md)
 
-## 기술 구성
+## 🧱 기술 구성
 
 <p align="center">
   <img src="https://img.shields.io/badge/Tauri-2-24C8DB?style=for-the-badge&logo=tauri&logoColor=white" alt="Tauri 2" />
