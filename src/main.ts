@@ -1578,8 +1578,25 @@ function edgeBar(): HTMLElement {
   return bar;
 }
 
-/// Type4(벽 붙임) 렌더 — 활성 계정 하나의 사용량만, 세로 막대로 (#151, 사용자 지시:
-/// "가로 막대가 아니라 세로 막대로, 아주 컴팩트하게"). 전환 카드는 없다.
+/// 접힌 물방울에 보이는 사용량 — 프로바이더별 최고 %를 모아 가장 높은 값을 채움
+/// 높이로 그린다 (사용자 지시: "손잡이에 현재 계정의 사용량이 보여야").
+const edgeGaugeByProvider = new Map<ProviderId, number>();
+function applyEdgeGauge() {
+  const fill = document.getElementById("edge-gauge-fill");
+  const gauge = document.getElementById("edge-gauge");
+  if (!fill || !gauge) return;
+  let pct = 0;
+  for (const value of edgeGaugeByProvider.values()) pct = Math.max(pct, value);
+  fill.style.height = `${pct}%`;
+  fill.classList.toggle("danger", pct >= 85);
+  fill.classList.toggle("warn", pct >= 60 && pct < 85);
+  gauge.title = `${Math.round(pct)}%`;
+}
+
+/// Type4(벽 붙임) 렌더 — 모든 계정의 사용량을 세로 막대로, 계정별 묶음으로 쌓는다
+/// (#151, 사용자 지시: "가로 막대가 아니라 세로 막대로, 아주 컴팩트하게",
+/// "확장되면 나머지 사용량들도 다 보여야"). 비활성 계정은 Type2·3과 같은
+/// `.card.switchable`이라 러스트 더블클릭 전환·호버 표시가 그대로 붙는다.
 async function renderProviderEdge(
   provider: ProviderId,
   title: string,
@@ -1588,63 +1605,101 @@ async function renderProviderEdge(
 ) {
   try {
     const snap = await invoke<Snapshot>("list_profiles", { provider });
-    const profile = snap.profiles.find((p) => p.active);
-    if (!profile) return;
+    if (snap.profiles.length === 0) {
+      edgeGaugeByProvider.delete(provider);
+      applyEdgeGauge();
+      return;
+    }
     const section = document.createElement("section");
     section.className = `edge-section prov-${provider}`;
     const head = document.createElement("div");
     head.className = "edge-title";
     head.textContent = title;
     section.appendChild(head);
-    const bars = document.createElement("div");
-    bars.className = "edge-bars";
-    section.appendChild(bars);
+    for (const profile of snap.profiles) {
+      section.appendChild(edgeAccount(provider, profile, pending));
+    }
     target.appendChild(section);
-
-    const load = (async () => {
-      try {
-        const usage = await fetchUsageShared(provider, null, profile.id);
-        if (usage.stale) {
-          // 이전 수치 — 채움만 흐리고, 제목 옆 점 하나로 이유를 알린다 (숫자는 살린다)
-          section.classList.add("stale");
-          const dot = document.createElement("span");
-          dot.className = "edge-stale";
-          dot.title = compactStaleAge(usage.stale_age_secs);
-          head.appendChild(dot);
-        }
-        for (const win of usage.windows) {
-          const pct = Math.min(100, Math.max(0, win.percent));
-          const col = document.createElement("div");
-          col.className = "edge-col";
-          const vbar = document.createElement("div");
-          vbar.className = "edge-vbar";
-          vbar.title = win.label;
-          const fill = document.createElement("div");
-          fill.className = "edge-vfill";
-          if (pct >= 85) fill.classList.add("danger");
-          else if (pct >= 60) fill.classList.add("warn");
-          fill.style.height = `${pct}%`;
-          vbar.appendChild(fill);
-          const num = document.createElement("span");
-          num.className = "edge-num";
-          num.textContent = String(Math.round(pct));
-          const lab = document.createElement("span");
-          lab.className = "edge-lab";
-          lab.textContent = minimalLabel(win);
-          lab.title = win.label;
-          col.append(vbar, num, lab);
-          bars.appendChild(col);
-        }
-      } catch {
-        // 표시 전용 — 조회 실패는 다음 주기에
-      } finally {
-        if (section.isConnected) fitHeight();
-      }
-    })();
-    pending.push(load);
   } catch {
     // 목록 실패도 조용히
   }
+}
+
+/// 계정 하나의 묶음 — 이름 한 줄 + 사용량 창마다 세로 막대. 활성 계정은 옅은
+/// 강조색 바탕, 비활성은 더블클릭 전환 대상
+function edgeAccount(
+  provider: ProviderId,
+  profile: ProfileInfo,
+  pending: Promise<unknown>[],
+): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "card edge-account" + (profile.active ? " active" : " switchable");
+  if (!profile.active) {
+    card.dataset.provider = provider;
+    card.dataset.name = profile.name;
+  }
+  const name = document.createElement("span");
+  name.className = "edge-name";
+  name.textContent = profile.name;
+  name.title = profile.email ?? profile.name;
+  card.appendChild(name);
+  const bars = document.createElement("div");
+  bars.className = "edge-bars";
+  card.appendChild(bars);
+
+  const load = (async () => {
+    try {
+      const usage = await fetchUsageShared(
+        provider,
+        profile.active ? null : profile.name,
+        profile.id,
+      );
+      if (usage.stale) {
+        // 이전 수치 — 채움만 흐리고, 이름 옆 점 하나로 이유를 알린다 (숫자는 살린다)
+        card.classList.add("stale");
+        const dot = document.createElement("span");
+        dot.className = "edge-stale";
+        dot.title = compactStaleAge(usage.stale_age_secs);
+        name.appendChild(dot);
+      }
+      for (const win of usage.windows) {
+        const pct = Math.min(100, Math.max(0, win.percent));
+        const col = document.createElement("div");
+        col.className = "edge-col";
+        const vbar = document.createElement("div");
+        vbar.className = "edge-vbar";
+        vbar.title = win.label;
+        const fill = document.createElement("div");
+        fill.className = "edge-vfill";
+        if (pct >= 85) fill.classList.add("danger");
+        else if (pct >= 60) fill.classList.add("warn");
+        fill.style.height = `${pct}%`;
+        vbar.appendChild(fill);
+        const num = document.createElement("span");
+        num.className = "edge-num";
+        num.textContent = String(Math.round(pct));
+        const lab = document.createElement("span");
+        lab.className = "edge-lab";
+        lab.textContent = minimalLabel(win);
+        lab.title = win.label;
+        col.append(vbar, num, lab);
+        bars.appendChild(col);
+      }
+      if (profile.active) {
+        edgeGaugeByProvider.set(
+          provider,
+          usage.windows.reduce((top, win) => Math.max(top, Math.min(100, win.percent)), 0),
+        );
+        applyEdgeGauge();
+      }
+    } catch {
+      // 표시 전용 — 조회 실패는 다음 주기에
+    } finally {
+      if (card.isConnected) fitHeight();
+    }
+  })();
+  pending.push(load);
+  return card;
 }
 
 /// 컴팩트(Type 2)·미니멀(Type 3) 렌더 — 모든 계정이 나오고 더블클릭 전환도 된다
@@ -1988,15 +2043,19 @@ function reportEdgeZone() {
 function setEdgeOut(out: boolean) {
   if (!edgeActive || edgeOut === out) return;
   edgeOut = out;
-  document.body.classList.remove("edge-noanim", "edge-settled");
+  document.body.classList.remove("edge-noanim");
+  document.body.classList.add("edge-moving");
   document.body.classList.toggle("edge-out", out);
   refreshHitRegionsAfterLayout();
 }
 
-// 판이 굳으면 필터를 약한 것으로 갈아끼운다 — 전이 중의 굵은 일렁임이 정지 상태까지
-// 이어지면 액체가 아니라 손떨림으로 읽힌다 (design review). 타이머 대신 animationend.
+// 출입이 끝나면 굵은 전이용 필터를 내린다 — 전이 중의 굵은 블러가 정지 상태까지
+// 이어지면 판은 손떨림으로 읽히고, 접힌 뒤엔 14px 물방울이 블러에 녹아 사라진다
+// (사용자 보고 "사라졌는데?"). 타이머 대신 animationend.
 document.getElementById("edge-body")!.addEventListener("animationend", (event) => {
-  if (event.animationName === "edge-body-rise") document.body.classList.add("edge-settled");
+  if (event.animationName === "edge-body-rise" || event.animationName === "edge-body-sink") {
+    document.body.classList.remove("edge-moving");
+  }
 });
 
 void listen<boolean>("edge-hover", (event) => setEdgeOut(event.payload));
@@ -2229,7 +2288,7 @@ async function fitWindowToContent() {
       const width = loginOpen || starPromptOpen
         ? 360
         : viewMode === "edge"
-          ? 84
+          ? 72
           : viewMode === "minimal"
             ? 120
             : viewMode === "compact"

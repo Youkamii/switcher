@@ -1320,7 +1320,8 @@ body.star-prompt-open .shell {
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  filter: url("#goo");
+  /* 평소(접힘·굳음)는 약한 필터 — 굵은 블러는 14px 물방울을 녹여 없앤다 */
+  filter: url("#goo-still");
   /* 투명도 슬라이더 계약(#42): 배경이 빠지면 액체도 함께 빠진다. 바닥 0.2는
      물방울을 찾을 수 있게 남기는 최소치 */
   opacity: max(0.2, var(--bg-alpha, 1));
@@ -1330,9 +1331,9 @@ body.edge #edge-liquid {
   display: block;
 }
 
-/* 굳은 뒤에는 일렁임을 약하게 */
-body.edge.edge-settled #edge-liquid {
-  filter: url("#goo-still");
+/* 출입 중에만 굵은 필터 — 덩어리들이 한 액체로 붙고 목이 길게 늘어난다 */
+body.edge.edge-moving #edge-liquid {
+  filter: url("#goo");
 }
 
 body.edge .shell {
@@ -1375,53 +1376,74 @@ body.edge.edge-left #edge-film {
   transform-origin: left center;
 }
 
-/* 물방울 — 벽에 매달린 물처럼 위가 가늘고 아래가 불룩하다 */
+/* 물방울 — 벽에 맺힌 반타원. 폭은 굳은 뒤 블러(8)의 2배 이상이어야 알파 문턱을
+   넉넉히 넘어 또렷하다 (14px이면 흐릿한 얼룩만 남는다, 실측) */
 #edge-tab {
   top: 50%;
-  right: -4px;
-  width: 14px;
-  height: 60px;
-  margin-top: -30px;
-  border-radius: 9px 0 0 16px / 20px 0 0 36px;
+  right: -8px;
+  width: 22px;
+  height: 64px;
+  margin-top: -32px;
+  border-radius: 14px 0 0 14px / 32px 0 0 32px;
   transform-origin: right center;
   animation: edge-drop-breathe 3.4s ease-in-out infinite;
 }
 
 body.edge.edge-left #edge-tab {
   right: auto;
-  left: -4px;
-  border-radius: 0 9px 16px 0 / 0 20px 36px 0;
+  left: -8px;
+  border-radius: 0 14px 14px 0 / 0 32px 32px 0;
   transform-origin: left center;
 }
 
-/* 물방울 반사광 — 필터 밖. 판이 나오면 꺼진다 */
-#edge-tab-glow {
+/* 물방울 게이지 — 필터 밖. 현재 계정 사용량을 채움 높이로 보여주고, 반사광으로
+   어두운 바탕에서도 물방울이 보이게 한다. 판이 완전히 들어간 뒤(0.65s)에야 켜진다 —
+   먼저 켜지면 손잡이가 판보다 앞서 튀어나온 것처럼 보인다 */
+#edge-gauge {
   display: none;
   position: fixed;
   top: 50%;
   right: 0;
-  width: 10px;
+  width: 12px;
   height: 60px;
   margin-top: -30px;
-  border-radius: 9px 0 0 16px / 20px 0 0 36px;
-  box-shadow: 0 0 7px 1px rgba(var(--accent-rgb), 0.4);
+  border-radius: 12px 0 0 12px / 30px 0 0 30px;
+  overflow: hidden;
+  background: rgba(var(--track-rgb), 0.55);
+  box-shadow: 0 0 7px 1px rgba(var(--accent-rgb), 0.35);
   pointer-events: none;
-  /* 판이 완전히 들어간 뒤(0.65s)에야 켜진다 — 먼저 켜지면 손잡이가 판보다 앞서
-     튀어나온 것처럼 보인다 (사용자 지적) */
   transition: opacity 0.25s 0.65s;
 }
 
-body.edge #edge-tab-glow {
+#edge-gauge-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 0;
+  background: var(--accent);
+  transition: height 0.5s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+#edge-gauge-fill.warn {
+  background: var(--warn);
+}
+
+#edge-gauge-fill.danger {
+  background: var(--danger);
+}
+
+body.edge #edge-gauge {
   display: block;
 }
 
-body.edge.edge-left #edge-tab-glow {
+body.edge.edge-left #edge-gauge {
   right: auto;
   left: 0;
-  border-radius: 0 9px 16px 0 / 0 20px 36px 0;
+  border-radius: 0 12px 12px 0 / 0 30px 30px 0;
 }
 
-body.edge.edge-out #edge-tab-glow {
+body.edge.edge-out #edge-gauge {
   opacity: 0;
   transition-delay: 0s;
 }
@@ -1431,7 +1453,7 @@ body.edge.edge-out #edge-tab-glow {
 #edge-body {
   top: 12px;
   bottom: 12px;
-  left: 8px;
+  left: 6px;
   right: -24px;
   border-radius: 18px 0 0 18px;
   transform-origin: right center;
@@ -1440,7 +1462,7 @@ body.edge.edge-out #edge-tab-glow {
 
 body.edge.edge-left #edge-body {
   left: -24px;
-  right: 8px;
+  right: 6px;
   border-radius: 0 18px 18px 0;
   transform-origin: left center;
 }
@@ -1730,25 +1752,31 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
   }
 }
 
-/* ── Type4 내용: 손가락 폭(84px) 세로 막대 미니 패널 ─────────────────
+/* ── Type4 내용: 손가락 폭(72px) 세로 막대 미니 패널 ─────────────────
    앱의 디자인 언어를 세운 것 — 세그먼트 바(.bar와 같은 트랙색·홈·채움색·칸 8px),
    .c-label 계열 라벨, 위젯 모드 버튼의 "흐릿하다 hover에 또렷" 규칙. 위계는
-   숫자(10px) > 제목(8px, 프로바이더 색) > 라벨(8px). 여백은 4px 그리드.
-   위 14·아래 16px 여백은 판 표면(top/bottom 12px) 안에 내용이 들어오게 한다. */
+   숫자(9px) > 이름·제목(8px) > 라벨. 계정마다 묶음(.edge-account)을 쌓고 활성
+   계정은 옅은 강조색 바탕. 여백은 촘촘하게 (사용자 지시: 그래프 간격을 줄여라).
+   판이 왼쪽 6px·위아래 12px 안에 있고 모서리 반경이 18px이므로 내용은 그보다
+   안쪽(왼 12·위 20)에서 시작해야 판 밖이나 모서리 위에 걸리지 않는다. */
 body.edge .titlebar,
 body.edge .dock {
   display: none;
 }
 
 body.edge main {
-  padding: 14px 6px 16px;
+  padding: 20px 5px 20px 11px;
+}
+
+body.edge.edge-left main {
+  padding: 20px 11px 20px 5px;
 }
 
 .edge-bar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 2px 8px;
+  padding: 0 0 6px;
 }
 
 /* 이동 손잡이·모드 버튼: 위젯 모드의 #drag-handle·#pin과 같은 문법 — 테두리·배경
@@ -1757,7 +1785,7 @@ body.edge main {
   font: inherit;
   font-size: 10px;
   line-height: 1;
-  padding: 2px 4px;
+  padding: 2px 2px;
   background: none;
   border: 0;
   color: var(--muted);
@@ -1772,7 +1800,7 @@ body.edge main:hover .edge-ui {
 }
 
 .edge-handle {
-  font-size: 13px;
+  font-size: 12px;
   cursor: grab;
 }
 
@@ -1786,24 +1814,9 @@ body.edge main:hover .edge-ui {
 }
 
 .edge-section + .edge-section {
-  margin-top: 8px;
-  padding-top: 8px;
+  margin-top: 6px;
+  padding-top: 6px;
   border-top: 1px solid rgba(var(--muted-rgb), calc(0.25 * var(--bar-alpha)));
-}
-
-/* 이전 수치: 채움만 흐리고 숫자는 살린다. 제목 옆 점이 이유를 말한다 */
-.edge-section.stale .edge-vfill {
-  opacity: 0.45;
-}
-
-.edge-stale {
-  display: inline-block;
-  width: 4px;
-  height: 4px;
-  margin-left: 4px;
-  vertical-align: middle;
-  border-radius: 50%;
-  background: var(--warn);
 }
 
 .edge-title {
@@ -1811,7 +1824,7 @@ body.edge main:hover .edge-ui {
   font-weight: 600;
   letter-spacing: 0.6px;
   text-align: center;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
   opacity: 0.85;
 }
 
@@ -1823,27 +1836,84 @@ body.edge main:hover .edge-ui {
   color: rgb(var(--accent-alt-rgb));
 }
 
+/* 계정 묶음 — .card의 상자 꾸밈(패널색·테두리·패딩)은 벗기고 자리만 쓴다.
+   활성은 옅은 강조색 바탕, 비활성은 더블클릭 전환 대상(hit-hover는 러스트가 붙임) */
+body.edge .card.edge-account {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 3px 2px 2px;
+  margin: 0;
+}
+
+body.edge .card.edge-account + .card.edge-account {
+  margin-top: 2px;
+}
+
+body.edge .card.edge-account.active {
+  background: rgba(var(--accent-rgb), calc(0.12 * var(--bar-alpha)));
+}
+
+body.edge .card.edge-account.switchable.hit-hover {
+  background: rgba(var(--accent-rgb), 0.08);
+  border: 0;
+}
+
+.edge-name {
+  max-width: 100%;
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.edge .card.edge-account.active .edge-name {
+  color: var(--text);
+}
+
+/* 이전 수치: 채움만 흐리고 숫자는 살린다. 이름 옆 점이 이유를 말한다 */
+body.edge .card.edge-account.stale .edge-vfill {
+  opacity: 0.45;
+}
+
+.edge-stale {
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  margin-left: 3px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--warn);
+}
+
 .edge-bars {
   display: flex;
   justify-content: center;
   align-items: flex-end;
-  gap: 8px;
+  gap: 3px;
 }
 
 .edge-col {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
 }
 
 /* 세로 세그먼트 바 — .bar를 90° 세운 것. 트랙·홈·채움·둥글기 값이 같고 칸은
-   8×8 정사각. 홈은 바닥(채움 시작점)에서 올라간다 — 위에서 내려오면 마지막 홈이
-   바닥에 깔려 2~7% 채움을 통째로 먹는다 (design review) */
+   8×8 정사각(6칸). 홈은 바닥(채움 시작점)에서 올라간다 — 위에서 내려오면 마지막
+   홈이 바닥에 깔려 2~7% 채움을 통째로 먹는다 */
 .edge-vbar {
   position: relative;
   width: 8px;
-  height: 64px;
+  height: 48px;
   border-radius: 2px;
   background: rgba(var(--track-rgb), 0.7);
   overflow: hidden;
@@ -1882,7 +1952,7 @@ body.edge main:hover .edge-ui {
 }
 
 .edge-num {
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 700;
   line-height: 1;
   color: var(--text);
@@ -1890,7 +1960,7 @@ body.edge main:hover .edge-ui {
 }
 
 .edge-lab {
-  font-size: 8px;
+  font-size: 7.5px;
   font-weight: 500;
   line-height: 1;
   color: var(--muted);

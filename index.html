@@ -63,9 +63,9 @@
       <div id="edge-body"></div>
       <div id="edge-tab"></div>
     </div>
-    <!-- 물방울의 벽면 반사광 — 필터 밖(번지지 않게). 판과 같은 색인 물방울이 어두운
-         바탕에서도 보이게 하는 유일한 표식 -->
-    <div id="edge-tab-glow" aria-hidden="true"></div>
+    <!-- 물방울 게이지 — 필터 밖(번지지 않게). 현재 계정 사용량(여러 창 중 최고 %)을
+         채움 높이로 보여주고, 반사광으로 어두운 바탕에서도 물방울이 보이게 한다 -->
+    <div id="edge-gauge" aria-hidden="true"><div id="edge-gauge-fill"></div></div>
     <svg width="0" height="0" style="position: absolute" aria-hidden="true">
       <defs>
         <!-- 액체 실루엣: 큰 파장의 난류로 윤곽을 살짝 일렁이게(displacement) 하고,
@@ -85,7 +85,7 @@
           <feTurbulence type="fractalNoise" baseFrequency="0.006 0.012" numOctaves="1" seed="7" result="noise" />
           <feDisplacementMap in="SourceGraphic" in2="noise" scale="2.5" xChannelSelector="R" yChannelSelector="G" result="wobbly" />
           <!-- 블러가 곧 목(메니스커스)의 반경 — 작으면 판과 막이 만나는 자리에 각이 남는다 -->
-          <feGaussianBlur in="wobbly" stdDeviation="9" result="blur" />
+          <feGaussianBlur in="wobbly" stdDeviation="8" result="blur" />
           <feColorMatrix
             in="blur"
             mode="matrix"
