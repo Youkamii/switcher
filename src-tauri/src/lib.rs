@@ -98,6 +98,146 @@ struct HitRegion {
     action: Option<(String, String)>,
 }
 
+/// Type4(벽 붙임)의 호버 존. 프론트가 보고한다 — 숨김 상태에서는 물방울 손잡이
+/// 사각형, 펼침 상태에서는 창 전체. `hold`가 참이면(로그인 패널 등) 커서가
+/// 벗어나도 접지 않는다. None이면 Type4가 아니다.
+#[derive(serde::Deserialize, Clone)]
+struct EdgeZone {
+    /// 창 기준 논리 좌표 [x, y, w, h]
+    rect: [f64; 4],
+    hold: bool,
+}
+
+static EDGE_ZONE: Mutex<Option<EdgeZone>> = Mutex::new(None);
+
+/// 벽 붙임 패널을 접기 전 커서 이탈 유예 — 손잡이에서 패널로 옮겨 타는
+/// 순간(존이 손잡이→창 전체로 바뀌는 사이)과 가장자리에서의 미세한 떨림을 삼킨다.
+const EDGE_LEAVE_GRACE: std::time::Duration = std::time::Duration::from_millis(450);
+
+/// 벽 붙임 호버 상태기계 — 폴링 스레드가 25ms마다 `update`를 부른다.
+/// 웹뷰는 투과 중이라 자체 mouseenter/leave를 못 받으므로 진입·이탈 판정과
+/// 이탈 유예를 전부 러스트가 맡는다 (비활성 웹뷰의 타이머 지연과도 무관).
+struct EdgeHover {
+    /// Some = 펼침 중 (마지막으로 존 안에 있던 시각), None = 접힘
+    last_inside: Option<std::time::Instant>,
+}
+
+impl EdgeHover {
+    const fn new() -> Self {
+        EdgeHover { last_inside: None }
+    }
+
+    /// 존이 없으면(Type4 아님) 조용히 초기화한다 — 다음 진입은 fresh start.
+    /// 상태가 바뀔 때만 Some(새 상태)를 돌려준다.
+    fn update(
+        &mut self,
+        zone: Option<&EdgeZone>,
+        cursor: tauri::LogicalPosition<f64>,
+        now: std::time::Instant,
+    ) -> Option<bool> {
+        let Some(zone) = zone else {
+            self.last_inside = None;
+            return None;
+        };
+        let [x, y, width, height] = zone.rect;
+        let inside = zone.hold
+            || (cursor.x >= x
+                && cursor.x <= x + width
+                && cursor.y >= y
+                && cursor.y <= y + height);
+        if inside {
+            let entered = self.last_inside.is_none();
+            self.last_inside = Some(now);
+            return entered.then_some(true);
+        }
+        match self.last_inside {
+            Some(t) if now.duration_since(t) >= EDGE_LEAVE_GRACE => {
+                self.last_inside = None;
+                Some(false)
+            }
+            _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod edge_hover_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn zone(hold: bool) -> EdgeZone {
+        EdgeZone {
+            rect: [226.0, 100.0, 14.0, 52.0],
+            hold,
+        }
+    }
+
+    #[test]
+    fn enters_immediately_and_leaves_only_after_grace() {
+        let mut hover = EdgeHover::new();
+        let t0 = Instant::now();
+        let on_tab = tauri::LogicalPosition::new(230.0, 120.0);
+        let outside = tauri::LogicalPosition::new(10.0, 10.0);
+        assert_eq!(hover.update(Some(&zone(false)), on_tab, t0), Some(true));
+        assert_eq!(hover.update(Some(&zone(false)), on_tab, t0), None);
+        // 유예 안의 이탈은 무시
+        assert_eq!(
+            hover.update(Some(&zone(false)), outside, t0 + Duration::from_millis(100)),
+            None
+        );
+        // 유예 안에 돌아오면 접지 않고 유예가 다시 시작된다
+        assert_eq!(
+            hover.update(Some(&zone(false)), on_tab, t0 + Duration::from_millis(200)),
+            None
+        );
+        assert_eq!(
+            hover.update(Some(&zone(false)), outside, t0 + Duration::from_millis(600)),
+            None
+        );
+        assert_eq!(
+            hover.update(Some(&zone(false)), outside, t0 + Duration::from_millis(700)),
+            Some(false)
+        );
+        assert_eq!(
+            hover.update(Some(&zone(false)), outside, t0 + Duration::from_millis(800)),
+            None
+        );
+    }
+
+    #[test]
+    fn hold_keeps_panel_open_while_cursor_is_away() {
+        let mut hover = EdgeHover::new();
+        let t0 = Instant::now();
+        let outside = tauri::LogicalPosition::new(-500.0, -500.0);
+        assert_eq!(hover.update(Some(&zone(true)), outside, t0), Some(true));
+        assert_eq!(
+            hover.update(Some(&zone(true)), outside, t0 + Duration::from_secs(10)),
+            None
+        );
+        // hold가 풀리면 유예 뒤 접힌다
+        assert_eq!(
+            hover.update(Some(&zone(false)), outside, t0 + Duration::from_secs(10)),
+            None
+        );
+        assert_eq!(
+            hover.update(Some(&zone(false)), outside, t0 + Duration::from_secs(11)),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn leaving_type4_resets_without_emitting() {
+        let mut hover = EdgeHover::new();
+        let t0 = Instant::now();
+        let on_tab = tauri::LogicalPosition::new(230.0, 120.0);
+        assert_eq!(hover.update(Some(&zone(false)), on_tab, t0), Some(true));
+        assert_eq!(hover.update(None, on_tab, t0), None);
+        assert!(hover.last_inside.is_none());
+        // 다시 Type4로 들어오면 새로 진입 신호를 낸다
+        assert_eq!(hover.update(Some(&zone(false)), on_tab, t0), Some(true));
+    }
+}
+
 fn hit_region_at(
     regions: &[HitRegion],
     cursor: tauri::LogicalPosition<f64>,
@@ -432,7 +572,7 @@ fn login_session_for_request(request_id: String) -> Result<Option<String>, Strin
     login::session_for_request(&request_id)
 }
 
-/// 데모·스크린샷용: SWITCHER_VIEW=normal|locked|compact 로 초기 보기 모드를 강제한다
+/// 데모·스크린샷용: SWITCHER_VIEW=normal|compact|minimal|edge 로 초기 보기 모드를 강제한다
 #[tauri::command]
 fn initial_view_mode() -> Option<String> {
     std::env::var("SWITCHER_VIEW").ok()
@@ -2902,6 +3042,23 @@ fn set_hit_regions(regions: Vec<HitRegion>) {
     }
 }
 
+/// Type4 벽 붙임의 호버 존 보고 (None = Type4 아님)
+#[tauri::command]
+fn set_edge_zone(zone: Option<EdgeZone>) {
+    if std::env::var("SWITCHER_DIAG").is_ok() {
+        match &zone {
+            Some(z) => eprintln!(
+                "[diag] edge zone: rect=({:.0},{:.0} {:.0}x{:.0}) hold={}",
+                z.rect[0], z.rect[1], z.rect[2], z.rect[3], z.hold
+            ),
+            None => eprintln!("[diag] edge zone: none"),
+        }
+    }
+    if let Ok(mut guard) = EDGE_ZONE.lock() {
+        *guard = zone;
+    }
+}
+
 /// 고정 모드 진입/해제 — 해제 시 투과를 즉시 끈다
 #[tauri::command]
 fn set_click_through(app: tauri::AppHandle, enabled: bool) {
@@ -3262,6 +3419,7 @@ pub fn run() {
                     let mut prev_down = false;
                     let mut hover_idx: i64 = -1;
                     let mut last_click: Option<(std::time::Instant, usize)> = None;
+                    let mut edge_hover = EdgeHover::new();
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(25));
                         let Some(window) = handle.get_webview_window("main") else {
@@ -3280,6 +3438,18 @@ pub fn run() {
                         let Some(cursor) = cursor_position_in_window(&window) else {
                             continue;
                         };
+                        // Type4 벽 붙임: 손잡이/창 진입·이탈을 여기서 판정해 웹뷰에 알린다
+                        let edge_zone = EDGE_ZONE.lock().ok().and_then(|guard| guard.clone());
+                        if let Some(state) = edge_hover.update(
+                            edge_zone.as_ref(),
+                            cursor,
+                            std::time::Instant::now(),
+                        ) {
+                            if std::env::var("SWITCHER_DIAG").is_ok() {
+                                eprintln!("[diag] edge hover: {state}");
+                            }
+                            let _ = handle.emit("edge-hover", state);
+                        }
                         let regions: Vec<HitRegion> = HIT_REGIONS
                             .lock()
                             .map(|guard| guard.clone())
@@ -3484,6 +3654,7 @@ pub fn run() {
             login_session_for_request,
             set_hit_regions,
             set_click_through,
+            set_edge_zone,
             memo_load,
             memo_save,
             memo_toggle,
