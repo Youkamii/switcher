@@ -63,9 +63,12 @@
       <div id="edge-body"></div>
       <div id="edge-tab"></div>
     </div>
-    <!-- 물방울 게이지 — 필터 밖(번지지 않게). 현재 계정 사용량(여러 창 중 최고 %)을
-         채움 높이로 보여주고, 반사광으로 어두운 바탕에서도 물방울이 보이게 한다 -->
-    <div id="edge-gauge" aria-hidden="true"><div id="edge-gauge-fill"></div></div>
+    <!-- 손잡이 게이지 — 필터 밖(번지지 않게). 클로드·코덱스 각각 현재 계정의
+         사용량(창 중 최고 %)을 얇은 세로 막대 둘로 항상 보여준다 -->
+    <div id="edge-gauge" aria-hidden="true">
+      <div class="edge-gauge-bar" data-provider="claude"><div class="edge-gauge-fill"></div></div>
+      <div class="edge-gauge-bar" data-provider="codex"><div class="edge-gauge-fill"></div></div>
+    </div>
     <svg width="0" height="0" style="position: absolute" aria-hidden="true">
       <defs>
         <!-- 액체 실루엣: 큰 파장의 난류로 윤곽을 살짝 일렁이게(displacement) 하고,
