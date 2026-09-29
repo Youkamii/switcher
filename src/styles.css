@@ -1336,40 +1336,15 @@ body.edge .shell {
   z-index: 1;
 }
 
-/* 액체 색: 앱 배경색. 투명도 슬라이더로 배경이 빠져도 액체는 남는다 — 투명한
-   액체는 goo 대비 단계에서 통째로 사라진다. 질감은 (1) 윗면을 도는 얇은 반사,
-   (2) 바닥 쪽 은은한 깊이, (3) 천천히 흐르는 옅은 빛(::after) 정도로만. */
+/* 액체 색: 앱 배경색 하나로 납작하게. 도형별 그림자·광택은 두지 않는다 —
+   각자 빛나면 이음매가 드러나 따로 붙인 조각처럼 보인다 (사용자 지적). 광택은
+   필터가 합쳐진 실루엣 전체에 한 번에 입힌다. 투명도 슬라이더로 배경이 빠져도
+   액체는 남는다 — 투명한 액체는 goo 대비 단계에서 통째로 사라진다. */
 #edge-film,
 #edge-body,
 #edge-tab {
   position: absolute;
-  background: rgba(var(--bg-rgb), max(0.94, var(--bg-alpha, 1)));
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.1),
-    inset 0 -8px 14px rgba(0, 0, 0, 0.22);
-  overflow: hidden;
-}
-
-#edge-body::after {
-  content: "";
-  position: absolute;
-  inset: -40% -60%;
-  background: radial-gradient(
-    32% 24% at 50% 50%,
-    rgba(255, 255, 255, 0.07),
-    rgba(255, 255, 255, 0) 70%
-  );
-  animation: edge-sheen 8s ease-in-out infinite;
-}
-
-@keyframes edge-sheen {
-  0%,
-  100% {
-    transform: translate(-18%, -26%) rotate(-8deg);
-  }
-  50% {
-    transform: translate(14%, 22%) rotate(6deg);
-  }
+  background: rgba(var(--bg-rgb), max(0.96, var(--bg-alpha, 1)));
 }
 
 /* 벽을 타고 흐르는 막 — 패널이 나와 있는 동안만 벽 전체 높이로 얇게 남아,
@@ -1381,19 +1356,22 @@ body.edge .shell {
   right: -6px;
   width: 11px;
   border-radius: 6px 0 0 6px;
-  opacity: 0;
-  transition: opacity 0.35s ease-out;
+  transform-origin: right center;
+  /* 투명도로 나타나면 그 사이 색이 달라 조각처럼 보인다 — 벽에서 자라 나온다 */
+  transform: scaleX(0);
+  transition: transform 0.4s cubic-bezier(0.2, 0.9, 0.3, 1);
 }
 
 body.edge.edge-out #edge-film {
-  opacity: 1;
-  transition-delay: 0.12s;
+  transform: scaleX(1);
+  transition-delay: 0.1s;
 }
 
 body.edge.edge-left #edge-film {
   right: auto;
   left: -6px;
   border-radius: 0 6px 6px 0;
+  transform-origin: left center;
 }
 
 /* 물방울 — 벽 중간에 맺힌 반원. 벽 너머로 살짝 이어져 벽에서 맺힌 모양 */

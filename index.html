@@ -62,18 +62,20 @@
     </div>
     <svg width="0" height="0" style="position: absolute" aria-hidden="true">
       <defs>
-        <!-- 물 표면: 느리게 흐르는 난류로 윤곽을 일렁이게(displacement) 한 뒤,
-             블러+알파 대비로 도형끼리 액체처럼 붙게(goo) 한다 -->
-        <filter id="goo" x="-25%" y="-15%" width="150%" height="130%" color-interpolation-filters="sRGB">
+        <!-- 물 표면: (1) 느리게 흐르는 난류로 윤곽을 일렁이게(displacement) 하고,
+             (2) 블러+알파 대비로 도형들을 한 실루엣으로 녹인(goo) 다음,
+             (3) 그 실루엣의 알파를 높이맵 삼아 정반사 조명을 한 번에 입힌다 —
+             막·패널·물방울이 각자 광택을 갖지 않고 한 덩어리 젤리로 빛난다. -->
+        <filter id="goo" x="-30%" y="-15%" width="160%" height="130%" color-interpolation-filters="sRGB">
           <feTurbulence type="fractalNoise" baseFrequency="0.012 0.03" numOctaves="2" seed="7" result="noise">
             <animate
               attributeName="baseFrequency"
-              dur="11s"
-              values="0.012 0.03;0.019 0.022;0.014 0.034;0.012 0.03"
+              dur="8s"
+              values="0.012 0.03;0.02 0.022;0.014 0.036;0.012 0.03"
               repeatCount="indefinite"
             />
           </feTurbulence>
-          <feDisplacementMap in="SourceGraphic" in2="noise" scale="7" xChannelSelector="R" yChannelSelector="G" result="wobbly" />
+          <feDisplacementMap in="SourceGraphic" in2="noise" scale="9" xChannelSelector="R" yChannelSelector="G" result="wobbly" />
           <feGaussianBlur in="wobbly" stdDeviation="6" result="blur" />
           <feColorMatrix
             in="blur"
@@ -81,7 +83,19 @@
             values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 20 -9"
             result="goo"
           />
-          <feComposite in="wobbly" in2="goo" operator="atop" />
+          <feGaussianBlur in="goo" stdDeviation="5" result="height" />
+          <feSpecularLighting
+            in="height"
+            surfaceScale="7"
+            specularConstant="0.85"
+            specularExponent="24"
+            lighting-color="#ffffff"
+            result="spec"
+          >
+            <fePointLight x="-30" y="-90" z="170" />
+          </feSpecularLighting>
+          <feComposite in="spec" in2="goo" operator="in" result="specIn" />
+          <feComposite in="goo" in2="specIn" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" />
         </filter>
       </defs>
     </svg>
