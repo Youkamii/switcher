@@ -1374,15 +1374,16 @@ body.edge.edge-left #edge-film {
   transform-origin: left center;
 }
 
-/* 손잡이 — 벽에 맺힌 반타원 판. 안에 게이지 둘(#edge-gauge)이 얹힌다.
-   폭은 굳은 뒤 블러(8)의 2배 이상이어야 알파 문턱을 넉넉히 넘어 또렷하다 */
+/* 손잡이 — 벽에 맺힌 반캡슐 판. 안에 게이지 둘(#edge-gauge)이 얹힌다. 반타원이면
+   위아래가 좁아져 게이지 끝이 실루엣 밖으로 삐져나온다(실측) — 반캡슐은 끝까지
+   폭이 같다. 폭은 굳은 뒤 블러(8)의 2배 이상이어야 알파 문턱을 넉넉히 넘는다 */
 #edge-tab {
   top: 50%;
   right: -8px;
   width: 30px;
   height: 76px;
   margin-top: -38px;
-  border-radius: 20px 0 0 20px / 38px 0 0 38px;
+  border-radius: 15px 0 0 15px;
   transform-origin: right center;
   animation: edge-drop-breathe 3.4s ease-in-out infinite;
 }
@@ -1390,7 +1391,7 @@ body.edge.edge-left #edge-film {
 body.edge.edge-left #edge-tab {
   right: auto;
   left: -8px;
-  border-radius: 0 20px 20px 0 / 0 38px 38px 0;
+  border-radius: 0 15px 15px 0;
   transform-origin: left center;
 }
 
