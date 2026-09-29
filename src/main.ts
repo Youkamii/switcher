@@ -1578,6 +1578,11 @@ function edgeBar(): HTMLElement {
   return bar;
 }
 
+/// 사용량 경고 단계 — 막대·게이지 채움색 클래스 (60% 경고, 85% 위험; .bar-fill과 동일)
+function usageLevel(pct: number): "" | "warn" | "danger" {
+  return pct >= 85 ? "danger" : pct >= 60 ? "warn" : "";
+}
+
 /// 접힌 손잡이 게이지 — 프로바이더별로 현재 계정의 창 중 최고 %를 얇은 막대로
 /// (사용자 지시: "손잡이에 클로드랑 코덱스 둘 다 현재 선택 중인 사용량을 작고 얇게").
 const edgeGaugeByProvider = new Map<ProviderId, number>();
@@ -1591,9 +1596,9 @@ function applyEdgeGauge() {
       const fill = bar.firstElementChild as HTMLElement | null;
       if (pct === undefined || !fill) return;
       fill.style.height = `${pct}%`;
-      fill.classList.toggle("danger", pct >= 85);
-      fill.classList.toggle("warn", pct >= 60 && pct < 85);
-      bar.title = `${provider}: ${Math.round(pct)}%`;
+      fill.classList.remove("warn", "danger");
+      const level = usageLevel(pct);
+      if (level) fill.classList.add(level);
     });
 }
 
@@ -1601,7 +1606,10 @@ function applyEdgeGauge() {
 /// 분수처럼 읽힌다 (review). 시간 창은 단위를 붙인다: 5h, 24h. 나머지는 minimalLabel.
 function edgeLabel(win: UsageWindow): string {
   const hours = win.label.match(/^(\d+) Hours?$/);
-  return hours ? `${hours[1]}h` : minimalLabel(win);
+  if (hours) return `${hours[1]}h`;
+  const days = win.label.match(/^(\d+) Days?$/);
+  if (days) return `${days[1]}d`;
+  return minimalLabel(win);
 }
 
 /// Type4(벽 붙임) 렌더 — 클로드·코덱스 각각 현재 계정의 사용량만, 세로 막대로
@@ -1658,8 +1666,8 @@ async function renderProviderEdge(
           vbar.title = win.label;
           const fill = document.createElement("div");
           fill.className = "edge-vfill";
-          if (pct >= 85) fill.classList.add("danger");
-          else if (pct >= 60) fill.classList.add("warn");
+          const level = usageLevel(pct);
+          if (level) fill.classList.add(level);
           fill.style.height = `${pct}%`;
           vbar.appendChild(fill);
           const num = document.createElement("span");
@@ -1670,7 +1678,6 @@ async function renderProviderEdge(
           const reset = document.createElement("span");
           reset.className = "edge-reset";
           reset.textContent = compactReset(win.resets_at);
-          reset.title = t("resetTooltip");
           const lab = document.createElement("span");
           lab.className = "edge-lab";
           lab.textContent = edgeLabel(win);
@@ -1772,7 +1779,14 @@ async function render(opts?: { immediate?: boolean }) {
       // 단 SYSTEM은 예외로 함께 나온다 (사용자 요청: PC 상태는 미니멀에서도).
       for (const key of sectionOrder) {
         const before = buffer.lastElementChild;
+        // Type4는 프로바이더 사용량만 그린다 — GITHUB·DISPLAY·SYSTEM 없음
+        if (mode === "edge" && key !== "claude" && key !== "codex") continue;
         if (key === "claude" || key === "codex") {
+          if (mode === "edge" && !visibility[key]) {
+            // 숨긴 프로바이더의 옛 게이지 값이 손잡이에 남지 않게
+            edgeGaugeByProvider.delete(key);
+            applyEdgeGauge();
+          }
           if (!visibility[key] && !starPromptOpen) continue;
           const title = PROVIDERS.find((p) => p.id === key)!.title;
           if (mode === "edge") {
@@ -1783,17 +1797,16 @@ async function render(opts?: { immediate?: boolean }) {
             await renderProvider(key, title, buffer, pending);
           }
         } else if (key === "github") {
-          if (!visibility.github || mode === "minimal" || mode === "edge") continue;
+          if (!visibility.github || mode === "minimal") continue;
           if (mode === "compact") {
             await renderGithubCompact(buffer);
           } else {
             await renderGithub(buffer);
           }
         } else if (key === "display") {
-          if (!visibility.display || mode === "minimal" || mode === "edge") continue;
+          if (!visibility.display || mode === "minimal") continue;
           await renderDisplays(buffer, mode === "compact");
         } else if (key === "system") {
-          if (mode === "edge") continue;
           if (!monitorOn && !starPromptOpen) continue;
           renderMonitor(buffer);
         }
@@ -1982,7 +1995,7 @@ function reportHitRegions() {
     // display:none이라 rect 0×0으로 걸러진다.
     document
       .querySelectorAll<HTMLElement>(
-        ".tb-actions > *, #dock-toggle, #drag-handle, .display-row, .collapsible, .edge-ui",
+        ".tb-actions > *, #dock-toggle, #drag-handle, .display-row, .collapsible",
       )
       .forEach((el) => pushVisible(el, null));
   }
@@ -2005,8 +2018,15 @@ let edgeSide: EdgeSide = "right";
 
 function applyEdgeMode(active: boolean) {
   const entering = active && !edgeActive;
+  const leaving = !active && edgeActive;
   edgeActive = active;
-  if (!active) edgeOut = false;
+  if (!active) {
+    edgeOut = false;
+    edgeAnimating = null;
+    edgePending = null;
+    window.clearTimeout(edgeAnimTimer);
+    endEdgeHold();
+  }
   // 진입 직후에는 숨김 상태로 시작하되, 첫 프레임에 "들어가는" 연출이 재생되지 않게
   // 애니메이션을 잠시 끈다 — 첫 호버부터 연출이 붙는다. 벽에 붙이는 일은 뒤따르는
   // fitHeight()의 스냅이 맡는다.
@@ -2015,10 +2035,10 @@ function applyEdgeMode(active: boolean) {
   document.body.classList.toggle("edge-out", active && edgeOut);
   document.body.classList.toggle("edge-left", edgeSide === "left");
   if (!active) void invoke("set_edge_zone", { zone: null });
-  if (entering || !active) {
+  if (entering || leaving) {
     // 창 그림자 프레임은 패널이 비어 있을 때 창 사각형의 테두리로 드러난다 —
     // Type4에서는 끈다 (사용자 지적). 프레임이 바뀌면 바깥 여백도 달라지므로
-    // 적용 뒤 다시 맞춰 벽에 붙인다.
+    // 적용 뒤 다시 맞춰 벽에 붙인다. 그 밖의 모드 전환에서는 건드리지 않는다.
     void invoke("set_window_shadow", { enabled: !active }).then(() => fitHeight());
   }
 }
@@ -2046,14 +2066,42 @@ function gooBlur(id: "goo-up" | "goo-down") {
   anim?.beginElement();
 }
 
+/// 출입 연출이 도는 동안 반대 신호가 오면 연출이 끝난 뒤 반영한다 — 나오는 도중
+/// 접으면 keyframes가 "완성 상태(0%)"에서 시작해 판·내용이 완성 모습으로 점프한 뒤
+/// 들어간다(내용은 한 번도 안 보였는데 번쩍임, red-review). 끝나는 시점은 나올 때
+/// 내용 등장(edge-content-in) animationend, 들어갈 때 판 수축(edge-body-sink)
+/// animationend. 비활성 웹뷰에서 이벤트가 늦어도 1.5s 안전 타이머가 풀어 준다.
+let edgeAnimating: "rise" | "sink" | null = null;
+let edgePending: boolean | null = null;
+let edgeAnimTimer: number | undefined;
+
 function setEdgeOut(out: boolean) {
-  if (!edgeActive || edgeOut === out) return;
+  if (!edgeActive) return;
+  if (edgeAnimating) {
+    edgePending = out;
+    return;
+  }
+  if (edgeOut === out) return;
   edgeOut = out;
+  edgeAnimating = out ? "rise" : "sink";
+  window.clearTimeout(edgeAnimTimer);
+  edgeAnimTimer = window.setTimeout(edgeAnimationDone, 1500);
   if (!out) endEdgeHold();
   document.body.classList.remove("edge-noanim");
   document.body.classList.toggle("edge-out", out);
   gooBlur("goo-up");
   refreshHitRegionsAfterLayout();
+}
+
+function edgeAnimationDone() {
+  window.clearTimeout(edgeAnimTimer);
+  edgeAnimTimer = undefined;
+  if (!edgeAnimating) return;
+  edgeAnimating = null;
+  gooBlur("goo-down");
+  const pending = edgePending;
+  edgePending = null;
+  if (pending !== null && pending !== edgeOut) setEdgeOut(pending);
 }
 
 // 꾹 누르면(0.25s) 숫자 자리에 초기화까지 남은 시간이 나온다 — 놓으면 돌아온다
@@ -2075,9 +2123,10 @@ for (const type of ["pointerup", "pointercancel", "pointerleave"] as const) {
 }
 
 document.getElementById("edge-body")!.addEventListener("animationend", (event) => {
-  if (event.animationName === "edge-body-rise" || event.animationName === "edge-body-sink") {
-    gooBlur("goo-down");
-  }
+  // 이름을 고정 비교하지 않는다 — 이름이 바뀌면(왼쪽 벽 변형 등) goo-down이 영영
+  // 안 와 손잡이가 녹는다 (red-review)
+  if (event.animationName.startsWith("edge-body-sink")) edgeAnimationDone();
+  else if (event.animationName.startsWith("edge-body-rise")) gooBlur("goo-down");
 });
 
 void listen<boolean>("edge-hover", (event) => setEdgeOut(event.payload));
@@ -2086,7 +2135,9 @@ void listen<boolean>("edge-hover", (event) => setEdgeOut(event.payload));
 // 애니메이션 도중 좌표라, 그대로 두면 최종 위치의 버튼 가장자리 클릭이 뒤 창으로
 // 새거나 위젯이 먹는 어긋남이 생긴다 (red-review)
 shell.addEventListener("animationend", (event) => {
-  if (event.target === shell && event.animationName.startsWith("edge-")) reportHitRegions();
+  if (event.target !== shell || !event.animationName.startsWith("edge-")) return;
+  reportHitRegions();
+  if (event.animationName.startsWith("edge-content-in")) edgeAnimationDone();
 });
 
 /// 창을 벽에 붙인다. 매번 현재 위치에서 가까운 벽을 고르므로, ☰로 반대편에

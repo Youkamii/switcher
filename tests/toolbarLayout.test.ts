@@ -161,7 +161,7 @@ test("keeps memo visible and clickable in every view mode once the dock is open"
   assert.match(
     mainSource,
     // pushVisible = visibleHitRect로 창 안으로 자르고 0크기(숨김) 요소를 거른 뒤 regions.push
-    /querySelectorAll<HTMLElement>\(\s*"\.tb-actions > \*, #dock-toggle, #drag-handle, \.display-row, \.collapsible, \.edge-ui",\s*\)\s*\.forEach\(\(el\) => pushVisible\(el, null\)\)/,
+    /querySelectorAll<HTMLElement>\(\s*"\.tb-actions > \*, #dock-toggle, #drag-handle, \.display-row, \.collapsible",\s*\)\s*\.forEach\(\(el\) => pushVisible\(el, null\)\)/,
     "Type2 and Type3 dock buttons and handle must stay inside the native hit-region report",
   );
 });

@@ -66,16 +66,15 @@
     <!-- 손잡이 게이지 — 필터 밖(번지지 않게). 클로드·코덱스 각각 현재 계정의
          사용량(창 중 최고 %)을 얇은 세로 막대 둘로 항상 보여준다 -->
     <div id="edge-gauge" aria-hidden="true">
-      <div class="edge-gauge-bar" data-provider="claude"><div class="edge-gauge-fill"></div></div>
-      <div class="edge-gauge-bar" data-provider="codex"><div class="edge-gauge-fill"></div></div>
+      <div class="edge-gauge-bar" data-provider="claude" hidden><div class="edge-gauge-fill"></div></div>
+      <div class="edge-gauge-bar" data-provider="codex" hidden><div class="edge-gauge-fill"></div></div>
     </div>
     <svg width="0" height="0" style="position: absolute" aria-hidden="true">
       <defs>
         <!-- 액체 실루엣: 블러+알파 대비로 도형들을 한 덩어리로 녹인다(goo).
              색·질감은 없다 — 앱 배경색 그대로. 액체다움은 도형들이 움직이는 방식이 낸다.
              블러 반경은 출입 중 11, 굳은 뒤 8 — 필터를 갈아끼우면 목 폭이 한 프레임에
-             튀므로(review) SMIL로 연속 변형한다 (JS가 beginElement로 시작).
-             난류 변위는 측정 가능한 효과 없이 GPU만 써서 뺐다. -->
+             튀므로 SMIL로 연속 변형한다 (JS gooBlur가 beginElement로 시작). -->
         <filter id="goo" x="-30%" y="-15%" width="160%" height="130%" color-interpolation-filters="sRGB">
           <feGaussianBlur in="SourceGraphic" stdDeviation="8" result="blur">
             <animate id="goo-up" attributeName="stdDeviation" to="11" dur="0.15s" fill="freeze" begin="indefinite" />

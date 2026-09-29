@@ -1331,6 +1331,14 @@ body.edge #edge-liquid {
   display: block;
 }
 
+/* 왼쪽 벽: 도형 층을 통째로 좌우 반전한다 — 글자가 없는 층이라 안전하고, 좌/우
+   keyframe 두 벌을 유지할 필요가 없다 (red-review). 게이지(#edge-gauge)는 층 밖이라
+   자기 left 규칙을 쓴다. 덩어리의 벽 쪽 밀림(translateX -4px)도 함께 뒤집혀
+   오른쪽과 거울상이 된다. */
+body.edge.edge-left #edge-liquid {
+  transform: scaleX(-1);
+}
+
 body.edge .shell {
   position: relative;
   z-index: 1;
@@ -1367,12 +1375,6 @@ body.edge.edge-out #edge-film {
   transition-delay: 0.1s;
 }
 
-body.edge.edge-left #edge-film {
-  right: auto;
-  left: -6px;
-  border-radius: 0 14px 14px 0 / 0 24px 24px 0;
-  transform-origin: left center;
-}
 
 /* 손잡이 — 벽에 맺힌 반캡슐 판. 안에 게이지 둘(#edge-gauge)이 얹힌다. 반타원이면
    위아래가 좁아져 게이지 끝이 실루엣 밖으로 삐져나온다(실측) — 반캡슐은 끝까지
@@ -1388,16 +1390,10 @@ body.edge.edge-left #edge-film {
   animation: edge-drop-breathe 3.4s ease-in-out infinite;
 }
 
-body.edge.edge-left #edge-tab {
-  right: auto;
-  left: -8px;
-  border-radius: 0 15px 15px 0;
-  transform-origin: left center;
-}
 
 /* 손잡이 게이지 — 필터 밖. 클로드·코덱스 각각 현재 계정 사용량(창 중 최고 %)을
-   얇은 세로 막대 둘로. 판이 완전히 들어간 뒤(0.65s)에야 켜진다 — 먼저 켜지면
-   손잡이가 판보다 앞서 튀어나온 것처럼 보인다 */
+   얇은 세로 막대 둘로. 판이 들어가고 손잡이가 출렁인 뒤(0.95s)에야 켜진다 —
+   먼저 켜지면 손잡이가 판보다 앞서 튀어나온 것처럼 보인다 */
 #edge-gauge {
   display: none;
   position: fixed;
@@ -1455,8 +1451,11 @@ body.edge.edge-out #edge-gauge {
   );
 }
 
-.edge-gauge-bar[hidden] {
-  display: none;
+/* 기본색은 변수로 — 프로바이더 셀렉터가 더 세면 warn/danger가 코덱스에서 영영
+   못 이긴다 (red-review). 판 안 막대는 앱 규칙대로 둘 다 accent지만, 손잡이에는
+   제목이 없어 코덱스만 accent-alt로 구분한다 */
+.edge-gauge-bar[data-provider="codex"] {
+  --edge-fill: rgb(var(--accent-alt-rgb));
 }
 
 .edge-gauge-fill {
@@ -1465,12 +1464,8 @@ body.edge.edge-out #edge-gauge {
   right: 0;
   bottom: 0;
   height: 0;
-  background: var(--accent);
+  background: var(--edge-fill, var(--accent));
   transition: height 0.5s cubic-bezier(0.2, 0.9, 0.3, 1);
-}
-
-.edge-gauge-bar[data-provider="codex"] .edge-gauge-fill {
-  background: rgb(var(--accent-alt-rgb));
 }
 
 .edge-gauge-fill.warn {
@@ -1493,12 +1488,6 @@ body.edge.edge-out #edge-gauge {
   transform: scale(0.06, 0.1);
 }
 
-body.edge.edge-left #edge-body {
-  left: -24px;
-  right: 6px;
-  border-radius: 0 18px 18px 0;
-  transform-origin: left center;
-}
 
 /* 번지는 덩어리 셋 — 크기·자리·시차가 다 다르다(균등하면 톱니로 읽힌다).
    가운데(손잡이 자리)가 제일 크고 먼저, 위·아래가 시차를 두고 따라온다.
@@ -1510,11 +1499,6 @@ body.edge.edge-left #edge-body {
   transform: scale(0.08, 0.12);
 }
 
-body.edge.edge-left .edge-blob {
-  right: auto;
-  left: -10px;
-  transform-origin: left center;
-}
 
 /* 크기 규칙: 폭×overshoot(1.12)+4px ≤ 창 폭+10 − 블러 여유 — 넘치면 창 왼쪽
    경계에서 평면으로 잘린다 (review). 88px 창: 66×1.12+4 = 78 → 왼쪽 여유 20px */
@@ -1556,9 +1540,6 @@ body.edge.edge-out #edge-body {
   animation: edge-body-rise 0.8s 0.2s cubic-bezier(0.22, 0.9, 0.24, 1) both;
 }
 
-body.edge.edge-left.edge-out #edge-body {
-  animation-name: edge-body-rise-left;
-}
 
 /* 들어가기: 내용이 꺼진 뒤(0.1s) 바깥 덩어리부터 벽으로 되돌아가고, 판이 줄며,
    가운데 덩어리가 마지막에 손잡이로 합쳐진다 (가운데는 되불룩임 없이) */
@@ -1574,9 +1555,6 @@ body.edge:not(.edge-out) #edge-body {
   animation: edge-body-sink 0.55s 0.1s cubic-bezier(0.55, 0, 0.7, 0.25) both;
 }
 
-body.edge.edge-left:not(.edge-out) #edge-body {
-  animation-name: edge-body-sink-left;
-}
 
 /* 손잡이는 판이 다 들어온 뒤(0.55s) 받아내며 출렁인다 — 먼저 부풀면 손잡이가
    판보다 앞서 나온 것처럼 보인다 */
@@ -1603,6 +1581,10 @@ body.edge:not(.edge-out) .shell {
 
 body.edge.edge-out .shell {
   animation: edge-content-in 0.22s 0.84s ease-out both;
+}
+
+body.edge.edge-left.edge-out .shell {
+  animation-name: edge-content-in-left;
 }
 
 /* Type4 진입 직후: 접힌 상태로 시작하되 "들어가는" 연출은 재생하지 않는다 */
@@ -1636,9 +1618,11 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
   }
 }
 
+/* 0%는 scale(1) — 지연(0.55s) 동안 both 채움으로 0% 상태가 보이는데, 부푼 값이면
+   그때 잰 손잡이 rect로 호버 존·히트 영역이 9px 커진다 (red-review) */
 @keyframes edge-drop-catch {
   0% {
-    transform: scale(1.3, 1.15);
+    transform: scale(1);
   }
   45% {
     transform: scale(1.8, 1.4);
@@ -1711,32 +1695,6 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
   }
 }
 
-@keyframes edge-body-rise-left {
-  0% {
-    transform: scale(0.06, 0.1);
-    border-radius: 0 40px 40px 0;
-  }
-  18% {
-    transform: scale(0.22, 0.34);
-    border-radius: 0 40px 40px 0;
-  }
-  60% {
-    transform: scale(1.02, 1.01);
-    border-radius: 0 26px 26px 0;
-  }
-  76% {
-    transform: scale(0.99, 0.995);
-    border-radius: 0 20px 20px 0;
-  }
-  88% {
-    transform: scale(1.004, 1.002);
-    border-radius: 0 18px 18px 0;
-  }
-  100% {
-    transform: scale(1);
-    border-radius: 0 18px 18px 0;
-  }
-}
 
 @keyframes edge-body-sink {
   0% {
@@ -1753,25 +1711,22 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
   }
 }
 
-@keyframes edge-body-sink-left {
-  0% {
-    transform: scale(1);
-    border-radius: 0 18px 18px 0;
-  }
-  25% {
-    transform: scale(1.03, 0.97);
-    border-radius: 0 24px 24px 0;
-  }
-  100% {
-    transform: scale(0.06, 0.1);
-    border-radius: 0 40px 40px 0;
-  }
-}
 
 @keyframes edge-content-in {
   0% {
     opacity: 0;
     transform: translateX(5px) scale(0.98);
+  }
+  100% {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes edge-content-in-left {
+  0% {
+    opacity: 0;
+    transform: translateX(-5px) scale(0.98);
   }
   100% {
     opacity: 1;
@@ -1790,10 +1745,11 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
 
 /* ── Type4 내용: 폭 88px 세로 막대 패널 ────────────────────────────────
    클로드·코덱스 각각 현재 계정의 사용량 창을 세로 세그먼트 바(.bar와 같은
-   트랙색·홈·채움색, 칸 8px)로 세운다. 위계는 숫자(11px) > 제목(9px, 프로바이더
+   채움색·둥글기·칸 8px; 트랙 0.7·홈 0.8은 .bar보다 옅다 — 세로로 세우면 빈
+   트랙 면적이 커서 데이터보다 무거워진다)로 세운다. 위계는 숫자(11px) > 제목(9px, 프로바이더
    색) > 라벨(8.5px). 꾹 누르면(body.edge-hold) 숫자 자리에 초기화까지 남은 시간.
    판이 왼쪽 6px·위아래 12px 안에 있고 모서리 반경이 18px이므로 내용은 그보다
-   안쪽(왼 12·위 20)에서 시작해야 판 밖이나 모서리 위에 걸리지 않는다. */
+   안쪽(왼 11·위 20)에서 시작해야 판 밖이나 모서리 위에 걸리지 않는다. */
 body.edge .titlebar,
 body.edge .dock {
   display: none;
@@ -1846,7 +1802,7 @@ body.edge main:hover .edge-ui {
 }
 
 .edge-section {
-  padding: 0;
+  position: relative; /* TFSD 워터마크 기준점 */
 }
 
 .edge-section + .edge-section {
@@ -1883,10 +1839,6 @@ body.edge main:hover .edge-ui {
 }
 
 /* TFSD 자율주행 워터마크 — Type3와 같은 24px */
-.edge-section {
-  position: relative;
-}
-
 body.edge .tfsd-watermark svg {
   width: 24px;
   height: 24px;
@@ -1918,9 +1870,9 @@ body.edge .tfsd-watermark svg {
   flex: none;
 }
 
-/* 세로 세그먼트 바 — .bar를 90° 세운 것. 트랙·홈·채움·둥글기 값이 같고 칸은
-   8px(8칸). 홈은 바닥(채움 시작점)에서 올라간다 — 위에서 내려오면 마지막 홈이
-   바닥에 깔려 2~7% 채움을 통째로 먹는다 */
+/* 세로 세그먼트 바 — .bar를 90° 세운 것. 채움·둥글기·칸 8px(8칸)은 같고 트랙·홈만
+   옅다(위 참조). 홈은 바닥(채움 시작점)에서 올라간다 — 위에서 내려오면 마지막
+   홈이 바닥에 깔려 2~7% 채움을 통째로 먹는다 */
 .edge-vbar {
   position: relative;
   width: 10px;
