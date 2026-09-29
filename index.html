@@ -57,15 +57,21 @@
          대비)로 한 덩어리 액체처럼 붙었다 떨어진다. 글자는 이 층 밖이라 번지지 않는다. -->
     <div id="edge-liquid" aria-hidden="true">
       <div id="edge-film"></div>
+      <!-- 흘러나오는 덩어리들 — 물방울 자리(가운데)에서 위아래로 시차를 두고
+           번지며 앞이 불룩한 물의 앞머리를 만든다. 판이 뒤따라와 삼킨다 -->
+      <div class="edge-blob"></div>
+      <div class="edge-blob"></div>
+      <div class="edge-blob"></div>
+      <div class="edge-blob"></div>
+      <div class="edge-blob"></div>
       <div id="edge-body"></div>
       <div id="edge-tab"></div>
     </div>
     <svg width="0" height="0" style="position: absolute" aria-hidden="true">
       <defs>
-        <!-- 물 표면: (1) 느리게 흐르는 난류로 윤곽을 일렁이게(displacement) 하고,
-             (2) 블러+알파 대비로 도형들을 한 실루엣으로 녹인(goo) 다음,
-             (3) 그 실루엣의 알파를 높이맵 삼아 정반사 조명을 한 번에 입힌다 —
-             막·패널·물방울이 각자 광택을 갖지 않고 한 덩어리 젤리로 빛난다. -->
+        <!-- 액체 실루엣: 느리게 흐르는 난류로 윤곽을 일렁이게(displacement) 하고,
+             블러+알파 대비로 도형들을 한 덩어리로 녹인다(goo). 색·질감은 없다 —
+             앱 배경색 그대로. 액체다움은 도형들이 움직이는 방식이 낸다. -->
         <filter id="goo" x="-30%" y="-15%" width="160%" height="130%" color-interpolation-filters="sRGB">
           <feTurbulence type="fractalNoise" baseFrequency="0.012 0.03" numOctaves="2" seed="7" result="noise">
             <animate
@@ -75,27 +81,13 @@
               repeatCount="indefinite"
             />
           </feTurbulence>
-          <feDisplacementMap in="SourceGraphic" in2="noise" scale="9" xChannelSelector="R" yChannelSelector="G" result="wobbly" />
-          <feGaussianBlur in="wobbly" stdDeviation="6" result="blur" />
+          <feDisplacementMap in="SourceGraphic" in2="noise" scale="8" xChannelSelector="R" yChannelSelector="G" result="wobbly" />
+          <feGaussianBlur in="wobbly" stdDeviation="7" result="blur" />
           <feColorMatrix
             in="blur"
             mode="matrix"
             values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 20 -9"
-            result="goo"
           />
-          <feGaussianBlur in="goo" stdDeviation="5" result="height" />
-          <feSpecularLighting
-            in="height"
-            surfaceScale="7"
-            specularConstant="0.85"
-            specularExponent="24"
-            lighting-color="#ffffff"
-            result="spec"
-          >
-            <fePointLight x="-30" y="-90" z="170" />
-          </feSpecularLighting>
-          <feComposite in="spec" in2="goo" operator="in" result="specIn" />
-          <feComposite in="goo" in2="specIn" operator="arithmetic" k1="0" k2="1" k3="1" k4="0" />
         </filter>
       </defs>
     </svg>

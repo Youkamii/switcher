@@ -1336,15 +1336,98 @@ body.edge .shell {
   z-index: 1;
 }
 
-/* 액체 색: 앱 배경색 하나로 납작하게. 도형별 그림자·광택은 두지 않는다 —
-   각자 빛나면 이음매가 드러나 따로 붙인 조각처럼 보인다 (사용자 지적). 광택은
-   필터가 합쳐진 실루엣 전체에 한 번에 입힌다. 투명도 슬라이더로 배경이 빠져도
-   액체는 남는다 — 투명한 액체는 goo 대비 단계에서 통째로 사라진다. */
+/* 액체 색: 앱 배경색 하나. 그림자·광택·그라데이션 없음 — 이미 채택된 디자인을
+   바꾸지 않는다 (사용자 지시). 투명도 슬라이더로 배경이 빠져도 액체는 남는다 —
+   투명한 액체는 goo 대비 단계에서 통째로 사라진다. */
 #edge-film,
 #edge-body,
-#edge-tab {
+#edge-tab,
+.edge-blob {
   position: absolute;
   background: rgba(var(--bg-rgb), max(0.96, var(--bg-alpha, 1)));
+}
+
+/* 흘러나오는 덩어리 — 판 높이를 5등분한 자리에 하나씩. 벽에 붙어 있다가
+   가운데(물방울 자리)부터 바깥 순으로 시차를 두고 불거진다. 다 나오면 판 안에
+   들어가 보이지 않는다 (가로 64px < 판, 세로 58px < 칸) */
+.edge-blob {
+  right: -10px;
+  width: 74px;
+  height: 58px;
+  border-radius: 50%;
+  transform-origin: right center;
+  transform: scale(0.08, 0.12);
+}
+
+body.edge.edge-left .edge-blob {
+  right: auto;
+  left: -10px;
+  transform-origin: left center;
+}
+
+.edge-blob:nth-child(2) {
+  top: calc(10px + (100% - 20px) * 0.1 - 29px);
+  --edge-lag: 180ms;
+  --edge-lag-in: 0ms;
+}
+
+.edge-blob:nth-child(3) {
+  top: calc(10px + (100% - 20px) * 0.3 - 29px);
+  --edge-lag: 90ms;
+  --edge-lag-in: 110ms;
+}
+
+.edge-blob:nth-child(4) {
+  top: calc(10px + (100% - 20px) * 0.5 - 29px);
+  --edge-lag: 0ms;
+  --edge-lag-in: 220ms;
+}
+
+.edge-blob:nth-child(5) {
+  top: calc(10px + (100% - 20px) * 0.7 - 29px);
+  --edge-lag: 90ms;
+  --edge-lag-in: 110ms;
+}
+
+.edge-blob:nth-child(6) {
+  top: calc(10px + (100% - 20px) * 0.9 - 29px);
+  --edge-lag: 180ms;
+  --edge-lag-in: 0ms;
+}
+
+/* 나오기: 덩어리가 앞서 번지고(가운데 먼저), 판은 0.2초 뒤에 따라와 삼킨다 */
+body.edge.edge-out .edge-blob {
+  animation: edge-blob-rise 0.75s var(--edge-lag) cubic-bezier(0.3, 1.4, 0.4, 1) both;
+}
+
+/* 들어가기: 내용이 꺼진 뒤 바깥 덩어리부터 벽으로 되돌아가고 가운데가 마지막에
+   물방울로 합쳐진다 */
+body.edge:not(.edge-out) .edge-blob {
+  animation: edge-blob-sink 0.45s calc(0.1s + var(--edge-lag-in)) cubic-bezier(0.55, 0, 0.7, 0.3) both;
+}
+
+@keyframes edge-blob-rise {
+  0% {
+    transform: scale(0.08, 0.12);
+  }
+  60% {
+    transform: translateX(-8px) scale(1.16, 1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes edge-blob-sink {
+  0% {
+    transform: scale(1);
+  }
+  30% {
+    transform: translateX(-4px) scale(1.08, 0.94);
+  }
+  100% {
+    transform: scale(0.08, 0.12);
+  }
 }
 
 /* 벽을 타고 흐르는 막 — 패널이 나와 있는 동안만 벽 전체 높이로 얇게 남아,
@@ -1416,8 +1499,8 @@ body.edge.edge-left #edge-body {
    자리 잡는다. 자리 잡은 뒤에도 바깥 모서리가 숨쉬듯 출렁인다 */
 body.edge.edge-out #edge-body {
   animation:
-    edge-body-rise 0.72s cubic-bezier(0.22, 0.9, 0.24, 1) both,
-    edge-body-wobble 5.5s 0.72s ease-in-out infinite;
+    edge-body-rise 0.8s 0.2s cubic-bezier(0.22, 0.9, 0.24, 1) both,
+    edge-body-wobble 5.5s 1s ease-in-out infinite;
 }
 
 body.edge.edge-left.edge-out #edge-body {
@@ -1430,7 +1513,7 @@ body.edge.edge-out #edge-tab {
 
 /* 들어가기: 내용이 사라진 뒤(0.1s) 패널이 한 번 움찔하고 물방울로 빨려 들어간다 */
 body.edge:not(.edge-out) #edge-body {
-  animation: edge-body-sink 0.5s 0.1s cubic-bezier(0.55, 0, 0.7, 0.25) both;
+  animation: edge-body-sink 0.55s 0.1s cubic-bezier(0.55, 0, 0.7, 0.25) both;
 }
 
 body.edge.edge-left:not(.edge-out) #edge-body {
@@ -1456,11 +1539,11 @@ body.edge:not(.edge-out) .shell {
 }
 
 body.edge.edge-out .shell {
-  animation: edge-content-in 0.32s 0.26s ease-out both;
+  animation: edge-content-in 0.32s 0.55s ease-out both;
 }
 
 /* Type4 진입 직후: 접힌 상태로 시작하되 "들어가는" 연출은 재생하지 않는다 */
-body.edge.edge-noanim :is(#edge-body, #edge-tab, .shell) {
+body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
   animation-duration: 0s;
   animation-delay: 0s;
 }
