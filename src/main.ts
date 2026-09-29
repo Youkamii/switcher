@@ -1570,8 +1570,8 @@ function edgeBar(): HTMLElement {
   handle.setAttribute("data-tauri-drag-region", "");
   handle.title = t("dragHandle");
   const mode = document.createElement("button");
-  mode.className = "edge-ui";
-  mode.textContent = "T4";
+  mode.className = "edge-ui edge-mode";
+  mode.textContent = "Type4";
   mode.title = t("typeTooltip");
   mode.addEventListener("click", () => lockBtn.click());
   bar.append(handle, mode);
@@ -1604,7 +1604,14 @@ async function renderProviderEdge(
     const load = (async () => {
       try {
         const usage = await fetchUsageShared(provider, null, profile.id);
-        if (usage.stale) section.classList.add("stale");
+        if (usage.stale) {
+          // 이전 수치 — 채움만 흐리고, 제목 옆 점 하나로 이유를 알린다 (숫자는 살린다)
+          section.classList.add("stale");
+          const dot = document.createElement("span");
+          dot.className = "edge-stale";
+          dot.title = compactStaleAge(usage.stale_age_secs);
+          head.appendChild(dot);
+        }
         for (const win of usage.windows) {
           const pct = Math.min(100, Math.max(0, win.percent));
           const col = document.createElement("div");
@@ -1981,10 +1988,16 @@ function reportEdgeZone() {
 function setEdgeOut(out: boolean) {
   if (!edgeActive || edgeOut === out) return;
   edgeOut = out;
-  document.body.classList.remove("edge-noanim");
+  document.body.classList.remove("edge-noanim", "edge-settled");
   document.body.classList.toggle("edge-out", out);
   refreshHitRegionsAfterLayout();
 }
+
+// 판이 굳으면 필터를 약한 것으로 갈아끼운다 — 전이 중의 굵은 일렁임이 정지 상태까지
+// 이어지면 액체가 아니라 손떨림으로 읽힌다 (design review). 타이머 대신 animationend.
+document.getElementById("edge-body")!.addEventListener("animationend", (event) => {
+  if (event.animationName === "edge-body-rise") document.body.classList.add("edge-settled");
+});
 
 void listen<boolean>("edge-hover", (event) => setEdgeOut(event.payload));
 

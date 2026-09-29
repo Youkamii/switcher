@@ -1306,16 +1306,13 @@ body.star-prompt-open .shell {
 }
 
 /* ── Type4 벽 붙임 (#151) — 벽에서 흘러나오는 액체 ─────────────────
-   다이내믹 아일랜드 문법: 벽에 맺힌 물방울이 "스스로" 부풀어 패널이 되고,
-   내용은 그 표면 위에 뒤늦게 떠오른다. 들어갈 땐 내용이 먼저 사라지고 표면이
-   물방울로 되돌아간다.
-   표면(#edge-liquid)은 도형 셋 — 벽을 타고 흐르는 얇은 막(#edge-film), 벽에서
-   불거진 패널(#edge-body), 물방울(#edge-tab) — 에 goo 필터(난류 일렁임 + 블러 +
-   알파 대비)를 걸어 서로 붙는 자리에 액체의 목(메니스커스)이 생긴다. 패널은
-   벽 쪽이 각지지 않고 벽 너머까지 이어져(right:-24px) "벽에서 나온" 모양이 되고,
-   바깥쪽만 둥글다 (사용자 지시: 테두리 라운딩 사각형 말고 벽으로 연결되듯).
-   색은 앱 카드와 같은 배경색 — 광택은 얇은 윗면 반사와 은은한 흐름만 남긴다.
-   내용(.shell)은 Type4에서 배경·테두리를 버리고 표면에 얹히기만 한다.
+   다이내믹 아일랜드 문법: 벽에 맺힌 물방울이 "스스로" 부풀어 판이 되고, 내용은
+   그 위에 뒤늦게 떠오른다. 들어갈 땐 내용이 먼저 사라지고 판이 물방울로 되돌아간다.
+   표면(#edge-liquid)은 도형들 — 벽을 타고 흐르는 막(#edge-film), 번지는 덩어리
+   (.edge-blob ×3, 비대칭), 판(#edge-body), 물방울(#edge-tab) — 에 goo 필터를 걸어
+   붙는 자리에 액체의 목(메니스커스)이 생긴다. 판은 벽 쪽이 벽 너머까지 이어지고
+   바깥쪽만 둥글다. 색은 앱 배경색 하나, 광택·그라데이션 없음(채택된 디자인 유지).
+   판 바깥 8px 여백 — 창 경계에 윤곽이 잘리면 찢어진 종이처럼 보인다.
    끝 상태는 전부 변환 없음(opacity만) — fitHeight 측정이 조상 변환에 물들지 않게. */
 #edge-liquid {
   display: none;
@@ -1324,123 +1321,44 @@ body.star-prompt-open .shell {
   z-index: 0;
   pointer-events: none;
   filter: url("#goo");
+  /* 투명도 슬라이더 계약(#42): 배경이 빠지면 액체도 함께 빠진다. 바닥 0.2는
+     물방울을 찾을 수 있게 남기는 최소치 */
+  opacity: max(0.2, var(--bg-alpha, 1));
 }
 
 body.edge #edge-liquid {
   display: block;
 }
 
-/* 내용은 표면 위에 — 액체 층이 DOM상 뒤에 와서 내용을 덮던 문제 */
+/* 굳은 뒤에는 일렁임을 약하게 */
+body.edge.edge-settled #edge-liquid {
+  filter: url("#goo-still");
+}
+
 body.edge .shell {
   position: relative;
   z-index: 1;
+  background: transparent;
+  border-color: transparent;
 }
 
-/* 액체 색: 앱 배경색 하나. 그림자·광택·그라데이션 없음 — 이미 채택된 디자인을
-   바꾸지 않는다 (사용자 지시). 투명도 슬라이더로 배경이 빠져도 액체는 남는다 —
-   투명한 액체는 goo 대비 단계에서 통째로 사라진다. */
 #edge-film,
 #edge-body,
 #edge-tab,
 .edge-blob {
   position: absolute;
-  background: rgba(var(--bg-rgb), max(0.96, var(--bg-alpha, 1)));
+  background: rgb(var(--bg-rgb));
 }
 
-/* 흘러나오는 덩어리 — 판 높이를 5등분한 자리에 하나씩. 벽에 붙어 있다가
-   가운데(물방울 자리)부터 바깥 순으로 시차를 두고 불거진다. 다 나오면 판 안에
-   들어가 보이지 않는다 (가로 64px < 판, 세로 58px < 칸) */
-.edge-blob {
-  right: -10px;
-  width: 74px;
-  height: 58px;
-  border-radius: 50%;
-  transform-origin: right center;
-  transform: scale(0.08, 0.12);
-}
-
-body.edge.edge-left .edge-blob {
-  right: auto;
-  left: -10px;
-  transform-origin: left center;
-}
-
-.edge-blob:nth-child(2) {
-  top: calc(10px + (100% - 20px) * 0.1 - 29px);
-  --edge-lag: 180ms;
-  --edge-lag-in: 0ms;
-}
-
-.edge-blob:nth-child(3) {
-  top: calc(10px + (100% - 20px) * 0.3 - 29px);
-  --edge-lag: 90ms;
-  --edge-lag-in: 110ms;
-}
-
-.edge-blob:nth-child(4) {
-  top: calc(10px + (100% - 20px) * 0.5 - 29px);
-  --edge-lag: 0ms;
-  --edge-lag-in: 220ms;
-}
-
-.edge-blob:nth-child(5) {
-  top: calc(10px + (100% - 20px) * 0.7 - 29px);
-  --edge-lag: 90ms;
-  --edge-lag-in: 110ms;
-}
-
-.edge-blob:nth-child(6) {
-  top: calc(10px + (100% - 20px) * 0.9 - 29px);
-  --edge-lag: 180ms;
-  --edge-lag-in: 0ms;
-}
-
-/* 나오기: 덩어리가 앞서 번지고(가운데 먼저), 판은 0.2초 뒤에 따라와 삼킨다 */
-body.edge.edge-out .edge-blob {
-  animation: edge-blob-rise 0.75s var(--edge-lag) cubic-bezier(0.3, 1.4, 0.4, 1) both;
-}
-
-/* 들어가기: 내용이 꺼진 뒤 바깥 덩어리부터 벽으로 되돌아가고 가운데가 마지막에
-   물방울로 합쳐진다 */
-body.edge:not(.edge-out) .edge-blob {
-  animation: edge-blob-sink 0.45s calc(0.1s + var(--edge-lag-in)) cubic-bezier(0.55, 0, 0.7, 0.3) both;
-}
-
-@keyframes edge-blob-rise {
-  0% {
-    transform: scale(0.08, 0.12);
-  }
-  60% {
-    transform: translateX(-8px) scale(1.16, 1.06);
-  }
-  100% {
-    transform: scale(1);
-  }
-}
-
-@keyframes edge-blob-sink {
-  0% {
-    transform: scale(1);
-  }
-  30% {
-    transform: translateX(-4px) scale(1.08, 0.94);
-  }
-  100% {
-    transform: scale(0.08, 0.12);
-  }
-}
-
-/* 벽을 타고 흐르는 막 — 패널이 나와 있는 동안만 벽 전체 높이로 얇게 남아,
-   패널 위아래가 벽으로 부드럽게 이어지는 목을 만든다. 벽 너머로 절반을 내보내
-   보이는 폭은 5px */
+/* 벽을 타고 흐르는 막 — 판이 나와 있는 동안만 벽 전체 높이로 흐르며, 판 위아래
+   20px 구간에서 벽으로 이어지는 오목한 목을 만든다. 보이는 폭 8px */
 #edge-film {
   top: 0;
   bottom: 0;
   right: -6px;
-  width: 11px;
-  border-radius: 6px 0 0 6px;
+  width: 14px;
+  border-radius: 7px 0 0 7px;
   transform-origin: right center;
-  /* 투명도로 나타나면 그 사이 색이 달라 조각처럼 보인다 — 벽에서 자라 나온다 */
   transform: scaleX(0);
   transition: transform 0.4s cubic-bezier(0.2, 0.9, 0.3, 1);
 }
@@ -1453,18 +1371,18 @@ body.edge.edge-out #edge-film {
 body.edge.edge-left #edge-film {
   right: auto;
   left: -6px;
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 7px 7px 0;
   transform-origin: left center;
 }
 
-/* 물방울 — 벽 중간에 맺힌 반원. 벽 너머로 살짝 이어져 벽에서 맺힌 모양 */
+/* 물방울 — 벽에 매달린 물처럼 위가 가늘고 아래가 불룩하다 */
 #edge-tab {
   top: 50%;
   right: -4px;
   width: 20px;
   height: 60px;
   margin-top: -30px;
-  border-radius: 30px 0 0 30px;
+  border-radius: 12px 0 0 22px / 22px 0 0 38px;
   transform-origin: right center;
   animation: edge-drop-breathe 3.4s ease-in-out infinite;
 }
@@ -1472,16 +1390,45 @@ body.edge.edge-left #edge-film {
 body.edge.edge-left #edge-tab {
   right: auto;
   left: -4px;
-  border-radius: 0 30px 30px 0;
+  border-radius: 0 12px 22px 0 / 0 22px 38px 0;
   transform-origin: left center;
 }
 
-/* 패널 — 벽 쪽은 벽 너머까지 이어지고 바깥쪽만 둥글다. 위아래 10px는 막에
-   맡겨 목이 보이게 한다. 접혀 있으면 물방울 크기로 찌그러져 물방울 속에 숨는다 */
-#edge-body {
-  top: 10px;
-  bottom: 10px;
+/* 물방울 반사광 — 필터 밖. 판이 나오면 꺼진다 */
+#edge-tab-glow {
+  display: none;
+  position: fixed;
+  top: 50%;
+  right: 0;
+  width: 16px;
+  height: 60px;
+  margin-top: -30px;
+  border-radius: 12px 0 0 22px / 22px 0 0 38px;
+  box-shadow: 0 0 7px 1px rgba(var(--accent-rgb), 0.4);
+  pointer-events: none;
+  transition: opacity 0.25s;
+}
+
+body.edge #edge-tab-glow {
+  display: block;
+}
+
+body.edge.edge-left #edge-tab-glow {
+  right: auto;
   left: 0;
+  border-radius: 0 12px 22px 0 / 0 22px 38px 0;
+}
+
+body.edge.edge-out #edge-tab-glow {
+  opacity: 0;
+}
+
+/* 판 — 벽 쪽은 벽 너머까지, 바깥쪽만 둥글게. 위아래 20px는 막이 목을 만든다.
+   접혀 있으면 물방울 크기로 찌그러져 물방울 속에 숨는다 */
+#edge-body {
+  top: 20px;
+  bottom: 20px;
+  left: 8px;
   right: -24px;
   border-radius: 18px 0 0 18px;
   transform-origin: right center;
@@ -1490,28 +1437,78 @@ body.edge.edge-left #edge-tab {
 
 body.edge.edge-left #edge-body {
   left: -24px;
-  right: 0;
+  right: 8px;
   border-radius: 0 18px 18px 0;
   transform-origin: left center;
 }
 
-/* 나오기: 물방울이 먼저 부풀고(0~25%), 그 힘으로 패널이 벽에서 불거져 출렁이다
-   자리 잡는다. 자리 잡은 뒤에도 바깥 모서리가 숨쉬듯 출렁인다 */
-body.edge.edge-out #edge-body {
-  animation:
-    edge-body-rise 0.8s 0.2s cubic-bezier(0.22, 0.9, 0.24, 1) both,
-    edge-body-wobble 5.5s 1s ease-in-out infinite;
+/* 번지는 덩어리 셋 — 크기·자리·시차가 다 다르다(균등하면 톱니로 읽힌다).
+   가운데(물방울 자리)가 제일 크고 먼저, 위·아래가 시차를 두고 따라온다.
+   높이를 간격보다 크게 두어 처음부터 서로 겹친다. 다 나오면 판 안에 숨는다 */
+.edge-blob {
+  right: -10px;
+  border-radius: 50%;
+  transform-origin: right center;
+  transform: scale(0.08, 0.12);
 }
 
-body.edge.edge-left.edge-out #edge-body {
-  animation-name: edge-body-rise-left, edge-body-wobble-left;
+body.edge.edge-left .edge-blob {
+  right: auto;
+  left: -10px;
+  transform-origin: left center;
 }
 
+.edge-blob:nth-child(2) {
+  width: 56px;
+  height: 54px;
+  top: calc(20px + (100% - 40px) * 0.24 - 27px);
+  --edge-lag: 120ms;
+  --edge-lag-in: 60ms;
+}
+
+.edge-blob:nth-child(3) {
+  width: 74px;
+  height: 78px;
+  top: calc(50% - 39px);
+  --edge-lag: 0ms;
+  --edge-lag-in: 120ms;
+}
+
+.edge-blob:nth-child(4) {
+  width: 62px;
+  height: 60px;
+  top: calc(20px + (100% - 40px) * 0.74 - 30px);
+  --edge-lag: 200ms;
+  --edge-lag-in: 0ms;
+}
+
+/* 나오기: 물방울이 부풀고 → 덩어리가 번지고 → 판이 80ms 뒤 따라와 삼킨다 */
 body.edge.edge-out #edge-tab {
   animation: edge-drop-swell 0.72s cubic-bezier(0.22, 0.9, 0.24, 1) both;
 }
 
-/* 들어가기: 내용이 사라진 뒤(0.1s) 패널이 한 번 움찔하고 물방울로 빨려 들어간다 */
+body.edge.edge-out .edge-blob {
+  animation: edge-blob-rise 0.8s var(--edge-lag) cubic-bezier(0.45, 0.1, 0.25, 1.15) both;
+}
+
+body.edge.edge-out #edge-body {
+  animation: edge-body-rise 0.8s 0.08s cubic-bezier(0.22, 0.9, 0.24, 1) both;
+}
+
+body.edge.edge-left.edge-out #edge-body {
+  animation-name: edge-body-rise-left;
+}
+
+/* 들어가기: 내용이 꺼진 뒤(0.1s) 바깥 덩어리부터 벽으로 되돌아가고, 판이 줄며,
+   가운데 덩어리가 마지막에 물방울로 합쳐진다 (가운데는 되불룩임 없이) */
+body.edge:not(.edge-out) .edge-blob {
+  animation: edge-blob-sink 0.45s calc(0.1s + var(--edge-lag-in)) cubic-bezier(0.55, 0, 0.7, 0.3) both;
+}
+
+body.edge:not(.edge-out) .edge-blob:nth-child(3) {
+  animation-name: edge-blob-sink-core;
+}
+
 body.edge:not(.edge-out) #edge-body {
   animation: edge-body-sink 0.55s 0.1s cubic-bezier(0.55, 0, 0.7, 0.25) both;
 }
@@ -1526,10 +1523,13 @@ body.edge:not(.edge-out) #edge-tab {
     edge-drop-breathe 3.4s 0.7s ease-in-out infinite;
 }
 
-/* 내용: 표면이 거의 다 나온 뒤 떠오르고, 들어갈 땐 먼저 꺼진다 */
+/* 내용: 판이 굳은 뒤(0.72s) 벽 쪽에서 떠오르고, 들어갈 땐 먼저 꺼진다 */
 body.edge .shell {
-  background: transparent;
-  border-color: transparent;
+  transform-origin: right center;
+}
+
+body.edge.edge-left .shell {
+  transform-origin: left center;
 }
 
 body.edge:not(.edge-out) .shell {
@@ -1539,7 +1539,7 @@ body.edge:not(.edge-out) .shell {
 }
 
 body.edge.edge-out .shell {
-  animation: edge-content-in 0.32s 0.55s ease-out both;
+  animation: edge-content-in 0.22s 0.72s ease-out both;
 }
 
 /* Type4 진입 직후: 접힌 상태로 시작하되 "들어가는" 연출은 재생하지 않는다 */
@@ -1554,7 +1554,7 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
     transform: scale(1);
   }
   50% {
-    transform: scale(1.14, 1.06);
+    transform: scale(1.06, 1.03) translateY(1px);
   }
 }
 
@@ -1588,6 +1588,39 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
   }
 }
 
+@keyframes edge-blob-rise {
+  0% {
+    transform: scale(0.08, 0.12);
+  }
+  60% {
+    transform: translateX(-4px) scale(1.12, 1.04);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes edge-blob-sink {
+  0% {
+    transform: scale(1);
+  }
+  30% {
+    transform: translateX(-3px) scale(1.06, 0.95);
+  }
+  100% {
+    transform: scale(0.08, 0.12);
+  }
+}
+
+@keyframes edge-blob-sink-core {
+  0% {
+    transform: scale(1);
+  }
+  100% {
+    transform: scale(0.08, 0.12);
+  }
+}
+
 @keyframes edge-body-rise {
   0% {
     transform: scale(0.06, 0.1);
@@ -1598,15 +1631,15 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
     border-radius: 40px 0 0 40px;
   }
   48% {
-    transform: scale(1.07, 1.03);
+    transform: scale(1.04, 1.02);
     border-radius: 26px 0 0 26px;
   }
   68% {
-    transform: scale(0.975, 0.99);
+    transform: scale(0.985, 0.995);
     border-radius: 20px 0 0 20px;
   }
   84% {
-    transform: scale(1.012, 1.004);
+    transform: scale(1.006, 1.002);
     border-radius: 18px 0 0 18px;
   }
   100% {
@@ -1625,15 +1658,15 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
     border-radius: 0 40px 40px 0;
   }
   48% {
-    transform: scale(1.07, 1.03);
+    transform: scale(1.04, 1.02);
     border-radius: 0 26px 26px 0;
   }
   68% {
-    transform: scale(0.975, 0.99);
+    transform: scale(0.985, 0.995);
     border-radius: 0 20px 20px 0;
   }
   84% {
-    transform: scale(1.012, 1.004);
+    transform: scale(1.006, 1.002);
     border-radius: 0 18px 18px 0;
   }
   100% {
@@ -1648,7 +1681,7 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
     border-radius: 18px 0 0 18px;
   }
   25% {
-    transform: scale(1.04, 0.96);
+    transform: scale(1.03, 0.97);
     border-radius: 24px 0 0 24px;
   }
   100% {
@@ -1663,7 +1696,7 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
     border-radius: 0 18px 18px 0;
   }
   25% {
-    transform: scale(1.04, 0.96);
+    transform: scale(1.03, 0.97);
     border-radius: 0 24px 24px 0;
   }
   100% {
@@ -1672,36 +1705,10 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
   }
 }
 
-@keyframes edge-body-wobble {
-  0%,
-  100% {
-    border-radius: 18px 0 0 18px / 18px 0 0 18px;
-  }
-  33% {
-    border-radius: 24px 0 0 16px / 20px 0 0 22px;
-  }
-  66% {
-    border-radius: 16px 0 0 24px / 22px 0 0 18px;
-  }
-}
-
-@keyframes edge-body-wobble-left {
-  0%,
-  100% {
-    border-radius: 0 18px 18px 0 / 0 18px 18px 0;
-  }
-  33% {
-    border-radius: 0 24px 16px 0 / 0 20px 22px 0;
-  }
-  66% {
-    border-radius: 0 16px 24px 0 / 0 22px 18px 0;
-  }
-}
-
 @keyframes edge-content-in {
   0% {
     opacity: 0;
-    transform: scale(0.97);
+    transform: translateX(5px) scale(0.98);
   }
   100% {
     opacity: 1;
@@ -1719,69 +1726,96 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
 }
 
 /* ── Type4 내용: 손가락 폭(84px) 세로 막대 미니 패널 ─────────────────
-   앱의 디자인 언어를 그대로 세운 것이다 — 세그먼트 바(.bar와 같은 트랙색·홈·
-   채움색), .bar-num 숫자, .c-label 라벨, 기본 button 모양. 타이틀바·독은 숨기고,
-   본문 맨 위 .edge-bar가 ☰ 이동 손잡이와 모드 버튼을 맡는다. 위아래 14px 여백은
-   패널 표면(top/bottom 10px) 안에 내용이 들어오게 한다. */
+   앱의 디자인 언어를 세운 것 — 세그먼트 바(.bar와 같은 트랙색·홈·채움색·칸 8px),
+   .c-label 계열 라벨, 위젯 모드 버튼의 "흐릿하다 hover에 또렷" 규칙. 위계는
+   숫자(10px) > 제목(8px, 프로바이더 색) > 라벨(8px). 여백은 4px 그리드.
+   위 22·아래 24px 여백은 판 표면(top/bottom 20px) 안에 내용이 들어오게 한다. */
 body.edge .titlebar,
 body.edge .dock {
   display: none;
 }
 
 body.edge main {
-  padding: 14px 6px 16px;
+  padding: 22px 6px 24px;
 }
 
 .edge-bar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 2px 6px;
+  padding: 0 2px 8px;
 }
 
+/* 이동 손잡이·모드 버튼: 위젯 모드의 #drag-handle·#pin과 같은 문법 — 테두리·배경
+   없이 흐릿하게 있다가 마우스가 판 위에 오면 또렷해진다 */
 .edge-ui {
   font: inherit;
   font-size: 10px;
   line-height: 1;
-  padding: 3px 6px;
-  background: var(--panel-2);
-  color: var(--text);
-  border: 1px solid rgb(var(--border-rgb));
-  border-radius: 6px;
+  padding: 2px 4px;
+  background: none;
+  border: 0;
+  color: var(--muted);
+  opacity: 0.45;
   cursor: pointer;
   user-select: none;
+  transition: opacity 0.15s;
 }
 
-.edge-ui:hover {
-  border-color: var(--accent);
+body.edge main:hover .edge-ui {
+  opacity: 1;
 }
 
 .edge-handle {
+  font-size: 13px;
   cursor: grab;
-  color: var(--muted);
+}
+
+.edge-mode {
+  color: var(--accent);
+  font-weight: 700;
 }
 
 .edge-section {
-  padding: 4px 0 2px;
+  padding: 0;
 }
 
 .edge-section + .edge-section {
-  margin-top: 4px;
-  border-top: 1px solid rgba(var(--track-rgb), var(--fg-alpha));
+  margin-top: 8px;
   padding-top: 8px;
+  border-top: 1px solid rgba(var(--muted-rgb), calc(0.25 * var(--bar-alpha)));
 }
 
-.edge-section.stale .edge-bars {
-  opacity: 0.55;
+/* 이전 수치: 채움만 흐리고 숫자는 살린다. 제목 옆 점이 이유를 말한다 */
+.edge-section.stale .edge-vfill {
+  opacity: 0.45;
+}
+
+.edge-stale {
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  margin-left: 4px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--warn);
 }
 
 .edge-title {
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 1px;
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
   text-align: center;
-  color: var(--muted);
-  margin-bottom: 5px;
+  margin-bottom: 4px;
+  opacity: 0.85;
+}
+
+.edge-section.prov-claude .edge-title {
+  color: var(--accent);
+}
+
+.edge-section.prov-codex .edge-title {
+  color: rgb(var(--accent-alt-rgb));
 }
 
 .edge-bars {
@@ -1795,16 +1829,18 @@ body.edge main {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
 }
 
-/* 세로 세그먼트 바 — .bar를 90° 세운 것. 트랙·홈·채움·둥글기 모두 같은 값 */
+/* 세로 세그먼트 바 — .bar를 90° 세운 것. 트랙·홈·채움·둥글기 값이 같고 칸은
+   8×8 정사각. 홈은 바닥(채움 시작점)에서 올라간다 — 위에서 내려오면 마지막 홈이
+   바닥에 깔려 2~7% 채움을 통째로 먹는다 (design review) */
 .edge-vbar {
   position: relative;
-  width: 11px;
+  width: 8px;
   height: 64px;
   border-radius: 2px;
-  background: rgb(var(--track-rgb));
+  background: rgba(var(--track-rgb), 0.7);
   overflow: hidden;
   opacity: var(--bar-alpha);
   --seg-w: 8px;
@@ -1816,9 +1852,9 @@ body.edge main {
   inset: 0;
   pointer-events: none;
   background: repeating-linear-gradient(
-    180deg,
+    0deg,
     transparent 0 calc(var(--seg-w) - 1.5px),
-    rgba(var(--separator-rgb), 0.95) calc(var(--seg-w) - 1.5px) var(--seg-w)
+    rgba(var(--separator-rgb), 0.8) calc(var(--seg-w) - 1.5px) var(--seg-w)
   );
 }
 
@@ -1832,10 +1868,6 @@ body.edge main {
   transition: height 0.3s;
 }
 
-.edge-section.prov-codex .edge-vfill {
-  background: rgb(var(--accent-alt-rgb));
-}
-
 .edge-vfill.warn {
   background: var(--warn);
 }
@@ -1845,7 +1877,7 @@ body.edge main {
 }
 
 .edge-num {
-  font-size: 8.5px;
+  font-size: 10px;
   font-weight: 700;
   line-height: 1;
   color: var(--text);
@@ -1854,7 +1886,7 @@ body.edge main {
 
 .edge-lab {
   font-size: 8px;
-  font-weight: 700;
+  font-weight: 500;
   line-height: 1;
   color: var(--muted);
 }

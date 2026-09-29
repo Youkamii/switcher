@@ -52,37 +52,39 @@
       </footer>
     </div>
     <!-- Type4(벽 붙임) 액체 층 (#151) — 다이내믹 아일랜드식. 벽에 맺힌 물방울
-         (#edge-tab)이 마우스를 대면 스스로 부풀어 패널 모양(#edge-body)이 되고,
-         내용(.shell)은 그 위에 나중에 떠오른다. 두 도형은 goo 필터(블러+알파
-         대비)로 한 덩어리 액체처럼 붙었다 떨어진다. 글자는 이 층 밖이라 번지지 않는다. -->
+         (#edge-tab)이 마우스를 대면 부풀어 덩어리(.edge-blob)로 번지고, 판(#edge-body)이
+         뒤따라 삼킨다. 내용(.shell)은 그 위에 나중에 떠오른다. 도형들은 goo 필터로
+         한 덩어리 액체처럼 붙었다 떨어진다. 글자는 이 층 밖이라 번지지 않는다. -->
     <div id="edge-liquid" aria-hidden="true">
       <div id="edge-film"></div>
-      <!-- 흘러나오는 덩어리들 — 물방울 자리(가운데)에서 위아래로 시차를 두고
-           번지며 앞이 불룩한 물의 앞머리를 만든다. 판이 뒤따라와 삼킨다 -->
-      <div class="edge-blob"></div>
-      <div class="edge-blob"></div>
       <div class="edge-blob"></div>
       <div class="edge-blob"></div>
       <div class="edge-blob"></div>
       <div id="edge-body"></div>
       <div id="edge-tab"></div>
     </div>
+    <!-- 물방울의 벽면 반사광 — 필터 밖(번지지 않게). 판과 같은 색인 물방울이 어두운
+         바탕에서도 보이게 하는 유일한 표식 -->
+    <div id="edge-tab-glow" aria-hidden="true"></div>
     <svg width="0" height="0" style="position: absolute" aria-hidden="true">
       <defs>
-        <!-- 액체 실루엣: 느리게 흐르는 난류로 윤곽을 일렁이게(displacement) 하고,
+        <!-- 액체 실루엣: 큰 파장의 난류로 윤곽을 살짝 일렁이게(displacement) 하고,
              블러+알파 대비로 도형들을 한 덩어리로 녹인다(goo). 색·질감은 없다 —
-             앱 배경색 그대로. 액체다움은 도형들이 움직이는 방식이 낸다. -->
+             앱 배경색 그대로. 전이 중(#goo)은 굵게, 굳은 뒤(#goo-still)는 약하게. -->
         <filter id="goo" x="-30%" y="-15%" width="160%" height="130%" color-interpolation-filters="sRGB">
-          <feTurbulence type="fractalNoise" baseFrequency="0.012 0.03" numOctaves="2" seed="7" result="noise">
-            <animate
-              attributeName="baseFrequency"
-              dur="8s"
-              values="0.012 0.03;0.02 0.022;0.014 0.036;0.012 0.03"
-              repeatCount="indefinite"
-            />
-          </feTurbulence>
+          <feTurbulence type="fractalNoise" baseFrequency="0.006 0.012" numOctaves="1" seed="7" result="noise" />
           <feDisplacementMap in="SourceGraphic" in2="noise" scale="8" xChannelSelector="R" yChannelSelector="G" result="wobbly" />
-          <feGaussianBlur in="wobbly" stdDeviation="7" result="blur" />
+          <feGaussianBlur in="wobbly" stdDeviation="9" result="blur" />
+          <feColorMatrix
+            in="blur"
+            mode="matrix"
+            values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 20 -9"
+          />
+        </filter>
+        <filter id="goo-still" x="-30%" y="-15%" width="160%" height="130%" color-interpolation-filters="sRGB">
+          <feTurbulence type="fractalNoise" baseFrequency="0.006 0.012" numOctaves="1" seed="7" result="noise" />
+          <feDisplacementMap in="SourceGraphic" in2="noise" scale="2.5" xChannelSelector="R" yChannelSelector="G" result="wobbly" />
+          <feGaussianBlur in="wobbly" stdDeviation="6" result="blur" />
           <feColorMatrix
             in="blur"
             mode="matrix"
