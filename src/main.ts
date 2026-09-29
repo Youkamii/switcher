@@ -1037,7 +1037,7 @@ function collapseSectionsInPlace() {
       collapsibleHeader(
         key === "github" ? "GITHUB" : "DISPLAY",
         key,
-        layoutOf(viewMode) === "compact",
+        viewMode === "compact",
       ),
     );
     // 새로 만든 머리글에 드래그 시작을 다시 붙인다 — 안 하면 다음 전체
@@ -1560,6 +1560,86 @@ function compactCard(
   return card;
 }
 
+/// Type4(벽 붙임) 본문 맨 위 — ☰ 이동 손잡이와 모드 버튼. 타이틀바·독은 숨긴다 (#151)
+function edgeBar(): HTMLElement {
+  const bar = document.createElement("div");
+  bar.className = "edge-bar";
+  const handle = document.createElement("span");
+  handle.className = "edge-ui edge-handle";
+  handle.textContent = "☰";
+  handle.setAttribute("data-tauri-drag-region", "");
+  handle.title = t("dragHandle");
+  const mode = document.createElement("button");
+  mode.className = "edge-ui";
+  mode.textContent = "T4";
+  mode.title = t("typeTooltip");
+  mode.addEventListener("click", () => lockBtn.click());
+  bar.append(handle, mode);
+  return bar;
+}
+
+/// Type4(벽 붙임) 렌더 — 활성 계정 하나의 사용량만, 세로 막대로 (#151, 사용자 지시:
+/// "가로 막대가 아니라 세로 막대로, 아주 컴팩트하게"). 전환 카드는 없다.
+async function renderProviderEdge(
+  provider: ProviderId,
+  title: string,
+  target: DocumentFragment,
+  pending: Promise<unknown>[],
+) {
+  try {
+    const snap = await invoke<Snapshot>("list_profiles", { provider });
+    const profile = snap.profiles.find((p) => p.active);
+    if (!profile) return;
+    const section = document.createElement("section");
+    section.className = `edge-section prov-${provider}`;
+    const head = document.createElement("div");
+    head.className = "edge-title";
+    head.textContent = title;
+    section.appendChild(head);
+    const bars = document.createElement("div");
+    bars.className = "edge-bars";
+    section.appendChild(bars);
+    target.appendChild(section);
+
+    const load = (async () => {
+      try {
+        const usage = await fetchUsageShared(provider, null, profile.id);
+        if (usage.stale) section.classList.add("stale");
+        for (const win of usage.windows) {
+          const pct = Math.min(100, Math.max(0, win.percent));
+          const col = document.createElement("div");
+          col.className = "edge-col";
+          const vbar = document.createElement("div");
+          vbar.className = "edge-vbar";
+          vbar.title = win.label;
+          const fill = document.createElement("div");
+          fill.className = "edge-vfill";
+          if (pct >= 85) fill.classList.add("danger");
+          else if (pct >= 60) fill.classList.add("warn");
+          fill.style.height = `${pct}%`;
+          vbar.appendChild(fill);
+          const num = document.createElement("span");
+          num.className = "edge-num";
+          num.textContent = String(Math.round(pct));
+          const lab = document.createElement("span");
+          lab.className = "edge-lab";
+          lab.textContent = minimalLabel(win);
+          lab.title = win.label;
+          col.append(vbar, num, lab);
+          bars.appendChild(col);
+        }
+      } catch {
+        // 표시 전용 — 조회 실패는 다음 주기에
+      } finally {
+        if (section.isConnected) fitHeight();
+      }
+    })();
+    pending.push(load);
+  } catch {
+    // 목록 실패도 조용히
+  }
+}
+
 /// 컴팩트(Type 2)·미니멀(Type 3) 렌더 — 모든 계정이 나오고 더블클릭 전환도 된다
 async function renderProviderCompact(
   provider: ProviderId,
@@ -1624,11 +1704,13 @@ async function render(opts?: { immediate?: boolean }) {
       queuedImmediate = false;
       // 그리는 도중 모드가 바뀌어도 한 화면은 단일 모드로 —
       // 프로바이더마다 다른 모드로 그려지는 혼종 화면 방지
-      const mode = starPromptOpen ? "normal" : layoutOf(viewMode);
+      const mode = starPromptOpen ? "normal" : viewMode;
       // 화면을 지우고 처음부터 다시 그리면 새로고침마다 카드가 전부 사라졌다
       // 주루룩 돌아온다 — 보이지 않는 버퍼에 완성해 두고 한 번에 교체한다
       const buffer = document.createDocumentFragment();
       const pending: Promise<unknown>[] = [];
+      // Type4(벽 붙임)는 타이틀바·독을 감추고 손잡이·모드 버튼을 본문 맨 위에 둔다
+      if (mode === "edge") buffer.appendChild(edgeBar());
       // 섹션은 사용자가 정한 순서(sectionOrder)대로 그린다 — Type1에서 머리글
       // 드래그로 바꾸고, 컴팩트에도 같은 순서가 적용된다.
       // 미니멀은 사용량 전용(#41)이라 GITHUB·DISPLAY는 그리지 않는다 —
@@ -1638,22 +1720,25 @@ async function render(opts?: { immediate?: boolean }) {
         if (key === "claude" || key === "codex") {
           if (!visibility[key] && !starPromptOpen) continue;
           const title = PROVIDERS.find((p) => p.id === key)!.title;
-          if (mode !== "normal") {
+          if (mode === "edge") {
+            await renderProviderEdge(key, title, buffer, pending);
+          } else if (mode !== "normal") {
             await renderProviderCompact(key, title, buffer, mode === "minimal", pending);
           } else {
             await renderProvider(key, title, buffer, pending);
           }
         } else if (key === "github") {
-          if (!visibility.github || mode === "minimal") continue;
+          if (!visibility.github || mode === "minimal" || mode === "edge") continue;
           if (mode === "compact") {
             await renderGithubCompact(buffer);
           } else {
             await renderGithub(buffer);
           }
         } else if (key === "display") {
-          if (!visibility.display || mode === "minimal") continue;
+          if (!visibility.display || mode === "minimal" || mode === "edge") continue;
           await renderDisplays(buffer, mode === "compact");
         } else if (key === "system") {
+          if (mode === "edge") continue;
           if (!monitorOn && !starPromptOpen) continue;
           renderMonitor(buffer);
         }
@@ -1728,11 +1813,6 @@ const VIEW_CYCLE = ["normal", "compact", "minimal", "edge"] as const;
 type ViewMode = (typeof VIEW_CYCLE)[number];
 function isViewMode(value: unknown): value is ViewMode {
   return (VIEW_CYCLE as readonly unknown[]).includes(value);
-}
-/// 화면 구성(레이아웃)만 보면 Type4는 컴팩트다 — 렌더·폭·접이식 머리글은 이 값을 본다
-type LayoutMode = Exclude<ViewMode, "edge">;
-function layoutOf(mode: ViewMode): LayoutMode {
-  return mode === "edge" ? "compact" : mode;
 }
 const lockBtn = document.getElementById("pin") as HTMLButtonElement;
 let viewMode: ViewMode = (() => {
@@ -1842,7 +1922,7 @@ function reportHitRegions() {
     // display:none이라 rect 0×0으로 걸러진다.
     document
       .querySelectorAll<HTMLElement>(
-        ".tb-actions > *, #dock-toggle, #drag-handle, .display-row, .collapsible",
+        ".tb-actions > *, #dock-toggle, #drag-handle, .display-row, .collapsible, .edge-ui",
       )
       .forEach((el) => pushVisible(el, null));
   }
@@ -2135,11 +2215,13 @@ async function fitWindowToContent() {
       // 타이틀바 버튼은 한 줄을 포기하고 다음 줄로 흐른다)
       const width = loginOpen || starPromptOpen
         ? 360
-        : viewMode === "minimal"
-          ? 120
-          : layoutOf(viewMode) === "compact"
-            ? 240
-            : 360;
+        : viewMode === "edge"
+          ? 84
+          : viewMode === "minimal"
+            ? 120
+            : viewMode === "compact"
+              ? 240
+              : 360;
       // 크기 조절 기준은 "오른쪽 상단" — 목표 폭이 실제로 바뀌는 전환에서만
       // 우측 가장자리를 고정한다. (바깥 크기에는 그림자가 포함되므로 실측 폭과
       // 목표 폭을 비교하면 매번 어긋나 창이 조금씩 밀리는 버그가 있었다)

@@ -1317,20 +1317,65 @@ body.star-prompt-open .shell {
   display: none;
   position: fixed;
   inset: 0;
+  z-index: 0;
   pointer-events: none;
   filter: url("#goo");
+}
+
+/* 내용은 표면 위에 — 액체 층이 DOM상 뒤에 와서 내용을 덮던 문제(사용자 보고:
+   "내용이 전혀 안 뜬다") */
+body.edge .shell {
+  position: relative;
+  z-index: 1;
 }
 
 body.edge #edge-liquid {
   display: block;
 }
 
-/* 표면색: 배경색을 쓰되 투명도 슬라이더로 배경이 빠져도 액체는 남는다 —
-   투명한 액체는 goo 대비 단계에서 통째로 사라진다 */
+/* 물의 질감: 표면색 위에 (1) 왼쪽 위에서 비치는 빛과 오른쪽 아래의 그늘,
+   (2) 가장자리를 도는 얇은 밝은 테(윗면 반사)와 바닥의 깊은 그림자,
+   (3) 느리게 흐르는 하이라이트(::after). 투명도 슬라이더로 배경이 빠져도 액체는
+   남는다 — 투명한 액체는 goo 대비 단계에서 통째로 사라진다.
+   하이라이트는 필터 층 안에 두어 윤곽과 함께 일렁인다. */
 #edge-body,
 #edge-tab {
   position: absolute;
-  background: rgba(var(--bg-rgb), max(0.92, var(--bg-alpha, 1)));
+  background:
+    radial-gradient(120% 70% at 18% 8%, rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0) 55%),
+    linear-gradient(160deg, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0) 45%, rgba(0, 0, 0, 0.22)),
+    rgba(var(--bg-rgb), max(0.9, var(--bg-alpha, 1)));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.45),
+    inset 1px 0 0 rgba(255, 255, 255, 0.16),
+    inset 0 -10px 18px rgba(0, 0, 0, 0.35),
+    inset -6px 0 12px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+
+/* 표면 위를 천천히 흐르는 빛 */
+#edge-body::after {
+  content: "";
+  position: absolute;
+  inset: -40% -60%;
+  background: radial-gradient(
+    30% 22% at 50% 50%,
+    rgba(255, 255, 255, 0.22),
+    rgba(255, 255, 255, 0) 70%
+  );
+  animation: edge-sheen 7s ease-in-out infinite;
+}
+
+@keyframes edge-sheen {
+  0% {
+    transform: translate(-18%, -26%) rotate(-8deg);
+  }
+  50% {
+    transform: translate(14%, 22%) rotate(6deg);
+  }
+  100% {
+    transform: translate(-18%, -26%) rotate(-8deg);
+  }
 }
 
 /* 물방울 — 벽 중간에 맺힌 반원 */
@@ -1369,7 +1414,23 @@ body.edge.edge-left #edge-body {
 /* 나오기: 물방울이 먼저 부풀고(0~25%), 그 힘으로 표면이 튀어나와 출렁이다
    자리 잡는다. 표면 모서리는 크게 둥글었다가 12px로 굳는다 */
 body.edge.edge-out #edge-body {
-  animation: edge-body-rise 0.72s cubic-bezier(0.22, 0.9, 0.24, 1) both;
+  animation:
+    edge-body-rise 0.72s cubic-bezier(0.22, 0.9, 0.24, 1) both,
+    edge-body-wobble 5.5s 0.72s ease-in-out infinite;
+}
+
+/* 자리 잡은 뒤에도 물처럼 미세하게 출렁인다 — 모서리 반경만 숨쉬듯 */
+@keyframes edge-body-wobble {
+  0%,
+  100% {
+    border-radius: 12px 12px 12px 12px / 12px 12px 12px 12px;
+  }
+  33% {
+    border-radius: 16px 11px 14px 12px / 13px 12px 16px 11px;
+  }
+  66% {
+    border-radius: 11px 15px 12px 16px / 12px 14px 11px 15px;
+  }
 }
 
 body.edge.edge-out #edge-tab {
@@ -1509,4 +1570,123 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .shell) {
   100% {
     opacity: 0;
   }
+}
+
+/* ── Type4 내용: 손가락 폭(84px) 세로 막대 미니 패널 ─────────────────
+   타이틀바·독은 숨기고, 본문 맨 위 .edge-bar가 ☰ 이동 손잡이와 모드 버튼을
+   맡는다. 프로바이더마다 활성 계정 하나의 사용량 창을 세로 막대로 세운다. */
+body.edge .titlebar,
+body.edge .dock {
+  display: none;
+}
+
+body.edge main {
+  padding: 4px 4px 8px;
+}
+
+.edge-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 4px 4px;
+}
+
+.edge-ui {
+  font: inherit;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 7px;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.edge-ui:hover {
+  background: rgba(255, 255, 255, 0.2);
+  color: var(--text);
+}
+
+.edge-handle {
+  cursor: grab;
+}
+
+.edge-section {
+  padding: 4px 2px 2px;
+}
+
+.edge-section.stale {
+  opacity: 0.55;
+}
+
+.edge-title {
+  font-size: 8.5px;
+  letter-spacing: 0.1em;
+  text-align: center;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.edge-section.prov-claude .edge-title {
+  color: var(--accent);
+}
+
+.edge-bars {
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 9px;
+}
+
+.edge-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+}
+
+.edge-vbar {
+  position: relative;
+  width: 12px;
+  height: 66px;
+  border-radius: 6px;
+  background: rgb(var(--track-rgb));
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  opacity: var(--bar-alpha);
+}
+
+.edge-vfill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.35);
+  transition: height 0.7s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+.edge-vfill.warn {
+  background: var(--warn);
+}
+
+.edge-vfill.danger {
+  background: var(--danger);
+}
+
+.edge-num {
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.edge-lab {
+  font-size: 8px;
+  line-height: 1;
+  color: var(--muted);
 }

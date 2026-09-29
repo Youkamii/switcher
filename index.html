@@ -61,15 +61,26 @@
     </div>
     <svg width="0" height="0" style="position: absolute" aria-hidden="true">
       <defs>
-        <filter id="goo">
-          <feGaussianBlur in="SourceGraphic" stdDeviation="7" result="blur" />
+        <!-- 물 표면: 느리게 흐르는 난류로 윤곽을 일렁이게(displacement) 한 뒤,
+             블러+알파 대비로 도형끼리 액체처럼 붙게(goo) 한다 -->
+        <filter id="goo" x="-25%" y="-15%" width="150%" height="130%" color-interpolation-filters="sRGB">
+          <feTurbulence type="fractalNoise" baseFrequency="0.012 0.03" numOctaves="2" seed="7" result="noise">
+            <animate
+              attributeName="baseFrequency"
+              dur="11s"
+              values="0.012 0.03;0.019 0.022;0.014 0.034;0.012 0.03"
+              repeatCount="indefinite"
+            />
+          </feTurbulence>
+          <feDisplacementMap in="SourceGraphic" in2="noise" scale="7" xChannelSelector="R" yChannelSelector="G" result="wobbly" />
+          <feGaussianBlur in="wobbly" stdDeviation="6" result="blur" />
           <feColorMatrix
             in="blur"
             mode="matrix"
             values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 20 -9"
             result="goo"
           />
-          <feComposite in="SourceGraphic" in2="goo" operator="atop" />
+          <feComposite in="wobbly" in2="goo" operator="atop" />
         </filter>
       </defs>
     </svg>

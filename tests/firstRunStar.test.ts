@@ -157,7 +157,7 @@ test("renders the default interface before the overlay and blocks background inp
   );
   assert.match(
     mainSource,
-    /const mode = starPromptOpen \? "normal" : layoutOf\(viewMode\);/,
+    /const mode = starPromptOpen \? "normal" : viewMode;/,
   );
   assert.match(mainSource, /if \(!visibility\[key\] && !starPromptOpen\) continue;/);
   assert.match(mainSource, /if \(!monitorOn && !starPromptOpen\) continue;/);
