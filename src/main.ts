@@ -12,8 +12,11 @@ import {
 } from "./loginLifecycle";
 import {
   clampWindowToWorkArea,
+  edgeSnapPosition,
   logicalWorkAreaHeight,
   monitorGeometryKey,
+  pickEdgeSide,
+  type EdgeSide,
   type PhysicalRect,
 } from "./windowGeometry";
 import {
@@ -1031,7 +1034,11 @@ function collapseSectionsInPlace() {
   document.querySelectorAll<HTMLElement>("section[data-collapsible]").forEach((el) => {
     const key = el.dataset.collapsible as CollapsibleKey;
     el.replaceChildren(
-      collapsibleHeader(key === "github" ? "GITHUB" : "DISPLAY", key, viewMode === "compact"),
+      collapsibleHeader(
+        key === "github" ? "GITHUB" : "DISPLAY",
+        key,
+        layoutOf(viewMode) === "compact",
+      ),
     );
     // 새로 만든 머리글에 드래그 시작을 다시 붙인다 — 안 하면 다음 전체
     // 재렌더까지 이 섹션만 드래그가 안 된다 (red-review)
@@ -1617,7 +1624,7 @@ async function render(opts?: { immediate?: boolean }) {
       queuedImmediate = false;
       // 그리는 도중 모드가 바뀌어도 한 화면은 단일 모드로 —
       // 프로바이더마다 다른 모드로 그려지는 혼종 화면 방지
-      const mode = starPromptOpen ? "normal" : viewMode;
+      const mode = starPromptOpen ? "normal" : layoutOf(viewMode);
       // 화면을 지우고 처음부터 다시 그리면 새로고침마다 카드가 전부 사라졌다
       // 주루룩 돌아온다 — 보이지 않는 버퍼에 완성해 두고 한 번에 교체한다
       const buffer = document.createDocumentFragment();
@@ -1713,13 +1720,20 @@ function userIsBusy(): boolean {
 
 const appWindow = getCurrentWindow();
 
-// 보기 모드 3단계 사이클: 일반 → 고정(사용량 위젯) → 컴팩트(활성 계정 요약만) → 일반
-// 고정·컴팩트 공통: 조작 숨김, 클릭 투과, ☰ 핸들로만 이동. (항상-위는 창 기본 설정)
-type ViewMode = "normal" | "compact" | "minimal";
+// 보기 모드 4단계 사이클: 일반 → 컴팩트(활성 계정 요약) → 미니멀(사용량만) →
+// 벽 붙임(Type4, #151: 좌/우 벽에 붙어 손잡이만 남기고 숨었다가 호버 시 컴팩트
+// 패널이 흘러나온다) → 일반.
+// 위젯 모드(일반 제외) 공통: 조작 숨김, 클릭 투과, ☰ 핸들로만 이동. (항상-위는 창 기본 설정)
+type ViewMode = "normal" | "compact" | "minimal" | "edge";
+/// 화면 구성(레이아웃)만 보면 Type4는 컴팩트다 — 렌더·폭·접이식 머리글은 이 값을 본다
+type LayoutMode = Exclude<ViewMode, "edge">;
+function layoutOf(mode: ViewMode): LayoutMode {
+  return mode === "edge" ? "compact" : mode;
+}
 const lockBtn = document.getElementById("pin") as HTMLButtonElement;
 let viewMode: ViewMode = (() => {
   const stored = localStorage.getItem("switcher.viewmode");
-  if (stored === "compact" || stored === "minimal") return stored;
+  if (stored === "compact" || stored === "minimal" || stored === "edge") return stored;
   // Type2(위젯 풀형)는 폐지됐다(#41) — 예전 locked 저장값은 컴팩트로 이관
   if (stored === "locked") return "compact";
   return localStorage.getItem("switcher.locked") === "1" ? "compact" : "normal";
@@ -1738,9 +1752,16 @@ function applyViewMode() {
   // 타이틀바도 위젯 모드로 (이름·새로고침·슬라이더 숨김, 남은 버튼은 호버 시에만 또렷)
   document.body.classList.toggle("locked", locked);
   document.body.classList.toggle("minimal", displayMode === "minimal");
+  applyEdgeMode(displayMode === "edge");
   lockBtn.classList.toggle("pinned", locked);
   lockBtn.textContent =
-    displayMode === "normal" ? "Type1" : displayMode === "compact" ? "Type2" : "Type3";
+    displayMode === "normal"
+      ? "Type1"
+      : displayMode === "compact"
+        ? "Type2"
+        : displayMode === "minimal"
+          ? "Type3"
+          : "Type4";
   // 위젯 모드에서는 ☰ 핸들을 잡아야만 창이 움직인다 — 타이틀바 전체 드래그를 끈다
   if (locked || starPromptOpen) {
     titlebarEl.removeAttribute("data-tauri-drag-region");
@@ -1777,7 +1798,17 @@ function reportHitRegions() {
   hitElements = [];
   const regions: { rect: number[]; action: [string, string] | null }[] = [];
   const interactionPanelOpen = loginOpen || starPromptOpen;
-  if (locked || starPromptOpen) {
+  // Type4가 벽에 숨어 있는 동안은 손잡이만 마우스를 받는다 — 벽 밖으로 밀려난
+  // 패널의 카드·버튼 좌표는 창 밖이라 어차피 닿지 않지만, 보고하지 않아야 낡은
+  // 좌표가 다음 펼침의 첫 클릭을 가로채지 않는다.
+  const edgeRetracted = edgeActive && !edgeOut && !interactionPanelOpen;
+  if (edgeRetracted) {
+    const r = edgeTabEl.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0) {
+      regions.push({ rect: [r.left, r.top, r.width, r.height], action: null });
+      hitElements.push(edgeTabEl);
+    }
+  } else if (locked || starPromptOpen) {
     if (!interactionPanelOpen) {
       document.querySelectorAll<HTMLElement>(".card.switchable").forEach((el) => {
         const r = el.getBoundingClientRect();
@@ -1824,6 +1855,116 @@ function reportHitRegions() {
       });
   }
   void invoke("set_hit_regions", { regions });
+  reportEdgeZone();
+}
+
+// ── Type4 벽 붙임 (#151) ──────────────────────────────────────────
+// 창 자체는 늘 펼친 크기(컴팩트 폭)로 벽에 딱 붙어 있고, 숨김은 .shell을 CSS로
+// 창 밖(벽 너머)으로 밀어내는 것이다 — 창을 움직이지 않으니 떨림이 없고, 투명한
+// 나머지 영역은 히트 영역 밖이라 뒤 창으로 클릭이 통과한다. 진입·이탈 판정과
+// 이탈 유예는 러스트 폴링(edge-hover)이 맡는다 — 투과 중인 웹뷰는 mouseenter를
+// 못 받고, 비활성 웹뷰의 타이머는 믿을 수 없다 (CLAUDE.md macOS 절).
+const edgeTabEl = document.getElementById("edge-tab") as HTMLDivElement;
+let edgeActive = false;
+/// 패널이 벽에서 나와 있는가 (러스트 호버 신호가 갱신)
+let edgeOut = false;
+let edgeSide: EdgeSide = localStorage.getItem("switcher.edge") === "left" ? "left" : "right";
+/// 다음 스냅에서 벽을 다시 고를지 — Type4 진입 시(있던 자리에서 가까운 벽)와
+/// ☰ 드래그 뒤에 켜진다. 창 크기만 바뀐 뒤의 스냅은 고른 벽을 유지한다.
+let edgeRepick = false;
+let edgeSnapTimer: number | undefined;
+
+function applyEdgeMode(active: boolean) {
+  const entering = active && !edgeActive;
+  edgeActive = active;
+  if (!active) edgeOut = false;
+  // 진입 직후에는 숨김 상태로 시작하되, 첫 프레임에 "들어가는" 연출이 재생되지 않게
+  // 애니메이션을 잠시 끈다 — 첫 호버부터 연출이 붙는다
+  if (entering) document.body.classList.add("edge-noanim");
+  document.body.classList.toggle("edge", active);
+  document.body.classList.toggle("edge-out", active && edgeOut);
+  document.body.classList.toggle("edge-left", edgeSide === "left");
+  if (!active) {
+    document.body.classList.remove("edge-noanim");
+    return;
+  }
+  if (entering) {
+    edgeRepick = true;
+    scheduleEdgeSnap();
+  }
+}
+
+function reportEdgeZone() {
+  if (!edgeActive) {
+    void invoke("set_edge_zone", { zone: null });
+    return;
+  }
+  // 로그인 패널·첫 실행 안내가 열려 있는 동안은 커서가 떠나도 접지 않는다
+  const hold = loginOpen || starPromptOpen;
+  let rect: number[];
+  if (edgeOut || hold) {
+    rect = [0, 0, window.innerWidth, window.innerHeight];
+  } else {
+    const r = edgeTabEl.getBoundingClientRect();
+    // 손잡이 주변 4px 여유 — 벽 끝에서 커서가 살짝 벗어나도 붙잡는다
+    rect = [r.left - 4, r.top - 4, r.width + 8, r.height + 8];
+  }
+  void invoke("set_edge_zone", { zone: { rect, hold } });
+}
+
+function setEdgeOut(out: boolean) {
+  if (!edgeActive || edgeOut === out) return;
+  edgeOut = out;
+  document.body.classList.remove("edge-noanim");
+  document.body.classList.toggle("edge-out", out);
+  refreshHitRegionsAfterLayout();
+}
+
+void listen<boolean>("edge-hover", (event) => setEdgeOut(event.payload));
+
+/// 창을 벽에 붙인다. 진입 시와 ☰ 드래그가 끝난 뒤(onMoved 정지 후)에는 벽을
+/// 다시 고른다 — 반대편으로 끌어다 놓으면 그쪽 벽으로 옮겨 붙는다.
+async function snapToEdge() {
+  if (!edgeActive || !currentWorkArea || monitorMoveTimer !== undefined) return;
+  const [pos, size, innerPos, innerSize] = await Promise.all([
+    appWindow.outerPosition(),
+    appWindow.outerSize(),
+    appWindow.innerPosition(),
+    appWindow.innerSize(),
+  ]);
+  const rect = { x: pos.x, y: pos.y, width: size.width, height: size.height };
+  // 바깥 크기에 포함된 그림자 여백(윈도우 실측 좌우 8px)은 벽 너머로 내보낸다
+  const insets = {
+    left: innerPos.x - pos.x,
+    right: pos.x + size.width - (innerPos.x + innerSize.width),
+  };
+  if (edgeRepick) {
+    edgeRepick = false;
+    const side = pickEdgeSide(rect, currentWorkArea);
+    if (side !== edgeSide) {
+      edgeSide = side;
+      localStorage.setItem("switcher.edge", side);
+      document.body.classList.toggle("edge-left", side === "left");
+      refreshHitRegionsAfterLayout();
+    }
+  }
+  const target = edgeSnapPosition(rect, currentWorkArea, edgeSide, insets);
+  if (target.x !== pos.x || target.y !== pos.y) {
+    await appWindow.setPosition(new PhysicalPosition(target.x, target.y));
+  }
+}
+
+/// 이동 이벤트가 멎은 뒤 한 번만 붙인다 — 드래그 중에 창을 당기면 손에서 튄다.
+/// 스냅의 setPosition도 onMoved를 내지만 이미 벽에 있으니 다시 골라도 같은 벽이다.
+function scheduleEdgeSnap() {
+  if (!edgeActive) return;
+  window.clearTimeout(edgeSnapTimer);
+  edgeSnapTimer = window.setTimeout(() => {
+    edgeSnapTimer = undefined;
+    snapToEdge().catch(() => {
+      // 이동 중 좌표 조회 실패는 다음 이동·리사이즈 이벤트가 다시 시도한다
+    });
+  }, 200);
 }
 
 // 창 크기·배율 변경 직후에는 WebView 레이아웃이 한 박자 늦을 수 있다. 즉시값으로
@@ -1870,7 +2011,14 @@ void listen<{ ok: boolean; provider?: string; name?: string; error?: string }>(
 );
 
 lockBtn.addEventListener("click", () => {
-  viewMode = viewMode === "normal" ? "compact" : viewMode === "compact" ? "minimal" : "normal";
+  viewMode =
+    viewMode === "normal"
+      ? "compact"
+      : viewMode === "compact"
+        ? "minimal"
+        : viewMode === "minimal"
+          ? "edge"
+          : "normal";
   localStorage.setItem("switcher.viewmode", viewMode);
   applyViewMode();
   // 새 모드 CSS가 줄인 현재 내용만으로도 창을 먼저 따라붙인다. 새 카드 목록은
@@ -2014,7 +2162,7 @@ async function fitWindowToContent() {
         ? 360
         : viewMode === "minimal"
           ? 120
-          : viewMode === "compact"
+          : layoutOf(viewMode) === "compact"
             ? 240
             : 360;
       // 크기 조절 기준은 "오른쪽 상단" — 목표 폭이 실제로 바뀌는 전환에서만
@@ -2058,6 +2206,8 @@ async function fitWindowToContent() {
       }
       try {
         await keepWindowInsideCurrentWorkArea();
+        // Type4는 크기가 바뀌어도 벽에서 떨어지지 않는다 (폭 전환의 우측 고정보다 우선)
+        await snapToEdge();
       } catch {
         // 창이 이동 중이면 좌표 읽기·보정이 잠시 실패할 수 있다. 다음 이벤트가 재시도한다.
       }
@@ -2094,6 +2244,9 @@ void appWindow.onResized(() => {
 void appWindow.onMoved(() => {
   // 드래그 도중 모니터 경계를 넘는 순간 창을 당겨 오지 않고, 이동이 끝난 뒤 맞춘다.
   scheduleMonitorSync();
+  // Type4: 놓은 자리에서 가까운 벽을 다시 골라 붙는다
+  edgeRepick = true;
+  scheduleEdgeSnap();
 });
 void appWindow.onScaleChanged(() => scheduleMonitorSync(true));
 void syncCurrentMonitor(true);
@@ -2104,7 +2257,7 @@ void syncCurrentMonitor(true);
 // 진행 중인 첫 렌더가 있으면 render()가 큐잉해 단일 모드로 다시 그린다
 void invoke<string | null>("initial_view_mode").then((mode) => {
   if (mode === "locked") mode = "compact"; // Type2 폐지(#41) — 옛 이름 이관
-  if (mode === "normal" || mode === "compact" || mode === "minimal") {
+  if (mode === "normal" || mode === "compact" || mode === "minimal" || mode === "edge") {
     viewMode = mode;
     applyViewMode();
     void render({ immediate: true });

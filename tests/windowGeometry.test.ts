@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   clampWindowToWorkArea,
+  edgeSnapPosition,
   logicalWorkAreaHeight,
   monitorGeometryKey,
+  pickEdgeSide,
 } from "../src/windowGeometry.ts";
 
 test("converts a physical work area using the destination monitor scale", () => {
@@ -74,4 +76,41 @@ test("clamps every edge and leaves an in-bounds widget unchanged", () => {
       clamped,
     );
   }
+});
+
+test("Type4 picks the wall nearest to the window center", () => {
+  const area = { position: { x: 1920, y: 0 }, size: { width: 2560, height: 1400 } };
+  assert.equal(pickEdgeSide({ x: 2000, y: 100, width: 240, height: 500 }, area), "left");
+  assert.equal(pickEdgeSide({ x: 3100, y: 100, width: 240, height: 500 }, area), "right");
+  // 중심선 위는 오른쪽(기본 벽)
+  assert.equal(pickEdgeSide({ x: 3080, y: 100, width: 240, height: 500 }, area), "right");
+});
+
+test("Type4 snap sticks the window flush to the wall and keeps it inside vertically", () => {
+  const area = { position: { x: 1920, y: 40 }, size: { width: 2560, height: 1400 } };
+  assert.deepEqual(
+    edgeSnapPosition({ x: 2500, y: 100, width: 240, height: 500 }, area, "right"),
+    { x: 1920 + 2560 - 240, y: 100 },
+  );
+  assert.deepEqual(
+    edgeSnapPosition({ x: 2500, y: -50, width: 240, height: 500 }, area, "left"),
+    { x: 1920, y: 40 },
+  );
+  assert.deepEqual(
+    edgeSnapPosition({ x: 2500, y: 5000, width: 240, height: 500 }, area, "left"),
+    { x: 1920, y: 40 + 1400 - 500 },
+  );
+});
+
+test("Type4 snap pushes the invisible shadow margin past the wall", () => {
+  const area = { position: { x: 0, y: 0 }, size: { width: 1920, height: 1032 } };
+  const win = { x: 1000, y: 451, width: 256, height: 581 };
+  assert.deepEqual(edgeSnapPosition(win, area, "right", { left: 8, right: 8 }), {
+    x: 1920 - 256 + 8,
+    y: 451,
+  });
+  assert.deepEqual(edgeSnapPosition(win, area, "left", { left: 8, right: 8 }), {
+    x: -8,
+    y: 451,
+  });
 });
