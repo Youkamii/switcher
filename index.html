@@ -74,7 +74,7 @@
         <filter id="goo" x="-30%" y="-15%" width="160%" height="130%" color-interpolation-filters="sRGB">
           <feTurbulence type="fractalNoise" baseFrequency="0.006 0.012" numOctaves="1" seed="7" result="noise" />
           <feDisplacementMap in="SourceGraphic" in2="noise" scale="8" xChannelSelector="R" yChannelSelector="G" result="wobbly" />
-          <feGaussianBlur in="wobbly" stdDeviation="9" result="blur" />
+          <feGaussianBlur in="wobbly" stdDeviation="11" result="blur" />
           <feColorMatrix
             in="blur"
             mode="matrix"
@@ -84,7 +84,8 @@
         <filter id="goo-still" x="-30%" y="-15%" width="160%" height="130%" color-interpolation-filters="sRGB">
           <feTurbulence type="fractalNoise" baseFrequency="0.006 0.012" numOctaves="1" seed="7" result="noise" />
           <feDisplacementMap in="SourceGraphic" in2="noise" scale="2.5" xChannelSelector="R" yChannelSelector="G" result="wobbly" />
-          <feGaussianBlur in="wobbly" stdDeviation="6" result="blur" />
+          <!-- 블러가 곧 목(메니스커스)의 반경 — 작으면 판과 막이 만나는 자리에 각이 남는다 -->
+          <feGaussianBlur in="wobbly" stdDeviation="9" result="blur" />
           <feColorMatrix
             in="blur"
             mode="matrix"
