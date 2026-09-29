@@ -1875,6 +1875,12 @@ function applyEdgeMode(active: boolean) {
   document.body.classList.toggle("edge-out", active && edgeOut);
   document.body.classList.toggle("edge-left", edgeSide === "left");
   if (!active) void invoke("set_edge_zone", { zone: null });
+  if (entering || !active) {
+    // 창 그림자 프레임은 패널이 비어 있을 때 창 사각형의 테두리로 드러난다 —
+    // Type4에서는 끈다 (사용자 지적). 프레임이 바뀌면 바깥 여백도 달라지므로
+    // 적용 뒤 다시 맞춰 벽에 붙인다.
+    void invoke("set_window_shadow", { enabled: !active }).then(() => fitHeight());
+  }
 }
 
 /// 러스트 폴링에 호버 존을 알린다 — 숨김 중엔 손잡이, 펼침 중엔 창 전체.

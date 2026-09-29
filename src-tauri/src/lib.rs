@@ -3042,6 +3042,16 @@ fn set_hit_regions(regions: Vec<HitRegion>) {
     }
 }
 
+/// 창 그림자 프레임 켜기/끄기 — Type4는 패널이 비어 있는 동안 프레임 테두리가
+/// 드러나므로 끈다
+#[tauri::command]
+fn set_window_shadow(app: tauri::AppHandle, enabled: bool) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_shadow(enabled);
+    }
+}
+
 /// Type4 벽 붙임의 호버 존 보고 (None = Type4 아님)
 #[tauri::command]
 fn set_edge_zone(zone: Option<EdgeZone>) {
@@ -3655,6 +3665,7 @@ pub fn run() {
             set_hit_regions,
             set_click_through,
             set_edge_zone,
+            set_window_shadow,
             memo_load,
             memo_save,
             memo_toggle,

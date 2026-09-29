@@ -1305,168 +1305,208 @@ body.star-prompt-open .shell {
   font-weight: 700;
 }
 
-/* ── Type4 벽 붙임 (#151) ────────────────────────────────────────────
-   창은 컴팩트 폭 그대로 벽에 붙어 있고, 숨김은 .shell을 벽 너머(창 밖)로
-   밀어내 잘리게 하는 것이다. 벽에는 물방울 손잡이(#edge-tab)만 맺혀 있다.
-   출입 연출은 keyframes로 — 과속(overshoot)과 눌림(squash)을 겹쳐 액체가
-   벽에서 배어 나왔다가 스며드는 느낌을 낸다. 최종 상태는 애니메이션이 멈춰도
-   forwards fill로 확정되므로 비활성 웹뷰에서 정지해도 어긋난 채 남지 않는다. */
-#edge-tab {
+/* ── Type4 벽 붙임 (#151) — 액체 ──────────────────────────────────
+   다이내믹 아일랜드 문법: 벽에 맺힌 물방울이 "스스로" 부풀어 패널 모양이 되고,
+   내용은 그 표면 위에 뒤늦게 떠오른다. 들어갈 땐 내용이 먼저 사라지고 표면이
+   물방울로 되돌아간다. 표면(#edge-liquid)은 도형 둘(#edge-body·#edge-tab)에
+   goo 필터를 걸어 붙었다 떨어질 때 액체처럼 목이 늘어났다 끊긴다.
+   내용(.shell)은 Type4에서 배경·테두리를 버리고 표면에 얹히기만 한다.
+   끝 상태는 전부 변환 없음(opacity만) — fitHeight가 재는 rect가 조상 변환에
+   물들지 않게. */
+#edge-liquid {
   display: none;
   position: fixed;
-  top: 50%;
-  right: 0;
-  width: 14px;
-  height: 56px;
-  margin-top: -28px;
-  border-radius: 28px 0 0 28px;
-  background: rgba(var(--accent-rgb), 0.82);
-  box-shadow:
-    0 0 12px rgba(var(--accent-rgb), 0.55),
-    inset 2px 0 4px rgba(255, 255, 255, 0.25);
-  transform-origin: right center;
-  transition:
-    transform 0.32s cubic-bezier(0.34, 1.56, 0.64, 1),
-    opacity 0.22s ease-out;
-  /* 벽에 매달린 물방울의 미세한 맥동 — 있는 줄 알게만 */
-  animation: edge-tab-breathe 3.2s ease-in-out infinite;
+  inset: 0;
+  pointer-events: none;
+  filter: url("#goo");
 }
 
-body.edge #edge-tab {
+body.edge #edge-liquid {
   display: block;
+}
+
+/* 표면색: 배경색을 쓰되 투명도 슬라이더로 배경이 빠져도 액체는 남는다 —
+   투명한 액체는 goo 대비 단계에서 통째로 사라진다 */
+#edge-body,
+#edge-tab {
+  position: absolute;
+  background: rgba(var(--bg-rgb), max(0.92, var(--bg-alpha, 1)));
+}
+
+/* 물방울 — 벽 중간에 맺힌 반원 */
+#edge-tab {
+  top: 50%;
+  right: 0;
+  width: 16px;
+  height: 60px;
+  margin-top: -30px;
+  border-radius: 30px 0 0 30px;
+  transform-origin: right center;
+  animation: edge-drop-breathe 3.4s ease-in-out infinite;
 }
 
 body.edge.edge-left #edge-tab {
   right: auto;
   left: 0;
-  border-radius: 0 28px 28px 0;
+  border-radius: 0 30px 30px 0;
   transform-origin: left center;
-  box-shadow:
-    0 0 12px rgba(var(--accent-rgb), 0.55),
-    inset -2px 0 4px rgba(255, 255, 255, 0.25);
 }
 
-/* 패널이 나오는 동안 손잡이는 부풀며 패널 속으로 녹아든다 */
+/* 패널 표면 — 창 전체 크기의 둥근 판. 접혀 있으면 벽 중간의 물방울 크기로
+   찌그러져 물방울 속에 숨어 있다 (scale 끝 상태는 도형 층에만 있으므로
+   내용 측정과 무관) */
+#edge-body {
+  inset: 0;
+  border-radius: 12px;
+  transform-origin: right center;
+  transform: scale(0.06, 0.1);
+}
+
+body.edge.edge-left #edge-body {
+  transform-origin: left center;
+}
+
+/* 나오기: 물방울이 먼저 부풀고(0~25%), 그 힘으로 표면이 튀어나와 출렁이다
+   자리 잡는다. 표면 모서리는 크게 둥글었다가 12px로 굳는다 */
+body.edge.edge-out #edge-body {
+  animation: edge-body-rise 0.72s cubic-bezier(0.22, 0.9, 0.24, 1) both;
+}
+
 body.edge.edge-out #edge-tab {
-  transform: scaleX(2.4) scaleY(1.5);
-  opacity: 0;
-  animation: none;
+  animation: edge-drop-swell 0.72s cubic-bezier(0.22, 0.9, 0.24, 1) both;
 }
 
-@keyframes edge-tab-breathe {
+/* 들어가기: 내용이 사라진 뒤(0.1s) 표면이 한 번 움찔하고 물방울로 빨려 들어간다 */
+body.edge:not(.edge-out) #edge-body {
+  animation: edge-body-sink 0.5s 0.1s cubic-bezier(0.55, 0, 0.7, 0.25) both;
+}
+
+body.edge:not(.edge-out) #edge-tab {
+  animation:
+    edge-drop-catch 0.6s 0.1s ease-out both,
+    edge-drop-breathe 3.4s 0.7s ease-in-out infinite;
+}
+
+/* 내용: 표면이 거의 다 나온 뒤 떠오르고, 들어갈 땐 먼저 꺼진다 */
+body.edge .shell {
+  background: transparent;
+  border-color: transparent;
+}
+
+body.edge:not(.edge-out) .shell {
+  opacity: 0;
+  pointer-events: none;
+  animation: edge-content-out 0.12s ease-in both;
+}
+
+body.edge.edge-out .shell {
+  animation: edge-content-in 0.32s 0.26s ease-out both;
+}
+
+/* Type4 진입 직후: 접힌 상태로 시작하되 "들어가는" 연출은 재생하지 않는다 */
+body.edge.edge-noanim :is(#edge-body, #edge-tab, .shell) {
+  animation-duration: 0s;
+  animation-delay: 0s;
+}
+
+@keyframes edge-drop-breathe {
   0%,
   100% {
     transform: scale(1);
   }
   50% {
-    transform: scaleX(1.12) scaleY(1.06);
+    transform: scale(1.14, 1.06);
   }
 }
 
-body.edge .shell {
-  will-change: transform, border-radius;
-  transform-origin: right center;
-}
-
-body.edge.edge-left .shell {
-  transform-origin: left center;
-}
-
-/* 숨김: 벽 너머로 밀려 잘린다 (기본 상태). 숨김 끝 상태에 세로 축소(scaleY)를
-   두지 않는다 — fitHeight가 재는 getBoundingClientRect가 조상 변환을 포함해
-   창 높이가 내용보다 짧게 잡힌다 (red-review) */
-body.edge:not(.edge-out) .shell {
-  animation: edge-sink-right 0.42s cubic-bezier(0.5, 0, 0.75, 0.2) both;
-}
-
-body.edge.edge-left:not(.edge-out) .shell {
-  animation-name: edge-sink-left;
-}
-
-/* 펼침: 벽에서 배어 나와 출렁이다 자리 잡는다 */
-body.edge.edge-out .shell {
-  animation: edge-rise-right 0.68s cubic-bezier(0.2, 0.85, 0.25, 1) both;
-}
-
-body.edge.edge-left.edge-out .shell {
-  animation-name: edge-rise-left;
-}
-
-/* Type4 진입 직후: 숨김 상태로 시작하되 "들어가는" 연출은 재생하지 않는다 */
-body.edge.edge-noanim .shell {
-  animation-duration: 0s;
-}
-
-@keyframes edge-rise-right {
+@keyframes edge-drop-swell {
   0% {
-    transform: translateX(calc(100% + 10px)) scaleX(0.55);
-    border-radius: 44px 12px 12px 44px;
+    transform: scale(1);
   }
-  40% {
-    transform: translateX(-5%) scaleX(1.1) scaleY(0.97);
-    border-radius: 26px 12px 12px 26px;
+  22% {
+    transform: scale(2.6, 1.9);
   }
-  62% {
-    transform: translateX(2%) scaleX(0.96) scaleY(1.02);
-    border-radius: 16px 12px 12px 16px;
-  }
-  80% {
-    transform: translateX(-0.8%) scaleX(1.015) scaleY(0.995);
+  60% {
+    transform: scale(1.2, 1.1);
   }
   100% {
-    transform: none;
+    transform: scale(1);
+  }
+}
+
+@keyframes edge-drop-catch {
+  0% {
+    transform: scale(1.4, 1.2);
+  }
+  45% {
+    transform: scale(2.2, 1.6);
+  }
+  75% {
+    transform: scale(0.9, 1.05);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes edge-body-rise {
+  0% {
+    transform: scale(0.06, 0.1);
+    border-radius: 40px;
+  }
+  18% {
+    transform: scale(0.22, 0.34);
+    border-radius: 40px;
+  }
+  48% {
+    transform: scale(1.07, 1.03);
+    border-radius: 22px;
+  }
+  68% {
+    transform: scale(0.975, 0.99);
+    border-radius: 14px;
+  }
+  84% {
+    transform: scale(1.012, 1.004);
+    border-radius: 12px;
+  }
+  100% {
+    transform: scale(1);
     border-radius: 12px;
   }
 }
 
-@keyframes edge-sink-right {
+@keyframes edge-body-sink {
   0% {
-    transform: none;
+    transform: scale(1);
     border-radius: 12px;
   }
-  28% {
-    transform: translateX(-2.5%) scaleX(1.05);
-    border-radius: 18px 12px 12px 18px;
+  25% {
+    transform: scale(1.04, 0.96);
+    border-radius: 18px;
   }
   100% {
-    transform: translateX(calc(100% + 10px)) scaleX(0.55);
-    border-radius: 44px 12px 12px 44px;
+    transform: scale(0.06, 0.1);
+    border-radius: 40px;
   }
 }
 
-@keyframes edge-rise-left {
+@keyframes edge-content-in {
   0% {
-    transform: translateX(calc(-100% - 10px)) scaleX(0.55);
-    border-radius: 12px 44px 44px 12px;
-  }
-  40% {
-    transform: translateX(5%) scaleX(1.1) scaleY(0.97);
-    border-radius: 12px 26px 26px 12px;
-  }
-  62% {
-    transform: translateX(-2%) scaleX(0.96) scaleY(1.02);
-    border-radius: 12px 16px 16px 12px;
-  }
-  80% {
-    transform: translateX(0.8%) scaleX(1.015) scaleY(0.995);
+    opacity: 0;
+    transform: scale(0.97);
   }
   100% {
+    opacity: 1;
     transform: none;
-    border-radius: 12px;
   }
 }
 
-@keyframes edge-sink-left {
+@keyframes edge-content-out {
   0% {
-    transform: none;
-    border-radius: 12px;
-  }
-  28% {
-    transform: translateX(2.5%) scaleX(1.05);
-    border-radius: 12px 18px 18px 12px;
+    opacity: 1;
   }
   100% {
-    transform: translateX(calc(-100% - 10px)) scaleX(0.55);
-    border-radius: 12px 44px 44px 12px;
+    opacity: 0;
   }
 }

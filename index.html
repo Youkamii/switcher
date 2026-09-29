@@ -51,9 +51,28 @@
         </div>
       </footer>
     </div>
-    <!-- Type4(벽 붙임) 물방울 손잡이 — 패널이 벽 밖으로 밀려나 있는 동안 벽에
-         맺혀 있는 유일한 표식. 마우스를 대면 부풀며 패널이 흘러나온다 (#151) -->
-    <div id="edge-tab" aria-hidden="true"></div>
+    <!-- Type4(벽 붙임) 액체 층 (#151) — 다이내믹 아일랜드식. 벽에 맺힌 물방울
+         (#edge-tab)이 마우스를 대면 스스로 부풀어 패널 모양(#edge-body)이 되고,
+         내용(.shell)은 그 위에 나중에 떠오른다. 두 도형은 goo 필터(블러+알파
+         대비)로 한 덩어리 액체처럼 붙었다 떨어진다. 글자는 이 층 밖이라 번지지 않는다. -->
+    <div id="edge-liquid" aria-hidden="true">
+      <div id="edge-body"></div>
+      <div id="edge-tab"></div>
+    </div>
+    <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+      <defs>
+        <filter id="goo">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="7" result="blur" />
+          <feColorMatrix
+            in="blur"
+            mode="matrix"
+            values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 20 -9"
+            result="goo"
+          />
+          <feComposite in="SourceGraphic" in2="goo" operator="atop" />
+        </filter>
+      </defs>
+    </svg>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
