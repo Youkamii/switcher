@@ -2038,13 +2038,21 @@ function reportEdgeZone() {
   void invoke("set_edge_zone", { zone: { rect, hold } });
 }
 
+/// goo 블러를 출입 중 11 ↔ 굳은 뒤 8로 연속 변형한다 (SVG SMIL). 필터를 통째로
+/// 갈아끼우면 목 폭이 한 프레임에 11px 튀고, 굵은 블러가 정지 상태까지 남으면
+/// 손잡이가 녹아 사라진다(사용자 보고 "사라졌는데?"). 타이머 대신 animationend.
+function gooBlur(id: "goo-up" | "goo-down") {
+  const anim = document.getElementById(id) as SVGAnimationElement | null;
+  anim?.beginElement();
+}
+
 function setEdgeOut(out: boolean) {
   if (!edgeActive || edgeOut === out) return;
   edgeOut = out;
   if (!out) endEdgeHold();
   document.body.classList.remove("edge-noanim");
-  document.body.classList.add("edge-moving");
   document.body.classList.toggle("edge-out", out);
+  gooBlur("goo-up");
   refreshHitRegionsAfterLayout();
 }
 
@@ -2066,12 +2074,9 @@ for (const type of ["pointerup", "pointercancel", "pointerleave"] as const) {
   app.addEventListener(type, endEdgeHold);
 }
 
-// 출입이 끝나면 굵은 전이용 필터를 내린다 — 전이 중의 굵은 블러가 정지 상태까지
-// 이어지면 판은 손떨림으로 읽히고, 접힌 뒤엔 14px 물방울이 블러에 녹아 사라진다
-// (사용자 보고 "사라졌는데?"). 타이머 대신 animationend.
 document.getElementById("edge-body")!.addEventListener("animationend", (event) => {
   if (event.animationName === "edge-body-rise" || event.animationName === "edge-body-sink") {
-    document.body.classList.remove("edge-moving");
+    gooBlur("goo-down");
   }
 });
 

@@ -71,24 +71,16 @@
     </div>
     <svg width="0" height="0" style="position: absolute" aria-hidden="true">
       <defs>
-        <!-- 액체 실루엣: 큰 파장의 난류로 윤곽을 살짝 일렁이게(displacement) 하고,
-             블러+알파 대비로 도형들을 한 덩어리로 녹인다(goo). 색·질감은 없다 —
-             앱 배경색 그대로. 전이 중(#goo)은 굵게, 굳은 뒤(#goo-still)는 약하게. -->
+        <!-- 액체 실루엣: 블러+알파 대비로 도형들을 한 덩어리로 녹인다(goo).
+             색·질감은 없다 — 앱 배경색 그대로. 액체다움은 도형들이 움직이는 방식이 낸다.
+             블러 반경은 출입 중 11, 굳은 뒤 8 — 필터를 갈아끼우면 목 폭이 한 프레임에
+             튀므로(review) SMIL로 연속 변형한다 (JS가 beginElement로 시작).
+             난류 변위는 측정 가능한 효과 없이 GPU만 써서 뺐다. -->
         <filter id="goo" x="-30%" y="-15%" width="160%" height="130%" color-interpolation-filters="sRGB">
-          <feTurbulence type="fractalNoise" baseFrequency="0.006 0.012" numOctaves="1" seed="7" result="noise" />
-          <feDisplacementMap in="SourceGraphic" in2="noise" scale="8" xChannelSelector="R" yChannelSelector="G" result="wobbly" />
-          <feGaussianBlur in="wobbly" stdDeviation="11" result="blur" />
-          <feColorMatrix
-            in="blur"
-            mode="matrix"
-            values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 20 -9"
-          />
-        </filter>
-        <filter id="goo-still" x="-30%" y="-15%" width="160%" height="130%" color-interpolation-filters="sRGB">
-          <feTurbulence type="fractalNoise" baseFrequency="0.006 0.012" numOctaves="1" seed="7" result="noise" />
-          <feDisplacementMap in="SourceGraphic" in2="noise" scale="2.5" xChannelSelector="R" yChannelSelector="G" result="wobbly" />
-          <!-- 블러가 곧 목(메니스커스)의 반경 — 작으면 판과 막이 만나는 자리에 각이 남는다 -->
-          <feGaussianBlur in="wobbly" stdDeviation="8" result="blur" />
+          <feGaussianBlur in="SourceGraphic" stdDeviation="8" result="blur">
+            <animate id="goo-up" attributeName="stdDeviation" to="11" dur="0.15s" fill="freeze" begin="indefinite" />
+            <animate id="goo-down" attributeName="stdDeviation" to="8" dur="0.35s" fill="freeze" begin="indefinite" />
+          </feGaussianBlur>
           <feColorMatrix
             in="blur"
             mode="matrix"

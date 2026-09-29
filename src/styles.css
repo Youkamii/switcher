@@ -1320,8 +1320,8 @@ body.star-prompt-open .shell {
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  /* 평소(접힘·굳음)는 약한 필터 — 굵은 블러는 손잡이를 녹여 없앤다 */
-  filter: url("#goo-still");
+  /* 블러 반경은 JS가 SMIL로 출입 중 11, 굳은 뒤 8로 바꾼다 (index.html #goo) */
+  filter: url("#goo");
   /* 투명도 슬라이더 계약(#42): 배경이 빠지면 액체도 함께 빠진다. 바닥 0.2는
      손잡이를 찾을 수 있게 남기는 최소치 */
   opacity: max(0.2, var(--bg-alpha, 1));
@@ -1329,11 +1329,6 @@ body.star-prompt-open .shell {
 
 body.edge #edge-liquid {
   display: block;
-}
-
-/* 출입 중에만 굵은 필터 — 덩어리들이 한 액체로 붙고 목이 길게 늘어난다 */
-body.edge.edge-moving #edge-liquid {
-  filter: url("#goo");
 }
 
 body.edge .shell {
@@ -1358,10 +1353,13 @@ body.edge .shell {
   bottom: 0;
   right: -6px;
   width: 14px;
-  border-radius: 7px 0 0 7px;
+  /* 양 끝은 벽으로 가늘어진다 — 반원 끝이면 목 위로 8px 꼭지가 뻗다 끊긴다 (review) */
+  border-radius: 14px 0 0 14px / 24px 0 0 24px;
   transform-origin: right center;
   transform: scaleX(0);
-  transition: transform 0.4s cubic-bezier(0.2, 0.9, 0.3, 1);
+  /* 나갈 때는 판이 줄기 시작한 뒤(0.2s) 걷힌다 — 먼저 걷히면 목이 사라져 벽에
+     붙은 사각 판이 된다 */
+  transition: transform 0.35s 0.2s cubic-bezier(0.2, 0.9, 0.3, 1);
 }
 
 body.edge.edge-out #edge-film {
@@ -1372,7 +1370,7 @@ body.edge.edge-out #edge-film {
 body.edge.edge-left #edge-film {
   right: auto;
   left: -6px;
-  border-radius: 0 7px 7px 0;
+  border-radius: 0 14px 14px 0 / 0 24px 24px 0;
   transform-origin: left center;
 }
 
@@ -1409,7 +1407,11 @@ body.edge.edge-left #edge-tab {
   gap: 4px;
   align-items: stretch;
   pointer-events: none;
-  transition: opacity 0.25s 0.65s;
+  transform-origin: right center;
+  /* 손잡이가 받아내며 출렁인 뒤(0.95s) 사용량이 다시 뜬다. 숨쉬기는 손잡이와 같은
+     박자 — 따로 놀면 테두리가 요동친다 (review) */
+  transition: opacity 0.25s 0.95s;
+  animation: edge-drop-breathe 3.4s 1.05s ease-in-out infinite;
 }
 
 body.edge #edge-gauge {
@@ -1419,11 +1421,15 @@ body.edge #edge-gauge {
 body.edge.edge-left #edge-gauge {
   right: auto;
   left: 3px;
+  transform-origin: left center;
 }
 
+/* 나올 때 게이지는 손잡이와 함께 부풀며 흡수된다 — 제자리에서 흐려지면 부푸는
+   덩어리 위에 스티커처럼 남는다 (review) */
 body.edge.edge-out #edge-gauge {
   opacity: 0;
-  transition-delay: 0s;
+  transition: opacity 0.12s 0.05s;
+  animation: edge-drop-swell 0.72s cubic-bezier(0.22, 0.9, 0.24, 1) both;
 }
 
 /* 판 안 막대와 같은 물건 — 세그먼트 홈(6칸)을 얹어 배터리가 아니라 사용량으로 읽힌다 */
@@ -1509,31 +1515,34 @@ body.edge.edge-left .edge-blob {
   transform-origin: left center;
 }
 
+/* 크기 규칙: 폭×overshoot(1.12)+4px ≤ 창 폭+10 − 블러 여유 — 넘치면 창 왼쪽
+   경계에서 평면으로 잘린다 (review). 88px 창: 66×1.12+4 = 78 → 왼쪽 여유 20px */
 .edge-blob:nth-child(2) {
-  width: 56px;
-  height: 54px;
-  top: calc(12px + (100% - 24px) * 0.24 - 27px);
-  --edge-lag: 120ms;
+  width: 62px;
+  height: 58px;
+  top: calc(12px + (100% - 24px) * 0.24 - 29px);
+  --edge-lag: 40ms;
   --edge-lag-in: 60ms;
 }
 
 .edge-blob:nth-child(3) {
-  width: 74px;
-  height: 78px;
-  top: calc(50% - 39px);
+  width: 66px;
+  height: 70px;
+  top: calc(50% - 35px);
   --edge-lag: 0ms;
   --edge-lag-in: 120ms;
 }
 
 .edge-blob:nth-child(4) {
-  width: 62px;
-  height: 60px;
-  top: calc(12px + (100% - 24px) * 0.74 - 30px);
-  --edge-lag: 200ms;
+  width: 64px;
+  height: 62px;
+  top: calc(12px + (100% - 24px) * 0.74 - 31px);
+  --edge-lag: 80ms;
   --edge-lag-in: 0ms;
 }
 
-/* 나오기: 손잡이가 부풀고 → 덩어리가 번지고 → 판이 80ms 뒤 따라와 삼킨다 */
+/* 나오기: 손잡이가 부풀고 → 덩어리 셋이 번지고(0~360ms) → 판이 0.2s 뒤 따라와
+   삼킨다. 판이 더 일찍 오면 덩어리가 피기 전에 덮어 가운데 하나만 보인다 (review) */
 body.edge.edge-out #edge-tab {
   animation: edge-drop-swell 0.72s cubic-bezier(0.22, 0.9, 0.24, 1) both;
 }
@@ -1543,7 +1552,7 @@ body.edge.edge-out .edge-blob {
 }
 
 body.edge.edge-out #edge-body {
-  animation: edge-body-rise 0.8s 0.08s cubic-bezier(0.22, 0.9, 0.24, 1) both;
+  animation: edge-body-rise 0.8s 0.2s cubic-bezier(0.22, 0.9, 0.24, 1) both;
 }
 
 body.edge.edge-left.edge-out #edge-body {
@@ -1592,7 +1601,7 @@ body.edge:not(.edge-out) .shell {
 }
 
 body.edge.edge-out .shell {
-  animation: edge-content-in 0.22s 0.72s ease-out both;
+  animation: edge-content-in 0.22s 0.84s ease-out both;
 }
 
 /* Type4 진입 직후: 접힌 상태로 시작하되 "들어가는" 연출은 재생하지 않는다 */
@@ -1607,7 +1616,7 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
     transform: scale(1);
   }
   50% {
-    transform: scale(1.04, 1.02) translateY(1px);
+    transform: scale(1.1, 1.04);
   }
 }
 
@@ -1683,16 +1692,16 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
     transform: scale(0.22, 0.34);
     border-radius: 40px 0 0 40px;
   }
-  48% {
-    transform: scale(1.04, 1.02);
+  60% {
+    transform: scale(1.02, 1.01);
     border-radius: 26px 0 0 26px;
   }
-  68% {
-    transform: scale(0.985, 0.995);
+  76% {
+    transform: scale(0.99, 0.995);
     border-radius: 20px 0 0 20px;
   }
-  84% {
-    transform: scale(1.006, 1.002);
+  88% {
+    transform: scale(1.004, 1.002);
     border-radius: 18px 0 0 18px;
   }
   100% {
@@ -1710,16 +1719,16 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
     transform: scale(0.22, 0.34);
     border-radius: 0 40px 40px 0;
   }
-  48% {
-    transform: scale(1.04, 1.02);
+  60% {
+    transform: scale(1.02, 1.01);
     border-radius: 0 26px 26px 0;
   }
-  68% {
-    transform: scale(0.985, 0.995);
+  76% {
+    transform: scale(0.99, 0.995);
     border-radius: 0 20px 20px 0;
   }
-  84% {
-    transform: scale(1.006, 1.002);
+  88% {
+    transform: scale(1.004, 1.002);
     border-radius: 0 18px 18px 0;
   }
   100% {
