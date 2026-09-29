@@ -1724,7 +1724,11 @@ const appWindow = getCurrentWindow();
 // 벽 붙임(Type4, #151: 좌/우 벽에 붙어 손잡이만 남기고 숨었다가 호버 시 컴팩트
 // 패널이 흘러나온다) → 일반.
 // 위젯 모드(일반 제외) 공통: 조작 숨김, 클릭 투과, ☰ 핸들로만 이동. (항상-위는 창 기본 설정)
-type ViewMode = "normal" | "compact" | "minimal" | "edge";
+const VIEW_CYCLE = ["normal", "compact", "minimal", "edge"] as const;
+type ViewMode = (typeof VIEW_CYCLE)[number];
+function isViewMode(value: unknown): value is ViewMode {
+  return (VIEW_CYCLE as readonly unknown[]).includes(value);
+}
 /// 화면 구성(레이아웃)만 보면 Type4는 컴팩트다 — 렌더·폭·접이식 머리글은 이 값을 본다
 type LayoutMode = Exclude<ViewMode, "edge">;
 function layoutOf(mode: ViewMode): LayoutMode {
@@ -1733,7 +1737,7 @@ function layoutOf(mode: ViewMode): LayoutMode {
 const lockBtn = document.getElementById("pin") as HTMLButtonElement;
 let viewMode: ViewMode = (() => {
   const stored = localStorage.getItem("switcher.viewmode");
-  if (stored === "compact" || stored === "minimal" || stored === "edge") return stored;
+  if (isViewMode(stored) && stored !== "normal") return stored;
   // Type2(위젯 풀형)는 폐지됐다(#41) — 예전 locked 저장값은 컴팩트로 이관
   if (stored === "locked") return "compact";
   return localStorage.getItem("switcher.locked") === "1" ? "compact" : "normal";
@@ -1754,14 +1758,7 @@ function applyViewMode() {
   document.body.classList.toggle("minimal", displayMode === "minimal");
   applyEdgeMode(displayMode === "edge");
   lockBtn.classList.toggle("pinned", locked);
-  lockBtn.textContent =
-    displayMode === "normal"
-      ? "Type1"
-      : displayMode === "compact"
-        ? "Type2"
-        : displayMode === "minimal"
-          ? "Type3"
-          : "Type4";
+  lockBtn.textContent = `Type${VIEW_CYCLE.indexOf(displayMode) + 1}`;
   // 위젯 모드에서는 ☰ 핸들을 잡아야만 창이 움직인다 — 타이틀바 전체 드래그를 끈다
   if (locked || starPromptOpen) {
     titlebarEl.removeAttribute("data-tauri-drag-region");
@@ -1798,25 +1795,25 @@ function reportHitRegions() {
   hitElements = [];
   const regions: { rect: number[]; action: [string, string] | null }[] = [];
   const interactionPanelOpen = loginOpen || starPromptOpen;
-  // Type4가 벽에 숨어 있는 동안은 손잡이만 마우스를 받는다 — 벽 밖으로 밀려난
-  // 패널의 카드·버튼 좌표는 창 밖이라 어차피 닿지 않지만, 보고하지 않아야 낡은
-  // 좌표가 다음 펼침의 첫 클릭을 가로채지 않는다.
-  const edgeRetracted = edgeActive && !edgeOut && !interactionPanelOpen;
+  // 모든 영역은 창 안으로 잘라 보고한다 — Type4의 .shell 변환으로 창 밖에 놓인
+  // 카드 좌표가 그대로 가면, 러스트는 커서를 창 크기로 제한하지 않으므로 옆
+  // 모니터의 더블클릭이 전환을 일으킬 수 있다 (red-review).
+  const pushVisible = (el: HTMLElement, action: [string, string] | null) => {
+    const rect = visibleHitRect(el.getBoundingClientRect(), window.innerWidth, window.innerHeight);
+    if (!rect) return;
+    regions.push({ rect, action });
+    hitElements.push(el);
+  };
+  // Type4가 벽에 숨어 있는 동안은 손잡이만 마우스를 받는다 — 낡은 카드·버튼
+  // 좌표가 다음 펼침의 첫 클릭을 가로채지 않게 손잡이 외에는 보고하지 않는다.
+  // (첫 실행 안내가 열리면 Type4 자체가 비활성이라 여기서는 로그인 패널만 본다)
+  const edgeRetracted = edgeActive && !edgeOut && !loginOpen;
   if (edgeRetracted) {
-    const r = edgeTabEl.getBoundingClientRect();
-    if (r.width > 0 && r.height > 0) {
-      regions.push({ rect: [r.left, r.top, r.width, r.height], action: null });
-      hitElements.push(edgeTabEl);
-    }
+    pushVisible(edgeTabEl, null);
   } else if (locked || starPromptOpen) {
     if (!interactionPanelOpen) {
       document.querySelectorAll<HTMLElement>(".card.switchable").forEach((el) => {
-        const r = el.getBoundingClientRect();
-        regions.push({
-          rect: [r.left, r.top, r.width, r.height],
-          action: [el.dataset.provider ?? "", el.dataset.name ?? ""],
-        });
-        hitElements.push(el);
+        pushVisible(el, [el.dataset.provider ?? "", el.dataset.name ?? ""]);
       });
     }
     // 로그인 패널이 높이 상한 아래로 밀려도 현재 보이는 스크롤 포트가 휠과
@@ -1847,15 +1844,10 @@ function reportHitRegions() {
       .querySelectorAll<HTMLElement>(
         ".tb-actions > *, #dock-toggle, #drag-handle, .display-row, .collapsible",
       )
-      .forEach((el) => {
-        const r = el.getBoundingClientRect();
-        if (r.width <= 0 || r.height <= 0) return;
-        regions.push({ rect: [r.left, r.top, r.width, r.height], action: null });
-        hitElements.push(el);
-      });
+      .forEach((el) => pushVisible(el, null));
   }
   void invoke("set_hit_regions", { regions });
-  reportEdgeZone();
+  if (edgeActive) reportEdgeZone();
 }
 
 // ── Type4 벽 붙임 (#151) ──────────────────────────────────────────
@@ -1868,41 +1860,29 @@ const edgeTabEl = document.getElementById("edge-tab") as HTMLDivElement;
 let edgeActive = false;
 /// 패널이 벽에서 나와 있는가 (러스트 호버 신호가 갱신)
 let edgeOut = false;
-let edgeSide: EdgeSide = localStorage.getItem("switcher.edge") === "left" ? "left" : "right";
-/// 다음 스냅에서 벽을 다시 고를지 — Type4 진입 시(있던 자리에서 가까운 벽)와
-/// ☰ 드래그 뒤에 켜진다. 창 크기만 바뀐 뒤의 스냅은 고른 벽을 유지한다.
-let edgeRepick = false;
-let edgeSnapTimer: number | undefined;
+/// 붙은 벽 — 스냅할 때마다 창 위치에서 다시 고른다 (붙어 있으면 같은 벽이 나온다)
+let edgeSide: EdgeSide = "right";
 
 function applyEdgeMode(active: boolean) {
   const entering = active && !edgeActive;
   edgeActive = active;
   if (!active) edgeOut = false;
   // 진입 직후에는 숨김 상태로 시작하되, 첫 프레임에 "들어가는" 연출이 재생되지 않게
-  // 애니메이션을 잠시 끈다 — 첫 호버부터 연출이 붙는다
+  // 애니메이션을 잠시 끈다 — 첫 호버부터 연출이 붙는다. 벽에 붙이는 일은 뒤따르는
+  // fitHeight()의 스냅이 맡는다.
   if (entering) document.body.classList.add("edge-noanim");
   document.body.classList.toggle("edge", active);
   document.body.classList.toggle("edge-out", active && edgeOut);
   document.body.classList.toggle("edge-left", edgeSide === "left");
-  if (!active) {
-    document.body.classList.remove("edge-noanim");
-    return;
-  }
-  if (entering) {
-    edgeRepick = true;
-    scheduleEdgeSnap();
-  }
+  if (!active) void invoke("set_edge_zone", { zone: null });
 }
 
+/// 러스트 폴링에 호버 존을 알린다 — 숨김 중엔 손잡이, 펼침 중엔 창 전체.
+/// 로그인 패널이 열려 있으면 hold(커서가 떠나도 접지 않음). Type4 활성일 때만 부른다.
 function reportEdgeZone() {
-  if (!edgeActive) {
-    void invoke("set_edge_zone", { zone: null });
-    return;
-  }
-  // 로그인 패널·첫 실행 안내가 열려 있는 동안은 커서가 떠나도 접지 않는다
-  const hold = loginOpen || starPromptOpen;
+  const hold = loginOpen;
   let rect: number[];
-  if (edgeOut || hold) {
+  if (edgeOut) {
     rect = [0, 0, window.innerWidth, window.innerHeight];
   } else {
     const r = edgeTabEl.getBoundingClientRect();
@@ -1922,8 +1902,16 @@ function setEdgeOut(out: boolean) {
 
 void listen<boolean>("edge-hover", (event) => setEdgeOut(event.payload));
 
-/// 창을 벽에 붙인다. 진입 시와 ☰ 드래그가 끝난 뒤(onMoved 정지 후)에는 벽을
-/// 다시 고른다 — 반대편으로 끌어다 놓으면 그쪽 벽으로 옮겨 붙는다.
+// 출입 연출이 끝난 자리에서 히트 영역을 한 번 더 찍는다 — 즉시·120ms 보고는 둘 다
+// 애니메이션 도중 좌표라, 그대로 두면 최종 위치의 버튼 가장자리 클릭이 뒤 창으로
+// 새거나 위젯이 먹는 어긋남이 생긴다 (red-review)
+shell.addEventListener("animationend", (event) => {
+  if (event.target === shell && event.animationName.startsWith("edge-")) reportHitRegions();
+});
+
+/// 창을 벽에 붙인다. 매번 현재 위치에서 가까운 벽을 고르므로, ☰로 반대편에
+/// 끌어다 놓으면(이동이 멎은 뒤 syncCurrentMonitor가 부른다) 그쪽 벽으로 옮겨 붙고,
+/// 이미 붙어 있으면 같은 벽이 다시 나온다.
 async function snapToEdge() {
   if (!edgeActive || !currentWorkArea || monitorMoveTimer !== undefined) return;
   const [pos, size, innerPos, innerSize] = await Promise.all([
@@ -1938,33 +1926,16 @@ async function snapToEdge() {
     left: innerPos.x - pos.x,
     right: pos.x + size.width - (innerPos.x + innerSize.width),
   };
-  if (edgeRepick) {
-    edgeRepick = false;
-    const side = pickEdgeSide(rect, currentWorkArea);
-    if (side !== edgeSide) {
-      edgeSide = side;
-      localStorage.setItem("switcher.edge", side);
-      document.body.classList.toggle("edge-left", side === "left");
-      refreshHitRegionsAfterLayout();
-    }
+  const side = pickEdgeSide(rect, currentWorkArea);
+  if (side !== edgeSide) {
+    edgeSide = side;
+    document.body.classList.toggle("edge-left", side === "left");
+    refreshHitRegionsAfterLayout();
   }
   const target = edgeSnapPosition(rect, currentWorkArea, edgeSide, insets);
   if (target.x !== pos.x || target.y !== pos.y) {
     await appWindow.setPosition(new PhysicalPosition(target.x, target.y));
   }
-}
-
-/// 이동 이벤트가 멎은 뒤 한 번만 붙인다 — 드래그 중에 창을 당기면 손에서 튄다.
-/// 스냅의 setPosition도 onMoved를 내지만 이미 벽에 있으니 다시 골라도 같은 벽이다.
-function scheduleEdgeSnap() {
-  if (!edgeActive) return;
-  window.clearTimeout(edgeSnapTimer);
-  edgeSnapTimer = window.setTimeout(() => {
-    edgeSnapTimer = undefined;
-    snapToEdge().catch(() => {
-      // 이동 중 좌표 조회 실패는 다음 이동·리사이즈 이벤트가 다시 시도한다
-    });
-  }, 200);
 }
 
 // 창 크기·배율 변경 직후에는 WebView 레이아웃이 한 박자 늦을 수 있다. 즉시값으로
@@ -2011,14 +1982,7 @@ void listen<{ ok: boolean; provider?: string; name?: string; error?: string }>(
 );
 
 lockBtn.addEventListener("click", () => {
-  viewMode =
-    viewMode === "normal"
-      ? "compact"
-      : viewMode === "compact"
-        ? "minimal"
-        : viewMode === "minimal"
-          ? "edge"
-          : "normal";
+  viewMode = VIEW_CYCLE[(VIEW_CYCLE.indexOf(viewMode) + 1) % VIEW_CYCLE.length];
   localStorage.setItem("switcher.viewmode", viewMode);
   applyViewMode();
   // 새 모드 CSS가 줄인 현재 내용만으로도 창을 먼저 따라붙인다. 새 카드 목록은
@@ -2097,6 +2061,11 @@ async function syncCurrentMonitor(force = false) {
     const key = monitorGeometryKey(area, monitor.scaleFactor);
     currentWorkArea = area;
     currentWorkAreaHeight = logicalWorkAreaHeight(area, monitor.scaleFactor);
+    // Type4: 이동이 멎은 뒤 새 작업영역 기준으로 가까운 벽에 붙는다 (같은 모니터
+    // 안의 드래그는 아래 fitHeight가 돌지 않으므로 여기서 직접)
+    snapToEdge().catch(() => {
+      // 이동 중 좌표 조회 실패는 다음 이동·리사이즈 이벤트가 다시 시도한다
+    });
     if (force || key !== currentMonitorKey) {
       currentMonitorKey = key;
       fitHeight();
@@ -2205,9 +2174,10 @@ async function fitWindowToContent() {
         }
       }
       try {
-        await keepWindowInsideCurrentWorkArea();
-        // Type4는 크기가 바뀌어도 벽에서 떨어지지 않는다 (폭 전환의 우측 고정보다 우선)
-        await snapToEdge();
+        // Type4는 안쪽 clamp 대신 벽 스냅만 — 둘을 연달아 부르면 그림자 여백 8px만큼
+        // 안팎으로 두 번 움직여 렌더마다 떨린다 (red-review)
+        if (edgeActive) await snapToEdge();
+        else await keepWindowInsideCurrentWorkArea();
       } catch {
         // 창이 이동 중이면 좌표 읽기·보정이 잠시 실패할 수 있다. 다음 이벤트가 재시도한다.
       }
@@ -2244,9 +2214,6 @@ void appWindow.onResized(() => {
 void appWindow.onMoved(() => {
   // 드래그 도중 모니터 경계를 넘는 순간 창을 당겨 오지 않고, 이동이 끝난 뒤 맞춘다.
   scheduleMonitorSync();
-  // Type4: 놓은 자리에서 가까운 벽을 다시 골라 붙는다
-  edgeRepick = true;
-  scheduleEdgeSnap();
 });
 void appWindow.onScaleChanged(() => scheduleMonitorSync(true));
 void syncCurrentMonitor(true);
@@ -2257,7 +2224,7 @@ void syncCurrentMonitor(true);
 // 진행 중인 첫 렌더가 있으면 render()가 큐잉해 단일 모드로 다시 그린다
 void invoke<string | null>("initial_view_mode").then((mode) => {
   if (mode === "locked") mode = "compact"; // Type2 폐지(#41) — 옛 이름 이관
-  if (mode === "normal" || mode === "compact" || mode === "minimal" || mode === "edge") {
+  if (isViewMode(mode)) {
     viewMode = mode;
     applyViewMode();
     void render({ immediate: true });

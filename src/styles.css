@@ -1372,7 +1372,9 @@ body.edge.edge-left .shell {
   transform-origin: left center;
 }
 
-/* 숨김: 벽 너머로 밀려 잘린다 (기본 상태) */
+/* 숨김: 벽 너머로 밀려 잘린다 (기본 상태). 숨김 끝 상태에 세로 축소(scaleY)를
+   두지 않는다 — fitHeight가 재는 getBoundingClientRect가 조상 변환을 포함해
+   창 높이가 내용보다 짧게 잡힌다 (red-review) */
 body.edge:not(.edge-out) .shell {
   animation: edge-sink-right 0.42s cubic-bezier(0.5, 0, 0.75, 0.2) both;
 }
@@ -1397,7 +1399,7 @@ body.edge.edge-noanim .shell {
 
 @keyframes edge-rise-right {
   0% {
-    transform: translateX(calc(100% + 10px)) scaleX(0.55) scaleY(0.9);
+    transform: translateX(calc(100% + 10px)) scaleX(0.55);
     border-radius: 44px 12px 12px 44px;
   }
   40% {
@@ -1427,14 +1429,14 @@ body.edge.edge-noanim .shell {
     border-radius: 18px 12px 12px 18px;
   }
   100% {
-    transform: translateX(calc(100% + 10px)) scaleX(0.55) scaleY(0.9);
+    transform: translateX(calc(100% + 10px)) scaleX(0.55);
     border-radius: 44px 12px 12px 44px;
   }
 }
 
 @keyframes edge-rise-left {
   0% {
-    transform: translateX(calc(-100% - 10px)) scaleX(0.55) scaleY(0.9);
+    transform: translateX(calc(-100% - 10px)) scaleX(0.55);
     border-radius: 12px 44px 44px 12px;
   }
   40% {
@@ -1464,7 +1466,7 @@ body.edge.edge-noanim .shell {
     border-radius: 12px 18px 18px 12px;
   }
   100% {
-    transform: translateX(calc(-100% - 10px)) scaleX(0.55) scaleY(0.9);
+    transform: translateX(calc(-100% - 10px)) scaleX(0.55);
     border-radius: 12px 44px 44px 12px;
   }
 }

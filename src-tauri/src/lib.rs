@@ -118,16 +118,13 @@ const EDGE_LEAVE_GRACE: std::time::Duration = std::time::Duration::from_millis(4
 /// 웹뷰는 투과 중이라 자체 mouseenter/leave를 못 받으므로 진입·이탈 판정과
 /// 이탈 유예를 전부 러스트가 맡는다 (비활성 웹뷰의 타이머 지연과도 무관).
 struct EdgeHover {
-    hovered: bool,
+    /// Some = 펼침 중 (마지막으로 존 안에 있던 시각), None = 접힘
     last_inside: Option<std::time::Instant>,
 }
 
 impl EdgeHover {
     const fn new() -> Self {
-        EdgeHover {
-            hovered: false,
-            last_inside: None,
-        }
+        EdgeHover { last_inside: None }
     }
 
     /// 존이 없으면(Type4 아님) 조용히 초기화한다 — 다음 진입은 fresh start.
@@ -139,7 +136,6 @@ impl EdgeHover {
         now: std::time::Instant,
     ) -> Option<bool> {
         let Some(zone) = zone else {
-            self.hovered = false;
             self.last_inside = None;
             return None;
         };
@@ -150,24 +146,17 @@ impl EdgeHover {
                 && cursor.y >= y
                 && cursor.y <= y + height);
         if inside {
+            let entered = self.last_inside.is_none();
             self.last_inside = Some(now);
-            if !self.hovered {
-                self.hovered = true;
-                return Some(true);
+            return entered.then_some(true);
+        }
+        match self.last_inside {
+            Some(t) if now.duration_since(t) >= EDGE_LEAVE_GRACE => {
+                self.last_inside = None;
+                Some(false)
             }
-            return None;
+            _ => None,
         }
-        if !self.hovered {
-            return None;
-        }
-        let left_long_enough = self
-            .last_inside
-            .map_or(true, |t| now.duration_since(t) >= EDGE_LEAVE_GRACE);
-        if left_long_enough {
-            self.hovered = false;
-            return Some(false);
-        }
-        None
     }
 }
 
@@ -243,7 +232,7 @@ mod edge_hover_tests {
         let on_tab = tauri::LogicalPosition::new(230.0, 120.0);
         assert_eq!(hover.update(Some(&zone(false)), on_tab, t0), Some(true));
         assert_eq!(hover.update(None, on_tab, t0), None);
-        assert!(!hover.hovered);
+        assert!(hover.last_inside.is_none());
         // 다시 Type4로 들어오면 새로 진입 신호를 낸다
         assert_eq!(hover.update(Some(&zone(false)), on_tab, t0), Some(true));
     }
