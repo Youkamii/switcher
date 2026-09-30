@@ -3013,9 +3013,9 @@ async fn stats_read() -> stats::SysStats {
     stats::sample()
 }
 
-/// 데모·검증용 (SWITCHER_OPEN): 프론트가 읽는 시작 옵션 — "monitor"가 있으면
-/// SYSTEM 섹션을 켠 채 시작한다 (메모창 "memo"는 setup에서 Rust가 직접 연다).
-/// SYSTEM은 모든 보기 타입에서 그려진다 (미니멀 포함 — 사용자 요청)
+/// 데모·검증용 (SWITCHER_OPEN): 프론트가 읽는 시작 옵션. "monitor"는 SYSTEM 섹션이
+/// 상시 표시가 되면서(📊 버튼 삭제, 2026-09-30) 의미가 없어졌고, 메모창 "memo"는
+/// setup에서 Rust가 직접 연다. 프론트 호출처는 없지만 옵션 문자열 관문으로 남긴다.
 #[tauri::command]
 fn initial_open() -> String {
     std::env::var("SWITCHER_OPEN").unwrap_or_default()

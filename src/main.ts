@@ -1643,10 +1643,10 @@ function edgeBar(): HTMLElement {
 
 /// 접힌 손잡이 게이지 — 판과 같은 구조. 프로바이더별로 현재 계정의 사용량 창을
 /// 전부 얇은 세로 막대로 한 줄에 나란히(클로드 5h·W·F 세 개 위, 코덱스 W 한 개
-/// 아래), 그 아래 SYSTEM 한 줄(CPU·MEM·DSK·NET, 📊가 켜져 있고 샘플이 있을 때).
+/// 아래), 그 아래 SYSTEM 한 줄(CPU·MEM·DSK·NET, 샘플이 있을 때).
 const edgeGaugeByProvider = new Map<ProviderId, number[]>();
 const MON_KEYS = ["cpu", "mem", "dsk", "net"] as const;
-/// 마지막 SYSTEM 샘플의 막대 % 넷 — paintMonitor가 채우고, 📊를 끄면 비운다
+/// 마지막 SYSTEM 샘플의 막대 % 넷 — paintMonitor가 채운다
 let edgeGaugeSystem: number[] | null = null;
 function applyEdgeGauge() {
   document
@@ -1655,7 +1655,7 @@ function applyEdgeGauge() {
       const kind = row.dataset.provider as ProviderId | "system";
       const pcts =
         kind === "system"
-          ? (monitorOn ? edgeGaugeSystem : null) ?? []
+          ? edgeGaugeSystem ?? []
           : (edgeGaugeByProvider.get(kind) ?? []);
       row.hidden = pcts.length === 0;
       row.replaceChildren();
@@ -1933,7 +1933,6 @@ async function render(opts?: { immediate?: boolean }) {
           if (mode === "edge") await renderDisplaysEdge(buffer);
           else await renderDisplays(buffer, mode === "compact");
         } else if (key === "system") {
-          if (!monitorOn && !starPromptOpen) continue;
           if (mode === "edge") renderMonitorEdge(buffer);
           else renderMonitor(buffer);
         }
@@ -1970,7 +1969,7 @@ async function render(opts?: { immediate?: boolean }) {
       app.replaceChildren(buffer);
       // 새 SYSTEM 스켈레톤을 마지막 샘플로 즉시 채운다 — 스무스 교체마다
       // 이 섹션만 '--'로 깜빡이던 문제 (red-review). 다음 틱이 이어받는다
-      if (monitorOn && monLastStats) {
+      if (monLastStats) {
         paintMonitor(monLastStats);
         drawMonSpark();
       }
@@ -2622,7 +2621,6 @@ function applyStaticText() {
   if (clamMode >= 0) applyClamshell(clamMode); // 클램셸 툴팁도 새 언어로
   labelIconButton("memobtn", t("memoTooltip"));
   labelIconButton("tfsdbtn", t("tfsdBtnTooltip"));
-  labelIconButton("monbtn", t("monitorTooltip"));
   labelIconButton("privacybtn", t("privacyTooltip"));
   alphaSlider.title = t("alphaTooltip");
   lockBtn.title = t("typeTooltip");
@@ -2738,8 +2736,9 @@ document.getElementById("tfsdbtn")!.addEventListener("click", () => {
     .catch((error) => toast(String(error), true));
 });
 
-// ── 시스템 모니터 (📊) — 위젯 본체 안 SYSTEM 섹션 토글 ─────────────
+// ── 시스템 모니터 — 위젯 본체 안 SYSTEM 섹션, 항상 표시 ─────────────
 // 별도 창은 메모장만이다 (사용자 지시) — 모니터는 위젯의 한 섹션으로 산다.
+// 켜고 끄는 📊 버튼은 없앴다 (사용자 지시 2026-09-30, #106): 자원 상태는 늘 보인다.
 // 미니멀(Type3)은 사용량 전용 독트린(#41)에 따라 그리지 않는다.
 interface SysStats {
   cpu: number;
@@ -2752,18 +2751,6 @@ interface SysStats {
   net_rx: number;
   net_tx: number;
 }
-
-const monBtn = document.getElementById("monbtn") as HTMLButtonElement;
-let monitorOn = localStorage.getItem("switcher.monitor") === "1";
-monBtn.classList.toggle("pinned", monitorOn);
-monBtn.addEventListener("click", () => {
-  monitorOn = !monitorOn;
-  localStorage.setItem("switcher.monitor", monitorOn ? "1" : "0");
-  monBtn.classList.toggle("pinned", monitorOn);
-  if (!monitorOn) edgeGaugeSystem = null;
-  applyEdgeGauge();
-  void render({ immediate: true });
-});
 
 /// SYSTEM 섹션 골격 — 값은 monitorTick이 1초마다 id로 찾아 채운다
 /// (재렌더로 노드가 갈려도 다음 틱이 새 노드를 채우므로 참조를 들고 있지 않는다)
@@ -2927,18 +2914,15 @@ function paintMonitor(s: SysStats) {
 }
 
 async function monitorTick() {
-  // 섹션이 화면에 없으면(꺼짐·재렌더 중) 조용히 건너뛴다.
+  // 섹션이 화면에 없으면(재렌더 중) 조용히 건너뛴다.
   // document.hidden은 보지 않는다 — 별도 모니터 창 시절의 고아 조건으로, 맥은
   // 앱이 비활성이면(위젯의 평상시) 페이지가 hidden이라 SYSTEM이 얼어붙었다
   // (리뷰 #53). 샘플은 1초에 한 번짜리 경량 호출이다.
-  if ((!monitorOn && !starPromptOpen) || monInflight) return;
+  if (monInflight) return;
   if (!document.getElementById("mon-row-cpu")) return;
   monInflight = true;
   try {
     const s = await invoke<SysStats>("stats_read");
-    // 응답을 기다리는 사이 📊가 꺼졌으면 폐기 — 꺼진 동안의 샘플이
-    // monHistory·monLastTick을 오염시키지 않게 (red-review)
-    if (!monitorOn && !starPromptOpen) return;
     // 오래 쉬었다 돌아왔으면 스파크라인을 새로 시작 — 공백 전후가
     // 연속 60초처럼 이어져 그려지는 왜곡 방지 (red-review)
     const now = Date.now();
@@ -2964,16 +2948,6 @@ async function monitorTick() {
   }
 }
 window.setInterval(() => void monitorTick(), 1000);
-
-// 데모·검증용 (SWITCHER_OPEN=monitor): SYSTEM 섹션을 켠 채 시작 — 저장하지 않는
-// 일회성 표시라 localStorage는 건드리지 않는다
-void invoke<string>("initial_open").then((open) => {
-  if (open.includes("monitor") && !monitorOn) {
-    monitorOn = true;
-    monBtn.classList.add("pinned");
-    void render({ immediate: true });
-  }
-});
 
 // ── 섹션 순서 (Type1 드래그 앤 드랍) ─────────────────────────────
 // 머리글을 잡아 다른 섹션 위/아래에 놓으면 순서가 바뀌고 저장된다.
