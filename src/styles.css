@@ -1401,8 +1401,8 @@ body.edge.edge-out #edge-film {
   top: 50%;
   right: 3px;
   width: 16px;
-  height: 56px;
-  margin-top: -28px;
+  height: 52px;
+  margin-top: -26px;
   flex-direction: column;
   justify-content: center;
   gap: 4px;
@@ -1439,7 +1439,7 @@ body.edge.edge-out #edge-gauge {
   border-radius: 1.5px;
   background: rgba(var(--track-rgb), 0.9);
   overflow: hidden;
-  --seg-w: 6.5px;
+  --seg-w: 6px; /* 24px에 4칸, 홈이 .5 정렬(판 막대와 동일) */
 }
 
 .edge-gauge-bar::after {
@@ -1454,18 +1454,13 @@ body.edge.edge-out #edge-gauge {
   );
 }
 
+/* 줄 높이 24 — 게이지 상자(52)가 캡슐 직선 구간(76−15×2=46)보다 커도 호 안으로
+   3px만 들어가 막대 모서리가 실루엣 밖으로 안 나온다 (review) */
 .edge-gauge-row {
   display: flex;
   justify-content: center;
   gap: 2px;
-  height: 26px;
-}
-
-/* 기본색은 변수로 — 프로바이더 셀렉터가 더 세면 warn/danger가 코덱스에서 영영
-   못 이긴다 (red-review). 판 안 막대는 앱 규칙대로 둘 다 accent지만, 손잡이에는
-   제목이 없어 코덱스 줄만 accent-alt로 구분한다 */
-.edge-gauge-row[data-provider="codex"] {
-  --edge-fill: rgb(var(--accent-alt-rgb));
+  height: 24px;
 }
 
 .edge-gauge-fill {
@@ -1474,8 +1469,9 @@ body.edge.edge-out #edge-gauge {
   right: 0;
   bottom: 0;
   height: 0;
-  background: var(--edge-fill, var(--accent));
-  transition: height 0.5s cubic-bezier(0.2, 0.9, 0.3, 1);
+  /* 앱 규칙: 막대 채움은 프로바이더와 무관하게 accent — 줄 위치(위 클로드·아래
+     코덱스)가 구분을 맡는다. 판 안 막대와 같은 데이터가 같은 색이어야 한다 */
+  background: var(--accent);
 }
 
 .edge-gauge-fill.warn {
@@ -1574,7 +1570,9 @@ body.edge:not(.edge-out) #edge-tab {
     edge-drop-breathe 3.4s 1.05s ease-in-out infinite;
 }
 
-/* 내용: 판이 굳은 뒤(0.72s) 벽 쪽에서 떠오르고, 들어갈 땐 먼저 꺼진다 */
+/* 내용: 판이 다 자란 뒤(0.7s, 판의 마지막 ±1% 출렁임과 겹쳐) 벽 쪽에서 떠오르고,
+   들어갈 땐 먼저 꺼진다. 등장에 scale을 쓰지 않는다 — 그 220ms 안에 fitHeight가
+   돌면 조상 변환에 물든 rect로 창이 2% 짧게 잡힌다 (review) */
 body.edge .shell {
   transform-origin: right center;
 }
@@ -1590,7 +1588,7 @@ body.edge:not(.edge-out) .shell {
 }
 
 body.edge.edge-out .shell {
-  animation: edge-content-in 0.22s 0.84s ease-out both;
+  animation: edge-content-in 0.22s 0.7s ease-out both;
 }
 
 body.edge.edge-left.edge-out .shell {
@@ -1598,9 +1596,15 @@ body.edge.edge-left.edge-out .shell {
 }
 
 /* Type4 진입 직후: 접힌 상태로 시작하되 "들어가는" 연출은 재생하지 않는다 */
-body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
+body.edge.edge-noanim :is(#edge-body, .edge-blob, .shell) {
   animation-duration: 0s;
   animation-delay: 0s;
+}
+
+/* 손잡이는 catch만 생략하고 숨쉬기는 게이지와 같은 박자로 — 손잡이만 멈추면
+   게이지가 정지한 캡슐 위에서 혼자 요동한다 (review) */
+body.edge.edge-noanim #edge-tab {
+  animation: edge-drop-breathe 3.4s 1.05s ease-in-out infinite;
 }
 
 @keyframes edge-drop-breathe {
@@ -1725,7 +1729,7 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
 @keyframes edge-content-in {
   0% {
     opacity: 0;
-    transform: translateX(5px) scale(0.98);
+    transform: translateX(5px);
   }
   100% {
     opacity: 1;
@@ -1736,7 +1740,7 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
 @keyframes edge-content-in-left {
   0% {
     opacity: 0;
-    transform: translateX(-5px) scale(0.98);
+    transform: translateX(-5px);
   }
   100% {
     opacity: 1;
@@ -1756,8 +1760,9 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
 /* ── Type4 내용: 폭 88px 세로 막대 패널 ────────────────────────────────
    클로드·코덱스 각각 현재 계정의 사용량 창을 세로 세그먼트 바(.bar와 같은
    채움색·둥글기·칸 8px; 트랙 0.7·홈 0.8은 .bar보다 옅다 — 세로로 세우면 빈
-   트랙 면적이 커서 데이터보다 무거워진다)로 세운다. 위계는 숫자(11px) > 제목(9px, 프로바이더
-   색) > 라벨(8.5px). 꾹 누르면(body.edge-hold) 숫자 자리에 초기화까지 남은 시간.
+   트랙 면적이 커서 데이터보다 무거워진다)로 세운다. 글자는 앱 사다리(11/10/9)만:
+   숫자 11px > 제목·라벨·남은 시간 9px. 꾹 누르면(body.edge-hold) 숫자 자리에
+   초기화까지 남은 시간.
    판이 왼쪽 6px·위아래 12px 안에 있고 모서리 반경이 18px이므로 내용은 그보다
    안쪽(왼 11·위 20)에서 시작해야 판 밖이나 모서리 위에 걸리지 않는다. */
 body.edge .titlebar {
@@ -1768,11 +1773,11 @@ body.edge .titlebar {
    트레이가 두 줄로 흐른다(.dock-tray flex-wrap). 판 위아래 12px 목 안에 들어오게
    독 자체에 아래 여백을 준다 (사용자 지시: 버튼들도 나오게) */
 body.edge main {
-  padding: 20px 5px 6px 11px;
+  padding: 20px 5px 8px 11px;
 }
 
 body.edge.edge-left main {
-  padding: 20px 11px 6px 5px;
+  padding: 20px 11px 8px 5px;
 }
 
 /* 좌우는 padding이 아니라 margin — 구분선(border-top)이 판 너비 전체에 그려져
@@ -1786,15 +1791,24 @@ body.edge.edge-left .dock {
   margin: 0 11px 0 5px;
 }
 
+/* 구분선 위아래 숨(8/8)을 섹션 구분선(8/9)과 맞춘다. 버튼은 flex:1이면 줄마다
+   남는 폭을 나눠 가져 윗줄 23·아랫줄 35px로 달라진다 — 고정 22px (review) */
 body.edge .dock-tray {
   justify-content: center;
-  gap: 2px 0;
-  padding: 4px 0 2px;
+  gap: 2px;
+  padding: 8px 0 2px;
 }
 
 body.edge .dock-tray button {
-  padding: 1px 3px;
+  flex: 0 0 22px;
+  padding: 1px 0;
   margin: 0;
+}
+
+/* Type4에는 SYSTEM 섹션도 이메일도 없으니 📊·🙈는 눌러도 아무 일이 없다 —
+   Type3가 🙈를 숨기는 것과 같은 이유로 숨긴다 */
+body.edge :is(#monbtn, #privacybtn) {
+  display: none;
 }
 
 .edge-bar {
@@ -1890,11 +1904,12 @@ body.edge .tfsd-watermark svg {
   display: flex;
   justify-content: center;
   align-items: flex-end;
-  gap: 3px;
+  gap: 2px;
 }
 
 /* 열 폭 고정 — 자릿수에 따라 열이 늘었다 줄면 막대 정렬이 흔들린다 (review).
-   11px "100" ≈ 20px, 8px "13:49" ≈ 21px → 22px. 3열 + 간격 3×2 = 72 = 내용 폭 */
+   11px "100" ≈ 20px, 9px "13:49" ≈ 19px → 22px. 3열 + 간격 2×2 = 70 = 내용 폭
+   (88 − 패딩 11/5 − .shell 테두리 1×2) */
 .edge-col {
   display: flex;
   flex-direction: column;
@@ -1937,7 +1952,6 @@ body.edge .tfsd-watermark svg {
   bottom: 0;
   border-radius: 1px;
   background: var(--accent);
-  transition: height 0.3s;
 }
 
 .edge-vfill.warn {
@@ -1948,11 +1962,15 @@ body.edge .tfsd-watermark svg {
   background: var(--danger);
 }
 
+/* 숫자와 남은 시간은 같은 11px 상자를 나눠 쓴다 — 줄 높이가 달라지면 꾹 누르는
+   순간 판 내용이 3px 위로 점프한다 (review) */
 .edge-num,
 .edge-reset {
+  height: 11px;
+  min-height: 11px;
   font-size: 11px;
   font-weight: 700;
-  line-height: 1;
+  line-height: 11px;
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
@@ -1964,8 +1982,8 @@ body.edge .tfsd-watermark svg {
 /* 꾹 누르는 동안 숫자 대신 초기화까지 남은 시간 (Type2와 같은 표기: 시:분 / 일::시) */
 .edge-reset {
   display: none;
-  font-size: 8px;
-  letter-spacing: -0.2px;
+  font-size: 9px;
+  letter-spacing: -0.3px;
   white-space: nowrap;
 }
 
@@ -1978,7 +1996,7 @@ body.edge-hold .edge-reset {
 }
 
 .edge-lab {
-  font-size: 8.5px;
+  font-size: 9px;
   font-weight: 600;
   line-height: 1;
   color: var(--muted);

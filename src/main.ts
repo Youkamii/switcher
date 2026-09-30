@@ -53,6 +53,11 @@ type UsageWindow = {
 
 type Usage = { windows: UsageWindow[]; stale?: boolean; stale_age_secs?: number | null };
 
+/// 사용량 경고 단계 — 모든 막대·게이지 채움색 클래스의 단일 기준 (60% 경고, 85% 위험)
+function usageLevel(pct: number): "" | "warn" | "danger" {
+  return pct >= 85 ? "danger" : pct >= 60 ? "warn" : "";
+}
+
 // 빠른 모드 전환이 같은 계정 조회를 겹쳐 시작하지 않게 진행 중 요청을 공유한다.
 // 완료되면 바로 비워 다음 수동 새로고침은 백엔드 캐시/정책에 따라 새로 판정한다.
 const usageInflight = new Map<string, Promise<Usage>>();
@@ -276,8 +281,8 @@ function usageRow(win: UsageWindow): HTMLElement {
   bar.className = "bar";
   const fill = document.createElement("div");
   fill.className = "bar-fill";
-  if (win.percent >= 85) fill.classList.add("danger");
-  else if (win.percent >= 60) fill.classList.add("warn");
+  const level = usageLevel(win.percent);
+  if (level) fill.classList.add(level);
   fill.style.width = `${Math.min(100, Math.max(0, win.percent))}%`;
   bar.appendChild(fill);
 
@@ -1523,8 +1528,8 @@ function compactCard(
         bar.className = "bar";
         const fill = document.createElement("div");
         fill.className = "bar-fill";
-        if (win.percent >= 85) fill.classList.add("danger");
-        else if (win.percent >= 60) fill.classList.add("warn");
+        const level = usageLevel(win.percent);
+        if (level) fill.classList.add(level);
         fill.style.width = `${Math.min(100, Math.max(0, win.percent))}%`;
         bar.appendChild(fill);
         // 사용량 % 숫자를 바 위에 겹친다 (사용자 지시 2회: 처음엔 남은 한도였으나
@@ -1576,11 +1581,6 @@ function edgeBar(): HTMLElement {
   mode.addEventListener("click", () => lockBtn.click());
   bar.append(handle, mode);
   return bar;
-}
-
-/// 사용량 경고 단계 — 막대·게이지 채움색 클래스 (60% 경고, 85% 위험; .bar-fill과 동일)
-function usageLevel(pct: number): "" | "warn" | "danger" {
-  return pct >= 85 ? "danger" : pct >= 60 ? "warn" : "";
 }
 
 /// 접힌 손잡이 게이지 — 판과 같은 구조. 프로바이더별로 현재 계정의 사용량 창을
@@ -1880,8 +1880,8 @@ function userIsBusy(): boolean {
 const appWindow = getCurrentWindow();
 
 // 보기 모드 4단계 사이클: 일반 → 컴팩트(활성 계정 요약) → 미니멀(사용량만) →
-// 벽 붙임(Type4, #151: 좌/우 벽에 붙어 손잡이만 남기고 숨었다가 호버 시 컴팩트
-// 패널이 흘러나온다) → 일반.
+// 벽 붙임(Type4, #151: 좌/우 벽에 액체 손잡이(현재 계정 게이지)로 맺혀 있다가 호버
+// 시 부풀어 세로 막대 패널이 된다) → 일반.
 // 위젯 모드(일반 제외) 공통: 조작 숨김, 클릭 투과, ☰ 핸들로만 이동. (항상-위는 창 기본 설정)
 const VIEW_CYCLE = ["normal", "compact", "minimal", "edge"] as const;
 type ViewMode = (typeof VIEW_CYCLE)[number];
@@ -1949,9 +1949,9 @@ function reportHitRegions() {
   hitElements = [];
   const regions: { rect: number[]; action: [string, string] | null }[] = [];
   const interactionPanelOpen = loginOpen || starPromptOpen;
-  // 모든 영역은 창 안으로 잘라 보고한다 — Type4의 .shell 변환으로 창 밖에 놓인
-  // 카드 좌표가 그대로 가면, 러스트는 커서를 창 크기로 제한하지 않으므로 옆
-  // 모니터의 더블클릭이 전환을 일으킬 수 있다 (red-review).
+  // 모든 영역은 창 안으로 잘라 보고한다 — 창 밖 좌표가 그대로 가면 러스트는 커서를
+  // 창 크기로 제한하지 않으므로 옆 모니터의 더블클릭이 전환을 일으킬 수 있다
+  // (red-review).
   const pushVisible = (el: HTMLElement, action: [string, string] | null) => {
     const rect = visibleHitRect(el.getBoundingClientRect(), window.innerWidth, window.innerHeight);
     if (!rect) return;
@@ -2010,11 +2010,12 @@ function reportHitRegions() {
 }
 
 // ── Type4 벽 붙임 (#151) ──────────────────────────────────────────
-// 창 자체는 늘 펼친 크기(컴팩트 폭)로 벽에 딱 붙어 있고, 숨김은 .shell을 CSS로
-// 창 밖(벽 너머)으로 밀어내는 것이다 — 창을 움직이지 않으니 떨림이 없고, 투명한
-// 나머지 영역은 히트 영역 밖이라 뒤 창으로 클릭이 통과한다. 진입·이탈 판정과
-// 이탈 유예는 러스트 폴링(edge-hover)이 맡는다 — 투과 중인 웹뷰는 mouseenter를
-// 못 받고, 비활성 웹뷰의 타이머는 믿을 수 없다 (CLAUDE.md macOS 절).
+// 창 자체는 늘 펼친 크기(88px)로 벽에 딱 붙어 있다. 접힘은 액체 층(#edge-liquid)이
+// 손잡이만 남기고 내용(.shell)은 opacity 0인 상태 — 창을 움직이지 않으니 떨림이
+// 없다. 접힘 중 히트 영역은 손잡이뿐(그 밖은 뒤 창으로 통과), 펼침 중엔 창 전체가
+// 마우스를 받는다(통과 없음, 사용자 지시). 진입·이탈 판정과 이탈 유예는 러스트
+// 폴링(edge-hover)이 맡는다 — 투과 중인 웹뷰는 mouseenter를 못 받고, 비활성 웹뷰의
+// 타이머는 믿을 수 없다 (CLAUDE.md macOS 절).
 const edgeTabEl = document.getElementById("edge-tab") as HTMLDivElement;
 let edgeActive = false;
 /// 패널이 벽에서 나와 있는가 (러스트 호버 신호가 갱신)
@@ -2045,7 +2046,7 @@ function applyEdgeMode(active: boolean) {
     // 창 그림자 프레임은 패널이 비어 있을 때 창 사각형의 테두리로 드러난다 —
     // Type4에서는 끈다 (사용자 지적). 프레임이 바뀌면 바깥 여백도 달라지므로
     // 적용 뒤 다시 맞춰 벽에 붙인다. 그 밖의 모드 전환에서는 건드리지 않는다.
-    void invoke("set_window_shadow", { enabled: !active }).then(() => fitHeight());
+    void invoke("set_window_shadow", { enabled: !active }).finally(() => fitHeight());
   }
 }
 
@@ -2131,8 +2132,9 @@ for (const type of ["pointerup", "pointercancel", "pointerleave"] as const) {
 document.getElementById("edge-body")!.addEventListener("animationend", (event) => {
   // 이름을 고정 비교하지 않는다 — 이름이 바뀌면(왼쪽 벽 변형 등) goo-down이 영영
   // 안 와 손잡이가 녹는다 (red-review)
+  // 나올 때의 goo-down은 내용 등장이 끝나는 edgeAnimationDone 한 곳에서만 — 여기서도
+  // 부르면 60ms 뒤 재시작돼 블러가 되튄다 (review)
   if (event.animationName.startsWith("edge-body-sink")) edgeAnimationDone();
-  else if (event.animationName.startsWith("edge-body-rise")) gooBlur("goo-down");
 });
 
 void listen<boolean>("edge-hover", (event) => setEdgeOut(event.payload));
