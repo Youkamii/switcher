@@ -1898,10 +1898,14 @@ async function render(opts?: { immediate?: boolean }) {
       // 드래그로 바꾸고, 컴팩트에도 같은 순서가 적용된다.
       // 미니멀은 사용량 전용(#41)이라 GITHUB·DISPLAY는 그리지 않는다 —
       // 단 SYSTEM은 예외로 함께 나온다 (사용자 요청: PC 상태는 미니멀에서도).
-      for (const key of sectionOrder) {
+      // Type4는 순서를 고정한다: 사용량(프로바이더는 sectionOrder 순) → SYSTEM →
+      // DISPLAY(조작) → 독. 데이터가 위, 조작이 아래 (사용자 지시 "순서 바꿔")
+      const keys: SectionKey[] =
+        mode === "edge"
+          ? [...sectionOrder.filter((k) => k === "claude" || k === "codex"), "system", "display"]
+          : sectionOrder;
+      for (const key of keys) {
         const before = buffer.lastElementChild;
-        // Type4는 프로바이더 사용량·SYSTEM·DISPLAY만 그린다 — GITHUB 없음
-        if (mode === "edge" && key === "github") continue;
         if (key === "claude" || key === "codex") {
           if (mode === "edge" && !visibility[key]) {
             // 숨긴 프로바이더의 옛 게이지 값이 손잡이에 남지 않게
