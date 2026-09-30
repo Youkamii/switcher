@@ -1760,17 +1760,38 @@ body.edge.edge-noanim :is(#edge-body, #edge-tab, .edge-blob, .shell) {
    색) > 라벨(8.5px). 꾹 누르면(body.edge-hold) 숫자 자리에 초기화까지 남은 시간.
    판이 왼쪽 6px·위아래 12px 안에 있고 모서리 반경이 18px이므로 내용은 그보다
    안쪽(왼 11·위 20)에서 시작해야 판 밖이나 모서리 위에 걸리지 않는다. */
-body.edge .titlebar,
-body.edge .dock {
+body.edge .titlebar {
   display: none;
 }
 
+/* 하단 도구 독(📝🚗📊🙈☕🌙)은 Type4에서도 판 맨 아래에 그대로 — 88px에서는
+   트레이가 두 줄로 흐른다(.dock-tray flex-wrap). 판 위아래 12px 목 안에 들어오게
+   독 자체에 아래 여백을 준다 (사용자 지시: 버튼들도 나오게) */
 body.edge main {
-  padding: 20px 5px 20px 11px;
+  padding: 20px 5px 6px 11px;
 }
 
 body.edge.edge-left main {
-  padding: 20px 11px 20px 5px;
+  padding: 20px 11px 6px 5px;
+}
+
+body.edge .dock {
+  padding: 0 6px 14px 12px;
+}
+
+body.edge.edge-left .dock {
+  padding: 0 12px 14px 6px;
+}
+
+body.edge .dock-tray {
+  justify-content: center;
+  gap: 2px 0;
+  padding: 4px 0 2px;
+}
+
+body.edge .dock-tray button {
+  padding: 1px 3px;
+  margin: 0;
 }
 
 .edge-bar {
