@@ -1390,9 +1390,10 @@ body.edge.edge-out #edge-film {
   top: 50%;
   right: -8px;
   width: 36px;
-  height: 96px;
-  margin-top: -48px;
-  /* 직선 구간 96−15×2 = 66 = 게이지 높이 → 막대 모서리가 호에 안 걸린다 */
+  height: 116px;
+  margin-top: -58px;
+  /* 직선 구간 116−15×2 = 86 = 게이지 높이 → 막대 모서리가 호에 안 걸린다.
+     96px에서는 세 영역이 붙어 보여 세로를 늘리고 간격을 벌렸다 (사용자 지시) */
   border-radius: 15px 0 0 15px;
   transform-origin: right center;
   animation: edge-drop-breathe 3.4s ease-in-out infinite;
@@ -1409,11 +1410,12 @@ body.edge.edge-out #edge-film {
   top: 50%;
   right: 3px;
   width: 22px;
-  height: 66px;
-  margin-top: -33px;
+  height: 86px;
+  margin-top: -43px;
   flex-direction: column;
   justify-content: center;
-  gap: 2px;
+  /* 영역 사이 숨: 클로드↔코덱스 6px, SYSTEM 앞은 구분선 포함 16px (아래 규칙) */
+  gap: 6px;
   pointer-events: none;
   transform-origin: right center;
   /* 손잡이가 받아내며 출렁인 뒤(0.95s) 사용량이 다시 뜬다. 숨쉬기는 손잡이와 같은
@@ -1487,12 +1489,13 @@ body.edge.edge-out #edge-gauge {
 }
 
 /* SYSTEM 줄은 에이전트 줄(클로드·코덱스)과 구분선으로 가른다 — 같은 굵기의 막대가
-   3px 간격으로 이어지면 셋이 한 덩어리로 읽힌다 (사용자 지적). 19+2+19+2+22 = 64
-   ≤ 66(손잡이 직선 구간)이라 막대가 호에 안 걸린다 */
+   3px 간격으로 이어지면 셋이 한 덩어리로 읽힌다 (사용자 지적). 구분선 위 4px(gap 6과
+   합쳐 10)·아래 5px. 19+6+19+10+25 = 79 ≤ 86(손잡이 직선 구간)이라 막대가 호에 안
+   걸린다 */
 .edge-gauge-row[data-provider="system"] {
-  height: 22px;
-  margin-top: 2px;
-  padding-top: 2px;
+  height: 25px;
+  margin-top: 4px;
+  padding-top: 5px;
   border-top: 1px solid rgba(var(--border-rgb), calc(0.9 * var(--fg-alpha)));
 }
 
