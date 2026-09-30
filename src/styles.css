@@ -1913,8 +1913,8 @@ body.edge main:hover .edge-ui {
 /* 섹션 사이는 앱 공통 테두리색 구분선 + 위아래 11/10px — muted 25%·8/8px로는
    에이전트(CLAUDE·CODEX)와 SYSTEM이 한 덩어리로 붙어 보였다 (사용자 지적) */
 .edge-section + .edge-section {
-  margin-top: 11px;
-  padding-top: 10px;
+  margin-top: 9px;
+  padding-top: 8px;
   border-top: 1px solid rgba(var(--border-rgb), calc(0.9 * var(--fg-alpha)));
 }
 
@@ -1974,7 +1974,7 @@ body.edge .tfsd-watermark svg {
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  width: 22px;
+  width: 20px;
   flex: none;
 }
 
@@ -1983,8 +1983,8 @@ body.edge .tfsd-watermark svg {
    홈이 바닥에 깔려 2~7% 채움을 통째로 먹는다 */
 .edge-vbar {
   position: relative;
-  width: 10px;
-  height: 64px;
+  width: 9px;
+  height: 56px;
   border-radius: 2px;
   background: rgba(var(--track-rgb), 0.7);
   overflow: hidden;
@@ -2025,11 +2025,11 @@ body.edge .tfsd-watermark svg {
    순간 판 내용이 3px 위로 점프한다 (review) */
 .edge-num,
 .edge-reset {
-  height: 11px;
-  min-height: 11px;
-  font-size: 11px;
+  height: 10px;
+  min-height: 10px;
+  font-size: 10px;
   font-weight: 700;
-  line-height: 11px;
+  line-height: 10px;
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
@@ -2115,8 +2115,8 @@ body.mac .edge-mon .edge-num {
   background: var(--danger);
 }
 
-/* ── Type4 DISPLAY 섹션: 모니터마다 세로 밝기 슬라이더 한 열. 막대와 같은 22px 열·
-   64px 높이. 네이티브 슬라이더를 writing-mode로 세우고(위가 100) accent-color는
+/* ── Type4 DISPLAY 섹션: 모니터마다 세로 밝기 슬라이더 한 열. 막대와 같은 20px 열·
+   56px 높이. 네이티브 슬라이더를 writing-mode로 세우고(위가 100) accent-color는
    전역 규칙 그대로 ─────────────────────────────────────────────── */
 .edge-dsp .edge-title {
   color: var(--muted);
@@ -2126,8 +2126,8 @@ body.mac .edge-mon .edge-num {
   writing-mode: vertical-lr;
   direction: rtl;
   flex: none;
-  width: 22px;
-  height: 64px;
+  width: 20px;
+  height: 56px;
   min-width: 0;
   max-width: none;
   margin: 0;
