@@ -53,4 +53,7 @@
 - GUI 앱(Finder 실행)은 셸 PATH를 모른다 — CLI 경로는 로그인 셸(`zsh -lc command -v`)과 관례 경로(`~/.local/bin` 등)로 해석한다 (login.rs `resolve_program`).
 - 마우스 전역 상태는 `CGEventSourceButtonState`(권한 불필요), 더블클릭 간격은 `NSEvent.doubleClickInterval`.
 - 내장 패널 밝기 0(DisplayServices) = **백라이트 완전 소등** — 오버레이·연기 연출·커서까지 화면 전체가 안 보인다 (입력은 살아 있어 ESC는 동작). 그래서 블랙 모니터의 밝기 최하 연동(#49)은 Windows 전용이고 맥은 오버레이만 쓴다 (#51, 사용자 실측 v1.7.21).
+- **Type4 벽 붙임 맥 실측 (2026-09-30, #152 / macOS 27)**: NSPanel에서 `set_shadow(false)`, 러스트 커서 폴링(`mouseLocationOutsideOfEventStream`)의 edge-hover, SVG goo 필터 + SMIL `beginElement`, 좌/우 벽 스냅(테두리 없는 창이라 insets 0), ☰ 드래그 후 반대 벽 갈아타기, 꾹 누르기(0.25s) 전부 동작. 멀티모니터 벽 갈아타기만 미실측(단일 디스플레이).
+- **맥 시스템 글꼴(SF)은 숫자가 Pretendard·맑은 고딕보다 넓다** — 9px 굵게 "23:59"가 26.6px(윈도우 측정 ≈19px). 좁은 열의 글자 폭은 Windows 실측값을 믿지 말고 WKWebView로 재서 `body.mac`(main.ts가 `navigator.platform`으로 붙임)에 따로 맞춘다.
+- **비활성 패널의 첫 클릭이 가끔 삼켜진다** (실측: 실행 직후 첫 꾹 누르기, 다른 창을 만진 뒤 모드 버튼 첫 클릭). 원인은 `becomesKeyOnlyIfNeeded` 패널 + WKWebView `acceptsFirstMouse` 추정, 미확정. 실입력 E2E는 선클릭 1회 후 진행하고, 한 번 안 먹은 클릭은 재시도로 판정할 것.
 - **앱이 비활성이면 WKWebView 페이지가 `visibilityState=hidden`이 될 수 있다** (위젯은 비활성 패널이라 상시 해당). hidden 페이지는 rAF 완전 정지·타이머 ≥0.5~1초 지연이고, 정지가 겹치면 setTimeout도 사실상 죽는다 — **해제·종료 같은 필수 동작을 웹뷰 타이머·rAF 완료 콜백에 걸지 말 것** (#52 실측: 흔들기 해제 연출이 얼며 검은 화면 고착). 대책 패턴: 웹뷰는 감지 즉시 invoke(예약)만 하고, 확실한 마무리는 러스트가 진다. 또한 비활성 앱의 창은 마우스 이벤트 자체를 못 받으므로 전역 폴링(CGEventCreate 커서 좌표 — 권한 불필요) 기반 네이티브 백업이 필요하다 (lib.rs `ShakeTracker`).
