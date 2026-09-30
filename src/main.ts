@@ -2401,16 +2401,29 @@ let currentMonitorKey = "";
 let monitorSyncRevision = 0;
 let monitorMoveTimer: number | undefined;
 let monitorMoveForce = false;
+let monitorSettleToken = 0;
 
 function scheduleMonitorSync(force = false) {
   monitorMoveForce ||= force;
   window.clearTimeout(monitorMoveTimer);
-  monitorMoveTimer = window.setTimeout(() => {
-    monitorMoveTimer = undefined;
-    const forceSync = monitorMoveForce;
-    monitorMoveForce = false;
-    void syncCurrentMonitor(forceSync);
-  }, 180);
+  monitorMoveTimer = window.setTimeout(() => void settleMonitorSync(++monitorSettleToken), 180);
+}
+
+/// 이동이 멎은 뒤 180ms — 단, 마우스 버튼을 쥔 채면 아직 끌고 있는 것이다(드래그 중
+/// 잠깐 멈춤). 여기서 동기화하면 Type4가 가까운 벽으로 되돌려 화면 중앙을 넘기 전에는
+/// 반대편 벽까지 갈 수 없었다 (맥 실측 #152). 놓을 때까지 180ms마다 다시 본다.
+async function settleMonitorSync(token: number) {
+  const held = await invoke<boolean>("pointer_button_down").catch(() => false);
+  // 기다리는 사이 다시 움직였으면 새 타이머가 맡는다
+  if (token !== monitorSettleToken) return;
+  if (held) {
+    monitorMoveTimer = window.setTimeout(() => void settleMonitorSync(++monitorSettleToken), 180);
+    return;
+  }
+  monitorMoveTimer = undefined;
+  const forceSync = monitorMoveForce;
+  monitorMoveForce = false;
+  void syncCurrentMonitor(forceSync);
 }
 
 async function syncCurrentMonitor(force = false) {

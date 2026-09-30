@@ -22,6 +22,7 @@
         "resizable": false,
         "skipTaskbar": true,
         "alwaysOnTop": true,
+        "acceptFirstMouse": true,
         "visible": false,
         "dragDropEnabled": false
       }

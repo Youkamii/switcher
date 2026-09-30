@@ -3052,6 +3052,17 @@ fn set_window_shadow(app: tauri::AppHandle, enabled: bool) {
     }
 }
 
+/// 마우스 왼쪽 버튼을 쥐고 있는가 (전역, 권한 불필요) — 프론트의 창 이동 정착 판정용.
+/// ☰ 드래그 중 잠깐 멈추면 moved 이벤트가 끊겨 "이동 끝"으로 오판하고 Type4가 가까운
+/// 벽으로 되돌려 반대편 벽까지 끌고 갈 수 없었다 (맥 실측 #152).
+#[tauri::command]
+fn pointer_button_down() -> bool {
+    #[cfg(any(windows, target_os = "macos"))]
+    return primary_button_down();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    return false;
+}
+
 /// Type4 벽 붙임의 호버 존 보고 (None = Type4 아님)
 #[tauri::command]
 fn set_edge_zone(zone: Option<EdgeZone>) {
@@ -3665,6 +3676,7 @@ pub fn run() {
             set_hit_regions,
             set_click_through,
             set_edge_zone,
+            pointer_button_down,
             set_window_shadow,
             memo_load,
             memo_save,
