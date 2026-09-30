@@ -1583,22 +1583,28 @@ function usageLevel(pct: number): "" | "warn" | "danger" {
   return pct >= 85 ? "danger" : pct >= 60 ? "warn" : "";
 }
 
-/// 접힌 손잡이 게이지 — 프로바이더별로 현재 계정의 창 중 최고 %를 얇은 막대로
-/// (사용자 지시: "손잡이에 클로드랑 코덱스 둘 다 현재 선택 중인 사용량을 작고 얇게").
-const edgeGaugeByProvider = new Map<ProviderId, number>();
+/// 접힌 손잡이 게이지 — 판과 같은 구조. 프로바이더별로 현재 계정의 사용량 창을
+/// 전부 얇은 세로 막대로 한 줄에 나란히(클로드 5h·W·F 세 개 위, 코덱스 W 한 개 아래).
+const edgeGaugeByProvider = new Map<ProviderId, number[]>();
 function applyEdgeGauge() {
   document
-    .querySelectorAll<HTMLElement>("#edge-gauge .edge-gauge-bar")
-    .forEach((bar) => {
-      const provider = bar.dataset.provider as ProviderId;
-      const pct = edgeGaugeByProvider.get(provider);
-      bar.hidden = pct === undefined;
-      const fill = bar.firstElementChild as HTMLElement | null;
-      if (pct === undefined || !fill) return;
-      fill.style.height = `${pct}%`;
-      fill.classList.remove("warn", "danger");
-      const level = usageLevel(pct);
-      if (level) fill.classList.add(level);
+    .querySelectorAll<HTMLElement>("#edge-gauge .edge-gauge-row")
+    .forEach((row) => {
+      const provider = row.dataset.provider as ProviderId;
+      const pcts = edgeGaugeByProvider.get(provider) ?? [];
+      row.hidden = pcts.length === 0;
+      row.replaceChildren();
+      for (const pct of pcts) {
+        const bar = document.createElement("div");
+        bar.className = "edge-gauge-bar";
+        const fill = document.createElement("div");
+        fill.className = "edge-gauge-fill";
+        const level = usageLevel(pct);
+        if (level) fill.classList.add(level);
+        fill.style.height = `${pct}%`;
+        bar.appendChild(fill);
+        row.appendChild(bar);
+      }
     });
 }
 
@@ -1687,7 +1693,7 @@ async function renderProviderEdge(
         }
         edgeGaugeByProvider.set(
           provider,
-          usage.windows.reduce((top, win) => Math.max(top, Math.min(100, win.percent)), 0),
+          usage.windows.map((win) => Math.min(100, Math.max(0, win.percent))),
         );
         applyEdgeGauge();
       } catch {

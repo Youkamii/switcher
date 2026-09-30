@@ -1391,18 +1391,21 @@ body.edge.edge-out #edge-film {
 }
 
 
-/* 손잡이 게이지 — 필터 밖. 클로드·코덱스 각각 현재 계정 사용량(창 중 최고 %)을
-   얇은 세로 막대 둘로. 판이 들어가고 손잡이가 출렁인 뒤(0.95s)에야 켜진다 —
-   먼저 켜지면 손잡이가 판보다 앞서 튀어나온 것처럼 보인다 */
+/* 손잡이 게이지 — 필터 밖. 판과 같은 구조: 클로드 창 세 개(5h·W·F)가 한 줄에
+   나란히, 그 아래 코덱스 창 한 개(W). 줄마다 얇은 세로 막대. 판이 들어가고
+   손잡이가 출렁인 뒤(0.95s)에야 켜진다 — 먼저 켜지면 손잡이가 판보다 앞서
+   튀어나온 것처럼 보인다 */
 #edge-gauge {
   display: none;
   position: fixed;
   top: 50%;
   right: 3px;
-  height: 60px;
-  margin-top: -30px;
+  width: 16px;
+  height: 56px;
+  margin-top: -28px;
+  flex-direction: column;
+  justify-content: center;
   gap: 4px;
-  align-items: stretch;
   pointer-events: none;
   transform-origin: right center;
   /* 손잡이가 받아내며 출렁인 뒤(0.95s) 사용량이 다시 뜬다. 숨쉬기는 손잡이와 같은
@@ -1429,14 +1432,14 @@ body.edge.edge-out #edge-gauge {
   animation: edge-drop-swell 0.72s cubic-bezier(0.22, 0.9, 0.24, 1) both;
 }
 
-/* 판 안 막대와 같은 물건 — 세그먼트 홈(6칸)을 얹어 배터리가 아니라 사용량으로 읽힌다 */
+/* 판 안 막대와 같은 물건 — 세그먼트 홈(4칸)을 얹어 배터리가 아니라 사용량으로 읽힌다 */
 .edge-gauge-bar {
   position: relative;
-  width: 5px;
-  border-radius: 2px;
+  width: 4px;
+  border-radius: 1.5px;
   background: rgba(var(--track-rgb), 0.9);
   overflow: hidden;
-  --seg-w: 10px;
+  --seg-w: 6.5px;
 }
 
 .edge-gauge-bar::after {
@@ -1451,10 +1454,17 @@ body.edge.edge-out #edge-gauge {
   );
 }
 
+.edge-gauge-row {
+  display: flex;
+  justify-content: center;
+  gap: 2px;
+  height: 26px;
+}
+
 /* 기본색은 변수로 — 프로바이더 셀렉터가 더 세면 warn/danger가 코덱스에서 영영
    못 이긴다 (red-review). 판 안 막대는 앱 규칙대로 둘 다 accent지만, 손잡이에는
-   제목이 없어 코덱스만 accent-alt로 구분한다 */
-.edge-gauge-bar[data-provider="codex"] {
+   제목이 없어 코덱스 줄만 accent-alt로 구분한다 */
+.edge-gauge-row[data-provider="codex"] {
   --edge-fill: rgb(var(--accent-alt-rgb));
 }
 
