@@ -53,4 +53,6 @@
 - GUI 앱(Finder 실행)은 셸 PATH를 모른다 — CLI 경로는 로그인 셸(`zsh -lc command -v`)과 관례 경로(`~/.local/bin` 등)로 해석한다 (login.rs `resolve_program`).
 - 마우스 전역 상태는 `CGEventSourceButtonState`(권한 불필요), 더블클릭 간격은 `NSEvent.doubleClickInterval`.
 - 내장 패널 밝기 0(DisplayServices) = **백라이트 완전 소등** — 오버레이·연기 연출·커서까지 화면 전체가 안 보인다 (입력은 살아 있어 ESC는 동작). 그래서 블랙 모니터의 밝기 최하 연동(#49)은 Windows 전용이고 맥은 오버레이만 쓴다 (#51, 사용자 실측 v1.7.21).
+- **다른 창을 클릭한 뒤 위젯의 첫 클릭이 매번 한 번 삼켜지던 문제는 창 설정 `acceptFirstMouse: true`로 해결** (tauri.conf.json, 2026-09-30 #152). 원인은 비활성 창의 첫 클릭을 WKWebView가 활성화용으로 먹던 것(wry `acceptsFirstMouse` 기본 false). 이 때문에 Type4 ☰ 드래그가 첫 시도에 안 잡혔다. 실입력 E2E의 "선클릭 1회" 요령은 이제 불필요.
+- **☰ 드래그 중 잠깐 멈추면 moved 이벤트가 180ms 끊겨 "이동 끝"으로 오판**해 Type4가 가까운 벽으로 되돌리던 문제 → `pointer_button_down`(전역 버튼 상태)으로 버튼을 놓을 때까지 정착을 미룬다 (main.ts `settleMonitorSync`). 화면 중앙을 넘겨 놓아야 반대편 벽에 붙는 규칙은 그대로.
 - **앱이 비활성이면 WKWebView 페이지가 `visibilityState=hidden`이 될 수 있다** (위젯은 비활성 패널이라 상시 해당). hidden 페이지는 rAF 완전 정지·타이머 ≥0.5~1초 지연이고, 정지가 겹치면 setTimeout도 사실상 죽는다 — **해제·종료 같은 필수 동작을 웹뷰 타이머·rAF 완료 콜백에 걸지 말 것** (#52 실측: 흔들기 해제 연출이 얼며 검은 화면 고착). 대책 패턴: 웹뷰는 감지 즉시 invoke(예약)만 하고, 확실한 마무리는 러스트가 진다. 또한 비활성 앱의 창은 마우스 이벤트 자체를 못 받으므로 전역 폴링(CGEventCreate 커서 좌표 — 권한 불필요) 기반 네이티브 백업이 필요하다 (lib.rs `ShakeTracker`).
