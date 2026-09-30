@@ -1331,6 +1331,13 @@ body.edge #edge-liquid {
   display: block;
 }
 
+/* 판·손잡이 윤곽색 — 다른 모드의 .shell 테두리와 같은 색·농도 (index.html #goo의
+   feFlood가 읽는다). 투명도 슬라이더에 따라 골조와 함께 옅어진다 */
+#goo feFlood {
+  flood-color: rgb(var(--border-rgb));
+  flood-opacity: calc(0.9 * var(--fg-alpha));
+}
+
 /* 왼쪽 벽: 도형 층을 통째로 좌우 반전한다 — 글자가 없는 층이라 안전하고, 좌/우
    keyframe 두 벌을 유지할 필요가 없다 (red-review). 게이지(#edge-gauge)는 층 밖이라
    자기 left 규칙을 쓴다. 덩어리의 벽 쪽 밀림(translateX -4px)도 함께 뒤집혀
@@ -1383,9 +1390,10 @@ body.edge.edge-out #edge-film {
   top: 50%;
   right: -8px;
   width: 36px;
-  height: 96px;
-  margin-top: -48px;
-  /* 직선 구간 96−15×2 = 66 = 게이지 높이 → 막대 모서리가 호에 안 걸린다 */
+  height: 116px;
+  margin-top: -58px;
+  /* 직선 구간 116−15×2 = 86 = 게이지 높이 → 막대 모서리가 호에 안 걸린다.
+     96px에서는 세 영역이 붙어 보여 세로를 늘리고 간격을 벌렸다 (사용자 지시) */
   border-radius: 15px 0 0 15px;
   transform-origin: right center;
   animation: edge-drop-breathe 3.4s ease-in-out infinite;
@@ -1402,11 +1410,12 @@ body.edge.edge-out #edge-film {
   top: 50%;
   right: 3px;
   width: 22px;
-  height: 66px;
-  margin-top: -33px;
+  height: 86px;
+  margin-top: -43px;
   flex-direction: column;
   justify-content: center;
-  gap: 3px;
+  /* 영역 사이 숨: 클로드↔코덱스 6px, SYSTEM 앞은 구분선 포함 16px (아래 규칙) */
+  gap: 6px;
   pointer-events: none;
   transform-origin: right center;
   /* 손잡이가 받아내며 출렁인 뒤(0.95s) 사용량이 다시 뜬다. 숨쉬기는 손잡이와 같은
@@ -1440,7 +1449,7 @@ body.edge.edge-out #edge-gauge {
   border-radius: 1.5px;
   background: rgba(var(--track-rgb), 0.9);
   overflow: hidden;
-  --seg-w: 5px; /* 20px에 4칸 */
+  --seg-w: 4.75px; /* 19px에 4칸 */
 }
 
 /* 손잡이 SYSTEM 줄: 판의 SYSTEM과 같은 자원색, 90% 넘으면 위험색 */
@@ -1476,7 +1485,38 @@ body.edge.edge-out #edge-gauge {
   display: flex;
   justify-content: center;
   gap: 2px;
-  height: 20px;
+  height: 19px;
+}
+
+/* SYSTEM 줄은 에이전트 줄(클로드·코덱스)과 구분선으로 가른다 — 같은 굵기의 막대가
+   3px 간격으로 이어지면 셋이 한 덩어리로 읽힌다 (사용자 지적). 구분선 위 4px(gap 6과
+   합쳐 10)·아래 5px. 19+6+19+10+25 = 79 ≤ 86(손잡이 직선 구간)이라 막대가 호에 안
+   걸린다 */
+.edge-gauge-row[data-provider="system"] {
+  height: 25px;
+  margin-top: 4px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(var(--border-rgb), calc(0.9 * var(--fg-alpha)));
+}
+
+/* 손잡이의 SYSTEM 막대는 색감과 형태를 에이전트 줄과 다르게 — 에이전트는 accent·경고·
+   위험(예산을 얼마나 썼나)의 세그먼트 막대, 자원은 무채색(글자색)·홈 없는 연속 미터
+   (지금 얼마나 바쁜가). 자원별 고정색은 accent(CPU)·경고 노랑(DSK)과 겹쳐 손잡이
+   안에서 에이전트 줄과 섞여 보였다 (사용자 지적). 90% 넘으면 위험색은 그대로 */
+.edge-gauge-row[data-provider="system"] .edge-gauge-bar {
+  width: 3px;
+}
+
+.edge-gauge-row[data-provider="system"] .edge-gauge-bar::after {
+  display: none;
+}
+
+.edge-gauge-row[data-provider="system"] .edge-gauge-fill {
+  background: rgba(var(--text-rgb), calc(0.8 * var(--bar-alpha)));
+}
+
+.edge-gauge-row[data-provider="system"] .edge-gauge-fill.hot {
+  background: var(--danger);
 }
 
 .edge-gauge-fill {
@@ -1870,10 +1910,12 @@ body.edge main:hover .edge-ui {
   position: relative; /* TFSD 워터마크 기준점 */
 }
 
+/* 섹션 사이는 앱 공통 테두리색 구분선 + 위아래 11/10px — muted 25%·8/8px로는
+   에이전트(CLAUDE·CODEX)와 SYSTEM이 한 덩어리로 붙어 보였다 (사용자 지적) */
 .edge-section + .edge-section {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid rgba(var(--muted-rgb), calc(0.25 * var(--bar-alpha)));
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(var(--border-rgb), calc(0.9 * var(--fg-alpha)));
 }
 
 /* 이전 수치: 채움만 흐리고 숫자는 살린다. 제목 옆 점이 이유를 말한다 */
@@ -2014,7 +2056,9 @@ body.mac .edge-reset {
   font-variant-numeric: normal;
 }
 
-body.edge-hold .edge-num {
+/* SYSTEM 숫자(.edge-mon-val)는 남는다 — 대신 보여줄 남은 시간이 없는데 사라지면
+   빈칸만 남는다 (사용자 지적) */
+body.edge-hold .edge-num:not(.edge-mon-val) {
   display: none;
 }
 
@@ -2045,6 +2089,14 @@ body.edge-hold .edge-reset {
 
 .edge-mon .edge-num {
   font-size: 9px;
+}
+
+/* macOS: SF 숫자가 넓어 9px "100"이 18.6px — 17px 열(간격 0)을 넘쳐 옆 열과 겹친다
+   (실측 #152). .edge-reset과 같은 처방 */
+body.mac .edge-mon .edge-num {
+  font-size: 8px;
+  letter-spacing: -0.3px;
+  font-variant-numeric: normal;
 }
 
 .edge-vfill.mon-fill-mem {
