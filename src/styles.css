@@ -1413,7 +1413,7 @@ body.edge.edge-out #edge-film {
   margin-top: -33px;
   flex-direction: column;
   justify-content: center;
-  gap: 3px;
+  gap: 2px;
   pointer-events: none;
   transform-origin: right center;
   /* 손잡이가 받아내며 출렁인 뒤(0.95s) 사용량이 다시 뜬다. 숨쉬기는 손잡이와 같은
@@ -1447,7 +1447,7 @@ body.edge.edge-out #edge-gauge {
   border-radius: 1.5px;
   background: rgba(var(--track-rgb), 0.9);
   overflow: hidden;
-  --seg-w: 5px; /* 20px에 4칸 */
+  --seg-w: 4.75px; /* 19px에 4칸 */
 }
 
 /* 손잡이 SYSTEM 줄: 판의 SYSTEM과 같은 자원색, 90% 넘으면 위험색 */
@@ -1483,7 +1483,17 @@ body.edge.edge-out #edge-gauge {
   display: flex;
   justify-content: center;
   gap: 2px;
-  height: 20px;
+  height: 19px;
+}
+
+/* SYSTEM 줄은 에이전트 줄(클로드·코덱스)과 구분선으로 가른다 — 같은 굵기의 막대가
+   3px 간격으로 이어지면 셋이 한 덩어리로 읽힌다 (사용자 지적). 19+2+19+2+22 = 64
+   ≤ 66(손잡이 직선 구간)이라 막대가 호에 안 걸린다 */
+.edge-gauge-row[data-provider="system"] {
+  height: 22px;
+  margin-top: 2px;
+  padding-top: 2px;
+  border-top: 1px solid rgba(var(--border-rgb), calc(0.9 * var(--fg-alpha)));
 }
 
 .edge-gauge-fill {
@@ -2013,7 +2023,9 @@ body.edge .tfsd-watermark svg {
   white-space: nowrap;
 }
 
-body.edge-hold .edge-num {
+/* SYSTEM 숫자(.edge-mon-val)는 남는다 — 대신 보여줄 남은 시간이 없는데 사라지면
+   빈칸만 남는다 (사용자 지적) */
+body.edge-hold .edge-num:not(.edge-mon-val) {
   display: none;
 }
 
