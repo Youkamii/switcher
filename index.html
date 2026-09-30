@@ -64,10 +64,12 @@
       <div id="edge-tab"></div>
     </div>
     <!-- 손잡이 게이지 — 필터 밖(번지지 않게). 판과 같은 구조로 클로드 창들(5h·W·F)을
-         한 줄에 나란히, 그 아래 코덱스 창(W)을 한 줄에 — 얇은 세로 막대로 항상 보여준다 -->
+         한 줄에, 그 아래 코덱스 창(W), 맨 아래 SYSTEM(CPU·MEM·DSK·NET, 📊 켜진 동안)을
+         한 줄씩 — 얇은 세로 막대로 항상 보여준다 -->
     <div id="edge-gauge" aria-hidden="true">
       <div class="edge-gauge-row" data-provider="claude" hidden></div>
       <div class="edge-gauge-row" data-provider="codex" hidden></div>
+      <div class="edge-gauge-row" data-provider="system" hidden></div>
     </div>
     <svg width="0" height="0" style="position: absolute" aria-hidden="true">
       <defs>

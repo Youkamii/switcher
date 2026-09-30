@@ -1584,28 +1584,85 @@ function edgeBar(): HTMLElement {
 }
 
 /// 접힌 손잡이 게이지 — 판과 같은 구조. 프로바이더별로 현재 계정의 사용량 창을
-/// 전부 얇은 세로 막대로 한 줄에 나란히(클로드 5h·W·F 세 개 위, 코덱스 W 한 개 아래).
+/// 전부 얇은 세로 막대로 한 줄에 나란히(클로드 5h·W·F 세 개 위, 코덱스 W 한 개
+/// 아래), 그 아래 SYSTEM 한 줄(CPU·MEM·DSK·NET, 📊가 켜져 있고 샘플이 있을 때).
 const edgeGaugeByProvider = new Map<ProviderId, number[]>();
+const MON_KEYS = ["cpu", "mem", "dsk", "net"] as const;
+/// 마지막 SYSTEM 샘플의 막대 % 넷 — paintMonitor가 채우고, 📊를 끄면 비운다
+let edgeGaugeSystem: number[] | null = null;
 function applyEdgeGauge() {
   document
     .querySelectorAll<HTMLElement>("#edge-gauge .edge-gauge-row")
     .forEach((row) => {
-      const provider = row.dataset.provider as ProviderId;
-      const pcts = edgeGaugeByProvider.get(provider) ?? [];
+      const kind = row.dataset.provider as ProviderId | "system";
+      const pcts =
+        kind === "system"
+          ? (monitorOn ? edgeGaugeSystem : null) ?? []
+          : (edgeGaugeByProvider.get(kind) ?? []);
       row.hidden = pcts.length === 0;
       row.replaceChildren();
-      for (const pct of pcts) {
+      pcts.forEach((pct, i) => {
         const bar = document.createElement("div");
         bar.className = "edge-gauge-bar";
         const fill = document.createElement("div");
         fill.className = "edge-gauge-fill";
-        const level = usageLevel(pct);
-        if (level) fill.classList.add(level);
+        if (kind === "system") {
+          // SYSTEM은 자원별 고정색(MEM 초록·DSK 노랑·NET 파랑), 90% 넘으면 위험색
+          fill.classList.add(`mon-fill-${MON_KEYS[i] ?? "cpu"}`);
+          if (pct >= 90) fill.classList.add("hot");
+        } else {
+          const level = usageLevel(pct);
+          if (level) fill.classList.add(level);
+        }
         fill.style.height = `${pct}%`;
         bar.appendChild(fill);
         row.appendChild(bar);
-      }
+      });
     });
+}
+
+/// Type4의 SYSTEM 섹션 — 판의 다른 줄과 같은 세로 막대 넷(C·M·D·N). id·클래스는
+/// monSetRow가 찾는 규약(#mon-row-<key>, .mon-bar, .edge-vfill, .edge-mon-val)을
+/// 따르므로 monitorTick이 1초마다 그대로 채운다. 값은 짧은 정수(CPU %, MEM GB,
+/// DSK·NET MB/s) — 17px 열에 들어가야 한다.
+function renderMonitorEdge(target: DocumentFragment) {
+  const section = document.createElement("section");
+  section.className = "edge-section edge-mon";
+  const head = document.createElement("div");
+  head.className = "edge-title";
+  head.textContent = "SYSTEM";
+  section.appendChild(head);
+  const bars = document.createElement("div");
+  bars.className = "edge-bars";
+  for (const [key, name, letter] of [
+    ["cpu", "CPU", "C"],
+    ["mem", "MEM", "M"],
+    ["dsk", "DSK", "D"],
+    ["net", "NET", "N"],
+  ] as const) {
+    const col = document.createElement("div");
+    col.className = "edge-col";
+    col.id = `mon-row-${key}`;
+    col.dataset.short = "";
+    col.title = name;
+    const vbar = document.createElement("div");
+    vbar.className = "edge-vbar mon-bar";
+    const fill = document.createElement("div");
+    fill.className = `edge-vfill mon-fill-${key}`;
+    fill.style.height = "0%";
+    vbar.appendChild(fill);
+    const val = document.createElement("span");
+    val.className = "edge-num edge-mon-val";
+    val.textContent = "--";
+    const lab = document.createElement("span");
+    lab.className = "edge-lab";
+    lab.textContent = letter;
+    lab.title = name;
+    col.append(vbar, val, lab);
+    bars.appendChild(col);
+  }
+  section.appendChild(bars);
+  target.appendChild(section);
 }
 
 /// Type4 라벨 — 세로 배치에서는 라벨이 숫자 바로 아래 오므로 "5"만 쓰면 "23/5"
@@ -1785,8 +1842,8 @@ async function render(opts?: { immediate?: boolean }) {
       // 단 SYSTEM은 예외로 함께 나온다 (사용자 요청: PC 상태는 미니멀에서도).
       for (const key of sectionOrder) {
         const before = buffer.lastElementChild;
-        // Type4는 프로바이더 사용량만 그린다 — GITHUB·DISPLAY·SYSTEM 없음
-        if (mode === "edge" && key !== "claude" && key !== "codex") continue;
+        // Type4는 프로바이더 사용량과 SYSTEM만 그린다 — GITHUB·DISPLAY 없음
+        if (mode === "edge" && key !== "claude" && key !== "codex" && key !== "system") continue;
         if (key === "claude" || key === "codex") {
           if (mode === "edge" && !visibility[key]) {
             // 숨긴 프로바이더의 옛 게이지 값이 손잡이에 남지 않게
@@ -1814,7 +1871,8 @@ async function render(opts?: { immediate?: boolean }) {
           await renderDisplays(buffer, mode === "compact");
         } else if (key === "system") {
           if (!monitorOn && !starPromptOpen) continue;
-          renderMonitor(buffer);
+          if (mode === "edge") renderMonitorEdge(buffer);
+          else renderMonitor(buffer);
         }
         // 방금 붙은 섹션에 순서 키를 달고 Type1이면 드래그 이동을 붙인다
         // (렌더 함수가 아무것도 안 붙였을 수 있어 lastElementChild 변화로 판별)
@@ -2638,6 +2696,8 @@ monBtn.addEventListener("click", () => {
   monitorOn = !monitorOn;
   localStorage.setItem("switcher.monitor", monitorOn ? "1" : "0");
   monBtn.classList.toggle("pinned", monitorOn);
+  if (!monitorOn) edgeGaugeSystem = null;
+  applyEdgeGauge();
   void render({ immediate: true });
 });
 
@@ -2758,15 +2818,20 @@ function monMood(cpuPct: number): string {
   return "(>﹏<)";
 }
 
-function monSetRow(key: string, percent: number, text: string) {
+/// short: Type4 세로 열(17px)용 짧은 값 — 열에 data-short가 있으면 이걸 쓴다
+function monSetRow(key: string, percent: number, text: string, short = text) {
   const row = document.getElementById(`mon-row-${key}`);
   if (!row) return;
   const clamped = Math.max(0, Math.min(100, percent));
-  const fill = row.querySelector<HTMLElement>(".bar-fill");
-  if (fill) fill.style.width = `${clamped}%`;
+  const fill = row.querySelector<HTMLElement>(".bar-fill, .edge-vfill");
+  if (fill) {
+    // Type4의 세로 막대는 높이로 찬다
+    if (fill.classList.contains("edge-vfill")) fill.style.height = `${clamped}%`;
+    else fill.style.width = `${clamped}%`;
+  }
   row.querySelector(".mon-bar")?.classList.toggle("hot", clamped >= 90);
-  const val = row.querySelector<HTMLElement>(".mon-val");
-  if (val) val.textContent = text;
+  const val = row.querySelector<HTMLElement>(".mon-val, .edge-mon-val");
+  if (val) val.textContent = row.dataset.short !== undefined ? short : text;
 }
 
 /// 마지막 샘플 — 재렌더 직후 새 스켈레톤을 즉시 채우는 데 쓴다 (red-review:
@@ -2780,26 +2845,21 @@ function paintMonitor(s: SysStats) {
   monSetRow("cpu", s.cpu, String(Math.round(s.cpu)));
   const mood = document.getElementById("mon-mood");
   if (mood) mood.textContent = monMood(s.cpu);
-  monSetRow(
-    "mem",
-    (s.mem_used / Math.max(1, s.mem_total)) * 100,
-    `${gbInt(s.mem_used)}/${gbInt(s.mem_total)}`,
-  );
+  const memPct = (s.mem_used / Math.max(1, s.mem_total)) * 100;
+  monSetRow("mem", memPct, `${gbInt(s.mem_used)}/${gbInt(s.mem_total)}`, gbInt(s.mem_used));
   // 디스크는 용량이 아니라 활동량(R/W 속도)이다 — 사용자 지시. 바는 Windows면
   // 물리 디스크 활성 시간 %(작업 관리자와 같은 지표 — "저긴 0%인데 여긴 차
   // 있다" 괴리 보고), 맥이면 세션 피크 대비 폴백
   const io = s.disk_read + s.disk_write;
-  monSetRow(
-    "dsk",
-    s.disk_pct ?? (io / Math.max(1, monDskPeak)) * 100,
-    `R${mbsInt(s.disk_read)} W${mbsInt(s.disk_write)}`,
-  );
+  const dskPct = s.disk_pct ?? (io / Math.max(1, monDskPeak)) * 100;
+  monSetRow("dsk", dskPct, `R${mbsInt(s.disk_read)} W${mbsInt(s.disk_write)}`, mbsInt(io));
   const flow = s.net_rx + s.net_tx;
-  monSetRow(
-    "net",
-    (flow / Math.max(1, monNetPeak)) * 100,
-    `↓${mbsInt(s.net_rx)} ↑${mbsInt(s.net_tx)}`,
-  );
+  const netPct = (flow / Math.max(1, monNetPeak)) * 100;
+  monSetRow("net", netPct, `↓${mbsInt(s.net_rx)} ↑${mbsInt(s.net_tx)}`, mbsInt(flow));
+  // 접힌 손잡이의 SYSTEM 줄도 같은 샘플로 (Type4가 아니면 줄이 안 보일 뿐)
+  const clamp = (v: number) => Math.max(0, Math.min(100, v));
+  edgeGaugeSystem = [clamp(s.cpu), clamp(memPct), clamp(dskPct), clamp(netPct)];
+  if (edgeActive) applyEdgeGauge();
 }
 
 async function monitorTick() {
