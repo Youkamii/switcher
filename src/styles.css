@@ -1775,12 +1775,15 @@ body.edge.edge-left main {
   padding: 20px 11px 6px 5px;
 }
 
+/* 좌우는 padding이 아니라 margin — 구분선(border-top)이 판 너비 전체에 그려져
+   왼쪽 모서리 밖으로 삐져나온다 (실측) */
 body.edge .dock {
-  padding: 0 6px 14px 12px;
+  margin: 0 5px 0 11px;
+  padding: 0 0 14px;
 }
 
 body.edge.edge-left .dock {
-  padding: 0 12px 14px 6px;
+  margin: 0 11px 0 5px;
 }
 
 body.edge .dock-tray {
