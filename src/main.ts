@@ -97,6 +97,9 @@ const app = document.getElementById("app")!;
 const shell = document.querySelector(".shell") as HTMLElement;
 const titlebarEl = document.querySelector(".titlebar") as HTMLElement;
 const dockEl = document.querySelector(".dock") as HTMLElement;
+// 플랫폼 글꼴 보정용 — 맥의 시스템 글꼴(SF)은 Pretendard·맑은 고딕보다 숫자가 넓어
+// Type4의 좁은 열(22px)에서 남은 시간 표기가 넘친다 (#152). CSS `body.mac`이 받는다.
+document.body.classList.toggle("mac", navigator.platform.startsWith("Mac"));
 let startupState: FirstRunStartupState | "checking" = "checking";
 let starPromptOpen = false;
 let starPromptBusy = false;

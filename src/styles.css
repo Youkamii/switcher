@@ -2004,6 +2004,16 @@ body.edge .tfsd-watermark svg {
   white-space: nowrap;
 }
 
+/* macOS: 시스템 글꼴(SF)은 숫자가 넓어 9px 굵게 "23:59"가 26.6px — 22px 열을 넘쳐
+   옆 열의 글자와 겹친다 (실측 #152: "0:17 5::025::02"). 8px·비례 숫자·자간 -0.4px면
+   최악 23.1px로 열 간격 2px 안에서 서로 닿지 않는다. 상자 높이(11px)는 그대로라
+   누르는 순간 줄이 뛰지 않는다. Windows(Pretendard·맑은 고딕 ≈19px)는 손대지 않는다 */
+body.mac .edge-reset {
+  font-size: 8px;
+  letter-spacing: -0.4px;
+  font-variant-numeric: normal;
+}
+
 body.edge-hold .edge-num {
   display: none;
 }
