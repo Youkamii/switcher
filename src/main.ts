@@ -1388,6 +1388,64 @@ async function renderDisplays(target: DocumentFragment, compact: boolean) {
   target.appendChild(section);
 }
 
+/// Type4의 DISPLAY — 모니터마다 세로 밝기 슬라이더 한 열(막대들과 같은 언어).
+/// 접이식 머리글 없이 항상 펼쳐지고, 밝기를 못 읽는 모니터·모니터 없음이면 섹션을
+/// 아예 그리지 않는다(88px에 안내문을 넣을 자리가 없다). 값 전송은 Type2와 같은
+/// 250ms 디바운스.
+async function renderDisplaysEdge(target: DocumentFragment) {
+  let monitors: DisplayInfo[];
+  try {
+    monitors = await invoke<DisplayInfo[]>("display_list");
+  } catch {
+    return;
+  }
+  const usable = monitors.filter((monitor) => monitor.brightness != null);
+  if (usable.length === 0) return;
+  const section = document.createElement("section");
+  section.className = "edge-section edge-dsp";
+  const head = document.createElement("div");
+  head.className = "edge-title";
+  head.textContent = "DISPLAY";
+  section.appendChild(head);
+  const cols = document.createElement("div");
+  cols.className = "edge-bars";
+  for (const monitor of usable) {
+    const col = document.createElement("div");
+    col.className = "edge-col";
+    col.title = monitor.name;
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.min = "0";
+    slider.max = "100";
+    slider.step = "1";
+    slider.value = String(monitor.brightness);
+    slider.title = monitor.name;
+    const pct = document.createElement("span");
+    pct.className = "edge-num";
+    pct.textContent = String(monitor.brightness);
+    let debounce: number | undefined;
+    slider.addEventListener("input", () => {
+      pct.textContent = slider.value;
+      window.clearTimeout(debounce);
+      debounce = window.setTimeout(() => {
+        void invoke("display_set_brightness", {
+          id: monitor.id,
+          percent: Number(slider.value),
+          name: monitor.name,
+        }).catch((error) => toast(String(error), true));
+      }, 250);
+    });
+    const lab = document.createElement("span");
+    lab.className = "edge-lab";
+    lab.textContent = String(monitor.id + 1);
+    lab.title = monitor.name;
+    col.append(slider, pct, lab);
+    cols.appendChild(col);
+  }
+  section.appendChild(cols);
+  target.appendChild(section);
+}
+
 /// 컴팩트의 GITHUB — 이름·활성·더블클릭 전환만, 계정이 없으면 섹션 생략
 async function renderGithubCompact(target: DocumentFragment) {
   const section = document.createElement("section");
@@ -1842,8 +1900,8 @@ async function render(opts?: { immediate?: boolean }) {
       // 단 SYSTEM은 예외로 함께 나온다 (사용자 요청: PC 상태는 미니멀에서도).
       for (const key of sectionOrder) {
         const before = buffer.lastElementChild;
-        // Type4는 프로바이더 사용량과 SYSTEM만 그린다 — GITHUB·DISPLAY 없음
-        if (mode === "edge" && key !== "claude" && key !== "codex" && key !== "system") continue;
+        // Type4는 프로바이더 사용량·SYSTEM·DISPLAY만 그린다 — GITHUB 없음
+        if (mode === "edge" && key === "github") continue;
         if (key === "claude" || key === "codex") {
           if (mode === "edge" && !visibility[key]) {
             // 숨긴 프로바이더의 옛 게이지 값이 손잡이에 남지 않게
@@ -1868,7 +1926,8 @@ async function render(opts?: { immediate?: boolean }) {
           }
         } else if (key === "display") {
           if (!visibility.display || mode === "minimal") continue;
-          await renderDisplays(buffer, mode === "compact");
+          if (mode === "edge") await renderDisplaysEdge(buffer);
+          else await renderDisplays(buffer, mode === "compact");
         } else if (key === "system") {
           if (!monitorOn && !starPromptOpen) continue;
           if (mode === "edge") renderMonitorEdge(buffer);
@@ -2179,7 +2238,8 @@ function endEdgeHold() {
 }
 app.addEventListener("pointerdown", (event) => {
   if (!edgeActive || !edgeOut || event.button !== 0) return;
-  if ((event.target as HTMLElement | null)?.closest(".edge-ui")) return;
+  // ☰·모드 버튼·밝기 슬라이더 위에서는 길게 누르기가 아니다
+  if ((event.target as HTMLElement | null)?.closest(".edge-ui, input")) return;
   window.clearTimeout(edgeHoldTimer);
   edgeHoldTimer = window.setTimeout(() => document.body.classList.add("edge-hold"), 250);
 });

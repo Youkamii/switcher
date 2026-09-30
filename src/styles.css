@@ -2052,3 +2052,22 @@ body.edge-hold .edge-reset {
 .edge-vbar.hot .edge-vfill {
   background: var(--danger);
 }
+
+/* ── Type4 DISPLAY 섹션: 모니터마다 세로 밝기 슬라이더 한 열. 막대와 같은 22px 열·
+   64px 높이. 네이티브 슬라이더를 writing-mode로 세우고(위가 100) accent-color는
+   전역 규칙 그대로 ─────────────────────────────────────────────── */
+.edge-dsp .edge-title {
+  color: var(--muted);
+}
+
+.edge-dsp .edge-col input[type="range"] {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  flex: none;
+  width: 22px;
+  height: 64px;
+  min-width: 0;
+  max-width: none;
+  margin: 0;
+  cursor: pointer;
+}
