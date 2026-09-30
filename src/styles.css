@@ -1496,6 +1496,26 @@ body.edge.edge-out #edge-gauge {
   border-top: 1px solid rgba(var(--border-rgb), calc(0.9 * var(--fg-alpha)));
 }
 
+/* 손잡이의 SYSTEM 막대는 색감과 형태를 에이전트 줄과 다르게 — 에이전트는 accent·경고·
+   위험(예산을 얼마나 썼나)의 세그먼트 막대, 자원은 무채색(글자색)·홈 없는 연속 미터
+   (지금 얼마나 바쁜가). 자원별 고정색은 accent(CPU)·경고 노랑(DSK)과 겹쳐 손잡이
+   안에서 에이전트 줄과 섞여 보였다 (사용자 지적). 90% 넘으면 위험색은 그대로 */
+.edge-gauge-row[data-provider="system"] .edge-gauge-bar {
+  width: 3px;
+}
+
+.edge-gauge-row[data-provider="system"] .edge-gauge-bar::after {
+  display: none;
+}
+
+.edge-gauge-row[data-provider="system"] .edge-gauge-fill {
+  background: rgba(var(--text-rgb), calc(0.8 * var(--bar-alpha)));
+}
+
+.edge-gauge-row[data-provider="system"] .edge-gauge-fill.hot {
+  background: var(--danger);
+}
+
 .edge-gauge-fill {
   position: absolute;
   left: 0;
