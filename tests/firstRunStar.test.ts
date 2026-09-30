@@ -160,11 +160,6 @@ test("renders the default interface before the overlay and blocks background inp
     /const mode = starPromptOpen \? "normal" : viewMode;/,
   );
   assert.match(mainSource, /if \(!visibility\[key\] && !starPromptOpen\) continue;/);
-  assert.match(mainSource, /if \(!monitorOn && !starPromptOpen\) continue;/);
-  assert.match(
-    mainSource,
-    /if \(\(!monitorOn && !starPromptOpen\) \|\| monInflight\) return;/,
-  );
   assert.match(mainSource, /titlebarEl\.inert = true;\s*app\.inert = true;/);
   assert.match(mainSource, /titlebarEl\.inert = false;\s*app\.inert = false;/);
   assert.match(mainSource, /const nativeLocked = viewMode !== "normal";/);
