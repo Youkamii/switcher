@@ -97,6 +97,9 @@ const app = document.getElementById("app")!;
 const shell = document.querySelector(".shell") as HTMLElement;
 const titlebarEl = document.querySelector(".titlebar") as HTMLElement;
 const dockEl = document.querySelector(".dock") as HTMLElement;
+// 플랫폼 글꼴 보정용 — 맥의 시스템 글꼴(SF)은 Pretendard·맑은 고딕보다 숫자가 넓어
+// Type4의 좁은 열(22px)에서 남은 시간 표기가 넘친다 (#152). CSS `body.mac`이 받는다.
+document.body.classList.toggle("mac", navigator.platform.startsWith("Mac"));
 let startupState: FirstRunStartupState | "checking" = "checking";
 let starPromptOpen = false;
 let starPromptBusy = false;
@@ -2826,6 +2829,13 @@ function mbsInt(bytesPerSec: number): string {
   return String(Math.round(bytesPerSec / 1024 ** 2));
 }
 
+/// Type4 SYSTEM 열(17px)용 짧은 MB/s — 1000 이상은 GB/s 정수에 G를 붙인다. 4자리
+/// ("1555")는 어느 글꼴로도 17px에 안 들어가 옆 열과 붙는다 (맥 실측 #152, 4GB dd)
+function mbsShort(bytesPerSec: number): string {
+  const mb = bytesPerSec / 1024 ** 2;
+  return mb >= 999.5 ? `${Math.round(mb / 1024)}G` : String(Math.round(mb));
+}
+
 const MON_HISTORY = 60;
 const monHistory: number[] = [];
 /// 네트워크 바의 기준 — 세션 최고 속도 (바닥 1MB/s: 유휴가 꽉 차 보이지 않게)
@@ -2916,10 +2926,10 @@ function paintMonitor(s: SysStats) {
   // 있다" 괴리 보고), 맥이면 세션 피크 대비 폴백
   const io = s.disk_read + s.disk_write;
   const dskPct = s.disk_pct ?? (io / Math.max(1, monDskPeak)) * 100;
-  monSetRow("dsk", dskPct, `R${mbsInt(s.disk_read)} W${mbsInt(s.disk_write)}`, mbsInt(io));
+  monSetRow("dsk", dskPct, `R${mbsInt(s.disk_read)} W${mbsInt(s.disk_write)}`, mbsShort(io));
   const flow = s.net_rx + s.net_tx;
   const netPct = (flow / Math.max(1, monNetPeak)) * 100;
-  monSetRow("net", netPct, `↓${mbsInt(s.net_rx)} ↑${mbsInt(s.net_tx)}`, mbsInt(flow));
+  monSetRow("net", netPct, `↓${mbsInt(s.net_rx)} ↑${mbsInt(s.net_tx)}`, mbsShort(flow));
   // 접힌 손잡이의 SYSTEM 줄도 같은 샘플로 (Type4가 아니면 줄이 안 보일 뿐)
   const clamp = (v: number) => Math.max(0, Math.min(100, v));
   edgeGaugeSystem = [clamp(s.cpu), clamp(memPct), clamp(dskPct), clamp(netPct)];
