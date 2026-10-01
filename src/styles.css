@@ -2141,6 +2141,11 @@ body.mac .edge-reset {
   font-size: 7px;
   letter-spacing: -0.5px;
   font-variant-numeric: normal;
+  /* 15px 열에서는 7px로도 "23:59"가 19.8px — W·F가 같은 값이면 서로 닿는다(맥 실측
+     "4::034::03"). 글자를 더 줄이는 대신 가로만 85% 압축: 16.8px, 열 간격 3px 안.
+     꾹 누를 때만 block이라 변환이 레이아웃을 흔들지 않는다 */
+  transform: scaleX(0.85);
+  transform-origin: center;
 }
 
 /* SYSTEM 숫자(.edge-mon-val)는 남는다 — 대신 보여줄 남은 시간이 없는데 사라지면
