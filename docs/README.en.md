@@ -1,203 +1,314 @@
-<h1><img src="logo.svg" width="26" alt="" /> switcher</h1>
+<p align="center">
+  <a href="https://github.com/Youkamii/switcher/releases/tag/v1.8.5">
+    <img src="hero.png" width="100%" alt="switcher — switch Claude Code, Codex CLI and GitHub CLI accounts from one widget" />
+  </a>
+</p>
 
-[한국어](../README.md) | **English** | [日本語](README.ja.md) | [简体中文](README.zh-CN.md) | [繁體中文](README.zh-TW.md) | [हिन्दी](README.hi.md)
+<p align="center">
+  <a href="https://www.npmjs.com/package/switcher-widget"><img src="https://img.shields.io/npm/v/switcher-widget?style=flat-square&label=npm&labelColor=1a1b22&color=a78bfa" alt="npm" /></a>
+  <a href="https://www.npmjs.com/package/switcher-widget"><img src="https://img.shields.io/npm/dm/switcher-widget?style=flat-square&label=downloads&labelColor=1a1b22&color=3f4250" alt="downloads" /></a>
+  <a href="../LICENSE"><img src="https://img.shields.io/github/license/Youkamii/switcher?style=flat-square&labelColor=1a1b22&color=3f4250" alt="MIT" /></a>
+  <img src="https://img.shields.io/badge/Windows-x64-3f4250?style=flat-square&labelColor=1a1b22" alt="Windows x64" />
+  <img src="https://img.shields.io/badge/macOS-Apple%20Silicon-3f4250?style=flat-square&labelColor=1a1b22&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
+</p>
 
-A desktop widget that switches between multiple Claude Code / Codex CLI accounts in one click, with per-account usage bars (Windows·macOS).
+<p align="center">
+  <strong>Switch Claude Code · Codex CLI · GitHub CLI accounts from one widget.</strong><br />
+  Sign in once per account, then switch with a click — usage and reset times always in view.
+</p>
 
-<p align="center"><img src="screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
-<p align="center"><sub>Four view modes — Type 1 (full) · Type 2 (widget) · Type 3 (compact) · Type 4 (liquid edge, below)</sub></p>
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#four-view-modes">Modes</a> ·
+  <a href="#type-4--the-liquid-edge-widget">Type 4</a> ·
+  <a href="#tfsd-autopilot">TFSD</a> ·
+  <a href="#cheat-sheet">Cheat sheet</a> ·
+  <a href="#data--security">Security</a> ·
+  <a href="#troubleshooting">Troubleshooting</a>
+</p>
 
-## Windows
+<p align="center">
+  <sub>
+    <a href="../README.md">한국어</a> ·
+    <strong>English</strong> ·
+    <a href="README.ja.md">日本語</a> ·
+    <a href="README.zh-CN.md">简体中文</a> ·
+    <a href="README.zh-TW.md">繁體中文</a> ·
+    <a href="README.hi.md">हिन्दी</a>
+  </sub>
+</p>
 
-### Install
+<br />
 
-**Install via npm (recommended)** — requires Node.js 18+
+## Install
+
+Two lines with Node.js 18 or newer. The first run downloads the official release that matches the npm package version.
 
 ```sh
 npm install -g switcher-widget
 switcher
 ```
 
-The first run of the `switcher` command downloads the official release build that matches the installed npm package version (subsequent runs start instantly). The binary is unsigned, so SmartScreen may still appear when installed through npm. Updates are automatic — every launch checks for a new release and applies it on the next launch.
+<p align="center">
+  <a href="https://github.com/Youkamii/switcher/releases/download/v1.8.5/switcher-win-x64-latest.zip"><img src="https://img.shields.io/badge/Windows%20x64-download%20zip-a78bfa?style=for-the-badge&labelColor=1a1b22" alt="Download for Windows x64" /></a>
+  &nbsp;
+  <a href="https://github.com/Youkamii/switcher/releases/download/v1.8.5/switcher-mac-arm64-latest.zip"><img src="https://img.shields.io/badge/macOS%20Apple%20Silicon-download%20zip-a78bfa?style=for-the-badge&labelColor=1a1b22" alt="Download for macOS Apple Silicon" /></a>
+</p>
 
-**Direct download** — grab `switcher-win-x64-latest.zip` from the [download archive](https://github.com/Youkamii/switcher/releases/tag/v1.8.5), extract it, and run `switcher.exe`. (Windows 10/11, 64-bit)
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) and/or [Codex CLI](https://github.com/openai/codex) must be installed separately. The binaries are not code-signed yet, so your OS may warn on first launch. Check that the download came from `github.com/Youkamii/switcher` before opening it.
 
-- The binary is not code-signed, so Windows SmartScreen may show an "unknown publisher" warning on first launch. Click `More info` → `Run anyway`.
-- The webview uses WebView2, which ships with Windows.
+<details>
+<summary><strong>Adding accounts</strong> — Claude · Codex · GitHub</summary>
+<br />
 
-### Run
+1. In Type 1, press **+ Add account** under Claude or Codex.
+2. Open the address the widget shows in your browser.
+3. Claude: paste the code from the browser into the widget. Codex: enter the one-time code (valid for 15 minutes) in the browser.
+4. When sign-in finishes a card appears. The currently active account does not change.
 
-- While running, it lives in the tray (right side of the taskbar) as a W icon. Closing the window (Alt+F4) does not quit it.
-- Left-click the W tray icon to bring the window back. To quit completely, right-click the tray icon → Quit.
-- Change the UI language via right-click on the tray icon → Settings → Language (한국어·English·日本語·简体中文·繁體中文·हिन्दी).
-- On first launch, a `switcher` shortcut is created on the desktop automatically (not recreated if you delete it).
-- Run at startup is enabled by default — turn it off via tray Settings → Run at startup.
-- Every launch checks for a new release and auto-updates (applied on the next launch) — turn it off via tray Settings → Auto-update.
+Codex requires device-code authentication to be enabled on the ChatGPT account. Personal accounts: **Settings → Security → Codex device code authentication**. Team/Business accounts: a workspace admin enables it in the workspace permissions.
 
-## macOS
+If [GitHub CLI](https://cli.github.com) is installed, a GITHUB section appears. Press **+ Add account** and approve the device code in your browser.
+</details>
 
-### Install
+<br />
 
-**Install via npm (recommended)** — requires Node.js 18+
+## Why switcher
 
-```sh
-npm install -g switcher-widget
-switcher
-```
+Claude Code and Codex CLI use one account at a time. With several accounts you sign out, re-authenticate in the browser and paste a code every time a limit fills up — and you still have to check which account has room left. switcher keeps the CLI's local credential store per account and swaps it in whole.
 
-The first run of the `switcher` command downloads the official release build that matches the installed npm package version (subsequent runs start instantly). The app is unsigned and not notarized, so macOS may still show an unidentified-developer warning when installed through npm. Updates are automatic — every launch checks for a new release and applies it on the next launch.
+| | By hand | switcher |
+| --- | --- | --- |
+| Switching | Sign out → browser auth → paste code | One click in the widget |
+| Remaining limits | Sign in to each account to check | Every account on one screen |
+| Hitting a limit | You find out when work stops | With TFSD on, switches at 90% |
 
-**Direct download** — grab `switcher-mac-arm64-latest.zip` from the [download archive](https://github.com/Youkamii/switcher/releases/tag/v1.8.5), extract it, and run `switcher.app`. Apple Silicon only — on Intel Macs, install via [Build from source](#build-from-source) below.
+- Shows the provider's **5-hour and weekly usage windows** with reset times, and keeps refreshing inactive profiles' tokens so their usage stays current.
+- Syncs the Claude plan and **Max multiplier (5x · 20x) from the server** — upgrade without signing in again.
 
-- The app is not code-signed, so the first launch may be blocked with an "unidentified developer" message. Open System Settings → Privacy & Security, scroll to the bottom, and click **Open Anyway**.
+<br />
 
-### Run
+## Four view modes
 
-- Launch `switcher.app`. It does not appear in the Dock or Cmd+Tab; it lives in the right side of the menu bar as a W icon.
-- The widget stays on top across all desktops (Spaces) and even over full-screen apps.
-- Left-click the menu bar W icon to toggle the window; right-click → Quit to exit completely.
-- Change the UI language via right-click on the menu bar W icon → Settings → Language (한국어·English·日本語·简体中文·繁體中文·हिन्दी).
-- Run at startup is enabled by default — turn it off via tray Settings → Run at startup (it also appears under System Settings → Login Items).
-- Every launch checks for a new release and auto-updates (applied on the next launch) — turn it off via tray Settings → Auto-update.
+<p align="center">
+  <img src="screenshot.png" width="100%" alt="switcher's four view modes — Type 1 full, Type 2 widget, Type 3 compact, Type 4 docked to the screen edge" />
+</p>
 
-## Using the widget (Windows·macOS)
+Cycle with the **Type** button at the top right. One widget scales from the full control panel down to an 80 px panel.
 
-<table align="center">
-<tr>
-<td align="center" width="450">
-<img src="demo.gif" width="420" alt="Widget mode demo — double-click an account card to switch; clicks on empty areas pass through to the window behind" />
-</td>
-<td width="430">
+| Mode | What it is | Switch accounts |
+| --- | --- | --- |
+| **Type 1** | Full panel with account add/remove and every tool. Drag section titles to reorder | Button on the card |
+| **Type 2** | Compact widget that keeps emails and plan info | Double-click a card |
+| **Type 3** | 120 px widget with labels and usage bars only | Double-click a card |
+| **Type 4** | A liquid handle on the screen edge that swells into an 80 px panel on hover | Click a card |
 
-**Widget mode behavior**
+<img align="right" width="300" src="transparency.gif" alt="Adjusting the widget's transparency over a code editor" />
 
-- **Double-click** an account card → switches auth to that account
-- Clicks and drags outside the cards **pass through to the window behind**
-- The active account is shown in higher saturation
-- Move the window with the ☰ handle; cycle modes with the Type button at the top right
-- On macOS, it stays visible across all Spaces and over full-screen apps
+**It stays out of your way.**
 
-</td>
-</tr>
-</table>
+- In Type 2/3, clicks and drags on empty areas pass through to the window behind.
+- Transparency steps down from the background to the bars; at the lowest step only the usage bars remain.
+- 🙈 blurs emails and GitHub user names, so the widget is safe to keep up while screen sharing.
+- Type 2 shortens reset times: `h:mm` under 24 hours, `d::hh` beyond.
 
-### Type 4 — the liquid edge widget (v2.0)
+<br clear="all" />
 
-<table align="center">
-<tr>
-<td align="center" width="360">
-<img src="type4.gif" width="260" alt="Type 4 demo — a handle docked to the screen edge swells into the panel on hover, shows time-to-reset while pressed, and seeps back when the mouse leaves" /><br />
-<sub>Demo — placeholder account names; the cursor was added in editing</sub>
-</td>
-<td width="430">
+## Type 4 — the liquid edge widget
 
-- **Handle**: snaps to the nearest left/right screen edge. Even when collapsed it shows the current Claude and Codex accounts' usage windows (e.g. 5h·W·F) and SYSTEM (CPU·MEM·DSK·NET) as thin bars.
-- **Expand**: hover the handle and it swells into an 80px-wide panel — every Claude/Codex account as vertical segmented bars with %, then SYSTEM, DISPLAY (a vertical brightness slider per monitor) and the tool dock. The active account gets an accent-colored border (purple by default) and a dot before its name.
-- **Switch**: a short click on another account card switches right away.
-- **Time to reset**: press and hold the panel to replace the % with the time left — `4d` (blue), `2h` (green), `52m` (red).
-- **Collapse**: shortly after the mouse leaves (about half a second) the content fades and the panel seeps back into the handle. Drag ☰ past the middle of the screen to dock on the other edge.
-- Unlike Type 2/3, the expanded panel takes the mouse (no click-through); only the area outside the collapsed handle passes through.
+<img align="left" width="128" src="type4.gif" alt="Type 4 demo — a handle docked to the screen edge swells into a panel on hover, shows time-to-reset while pressed, and seeps back when the mouse leaves" />
 
-</td>
-</tr>
-</table>
+New in **v2.0**. The widget rests as a handle on whichever screen edge is closer, swells into a panel when the mouse touches it, and seeps back when the mouse leaves.
 
-## Overview
+- **Handle** — even collapsed, it shows the current Claude and Codex accounts' usage windows (e.g. 5h·W·F) and SYSTEM (CPU·MEM·DSK·NET) as thin bars.
+- **Panel** — every account as vertical segmented bars with %, followed by SYSTEM, DISPLAY (a vertical brightness slider per monitor) and the tool dock. The active account has an accent-colored border and a dot before its name.
+- **Switch** — a short click on another account card switches right away.
+- **Time to reset** — press and hold the panel to replace the % with the time left: `4d` in blue, `2h` in green, `52m` in red.
+- **Collapse** — about half a second after the mouse leaves, it returns to the handle. Drag ☰ past the middle of the screen to dock on the other edge.
+- The expanded panel takes the mouse (no click-through). While collapsed, only the area outside the handle passes through.
 
-Whether you use Claude Code or Codex, a terminal only holds one login at a time. Multi-account users re-run `/login` every time a limit fills up, go through browser auth again, and lose track of which account is active.
+<sub>Sample account names; the cursor was added in editing.</sub>
 
-switcher removes that loop. Log in once per account, and from then on switching is a single click in the widget. Each account's usage (5-hour and weekly limits) is shown as bars, so you can see which account has headroom and hop over.
+<br clear="all" />
 
-## Features
+## TFSD autopilot
 
-- Account switching: one click, no re-login. Applies to newly opened terminals.
-- Usage display: per account, 5 Hours / Weekly / per-model limits with time remaining until reset.
-- Add accounts: open the login link shown in the widget, get a code, paste it in.
-- Subscription tier: Max (5x yellow, 20x red) / Pro / Plus badges next to each account.
-- Modes (Type 1/2/3/4): full → widget → compact → liquid edge cycle. In widget/compact modes the buttons hide, clicks and drags pass through to the window behind, and double-clicking a card switches accounts. Type 4 docks to the screen edge as a handle and expands on hover (see above). Move the window with the ☰ handle.
-- The window height auto-fits the content. Lowering the opacity slider fades the background first, then the frame.
-- UI language: tray → Settings → Language, 6 languages (Korean·English·Japanese·Simplified Chinese·Traditional Chinese·Hindi).
-- Auto-update and run-at-startup: toggled in tray Settings. The desktop shortcut is Windows-only.
-- GitHub account switching: switch between accounts logged in to the gh CLI — git push/pull (HTTPS) follows the active account. No usage bars.
-- Black monitor: the 🌙 button or tray menu covers every screen with a topmost black veil. Moving the mouse reveals a smoke-like opening around the cursor; shake the mouse hard for a second or two, or press ESC, to exit — the veil lifts as light spreads from the last cursor position. On macOS it cannot cover apps in fullscreen Spaces.
-- Account info hiding: the 🙈 button blurs emails and GitHub logins on the cards — for screen sharing and screenshots. Press again to reveal.
-- Screen brightness control: per-monitor sliders in the DISPLAY section drive the real backlight (DDC/CI on Windows, the built-in display on macOS). Monitors with DDC/CI disabled, and external monitors on a Mac, show an unsupported notice.
-- TFSD (Token Full Self-Driving): when any usage window (5 Hours, Weekly, Fable, …) of the active account hits 90%, automatically switches to the account whose bottleneck window is lowest — only accounts with headroom in every window qualify. If the exhausted window resets within 30 minutes, it coasts instead of switching. Enable in tray Settings (off by default).
+<img align="right" width="340" src="tfsd.png" alt="Active account card with the T watermark while TFSD is on" />
 
-## How it works
+**Token Full Self-Driving.** When one usage window of the active account reaches 90%, switcher moves to the account that has room in every window and the most headroom overall.
 
-Both CLIs store their login token locally.
+- Open the tool dock with ▲ at the bottom of the window and turn on 🚗, or enable it in the tray settings. While on, the active card shows a T watermark.
+- If every window above 90% resets within 30 minutes, it waits instead of switching.
+- Switching an account yourself turns it off immediately.
+- History is written to `~/.switcher/tfsd-history.log`, which may contain account names and emails in plain text.
 
-- Claude Code: `~/.claude/.credentials.json` (Windows) / on macOS, the **Keychain** item "Claude Code-credentials"
-- Codex CLI: `~/.codex/auth.json` (same on both OSes)
+<br clear="all" />
 
-On macOS, switcher reads and writes the Keychain the same way the Claude CLI does (via the built-in `security` tool) — no extra permission popups.
+## Tools that don't interrupt work
 
-switcher keeps per-account tokens as profiles under `~/.switcher/` and swaps files in two steps when switching:
+<p align="center">
+  <img src="black.gif" width="520" alt="Black monitor — the screen goes dark, only the area around the cursor clears like smoke, then the overlay is dismissed" />
+</p>
 
-1. Back up the currently active file into the current account's profile. Tokens refresh themselves frequently, so this step must come first.
-2. Copy the target account's profile into the active location.
+**Black monitor** (🌙) covers the screen with a black overlay. Moving the cursor clears the area around it like smoke; shake the mouse hard for a second or two, or press `Esc`, to dismiss it. On Windows it also lowers the hardware brightness of monitors that support DDC/CI. On macOS it is overlay-only and cannot cover a separate Space with a full-screen app.
 
-Note: if a CLI session is running in a terminal, it's safest to finish it before switching. A live session that auto-refreshes its token may rewrite the active file, overwriting the account you just switched to with the previous account's token.
+<p align="center">
+  <img src="tools.png" width="100%" alt="SYSTEM section and the memo window" />
+</p>
 
-Chat history, memory, and settings live in local folders unrelated to the account, so your work environment stays intact across switches.
+**SYSTEM** shows CPU, memory, disk and network with a 60-second graph. **MEMO** (📝) opens a small window with five auto-saved tabs and its own transparency. **Clamshell mode** (☕) keeps terminal jobs running with the laptop lid closed, and **GitHub switching** changes the `gh` account together with its HTTPS Git credential helper.
 
-Usage is queried directly from the same usage API the CLI uses, with each account's token. A 60-second cache avoids rate limits. If a query is blocked, the last known values are shown.
+| Feature | Windows | macOS |
+| --- | :---: | :---: |
+| Claude · Codex switching, usage, TFSD | ✓ | ✓ |
+| Type 4 edge dock | ✓ | ✓ |
+| GitHub switching | ✓ | ✓ |
+| Click-through · transparency | ✓ | ✓ |
+| DISPLAY brightness | External monitors (DDC/CI) | Built-in display |
+| Black monitor | ✓ | ✓ ¹ |
+| Clamshell sleep guard | ✓ | ✓ |
+| Auto-update | ✓ | ✓ ² |
+| Run at startup · 6 accent colors · 6 UI languages | ✓ | ✓ ³ |
 
-Claude access tokens only live a few hours, so when a stored profile's token expires the widget re-issues it the same way the CLI does and writes it back to the profile — all profiles once at app start, then on demand per query. That keeps usage live even for accounts you aren't using. The token of the account currently in use is refreshed by the CLI itself, so the widget leaves it alone.
+<sub>¹ Cannot cover a separate Space with a full-screen app · ² Implemented and shipped; real-device verification of the latest path on a Mac is still pending · ³ Run at startup needs macOS 13+</sub>
 
-Adding an account is handled with an isolated login.
+<details>
+<summary><strong>Clamshell mode and GitHub switching in detail</strong></summary>
+<br />
 
-## Adding an account
+**Clamshell** — press ☕ once to keep the machine awake until the lid is next opened, twice to keep it awake as long as the watcher process lives, even across app restarts. The original setting is restored on normal exit and reboot; if the watcher dies abnormally, the next launch repairs the setting and turns the feature off.
 
-Press "＋ Add account" in the widget and a login URL appears. Paste that URL into any browser you like.
+- Windows: stores the current power plan's AC and battery lid actions, then sets them to `Do nothing`. If the plan changes while enabled, the new plan is stored too; on release only the values switcher changed are reverted.
+- macOS: stores and restores `SleepDisabled`, asking for admin approval once when enabling.
 
-- **Claude**: after logging in, the browser shows a code. Paste that code into the widget's input field and you're done.
-- **Codex**: the widget shows the URL together with a one-time code (valid for 15 minutes). Enter that code in the browser and the rest is automatic.
+**GitHub** — switches the `github.com` account signed in to [GitHub CLI](https://cli.github.com). It runs `gh auth setup-git` for HTTPS remotes, so GitHub CLI's global HTTPS credential helper follows the switch. SSH remotes, `git config user.name/email`, and VS Code/Copilot sign-ins are not affected. GitHub Enterprise hosts are not supported.
+</details>
 
-**Before adding Codex for the first time**: device-code authentication is disabled by default on OpenAI accounts. If it's off, entering the code gets rejected with "enable device code authentication and try again".
+<br />
 
-- Personal accounts: chatgpt.com → profile → Settings → Security (or Data Controls) → enable **Codex device code authentication**
-- Team/Business accounts: an admin enables it under Workspace Settings → Permissions & Roles
+## Cheat sheet
 
-Note: the Claude CLI tries to open your default browser once when the login starts. You can close that window and continue in the browser where you pasted the widget's URL.
+| I want to… | How |
+| --- | --- |
+| Change the view mode | **Type** button at the top right cycles 1 → 2 → 3 → 4. In Type 4, use the **Type4** button on the expanded panel |
+| Switch accounts | Type 1: button on the card · Type 2/3: **double-click** a card · Type 4: **click** a card |
+| See time to reset | **Press and hold** the Type 4 panel |
+| Move Type 4 to the other edge | Drag ☰ past the middle of the screen |
+| Reorder sections | Drag section titles in Type 1 |
+| Use the window underneath | Empty areas in Type 2/3 and the area outside the collapsed Type 4 handle pass clicks through |
+| Open the tool dock | **▲** at the bottom of the window: 📝 memo · 🚗 TFSD · 🙈 privacy · ☕ clamshell · 🌙 black monitor |
+| Dismiss the black monitor | Shake the mouse hard for 1–2 s, or `Esc` |
+| Clamshell mode | ☕ once until the lid opens, twice to keep it on |
+| Quit completely | **Quit** in the tray menu — closing the window does not quit |
 
-## GitHub account switching
+switcher lives as a **W** icon in the Windows notification area or the macOS menu bar. Language, auto-update, run at startup, TFSD, accent color and visible sections are in the tray settings. **Check for updates** in the tray applies the update and restarts the app.
 
-If the [GitHub CLI (gh)](https://cli.github.com) is installed, a GITHUB section appears in the widget. Add accounts with the "＋ Add account" button in the widget — it shows a URL and a one-time code to enter in your browser (a terminal `gh auth login` still works too). From then on you can switch in the widget — it goes through the same channel as `gh auth switch`, and runs `gh auth setup-git` on every switch so git push/pull (HTTPS) follows the active account. Tokens stay in gh's keyring; the widget never touches them.
+<br />
 
-Known limits:
+## Data & security
 
-- SSH remotes (`git@github.com:...`) are unaffected — SSH keys decide identity. HTTPS remotes only.
-- The commit author (`git config user.name/email`) does not change — commits keep the existing name after a switch.
-- GitHub sessions in other apps (VS Code, Copilot, …) have their own tokens and do not follow.
-- Org repos behind SAML SSO require per-account SSO authorization.
-- The `gh auth setup-git` run when adding an account or switching permanently registers gh as the github.com credential helper in your global git config, replacing any existing GCM setup — undo with `git config --global --unset-all credential.https://github.com.helper`.
+There is no switcher server. The app reads and writes the local CLI credential stores; usage queries and token refreshes go straight to Anthropic or OpenAI. GitHub credentials are managed by `gh`, and updates come from GitHub Releases.
 
-## Tech
+> [!IMPORTANT]
+> Account profiles contain real credentials. Copies are stored as local files without app-level encryption, created with `0600` permissions on Unix-like systems. Never attach credential files from `~/.switcher`, `~/.claude` or `~/.codex` to issues or logs.
 
-Tauri 2 + Rust, with a vanilla TypeScript frontend. Account switching, usage queries, and isolated logins are all handled in Rust.
-Tokens never reach the webview.
-CLI login screens are read through a virtual console (PTY).
+The switch order is fixed on purpose: **① back up the active credentials into the current profile, ② then copy the chosen profile into the active location.** This keeps the newest token the CLI refreshed on its own. Token values are never printed to logs or error messages.
 
-## Build from source
+Conversation history, memory and project settings are separate from credentials and survive a switch. A Claude Code or Codex session that is already running may keep the credentials it loaded at start, so open a new terminal after switching to be sure.
 
-To build from source instead of downloading, you need the [Node.js](https://nodejs.org) and [Rust](https://rustup.rs) toolchains.
+<details>
+<summary><strong>File locations</strong></summary>
+<br />
+
+| What | Where |
+| --- | --- |
+| Active Claude credentials · Windows | `~/.claude/.credentials.json` |
+| Active Claude credentials · macOS | Keychain item `Claude Code-credentials`; the file may also be written for CLI compatibility |
+| Active Codex credentials | `~/.codex/auth.json` |
+| Claude profile copies | `~/.switcher/claude/profiles/<name>/` |
+| Codex profile copies | `~/.switcher/codex/profiles/<name>/` |
+| TFSD history | `~/.switcher/tfsd-history.log` |
+</details>
+
+<br />
+
+## Supported platforms
+
+| Target | Release file | Status |
+| --- | --- | --- |
+| Windows 10 1803+ / 11 x64 | `switcher-win-x64-latest.zip` | Supported |
+| macOS Apple Silicon | `switcher-mac-arm64-latest.zip` | Supported |
+| Windows ARM64 | x64 emulation | Not verified on real hardware |
+| macOS Intel | None | Not supported (building from source works) |
+| Linux | None | Not supported |
+
+npm installs, auto-updates and direct downloads from the [download archive](https://github.com/Youkamii/switcher/releases/tag/v1.8.5) all use the same release files.
+
+> [!WARNING]
+> Release files are not signed or notarized with Windows Authenticode or a macOS Developer ID. The auto-updater checks the GitHub origin, file size and embedded version, and the npm launcher only downloads from a fixed GitHub address — but neither verifies a cryptographic signature or a published checksum.
+
+<br />
+
+## Troubleshooting
+
+<details>
+<summary><strong>The first launch is blocked</strong></summary>
+<br />
+Windows: <strong>More info → Run anyway</strong>. macOS: right-click the app and choose <strong>Open</strong>, or use <strong>System Settings → Privacy &amp; Security → Open Anyway</strong>. Confirm the download came from this repository's GitHub Releases first.
+</details>
+
+<details>
+<summary><strong>Adding a Codex account is rejected at the approval step</strong></summary>
+<br />
+Device-code authentication must be enabled on the ChatGPT account: <strong>Settings → Security</strong> for personal accounts, or the workspace permissions set by an admin for team accounts.
+</details>
+
+<details>
+<summary><strong>I switched accounts but an open CLI still uses the old one</strong></summary>
+<br />
+A running session may hold the credentials it loaded at start. Restart Claude Code or Codex in a new terminal.
+</details>
+
+<details>
+<summary><strong>I deleted a profile but it came back after switching</strong></summary>
+<br />
+Deleting removes only the stored copy, not the sign-in. Because switching backs up the current account automatically, the active account's profile can reappear. To remove it for good, switch to another account first, then delete.
+</details>
+
+<details>
+<summary><strong>Screen brightness doesn't change</strong></summary>
+<br />
+Windows: enable DDC/CI in the monitor's OSD menu; some monitors and connections do not support it. The macOS build supports the built-in display only and shows an unsupported notice for external monitors.
+</details>
+
+<br />
+
+## Development & contributing
 
 ```sh
 git clone https://github.com/Youkamii/switcher.git
 cd switcher
-npm run setup
+npm ci
+npm run tauri dev
 ```
 
-`npm run setup` installs dependencies and builds the app in one go. Instead of dumping verbose logs, it shows a spinner and elapsed time.
+| Task | Command |
+| --- | --- |
+| Front-end geometry regression tests | `npm test` |
+| Front-end build · type check | `npm run build` |
+| Rust check · tests | `cd src-tauri && cargo check` · `cargo test` |
+| Windows portable build | `npm run tauri build -- --no-bundle` |
+| macOS app build | `npm run tauri build -- --bundles app` |
 
-The first build compiles all of Rust, so it **can take 5–10 minutes.** It isn't stuck — just wait. The output lands at `src-tauri\target\release\switcher.exe` on Windows and `src-tauri/target/release/bundle/macos/switcher.app` on macOS — feel free to move the app into your Applications folder.
+Build output lands in `src-tauri/target/release/switcher.exe` on Windows and `src-tauri/target/release/bundle/macos/switcher.app` on macOS.
 
-For development, run `npm run tauri dev`.
+Built with Tauri 2 and Rust, with vanilla TypeScript and Vite on the front end. Account switching, sign-in (PTY for Claude, device code for Codex), usage queries and system integration are all Rust commands; the webview is WebView2 on Windows and WKWebView on macOS. Running the release workflow for a tag uploads the Windows and macOS files to the download archive and then publishes the npm package.
 
----
+Bug fixes, docs, translations and real-device verification are all welcome. Open an [issue](https://github.com/Youkamii/switcher/issues) first for larger changes, and list the OS you tested on and the checks you ran in your pull request. Never put real tokens, account files or the contents of `~/.switcher` in commits, screenshots or issues. For macOS, follow the [verification checklist](MAC_VALIDATION_PROMPT.md).
 
-<div align="center">
-<sub>Licensed under the <a href="../LICENSE">MIT License</a> — free for any use, including commercial. Keep the copyright and license notice.</sub>
-</div>
+<br />
+
+<p align="center">
+  <a href="../LICENSE">MIT License</a> · free for personal and commercial use<br />
+  <sub>switcher is an independent open-source project, not affiliated with or endorsed by Anthropic, OpenAI or GitHub.</sub>
+</p>
