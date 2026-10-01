@@ -2581,7 +2581,7 @@ async function fitWindowToContent() {
       const width = loginOpen || starPromptOpen
         ? 360
         : viewMode === "edge"
-          ? 88
+          ? 80
           : viewMode === "minimal"
             ? 120
             : viewMode === "compact"

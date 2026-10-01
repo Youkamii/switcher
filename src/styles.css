@@ -1828,23 +1828,25 @@ body.edge .titlebar {
 /* 하단 도구 독(📝🚗🙈☕🌙)은 Type4에서도 판 맨 아래에 그대로 — 88px에서는
    트레이가 두 줄로 흐른다(.dock-tray flex-wrap). 판 위아래 12px 목 안에 들어오게
    독 자체에 아래 여백을 준다 (사용자 지시: 버튼들도 나오게) */
+/* 판 폭 80 — 안쪽 폭 65(80 − 왼 9 − 오른 4 − .shell 테두리 2). 좌우 여백을 좁혀
+   세로 밀도와 맞춘다 (사용자 지시) */
 body.edge main {
-  padding: 14px 5px 4px 11px;
+  padding: 14px 4px 4px 9px;
 }
 
 body.edge.edge-left main {
-  padding: 14px 11px 4px 5px;
+  padding: 14px 9px 4px 4px;
 }
 
 /* 좌우는 padding이 아니라 margin — 구분선(border-top)이 판 너비 전체에 그려져
    왼쪽 모서리 밖으로 삐져나온다 (실측) */
 body.edge .dock {
-  margin: 0 5px 0 11px;
+  margin: 0 4px 0 9px;
   padding: 0 0 14px;
 }
 
 body.edge.edge-left .dock {
-  margin: 0 11px 0 5px;
+  margin: 0 9px 0 4px;
 }
 
 /* 구분선 위아래 숨(8/8)을 섹션 구분선(8/9)과 맞춘다. 버튼은 flex:1이면 줄마다
@@ -1857,7 +1859,7 @@ body.edge .dock-tray {
 }
 
 body.edge .dock-tray button {
-  flex: 0 0 17px;
+  flex: 0 0 16px;
   padding: 1px 0;
   margin: 0;
 }
@@ -1962,14 +1964,14 @@ body.edge .tfsd-watermark svg {
   display: flex;
   justify-content: center;
   align-items: flex-end;
-  gap: 2px;
+  gap: 3px;
 }
 
 /* 창 라벨 줄(5h·W·F) — 제목 아래 한 번만, 열 폭과 같은 15px */
 .edge-labels {
   display: flex;
   justify-content: center;
-  gap: 2px;
+  gap: 3px;
   margin-bottom: 2px;
 }
 
@@ -1986,18 +1988,27 @@ body.edge .tfsd-watermark svg {
   color: var(--muted);
 }
 
-/* 계정 묶음 — 활성은 이름 앞 점·흰 글자, 비활성은 회색·클릭 전환 */
+/* 계정 묶음 — 앱 카드 문법 그대로: 패널색 바탕 + 트랙색 테두리, 활성은 accent
+   테두리(.card.active와 동일). 비활성은 이름만 회색이고 막대는 흐리지 않는다
+   (사용자 지시: 활성 구분이 안 되고 그래프가 구분이 안 된다) */
 .edge-account {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  padding: 2px 0;
-  border-radius: 4px;
+  padding: 3px 2px;
+  background: var(--panel);
+  border: 1px solid rgba(var(--track-rgb), var(--fg-alpha));
+  border-radius: 6px;
+  width: 100%;
+}
+
+.edge-account.active {
+  border-color: rgba(var(--accent-rgb), var(--fg-alpha));
 }
 
 .edge-account + .edge-account {
-  margin-top: 2px;
+  margin-top: 3px;
 }
 
 .edge-account.switchable {
@@ -2005,15 +2016,11 @@ body.edge .tfsd-watermark svg {
 }
 
 .edge-account.switchable:hover {
-  background: rgba(var(--accent-rgb), 0.1);
+  border-color: rgba(var(--accent-rgb), 0.6);
 }
 
 .edge-account.switching {
   opacity: 0.5;
-}
-
-.edge-account:not(.active) .edge-vfill {
-  opacity: 0.6;
 }
 
 .edge-name {
@@ -2063,13 +2070,13 @@ body.edge .tfsd-watermark svg {
    홈이 바닥에 깔려 2~7% 채움을 통째로 먹는다 */
 .edge-vbar {
   position: relative;
-  width: 6px;
-  height: 24px;
+  width: 7px;
+  height: 28px;
   border-radius: 1.5px;
   background: rgba(var(--track-rgb), 0.7);
   overflow: hidden;
   opacity: var(--bar-alpha);
-  --seg-w: 8px;
+  --seg-w: 7px;
 }
 
 .edge-vbar::after {
