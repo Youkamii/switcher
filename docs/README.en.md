@@ -5,7 +5,7 @@
 A desktop widget that switches between multiple Claude Code / Codex CLI accounts in one click, with per-account usage bars (Windows·macOS).
 
 <p align="center"><img src="screenshot.png" alt="switcher — Type 1 / 2 / 3" /></p>
-<p align="center"><sub>Three view modes — Type 1 (full) · Type 2 (widget) · Type 3 (compact)</sub></p>
+<p align="center"><sub>Four view modes — Type 1 (full) · Type 2 (widget) · Type 3 (compact) · Type 4 (liquid edge, below)</sub></p>
 
 ## Windows
 
@@ -81,6 +81,27 @@ The first run of the `switcher` command downloads the official release build tha
 </tr>
 </table>
 
+### Type 4 — the liquid edge widget (v2.0)
+
+<table align="center">
+<tr>
+<td align="center" width="360">
+<img src="type4.gif" width="260" alt="Type 4 demo — a handle docked to the screen edge swells into the panel on hover, shows time-to-reset while pressed, and seeps back when the mouse leaves" /><br />
+<sub>Demo — placeholder account names; the cursor was added in editing</sub>
+</td>
+<td width="430">
+
+- **Handle**: snaps to the nearest left/right screen edge. Even when collapsed it shows the current Claude and Codex accounts' usage windows (e.g. 5h·W·F) and SYSTEM (CPU·MEM·DSK·NET) as thin bars.
+- **Expand**: hover the handle and it swells into an 80px-wide panel — every Claude/Codex account as vertical segmented bars with %, then SYSTEM, DISPLAY (a vertical brightness slider per monitor) and the tool dock. The active account gets an accent-colored border (purple by default) and a dot before its name.
+- **Switch**: a short click on another account card switches right away.
+- **Time to reset**: press and hold the panel to replace the % with the time left — `4d` (blue), `2h` (green), `52m` (red).
+- **Collapse**: shortly after the mouse leaves (about half a second) the content fades and the panel seeps back into the handle. Drag ☰ past the middle of the screen to dock on the other edge.
+- Unlike Type 2/3, the expanded panel takes the mouse (no click-through); only the area outside the collapsed handle passes through.
+
+</td>
+</tr>
+</table>
+
 ## Overview
 
 Whether you use Claude Code or Codex, a terminal only holds one login at a time. Multi-account users re-run `/login` every time a limit fills up, go through browser auth again, and lose track of which account is active.
@@ -93,7 +114,7 @@ switcher removes that loop. Log in once per account, and from then on switching 
 - Usage display: per account, 5 Hours / Weekly / per-model limits with time remaining until reset.
 - Add accounts: open the login link shown in the widget, get a code, paste it in.
 - Subscription tier: Max (5x yellow, 20x red) / Pro / Plus badges next to each account.
-- Modes (Type1/2/3): full → widget → compact cycle. In widget/compact modes the buttons hide, clicks and drags pass through to the window behind, and double-clicking a card switches accounts. Move the window with the ☰ handle.
+- Modes (Type 1/2/3/4): full → widget → compact → liquid edge cycle. In widget/compact modes the buttons hide, clicks and drags pass through to the window behind, and double-clicking a card switches accounts. Type 4 docks to the screen edge as a handle and expands on hover (see above). Move the window with the ☰ handle.
 - The window height auto-fits the content. Lowering the opacity slider fades the background first, then the frame.
 - UI language: tray → Settings → Language, 6 languages (Korean·English·Japanese·Simplified Chinese·Traditional Chinese·Hindi).
 - Auto-update and run-at-startup: toggled in tray Settings. The desktop shortcut is Windows-only.
