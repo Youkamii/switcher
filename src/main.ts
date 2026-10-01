@@ -1426,7 +1426,7 @@ async function renderDisplaysEdge(target: DocumentFragment) {
     // 트랙 채움은 CSS 그라데이션 — 값(%)을 변수로 넘긴다 (네이티브 채움은 쓰지 않는다)
     slider.style.setProperty("--edge-pct", `${monitor.brightness}%`);
     const pct = document.createElement("span");
-    pct.className = "edge-num";
+    pct.className = "edge-num edge-dsp-val"; // 꾹 누를 때도 남는다(대신할 남은 시간이 없다)
     pct.textContent = String(monitor.brightness);
     let debounce: number | undefined;
     slider.addEventListener("input", () => {

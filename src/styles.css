@@ -2160,7 +2160,7 @@ body.mac .edge-reset {
 
 /* SYSTEM 숫자(.edge-mon-val)는 남는다 — 대신 보여줄 남은 시간이 없는데 사라지면
    빈칸만 남는다 (사용자 지적) */
-body.edge-hold .edge-num:not(.edge-mon-val) {
+body.edge-hold .edge-num:not(.edge-mon-val):not(.edge-dsp-val) {
   display: none;
 }
 
