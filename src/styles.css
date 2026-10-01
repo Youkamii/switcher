@@ -2209,7 +2209,11 @@ body.mac .edge-mon .edge-num {
   color: var(--muted);
 }
 
+/* 네이티브 동그라미 손잡이는 15px 열에서 너무 두껍다(사용자 지적) — 트랙은 5px 세로
+   선(값만큼 accent 채움), 손잡이는 10×5 얇은 가로 막대로 직접 그린다 */
 .edge-dsp .edge-col input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
   writing-mode: vertical-lr;
   direction: rtl;
   flex: none;
@@ -2218,5 +2222,28 @@ body.mac .edge-mon .edge-num {
   min-width: 0;
   max-width: none;
   margin: 0;
+  background: transparent;
   cursor: pointer;
+}
+
+.edge-dsp .edge-col input[type="range"]::-webkit-slider-runnable-track {
+  width: 5px;
+  height: 100%;
+  border-radius: 2.5px;
+  background: linear-gradient(
+    to top,
+    var(--accent) 0 var(--edge-pct, 0%),
+    rgba(var(--track-rgb), 0.9) var(--edge-pct, 0%) 100%
+  );
+}
+
+.edge-dsp .edge-col input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 5px;
+  margin-left: -3px; /* 5px 트랙 가운데 */
+  border: 0;
+  border-radius: 2.5px;
+  background: var(--text);
 }

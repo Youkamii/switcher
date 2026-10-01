@@ -1423,12 +1423,15 @@ async function renderDisplaysEdge(target: DocumentFragment) {
     slider.step = "1";
     slider.value = String(monitor.brightness);
     slider.title = monitor.name;
+    // 트랙 채움은 CSS 그라데이션 — 값(%)을 변수로 넘긴다 (네이티브 채움은 쓰지 않는다)
+    slider.style.setProperty("--edge-pct", `${monitor.brightness}%`);
     const pct = document.createElement("span");
     pct.className = "edge-num";
     pct.textContent = String(monitor.brightness);
     let debounce: number | undefined;
     slider.addEventListener("input", () => {
       pct.textContent = slider.value;
+      slider.style.setProperty("--edge-pct", `${slider.value}%`);
       window.clearTimeout(debounce);
       debounce = window.setTimeout(() => {
         void invoke("display_set_brightness", {
