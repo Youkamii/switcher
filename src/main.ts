@@ -1506,6 +1506,23 @@ function compactReset(resetsAt: string | null): string {
   return `${hours}:${String(minutes % 60).padStart(2, "0")}`;
 }
 
+/// Type4 꾹 누르기용 남은 시간 — 15px 열에 두 단위("13h49m")는 안 들어가므로 가장 큰
+/// 단위 하나만: 2d / 13h / 49m (사용자 제안). 단위별 색은 CSS(.u-d 파랑·.u-h 초록·
+/// .u-m 빨강)가 입힌다. 끝났으면 0m.
+function edgeResetToken(resetsAt: string | null): { text: string; unit: "d" | "h" | "m" | "" } {
+  if (!resetsAt) return { text: "", unit: "" };
+  const ts = /^\d+$/.test(resetsAt) ? Number(resetsAt) * 1000 : Date.parse(resetsAt);
+  if (Number.isNaN(ts)) return { text: "", unit: "" };
+  const diff = ts - Date.now();
+  if (diff <= 0) return { text: "0m", unit: "m" };
+  const minutes = Math.floor(diff / 60000);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (days >= 1) return { text: `${days}d`, unit: "d" };
+  if (hours >= 1) return { text: `${hours}h`, unit: "h" };
+  return { text: `${Math.max(1, minutes)}m`, unit: "m" };
+}
+
 /// 미니멀용 초약자 라벨 — 5 Hours→5, Weekly→W, Fable→F. 그 외는 첫 글자 (#41)
 function minimalLabel(win: UsageWindow): string {
   const label = win.label;
@@ -1842,8 +1859,10 @@ function edgeAccount(
         num.textContent = String(Math.round(pct));
         num.classList.toggle("zero", Math.round(pct) === 0);
         const reset = document.createElement("span");
-        reset.className = "edge-reset";
-        reset.textContent = compactReset(win.resets_at);
+        const token = edgeResetToken(win.resets_at);
+        reset.className = "edge-reset" + (token.unit ? ` u-${token.unit}` : "");
+        reset.textContent = token.text;
+        reset.title = `${t("resetTooltip")} ${compactReset(win.resets_at)}`;
         col.append(vbar, num, reset);
         bars.appendChild(col);
       }

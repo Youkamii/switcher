@@ -2126,11 +2126,25 @@ body.edge .tfsd-watermark svg {
 }
 
 /* 꾹 누르는 동안 숫자 대신 초기화까지 남은 시간 (Type2와 같은 표기: 시:분 / 일::시) */
+/* 남은 시간은 단위 하나(2d·13h·49m, 최대 3글자)라 숫자와 같은 8px — 단위별 색:
+   d 파랑·h 초록·m 빨강 (사용자 제안) */
 .edge-reset {
   display: none;
-  font-size: 7.5px;
-  letter-spacing: -0.4px;
+  font-size: 8px;
+  letter-spacing: -0.2px;
   white-space: nowrap;
+}
+
+.edge-reset.u-d {
+  color: rgb(var(--monitor-net-rgb));
+}
+
+.edge-reset.u-h {
+  color: var(--ok);
+}
+
+.edge-reset.u-m {
+  color: var(--danger);
 }
 
 /* macOS: 시스템 글꼴(SF)은 숫자가 넓어 9px 굵게 "23:59"가 26.6px — 22px 열을 넘쳐
@@ -2138,14 +2152,10 @@ body.edge .tfsd-watermark svg {
    최악 23.1px로 열 간격 2px 안에서 서로 닿지 않는다. 상자 높이(11px)는 그대로라
    누르는 순간 줄이 뛰지 않는다. Windows(Pretendard·맑은 고딕 ≈19px)는 손대지 않는다 */
 body.mac .edge-reset {
-  font-size: 7px;
-  letter-spacing: -0.5px;
+  /* 단위 하나(≤3글자)라 가로 압축은 필요 없다 — SF 숫자 폭만 감안해 한 단계 작게 */
+  font-size: 7.5px;
+  letter-spacing: -0.3px;
   font-variant-numeric: normal;
-  /* 15px 열에서는 7px로도 "23:59"가 19.8px — W·F가 같은 값이면 서로 닿는다(맥 실측
-     "4::034::03"). 글자를 더 줄이는 대신 가로만 85% 압축: 16.8px, 열 간격 3px 안.
-     꾹 누를 때만 block이라 변환이 레이아웃을 흔들지 않는다 */
-  transform: scaleX(0.85);
-  transform-origin: center;
 }
 
 /* SYSTEM 숫자(.edge-mon-val)는 남는다 — 대신 보여줄 남은 시간이 없는데 사라지면
