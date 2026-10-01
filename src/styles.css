@@ -1829,11 +1829,11 @@ body.edge .titlebar {
    트레이가 두 줄로 흐른다(.dock-tray flex-wrap). 판 위아래 12px 목 안에 들어오게
    독 자체에 아래 여백을 준다 (사용자 지시: 버튼들도 나오게) */
 body.edge main {
-  padding: 20px 5px 8px 11px;
+  padding: 14px 5px 4px 11px;
 }
 
 body.edge.edge-left main {
-  padding: 20px 11px 8px 5px;
+  padding: 14px 11px 4px 5px;
 }
 
 /* 좌우는 padding이 아니라 margin — 구분선(border-top)이 판 너비 전체에 그려져
@@ -1862,24 +1862,23 @@ body.edge .dock-tray button {
   margin: 0;
 }
 
-/* Type4에는 이메일이 없으니 🙈는 눌러도 아무 일이 없다 — Type3와 같은 이유로
-   숨긴다 */
-body.edge #privacybtn {
-  display: none;
+/* 🙈 이메일 가리기는 계정 이름(.edge-name)에 적용된다 */
+body.privacy .edge-name {
+  filter: blur(3px);
 }
 
 .edge-bar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 0 8px;
+  padding: 0 0 4px;
 }
 
 /* 이동 손잡이·모드 버튼: 위젯 모드의 #drag-handle·#pin과 같은 문법 — 테두리·배경
    없이 흐릿하게 있다가 마우스가 판 위에 오면 또렷해진다 */
 .edge-ui {
   font: inherit;
-  font-size: 10px;
+  font-size: 9px;
   line-height: 1;
   padding: 2px 3px;
   background: none;
@@ -1913,8 +1912,8 @@ body.edge main:hover .edge-ui {
 /* 섹션 사이는 앱 공통 테두리색 구분선 + 위아래 11/10px — muted 25%·8/8px로는
    에이전트(CLAUDE·CODEX)와 SYSTEM이 한 덩어리로 붙어 보였다 (사용자 지적) */
 .edge-section + .edge-section {
-  margin-top: 9px;
-  padding-top: 8px;
+  margin-top: 6px;
+  padding-top: 6px;
   border-top: 1px solid rgba(var(--border-rgb), calc(0.9 * var(--fg-alpha)));
 }
 
@@ -1937,11 +1936,11 @@ body.edge main:hover .edge-ui {
 /* 제목은 투명도 계약(글자는 --fg-alpha를 따른다)을 지킨다 */
 .edge-title {
   position: relative;
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 700;
   letter-spacing: 1px;
   text-align: center;
-  margin-bottom: 5px;
+  margin-bottom: 2px;
   opacity: calc(0.85 * var(--fg-alpha));
 }
 
@@ -1966,6 +1965,87 @@ body.edge .tfsd-watermark svg {
   gap: 2px;
 }
 
+/* 창 라벨 줄(5h·W·F) — 제목 아래 한 번만, 열 폭과 같은 15px */
+.edge-labels {
+  display: flex;
+  justify-content: center;
+  gap: 2px;
+  margin-bottom: 2px;
+}
+
+.edge-labels:empty {
+  display: none;
+}
+
+.edge-labels span {
+  width: 15px;
+  text-align: center;
+  font-size: 7.5px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--muted);
+}
+
+/* 계정 묶음 — 활성은 이름 앞 점·흰 글자, 비활성은 회색·클릭 전환 */
+.edge-account {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 0;
+  border-radius: 4px;
+}
+
+.edge-account + .edge-account {
+  margin-top: 2px;
+}
+
+.edge-account.switchable {
+  cursor: pointer;
+}
+
+.edge-account.switchable:hover {
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
+.edge-account.switching {
+  opacity: 0.5;
+}
+
+.edge-account:not(.active) .edge-vfill {
+  opacity: 0.6;
+}
+
+.edge-name {
+  max-width: 100%;
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.edge-account.active .edge-name {
+  color: var(--text);
+}
+
+.edge-account.active .edge-name::before {
+  content: "";
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  margin-right: 3px;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.edge-account.stale .edge-vfill {
+  opacity: 0.4;
+}
+
 /* 열 폭 고정 — 자릿수에 따라 열이 늘었다 줄면 막대 정렬이 흔들린다 (review).
    11px "100" ≈ 20px, 9px "13:49" ≈ 19px → 22px. 3열 + 간격 2×2 = 70 = 내용 폭
    (88 − 패딩 11/5 − .shell 테두리 1×2) */
@@ -1973,8 +2053,8 @@ body.edge .tfsd-watermark svg {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  width: 20px;
+  gap: 2px;
+  width: 15px;
   flex: none;
 }
 
@@ -1983,9 +2063,9 @@ body.edge .tfsd-watermark svg {
    홈이 바닥에 깔려 2~7% 채움을 통째로 먹는다 */
 .edge-vbar {
   position: relative;
-  width: 9px;
-  height: 56px;
-  border-radius: 2px;
+  width: 6px;
+  height: 24px;
+  border-radius: 1.5px;
   background: rgba(var(--track-rgb), 0.7);
   overflow: hidden;
   opacity: var(--bar-alpha);
@@ -2025,11 +2105,11 @@ body.edge .tfsd-watermark svg {
    순간 판 내용이 3px 위로 점프한다 (review) */
 .edge-num,
 .edge-reset {
-  height: 10px;
-  min-height: 10px;
-  font-size: 10px;
+  height: 8px;
+  min-height: 8px;
+  font-size: 8px;
   font-weight: 700;
-  line-height: 10px;
+  line-height: 8px;
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
@@ -2041,8 +2121,8 @@ body.edge .tfsd-watermark svg {
 /* 꾹 누르는 동안 숫자 대신 초기화까지 남은 시간 (Type2와 같은 표기: 시:분 / 일::시) */
 .edge-reset {
   display: none;
-  font-size: 9px;
-  letter-spacing: -0.3px;
+  font-size: 7.5px;
+  letter-spacing: -0.4px;
   white-space: nowrap;
 }
 
@@ -2051,8 +2131,8 @@ body.edge .tfsd-watermark svg {
    최악 23.1px로 열 간격 2px 안에서 서로 닿지 않는다. 상자 높이(11px)는 그대로라
    누르는 순간 줄이 뛰지 않는다. Windows(Pretendard·맑은 고딕 ≈19px)는 손대지 않는다 */
 body.mac .edge-reset {
-  font-size: 8px;
-  letter-spacing: -0.4px;
+  font-size: 7px;
+  letter-spacing: -0.5px;
   font-variant-numeric: normal;
 }
 
@@ -2067,7 +2147,7 @@ body.edge-hold .edge-reset {
 }
 
 .edge-lab {
-  font-size: 9px;
+  font-size: 7.5px;
   font-weight: 600;
   line-height: 1;
   color: var(--muted);
@@ -2084,18 +2164,18 @@ body.edge-hold .edge-reset {
 }
 
 .edge-mon .edge-col {
-  width: 17px;
+  width: 15px;
 }
 
 .edge-mon .edge-num {
-  font-size: 9px;
+  font-size: 8px;
 }
 
 /* macOS: SF 숫자가 넓어 9px "100"이 18.6px — 17px 열(간격 0)을 넘쳐 옆 열과 겹친다
    (실측 #152). .edge-reset과 같은 처방 */
 body.mac .edge-mon .edge-num {
-  font-size: 8px;
-  letter-spacing: -0.3px;
+  font-size: 7px;
+  letter-spacing: -0.4px;
   font-variant-numeric: normal;
 }
 
@@ -2126,8 +2206,8 @@ body.mac .edge-mon .edge-num {
   writing-mode: vertical-lr;
   direction: rtl;
   flex: none;
-  width: 20px;
-  height: 56px;
+  width: 15px;
+  height: 36px;
   min-width: 0;
   max-width: none;
   margin: 0;
