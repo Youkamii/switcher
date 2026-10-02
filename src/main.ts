@@ -85,6 +85,29 @@ function fetchUsageShared(
   return request;
 }
 
+/// 전환 직후의 낙관적 활성 표시 — 새 화면은 사용량까지 받아진 뒤 한 번에 교체되므로
+/// (스무스 렌더), 그동안 현재 화면에서 활성 테두리만 눌린 카드로 옮겨 즉시 반응한다.
+/// 화면을 비우고 다시 채우면 카드가 전부 사라졌다 돌아오고 창이 줄었다 커졌다
+/// (사용자 보고: "앱 전체가 새로고침되는 느낌").
+function markActiveOptimistic(card: HTMLElement) {
+  if (!card.isConnected) {
+    // 클릭과 응답 사이에 주기 렌더가 화면을 갈아 끼웠으면 클로저의 카드는 떨어진
+    // 노드다 — 같은 계정의 살아 있는 카드를 찾아 거기에 찍는다 (review)
+    const { provider, name } = card.dataset;
+    const live = [...app.querySelectorAll<HTMLElement>(".card, .edge-account")].find(
+      (el) => el.dataset.provider === provider && el.dataset.name === name,
+    );
+    if (!live) return;
+    card = live;
+  }
+  const section = card.closest("section") ?? app;
+  for (const el of section.querySelectorAll<HTMLElement>(".card.active, .edge-account.active")) {
+    if (el !== card) el.classList.remove("active");
+  }
+  card.classList.add("active");
+  card.classList.remove("switchable");
+}
+
 const PROVIDERS = [
   { id: "claude", title: "CLAUDE" },
   { id: "codex", title: "CODEX" },
@@ -401,8 +424,11 @@ function profileCard(
     if (disable) disable.disabled = true;
     try {
       await invoke("switch_profile", { provider, name: profile.name });
-      // 성공 안내는 따로 없다 — 활성 표시가 옮겨가는 것으로 충분하다
-      await render({ immediate: true });
+      // 성공 안내는 따로 없다 — 활성 표시가 옮겨가는 것으로 충분하다.
+      // 즉시 렌더가 아니라 스무스 렌더: 화면을 비우지 않고 새 사용량까지 받아진 뒤
+      // 한 번에 바꾼다. 그동안 활성 표시만 먼저 옮긴다.
+      markActiveOptimistic(card);
+      await render();
     } catch (error) {
       toast(String(error), true);
       if (disable) disable.disabled = false;
@@ -1169,7 +1195,8 @@ function githubCard(acc: GithubAccount, compact = false): HTMLElement {
         switchBtn.disabled = true;
         try {
           await invoke("github_switch", { name: acc.login });
-          await render({ immediate: true });
+          markActiveOptimistic(card);
+          await render();
         } catch (error) {
           toast(String(error), true);
           switchBtn.disabled = false;
@@ -1896,7 +1923,12 @@ async function edgeSwitch(card: HTMLElement) {
   card.classList.add("switching");
   try {
     await invoke("switch_profile", { provider: card.dataset.provider, name: card.dataset.name });
-    await render({ immediate: true });
+    // 전환은 끝났다 — 가드와 반투명을 바로 풀고, 활성 표시만 옮긴 뒤 스무스 렌더를
+    // 기다린다 (대기 중 다른 카드를 눌러도 render()가 큐로 직렬화한다)
+    edgeSwitching = false;
+    card.classList.remove("switching");
+    markActiveOptimistic(card);
+    await render();
   } catch (error) {
     toast(String(error), true);
     card.classList.remove("switching");
@@ -1943,6 +1975,14 @@ let renderQueued = false;
 let queuedImmediate = false;
 /// 스무스 렌더의 사용량 대기를 즉시 끝내는 스위치 (상태 변경이 끼어들 때)
 let renderAbort: (() => void) | null = null;
+/// 입력·드래그 중이라 완성된 버퍼를 버렸다 — 바쁨이 풀리면 한 번 더 그린다
+/// (전환 뒤 낙관 표시만 남은 화면이 다음 주기까지 고착되지 않게, review)
+let renderDeferred = false;
+function flushDeferredRender() {
+  if (!renderDeferred || userIsBusy()) return;
+  renderDeferred = false;
+  void render();
+}
 
 /// immediate: 전환·삭제·모드 변경처럼 "지금 상태가 바뀐" 렌더 — 새 목록을 바로
 /// 보여주고 사용량은 교체된 카드에 이어서 채운다. 생략(스무스)은 주기·수동
@@ -2043,7 +2083,11 @@ async function render(opts?: { immediate?: boolean }) {
       // 그리는·기다리는 사이 상태가 바뀌었으면 이 버퍼는 낡았고(전환·삭제),
       // 화면에는 그새 생긴 로그인 패널·입력 중인 글자가 있을 수 있다 — 교체를
       // 접는다. 큐가 있으면 새 상태로 다시 그리고, 없으면 다음 주기에 맡긴다.
-      if (renderQueued || userIsBusy()) continue;
+      if (renderQueued) continue;
+      if (userIsBusy()) {
+        renderDeferred = true;
+        continue;
+      }
       // 첫 화면은 뼈대를 먼저 보여주고 사용량은 채워지는 대로 붙는다
       if (shutdownState !== "idle") buffer.prepend(shutdownStatus);
       // 진행 중 로그인은 버퍼에서 새로 만들지 않고 같은 노드를 옮겨 입력값·세션을 보존한다.
@@ -2432,9 +2476,13 @@ void listen<{ ok: boolean; provider?: string; name?: string; error?: string }>(
           candidate.dataset.provider === event.payload.provider &&
           candidate.dataset.name === event.payload.name,
       );
-      // 전환된 카드가 살짝 빛나고 나서 다시 그린다 — 성공 토스트는 띄우지 않는다
-      el?.classList.add("switch-flash");
-      window.setTimeout(() => void render({ immediate: true }), 380);
+      // 전환된 카드가 살짝 빛나고 활성 표시가 옮겨간다 — 성공 토스트는 띄우지 않는다.
+      // 다시 그리기는 스무스 렌더(사용량까지 받은 뒤 한 번에 교체)라 화면이 비지 않는다.
+      if (el) {
+        el.classList.add("switch-flash");
+        markActiveOptimistic(el);
+      }
+      window.setTimeout(() => void render(), 380);
     } else if (!demoMode) {
       toast(event.payload.error ?? t("switchFailed"), true);
     }
@@ -3108,7 +3156,13 @@ function clearDragState() {
   dragKey = null;
   clearDropMarks();
   document.querySelectorAll(".dragging").forEach((el) => el.classList.remove("dragging"));
+  flushDeferredRender();
 }
+// 입력칸을 떠나면(바쁨 해제) 미뤄 둔 렌더를 돌린다 — focusout은 버블링한다
+app.addEventListener("focusout", () => {
+  // activeElement가 바뀐 뒤에 판정해야 하므로 한 틱 미룬다
+  window.setTimeout(flushDeferredRender, 0);
+});
 
 // dragend 유실 복구 (리뷰 #53: 고착된 dragKey가 렌더 스왑을 영구 차단하던 문제):
 // HTML5 드래그 중에는 pointermove가 발화하지 않는다(드래그 이벤트로 대체) —
@@ -3229,7 +3283,7 @@ void listen("tfsd-disengaged", () => {
 // (로그인 패널이 열려 있으면 재렌더를 미룬다 — 세션 보호 정책과 동일)
 void listen<{ provider: string; from: string; to: string }>("tfsd-switched", (event) => {
   toast(t("tfsdSwitched", event.payload));
-  if (!loginOpen) void render({ immediate: true });
+  if (!loginOpen) void render();
 });
 
 // 실행 시 자동 업데이트 결과 — 교체는 이미 끝났고 다음 실행부터 새 버전이다
@@ -3251,7 +3305,16 @@ void listen<string>("shutdown-blocked", (event) => {
 
 // 트레이(설정 → 표시 기능)에서 체크가 바뀌면 다시 그린다
 void listen("visibility-changed", () => {
-  void loadVisibility().then(() => render({ immediate: true }));
+  const before = { ...visibility };
+  void loadVisibility().then(() => {
+    // 섹션 표시가 바뀌면 즉시 렌더로 구성을 바로 반영한다. TFSD 켬/끔만 바뀐 경우
+    // (수동 전환이 자율주행을 풀 때 Rust가 같은 이벤트를 보낸다)는 화면 구성이
+    // 같으니 스무스 렌더 — 전환 직후 즉시 렌더가 겹쳐 카드가 비는 것을 막는다 (review)
+    const sectionsChanged = (Object.keys(visibility) as (keyof Visibility)[]).some(
+      (key) => key !== "tfsd" && before[key] !== visibility[key],
+    );
+    void render(sectionsChanged ? { immediate: true } : undefined);
+  });
 });
 
 // 트레이(설정 → 언어)에서 바꾸면 Rust가 저장을 마친 뒤 알려온다
