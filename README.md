@@ -55,7 +55,13 @@ switcher
   <a href="https://github.com/Youkamii/switcher/releases/download/v1.8.5/switcher-mac-arm64-latest.zip"><img src="https://img.shields.io/badge/macOS%20Apple%20Silicon-zip%20다운로드-a78bfa?style=for-the-badge&labelColor=1a1b22" alt="macOS Apple Silicon 다운로드" /></a>
 </p>
 
-전환할 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)나 [Codex CLI](https://github.com/openai/codex)는 따로 설치되어 있어야 합니다. 배포 파일은 아직 코드 서명이 없어 첫 실행 때 운영체제 경고가 뜰 수 있습니다. 출처가 `github.com/Youkamii/switcher`인지 확인하고 열어 주세요.
+전환할 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)나 [Codex CLI](https://github.com/openai/codex)는 따로 설치되어 있어야 합니다.
+
+> [!NOTE]
+> **첫 실행 때 "알 수 없는 게시자" 경고가 뜹니다.** 배포 파일에 유료 코드 서명이 없어서 그렇지, 파일이 바뀐 것은 아닙니다. 출처가 `github.com/Youkamii/switcher`인지 확인하고 이렇게 여세요.
+> - **Windows** — SmartScreen 창에서 **추가 정보 → 실행**
+> - **macOS** — 막히면 **시스템 설정 → 개인정보 보호 및 보안**으로 내려가 **그래도 열기**. 터미널이 편하면 `xattr -dr com.apple.quarantine switcher.app` 한 줄로 다운로드 표시를 떼도 됩니다.
+> - 이 경고는 브라우저가 받은 파일에 붙는 다운로드 표시 때문입니다. `npm install -g switcher-widget`로 설치하면 Windows에서는 표시가 붙지 않아 경고 없이 실행되고, macOS도 같은 원리입니다.
 
 <details>
 <summary><strong>계정 추가하기</strong> — Claude · Codex · GitHub</summary>
@@ -254,7 +260,7 @@ npm 설치, 자동 업데이트, [다운로드 보관함](https://github.com/You
 <details>
 <summary><strong>처음 실행이 차단됩니다</strong></summary>
 <br />
-Windows는 <strong>추가 정보 → 실행</strong>, macOS는 앱을 우클릭해 <strong>열기</strong>를 고르거나 <strong>시스템 설정 → 개인정보 보호 및 보안 → 그래도 열기</strong>를 누릅니다. 다운로드 주소가 이 저장소의 GitHub Releases인지 먼저 확인하세요.
+배포 파일에 코드 서명이 없어서 그렇습니다. Windows는 <strong>추가 정보 → 실행</strong>, macOS는 <strong>시스템 설정 → 개인정보 보호 및 보안 → 그래도 열기</strong>(최근 macOS는 우클릭 열기가 없습니다) 또는 터미널에서 <code>xattr -dr com.apple.quarantine switcher.app</code>. 다운로드 주소가 이 저장소의 GitHub Releases인지 먼저 확인하세요. npm으로 설치하면 다운로드 표시가 붙지 않아 Windows에서는 경고 없이 실행됩니다.
 </details>
 
 <details>

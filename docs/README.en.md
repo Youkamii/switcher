@@ -55,7 +55,13 @@ switcher
   <a href="https://github.com/Youkamii/switcher/releases/download/v1.8.5/switcher-mac-arm64-latest.zip"><img src="https://img.shields.io/badge/macOS%20Apple%20Silicon-download%20zip-a78bfa?style=for-the-badge&labelColor=1a1b22" alt="Download for macOS Apple Silicon" /></a>
 </p>
 
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code) and/or [Codex CLI](https://github.com/openai/codex) must be installed separately. The binaries are not code-signed yet, so your OS may warn on first launch. Check that the download came from `github.com/Youkamii/switcher` before opening it.
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) and/or [Codex CLI](https://github.com/openai/codex) must be installed separately.
+
+> [!NOTE]
+> **The first launch shows an "unknown publisher" warning.** The release files carry no paid code signature; the files themselves are fine. Check that the download came from `github.com/Youkamii/switcher`, then:
+> - **Windows** — in the SmartScreen dialog, **More info → Run anyway**
+> - **macOS** — if it is blocked, open **System Settings → Privacy & Security**, scroll down and press **Open Anyway**. Or strip the download flag in Terminal: `xattr -dr com.apple.quarantine switcher.app`
+> - The warning comes from the download flag that browsers attach. Installing with `npm install -g switcher-widget` leaves no flag, so Windows runs it without a warning; macOS works the same way.
 
 <details>
 <summary><strong>Adding accounts</strong> — Claude · Codex · GitHub</summary>
@@ -254,7 +260,7 @@ npm installs, auto-updates and direct downloads from the [download archive](http
 <details>
 <summary><strong>The first launch is blocked</strong></summary>
 <br />
-Windows: <strong>More info → Run anyway</strong>. macOS: right-click the app and choose <strong>Open</strong>, or use <strong>System Settings → Privacy &amp; Security → Open Anyway</strong>. Confirm the download came from this repository's GitHub Releases first.
+The release files are not code-signed. Windows: <strong>More info → Run anyway</strong>. macOS: <strong>System Settings → Privacy &amp; Security → Open Anyway</strong> (recent macOS no longer offers right-click → Open), or in Terminal <code>xattr -dr com.apple.quarantine switcher.app</code>. Confirm the download came from this repository's GitHub Releases first. Installing through npm leaves no download flag, so Windows runs it without a warning.
 </details>
 
 <details>
