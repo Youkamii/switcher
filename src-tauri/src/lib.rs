@@ -422,7 +422,23 @@ fn double_click_window() -> std::time::Duration {
 
 #[tauri::command]
 fn list_profiles(provider: String) -> Result<Snapshot, String> {
-    accounts::list(&Env::real()?, Provider::parse(&provider)?)
+    let env = Env::real()?;
+    let provider = Provider::parse(&provider)?;
+    let snap = accounts::list(&env, provider)?;
+    // 로그인됐지만 아직 프로필로 없는 활성 계정만 이름을 묻지 않고 자동 등록한다 (#168).
+    // 이미 저장된 흔한 경우엔 추가 I/O가 없다. 실패하면 방금 만든 목록을 그대로 쓴다
+    // (화면이 비는 것보다 입력칸 폴백이 낫다).
+    if snap.live.is_some() && !snap.live_saved {
+        if let Ok(Some(_)) = accounts::ensure_live_saved(&env, provider) {
+            return accounts::list(&env, provider);
+        }
+    }
+    Ok(snap)
+}
+
+#[tauri::command]
+fn rename_profile(provider: String, from: String, to: String) -> Result<(), String> {
+    accounts::rename(&Env::real()?, Provider::parse(&provider)?, &from, &to)
 }
 
 #[tauri::command]
@@ -3662,6 +3678,7 @@ pub fn run() {
             save_profile,
             switch_profile,
             delete_profile,
+            rename_profile,
             clamshell_mode,
             clamshell_cycle,
             fetch_usage,

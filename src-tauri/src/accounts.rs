@@ -1033,6 +1033,58 @@ pub fn save_current(env: &Env, provider: Provider, name: &str) -> Result<String,
     Ok(name)
 }
 
+/// 저장되지 않은 활성 계정을 자동 작명으로 즉시 프로필에 올린다 — 목록을 그릴 때 부른다 (#168).
+/// 이름을 묻는 입력칸 없이 카드가 바로 뜨게 한다. 이 세션에서 사용자가 지운 계정이면 손대지 않는다.
+/// 변이는 MUTATION_LOCK으로 로그인 임포트·전환과 직렬화되므로 격리 로그인과 겹쳐도 안전하다
+/// (격리 로그인은 활성 파일을 건드리지 않고, 임포트는 계정 id로 폴더를 찾는다).
+/// 저장했으면 그 이름을, 할 일이 없었으면 None을 돌려준다.
+pub fn ensure_live_saved(env: &Env, provider: Provider) -> Result<Option<String>, String> {
+    if !live_cred_exists(env, provider) {
+        return Ok(None);
+    }
+    let Some(ident) = live_identity(env, provider)? else {
+        return Ok(None);
+    };
+    if find_profile_by_id(env, provider, &ident.id)?.is_some() {
+        return Ok(None);
+    }
+    if profile_deleted_after(&deletion_identity_key(env, provider, &ident.id), 0) {
+        return Ok(None);
+    }
+    save_current(env, provider, "").map(Some)
+}
+
+/// 프로필 이름 바꾸기 (#168). 폴더 이름이 곧 프로필 이름이라 폴더를 옮긴다.
+/// 옛 이름으로 진행 중인 재발급은 profile_exclusive_begin으로 끝나길 기다린다.
+/// 활성 판정은 계정 id로 하므로 활성 프로필의 이름도 바꿀 수 있다.
+/// 옛 이름에 삭제 표식은 남기지 않는다 — 그 표식의 유일한 소비자(로그인 임포트)가
+/// 진행 중이던 로그인 결과를 "삭제됨"으로 오인해 폐기하기 때문 (red-review).
+pub fn rename(env: &Env, provider: Provider, from: &str, to: &str) -> Result<(), String> {
+    validate_name(from)?;
+    validate_name(to)?;
+    if from == to {
+        return Ok(());
+    }
+    let _profile_guard = profile_exclusive_begin(
+        refresh_key(env, provider, from),
+        std::time::Duration::from_secs(20),
+    )?;
+    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
+    let root = env.profiles_dir(provider);
+    let src = root.join(from);
+    let dst = root.join(to);
+    if read_meta(&src).is_none() {
+        return Err(format!("프로필 '{from}'이 없습니다"));
+    }
+    if dst.exists() {
+        return Err(format!("'{to}'은 이미 있는 프로필 이름입니다 — 다른 이름을 쓰세요"));
+    }
+    fs::rename(&src, &dst)
+        .map_err(|e| format!("이름 변경 실패 {} → {}: {e}", src.display(), dst.display()))?;
+    crate::usage::purge_account_cache(env, provider, None, from);
+    Ok(())
+}
+
 /// 계정 전환. 순서 불변: 1) 현재 활성 파일 백업 → 2) 대상 프로필 복사
 pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult, String> {
     validate_name(name)?;
@@ -1540,6 +1592,208 @@ mod tests {
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].name, "personal");
         assert_eq!(active[0].email.as_deref(), Some("bob@test.dev"));
+    }
+
+    /// 코덱스 활성 auth.json을 통째로 읽는다 (바이트 비교용)
+    fn codex_live_bytes(env: &Env) -> Vec<u8> {
+        fs::read(env.live_credential_path(Provider::Codex)).unwrap()
+    }
+
+    fn codex_profile_bytes(env: &Env, name: &str) -> Vec<u8> {
+        fs::read(env.profiles_dir(Provider::Codex).join(name).join("auth.json")).unwrap()
+    }
+
+    /// 세 계정을 돌아가며 전환해도 ① 떠나는 계정의 최신 토큰이 자기 프로필에 백업되고
+    /// ② 활성 파일은 대상 프로필과 바이트 단위로 같고 ③ 활성은 항상 정확히 하나다 (#169)
+    #[test]
+    fn codex_three_accounts_rotate_with_refreshes() {
+        let env = test_env("codex-rotate");
+        login_codex(&env, "acct-a", "alice@test.dev", "ctok-a1");
+        save_current(&env, Provider::Codex, "alice").unwrap();
+        login_codex(&env, "acct-b", "bob@test.dev", "ctok-b1");
+        save_current(&env, Provider::Codex, "bob").unwrap();
+        login_codex(&env, "acct-c", "carol@test.dev", "ctok-c1");
+        save_current(&env, Provider::Codex, "carol").unwrap();
+
+        // carol 활성 → alice: carol의 갱신 토큰(c2)이 carol 프로필에 남아야 한다
+        login_codex(&env, "acct-c", "carol@test.dev", "ctok-c2");
+        let r = switch(&env, Provider::Codex, "alice").unwrap();
+        assert_eq!(r.backed_up_to.as_deref(), Some("carol"));
+        assert_eq!(codex_live_bytes(&env), codex_profile_bytes(&env, "alice"));
+        assert!(String::from_utf8_lossy(&codex_profile_bytes(&env, "carol")).contains("ctok-c2"));
+
+        // alice 활성 → bob
+        login_codex(&env, "acct-a", "alice@test.dev", "ctok-a2");
+        let r = switch(&env, Provider::Codex, "bob").unwrap();
+        assert_eq!(r.backed_up_to.as_deref(), Some("alice"));
+        assert_eq!(codex_live_bytes(&env), codex_profile_bytes(&env, "bob"));
+        assert!(String::from_utf8_lossy(&codex_profile_bytes(&env, "alice")).contains("ctok-a2"));
+
+        // bob 활성 → carol: carol 프로필의 토큰은 아까 백업된 c2여야 한다
+        let r = switch(&env, Provider::Codex, "carol").unwrap();
+        assert_eq!(r.backed_up_to.as_deref(), Some("bob"));
+        assert!(String::from_utf8_lossy(&codex_live_bytes(&env)).contains("ctok-c2"));
+
+        let snap = list(&env, Provider::Codex).unwrap();
+        assert_eq!(snap.profiles.len(), 3);
+        let active: Vec<_> = snap.profiles.iter().filter(|p| p.active).collect();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].name, "carol");
+        assert!(snap.live_saved);
+    }
+
+    /// auth_mode·OPENAI_API_KEY·last_refresh 같은 부가 필드는 전환을 거쳐도 그대로다 (#169)
+    #[test]
+    fn codex_switch_keeps_auth_json_fields() {
+        let env = test_env("codex-fields");
+        fs::create_dir_all(env.home.join(".codex")).unwrap();
+        let special = format!(
+            r#"{{"auth_mode":"chatgpt","OPENAI_API_KEY":"sk-test-not-real","tokens":{{"id_token":"{}","access_token":"ctok-s1","refresh_token":"r-ctok-s1","account_id":"acct-s"}},"last_refresh":"2026-02-02T02:02:02Z","extra":{{"keep":true}}}}"#,
+            fake_jwt(r#"{"email":"sam@test.dev","sub":"sub-s"}"#)
+        );
+        fs::write(env.live_credential_path(Provider::Codex), &special).unwrap();
+        save_current(&env, Provider::Codex, "sam").unwrap();
+        login_codex(&env, "acct-b", "bob@test.dev", "ctok-b1");
+        save_current(&env, Provider::Codex, "bob").unwrap();
+
+        switch(&env, Provider::Codex, "sam").unwrap();
+        let live: Value = serde_json::from_slice(&codex_live_bytes(&env)).unwrap();
+        assert_eq!(live["auth_mode"], "chatgpt");
+        assert_eq!(live["OPENAI_API_KEY"], "sk-test-not-real");
+        assert_eq!(live["last_refresh"], "2026-02-02T02:02:02Z");
+        assert_eq!(live["extra"]["keep"], true);
+        assert_eq!(live["tokens"]["access_token"], "ctok-s1");
+        // 바이트까지 같다 — 재직렬화로 키 순서·공백을 바꾸지 않는다
+        assert_eq!(codex_live_bytes(&env), special.as_bytes());
+    }
+
+    /// 토큰 파일이 없는 프로필로는 전환할 수 없고, 활성 파일은 손대지 않는다 (#169)
+    #[test]
+    fn codex_switch_rejects_profile_without_token_and_keeps_live() {
+        let env = test_env("codex-notoken");
+        login_codex(&env, "acct-a", "alice@test.dev", "ctok-a1");
+        save_current(&env, Provider::Codex, "alice").unwrap();
+        let broken = env.profiles_dir(Provider::Codex).join("broken");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(broken.join("meta.json"), r#"{"id":"acct-x","email":"x@test.dev","saved_at":0}"#).unwrap();
+
+        let before = codex_live_bytes(&env);
+        let err = switch(&env, Provider::Codex, "broken").unwrap_err();
+        assert!(err.contains("토큰이 없습니다"), "{err}");
+        assert_eq!(codex_live_bytes(&env), before);
+        let snap = list(&env, Provider::Codex).unwrap();
+        assert_eq!(snap.profiles.iter().filter(|p| p.active).count(), 1);
+    }
+
+    /// 활성 계정 자기 자신으로의 전환(왕복)은 무해하다: 최신 토큰이 프로필에 백업되고
+    /// 활성 파일은 그 백업과 같다 (#169)
+    #[test]
+    fn codex_self_switch_is_harmless() {
+        let env = test_env("codex-self");
+        login_codex(&env, "acct-a", "alice@test.dev", "ctok-a1");
+        save_current(&env, Provider::Codex, "alice").unwrap();
+        login_codex(&env, "acct-a", "alice@test.dev", "ctok-a2"); // CLI가 갱신한 상태
+
+        let r = switch(&env, Provider::Codex, "alice").unwrap();
+        assert_eq!(r.backed_up_to.as_deref(), Some("alice"));
+        assert!(String::from_utf8_lossy(&codex_live_bytes(&env)).contains("ctok-a2"));
+        assert_eq!(codex_live_bytes(&env), codex_profile_bytes(&env, "alice"));
+        assert_eq!(list(&env, Provider::Codex).unwrap().profiles.len(), 1);
+    }
+
+    /// 코덱스 전환은 클로드 활성 파일을 건드리지 않는다 (#169)
+    #[test]
+    fn codex_switch_leaves_claude_live_alone() {
+        let env = test_env("codex-claude-live");
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a1");
+        let claude_before = fs::read(env.live_credential_path(Provider::Claude)).unwrap();
+        login_codex(&env, "acct-a", "alice@test.dev", "ctok-a1");
+        save_current(&env, Provider::Codex, "alice").unwrap();
+        login_codex(&env, "acct-b", "bob@test.dev", "ctok-b1");
+        save_current(&env, Provider::Codex, "bob").unwrap();
+
+        switch(&env, Provider::Codex, "alice").unwrap();
+        assert_eq!(fs::read(env.live_credential_path(Provider::Claude)).unwrap(), claude_before);
+        assert_eq!(list(&env, Provider::Claude).unwrap().profiles.len(), 0);
+    }
+
+    /// 저장되지 않은 활성 계정은 목록을 그릴 때 자동 작명으로 한 번만 등록된다 (#168)
+    #[test]
+    fn ensure_live_saved_registers_unsaved_live_account_once() {
+        let env = test_env("autosave");
+        login_codex(&env, "acct-a", "alice@test.dev", "ctok-a1");
+        assert_eq!(
+            ensure_live_saved(&env, Provider::Codex).unwrap().as_deref(),
+            Some("alice")
+        );
+        assert_eq!(ensure_live_saved(&env, Provider::Codex).unwrap(), None);
+        let snap = list(&env, Provider::Codex).unwrap();
+        assert!(snap.live_saved);
+        assert_eq!(snap.profiles.len(), 1);
+        assert_eq!(snap.profiles[0].name, "alice");
+        assert!(snap.profiles[0].active);
+    }
+
+    /// 이 세션에서 사용자가 지운 계정은 자동 등록이 되살리지 않는다 (#168)
+    #[test]
+    fn ensure_live_saved_skips_account_deleted_in_this_session() {
+        let env = test_env("autosave-deleted");
+        login_codex(&env, "acct-a", "alice@test.dev", "ctok-a1");
+        save_current(&env, Provider::Codex, "alice").unwrap();
+        delete(&env, Provider::Codex, "alice").unwrap();
+        assert_eq!(ensure_live_saved(&env, Provider::Codex).unwrap(), None);
+        assert!(list(&env, Provider::Codex).unwrap().profiles.is_empty());
+    }
+
+    #[test]
+    fn ensure_live_saved_without_login_is_noop() {
+        let env = test_env("autosave-none");
+        assert_eq!(ensure_live_saved(&env, Provider::Codex).unwrap(), None);
+        assert_eq!(ensure_live_saved(&env, Provider::Claude).unwrap(), None);
+    }
+
+    /// 이름을 바꿔도 같은 계정·토큰이고, 바뀐 이름으로 전환되며 활성 표시가 따라간다 (#168)
+    #[test]
+    fn rename_moves_profile_and_keeps_it_switchable() {
+        let env = test_env("rename");
+        login_codex(&env, "acct-a", "alice@test.dev", "ctok-a1");
+        save_current(&env, Provider::Codex, "alice").unwrap();
+        login_codex(&env, "acct-b", "bob@test.dev", "ctok-b1");
+        save_current(&env, Provider::Codex, "bob").unwrap();
+
+        rename(&env, Provider::Codex, "alice", "work").unwrap();
+        assert!(!env.profiles_dir(Provider::Codex).join("alice").exists());
+        let snap = list(&env, Provider::Codex).unwrap();
+        assert!(snap
+            .profiles
+            .iter()
+            .any(|p| p.name == "work" && p.email.as_deref() == Some("alice@test.dev")));
+
+        switch(&env, Provider::Codex, "work").unwrap();
+        assert!(String::from_utf8_lossy(&codex_live_bytes(&env)).contains("ctok-a1"));
+
+        // 활성 프로필의 이름도 바꿀 수 있고, 활성 판정(계정 id)이 새 이름을 따라간다
+        rename(&env, Provider::Codex, "work", "main").unwrap();
+        let snap = list(&env, Provider::Codex).unwrap();
+        let active: Vec<_> = snap.profiles.iter().filter(|p| p.active).collect();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].name, "main");
+    }
+
+    #[test]
+    fn rename_rejects_bad_or_taken_names() {
+        let env = test_env("rename-reject");
+        login_codex(&env, "acct-a", "alice@test.dev", "ctok-a1");
+        save_current(&env, Provider::Codex, "alice").unwrap();
+        login_codex(&env, "acct-b", "bob@test.dev", "ctok-b1");
+        save_current(&env, Provider::Codex, "bob").unwrap();
+
+        assert!(rename(&env, Provider::Codex, "alice", "bob").is_err());
+        assert!(rename(&env, Provider::Codex, "alice", "bad name!").is_err());
+        assert!(rename(&env, Provider::Codex, "ghost", "x").is_err());
+        assert!(rename(&env, Provider::Codex, "alice", "alice").is_ok());
+        assert!(env.profiles_dir(Provider::Codex).join("alice").exists());
+        assert!(env.profiles_dir(Provider::Codex).join("bob").exists());
     }
 
     #[test]

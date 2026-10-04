@@ -1079,6 +1079,22 @@ fn output_buffer() -> &'static Mutex<OutputBuffer> {
 
 /// 세션 세대 — start_impl이 올리고, reader 스레드가 자기 세대인지 확인한다
 static SESSION_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// 완료 경로가 세션을 가져간 마지막 세대. 클로드는 브라우저 승인 대기와 코드 제출이
+/// 같은 세션을 동시에 끝내려 할 수 있다(#167) — 늦은 쪽이 "취소"가 아니라 "이미 완료"로
+/// 물러나야 프론트가 오류 토스트 없이 먼저 끝난 쪽의 결과만 보여준다.
+static LAST_COMPLETED_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// 프론트가 이 문구로 "다른 경로가 먼저 완료" 상황을 판별한다 (main.ts isLoginCompletedElsewhere)
+pub(crate) const COMPLETED_ELSEWHERE: &str = "이미 완료된 로그인입니다";
+
+/// 세션이 사라진 이유를 구분한다: 같은 세대를 완료 경로가 가져갔으면 "이미 완료", 아니면 취소
+fn session_gone_error(generation: u64) -> String {
+    if generation != 0 && LAST_COMPLETED_GEN.load(std::sync::atomic::Ordering::SeqCst) == generation {
+        COMPLETED_ELSEWHERE.to_string()
+    } else {
+        "로그인을 취소했습니다".to_string()
+    }
+}
+
 
 /// CLI가 코드 거부를 화면에 알렸는지 감지한다 (빠른 실패 표시, #18).
 /// "Invalid code. Please make sure the full code was copied."는 실측 문구다
@@ -1099,10 +1115,10 @@ fn wait_for_exit(timeout: Duration, generation: u64) -> Result<(), String> {
         let probe = {
             let mut guard = SESSION.lock().map_err(|_| "내부 잠금 오류")?;
             let Some(session) = guard.as_mut() else {
-                return Err("로그인을 취소했습니다".into());
+                return Err(session_gone_error(generation));
             };
             if session.generation != generation {
-                return Err("로그인을 취소했습니다".into());
+                return Err(session_gone_error(generation));
             }
             session.child.try_wait()
         };
@@ -1145,10 +1161,10 @@ fn wait_for_exit_or_rejection(
         let probe = {
             let mut guard = SESSION.lock().map_err(|_| "내부 잠금 오류")?;
             let Some(session) = guard.as_mut() else {
-                return Err("로그인을 취소했습니다".into());
+                return Err(session_gone_error(generation));
             };
             if session.generation != generation {
-                return Err("로그인을 취소했습니다".into());
+                return Err(session_gone_error(generation));
             }
             session.child.try_wait()
         };
@@ -1240,6 +1256,8 @@ fn finish_session(generation: u64) -> Option<(Provider, PathBuf, u64)> {
     if guard.as_ref()?.generation != generation {
         return None;
     }
+    // 잠금을 쥔 채 기록한다 — 세션이 비는 것을 본 다른 대기자는 반드시 이 값을 본다
+    LAST_COMPLETED_GEN.store(generation, std::sync::atomic::Ordering::SeqCst);
     let session = guard.take()?;
     Some((session.provider, session.config_dir, session.delete_epoch))
 }
@@ -1316,7 +1334,7 @@ fn finish_and_import(
         .lock()
         .map_err(|_| "내부 잠금 오류")?;
     let (provider, dir, delete_epoch) =
-        finish_session(generation).ok_or("로그인 세션이 사라졌습니다")?;
+        finish_session(generation).ok_or_else(|| session_gone_error(generation))?;
     import_started(env, provider, &dir, delete_epoch)
 }
 
@@ -1339,7 +1357,9 @@ pub fn submit_code(env: &Env, code: &str, generation: u64) -> Result<LoginOutcom
     // 경합이 나도 이 waiter는 새 세션을 관찰하거나 취소하지 않는다.
     let (mark, write_result) = {
         let guard = SESSION.lock().map_err(|_| "내부 잠금 오류")?;
-        let session = guard.as_ref().ok_or("진행 중인 로그인이 없습니다")?;
+        // 승인 대기자가 먼저 세션을 가져갔을 수 있다 — 같은 분류를 거쳐 "이미 완료"로
+        // 물러나게 한다(두 경로 패자의 일관성, red-review 정합성 #167)
+        let session = guard.as_ref().ok_or_else(|| session_gone_error(generation))?;
         if session.generation != generation {
             return Err("이전 로그인 패널의 요청이라 무시했습니다".into());
         }
@@ -1371,7 +1391,7 @@ pub fn submit_code(env: &Env, code: &str, generation: u64) -> Result<LoginOutcom
                 .lock()
                 .map_err(|_| "내부 잠금 오류")?;
             let (provider, dir, delete_epoch) =
-                finish_session(generation).ok_or("로그인 세션이 사라졌습니다")?;
+                finish_session(generation).ok_or_else(|| session_gone_error(generation))?;
             import_started(env, provider, &dir, delete_epoch)
         }
         // 프론트는 이 문구("코드가 거부")로 재시도 가능 상태를 판별한다 (main.ts)
@@ -1900,6 +1920,14 @@ mod tests {
         assert!(extract_device_code("ERROR-CODE").is_none());
         assert!(extract_device_code("HELLO-WORLD").is_none());
         assert_eq!(extract_device_code("A1B2-C3D4").as_deref(), Some("A1B2-C3D4"));
+    }
+
+    #[test]
+    fn session_gone_distinguishes_completion_from_cancel() {
+        LAST_COMPLETED_GEN.store(77, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(session_gone_error(77), COMPLETED_ELSEWHERE);
+        assert_eq!(session_gone_error(78), "로그인을 취소했습니다");
+        assert_eq!(session_gone_error(0), "로그인을 취소했습니다");
     }
 
     #[test]
