@@ -452,6 +452,57 @@ function profileCard(
     actions.appendChild(switchBtn);
   }
 
+  // 이름 바꾸기 (#168) — 카드 아래 한 줄 입력칸. Enter로 적용, Esc로 접기.
+  // 입력 중에는 userIsBusy가 주기 새로고침을 미룬다.
+  const renameBtn = document.createElement("button");
+  renameBtn.textContent = "✎";
+  renameBtn.title = t("rename");
+  renameBtn.setAttribute("aria-label", t("rename"));
+  renameBtn.addEventListener("click", () => {
+    const open = card.querySelector<HTMLElement>(".rename-row");
+    if (open) {
+      open.remove();
+      return;
+    }
+    const row = document.createElement("div");
+    row.className = "save-row rename-row";
+    const input = document.createElement("input");
+    input.value = profile.name;
+    input.maxLength = 32;
+    input.placeholder = t("namePlaceholder");
+    const okBtn = document.createElement("button");
+    okBtn.textContent = t("ok");
+    const submit = async () => {
+      const to = input.value.trim();
+      if (!to || to === profile.name) {
+        row.remove();
+        return;
+      }
+      okBtn.disabled = true;
+      try {
+        await invoke("rename_profile", { provider, from: profile.name, to });
+        toast(t("renameDone", { from: profile.name, to }));
+        // 입력칸을 먼저 걷는다 — 글자가 든 입력칸에 포커스가 남아 있으면 userIsBusy가
+        // 스무스 렌더의 교체를 미뤄 바뀐 이름이 화면에 안 나온다 (실측)
+        row.remove();
+        await render();
+      } catch (error) {
+        toast(String(error), true);
+        okBtn.disabled = false;
+      }
+    };
+    okBtn.addEventListener("click", () => void submit());
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") void submit();
+      if (event.key === "Escape") row.remove();
+    });
+    row.append(input, okBtn);
+    card.insertBefore(row, actions);
+    input.focus();
+    input.select();
+  });
+  actions.appendChild(renameBtn);
+
   const deleteBtn = document.createElement("button");
   deleteBtn.textContent = t("del");
   let armed = false;
@@ -739,6 +790,32 @@ function loginPanel(prompt: LoginPrompt, attempt: number): HTMLElement {
   }
 
   if (prompt.needs_code) {
+    // 클로드: 같은 PC의 브라우저에서 승인하면 CLI의 localhost 콜백으로 스스로 끝난다 —
+    // 코덱스처럼 종료를 바로 기다리고, 코드 붙여넣기는 콜백이 닿지 않는 환경의
+    // 폴백으로만 남긴다 (#167). 두 경로 중 먼저 끝난 쪽이 보고하고, 늦은 쪽은
+    // 백엔드가 "이미 완료"로 알려 조용히 물러난다.
+    const waiting = document.createElement("div");
+    waiting.className = "usage-note";
+    waiting.textContent = t("waitingApproval");
+    panel.appendChild(waiting);
+    void (async () => {
+      const wait = invoke<LoginOutcome>("await_device_login", {
+        sessionId: prompt.session_id,
+      });
+      activeAccountWait = wait;
+      try {
+        const result = await wait;
+        if (activeAccountWait === wait) activeAccountWait = null;
+        if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+        reportLogin(result);
+      } catch (error) {
+        if (activeAccountWait === wait) activeAccountWait = null;
+        if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+        if (isLoginCompletedElsewhere(error)) return;
+        toast(String(error), true);
+      }
+      finishLogin(attempt);
+    })();
     const actions = document.createElement("div");
     actions.className = "add-row";
     const input = document.createElement("input");
@@ -760,14 +837,14 @@ function loginPanel(prompt: LoginPrompt, attempt: number): HTMLElement {
         code,
         sessionId: prompt.session_id,
       });
-      activeAccountWait = wait;
+      // activeAccountWait은 건드리지 않는다 — 취소가 읽는 대기 슬롯은 브라우저 승인
+      // 대기가 쥐고 있어야, 두 경로가 동시에 끝날 때 취소가 진 쪽(이 제출)이 아니라
+      // 이긴 쪽의 결과를 보고한다 (red-review 정합성). 성공·거부는 여기서 바로 처리한다.
       try {
         const result = await wait;
-        if (activeAccountWait === wait) activeAccountWait = null;
         if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
         reportLogin(result);
       } catch (error) {
-        if (activeAccountWait === wait) activeAccountWait = null;
         if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
         const message = String(error);
         // "코드가 거부" = CLI가 몇 초 안에 거부를 알렸고(백엔드 화면 감지, 실측)
@@ -780,6 +857,8 @@ function loginPanel(prompt: LoginPrompt, attempt: number): HTMLElement {
           input.select();
           return;
         }
+        // 브라우저 승인 대기가 먼저 끝냈다 — 그쪽이 보고·마무리한다
+        if (isLoginCompletedElsewhere(error)) return;
         // 그 외 실패는 세션이 이미 끝난 상태라 재시도가 불가능하다 —
         // 패널을 닫고 처음부터 다시 시작하게 안내한다
         toast(t("retryFromStart", { error: message }), true);
@@ -829,6 +908,11 @@ function loginPanel(prompt: LoginPrompt, attempt: number): HTMLElement {
   panel.appendChild(cancelBtn);
 
   return panel;
+}
+
+/// 같은 세션을 다른 대기 경로(승인 대기 ↔ 코드 제출)가 먼저 끝냈을 때 백엔드가 주는 표식
+function isLoginCompletedElsewhere(error: unknown): boolean {
+  return String(error).includes("이미 완료된 로그인");
 }
 
 function reportLogin(result: LoginOutcome) {
