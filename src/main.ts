@@ -1849,6 +1849,26 @@ function edgeBar(): HTMLElement {
 /// 전부 얇은 세로 막대로 한 줄에 나란히(클로드 5h·W·F 세 개 위, 코덱스 W 한 개
 /// 아래), 그 아래 SYSTEM 한 줄(CPU·MEM·DSK·NET, 샘플이 있을 때).
 const edgeGaugeByProvider = new Map<ProviderId, number[]>();
+
+/// 활성 계정 카드가 받은 손잡이 게이지 값 — 카드 노드에 묶어 맡겨 두고, 카드가 실제
+/// 화면(#app)에 붙어 있을 때만 전역 게이지(edgeGaugeByProvider)로 옮긴다 (#177).
+/// 렌더는 보이지 않는 버퍼에 카드를 만들고, 상태가 바뀌면(전환·삭제) 그 버퍼를 통째로
+/// 버린다. 버려진 버퍼의 활성 카드(예: 전환 전 계정)가 늦게 응답하면 가드 없이 쓰던
+/// 예전 코드는 손잡이 게이지를 옛 계정 값으로 덮었다.
+/// 렌더 세대 번호를 따로 들고 다니지 않고 노드 연결로 판정하는 이유: "이 카드가 화면에
+/// 올라갔다"가 곧 "이 카드를 만든 렌더가 이겼다"여서, 두 렌더 방식을 한 규칙으로 덮는다.
+/// - 즉시 렌더(교체 뒤 응답) — 응답 시점에 이미 연결돼 있으니 그 자리에서 반영
+/// - 스무스 렌더(응답 뒤 교체) — 값만 맡겨 두고, render()가 교체 직후 다시 불러 반영
+/// - 버려진 버퍼·이미 갈아 끼워진 카드 — 끝내 연결되지 않으므로 반영되지 않는다
+const edgeGaugeOfCard = new WeakMap<HTMLElement, { provider: ProviderId; pcts: number[] }>();
+
+function commitEdgeGauge(card: HTMLElement) {
+  const gauge = edgeGaugeOfCard.get(card);
+  if (!gauge || !card.isConnected) return;
+  edgeGaugeByProvider.set(gauge.provider, gauge.pcts);
+  applyEdgeGauge();
+}
+
 const MON_KEYS = ["cpu", "mem", "dsk", "net"] as const;
 /// 마지막 SYSTEM 샘플의 막대 % 넷 — paintMonitor가 채운다
 let edgeGaugeSystem: number[] | null = null;
@@ -2054,11 +2074,12 @@ function edgeAccount(
         bars.appendChild(col);
       }
       if (profile.active) {
-        edgeGaugeByProvider.set(
+        // 전역 게이지에 바로 쓰지 않는다 — 화면에 붙은 카드일 때만 반영 (#177, edgeGaugeOfCard)
+        edgeGaugeOfCard.set(card, {
           provider,
-          usage.windows.map((win) => Math.min(100, Math.max(0, win.percent))),
-        );
-        applyEdgeGauge();
+          pcts: usage.windows.map((win) => Math.min(100, Math.max(0, win.percent))),
+        });
+        commitEdgeGauge(card);
       }
     } catch {
       // 표시 전용 — 조회 실패는 다음 주기에
@@ -2271,6 +2292,9 @@ async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
       // 진행 중 로그인은 버퍼에서 새로 만들지 않고 같은 노드를 옮겨 입력값·세션을 보존한다.
       if (loginOpen) buffer.appendChild(loginHost);
       app.replaceChildren(buffer);
+      // 교체 전에 응답이 온 Type4 활성 카드는 게이지 값을 맡겨만 뒀다 — 이제 화면에
+      // 붙었으니 손잡이에 반영한다. 아직 응답 전인 카드는 응답 때 스스로 반영한다 (#177)
+      app.querySelectorAll<HTMLElement>(".edge-account").forEach((card) => commitEdgeGauge(card));
       // 새 SYSTEM 스켈레톤을 마지막 샘플로 즉시 채운다 — 스무스 교체마다
       // 이 섹션만 '--'로 깜빡이던 문제 (red-review). 다음 틱이 이어받는다
       if (monLastStats) {
