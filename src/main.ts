@@ -494,13 +494,20 @@ function profileCard(
     input.placeholder = t("namePlaceholder");
     const okBtn = document.createElement("button");
     okBtn.textContent = t("ok");
+    // 제출 중 표시 — 확인 버튼만 막으면 입력칸의 Enter 연타가 첫 rename_profile 응답
+    // 전에 같은 요청을 또 보낸다. 첫 요청만 성공하고 뒤 요청은 옛 이름이 이미 없어
+    // "프로필이 없습니다" 거짓 오류를 띄웠다 (#177). 로그인 코드 입력처럼 입력칸도 막는다.
+    let submitting = false;
     const submit = async () => {
+      if (submitting) return;
       const to = input.value.trim();
       if (!to || to === profile.name) {
         row.remove();
         return;
       }
+      submitting = true;
       okBtn.disabled = true;
+      input.disabled = true;
       try {
         await invoke("rename_profile", { provider, from: profile.name, to });
         toast(t("renameDone", { from: profile.name, to }));
@@ -511,11 +518,22 @@ function profileCard(
       } catch (error) {
         toast(String(error), true);
         okBtn.disabled = false;
+        input.disabled = false;
+        submitting = false;
+        // 비활성화로 빠진 포커스를 돌려준다 — 이름을 고쳐 바로 Enter로 다시 낼 수 있게
+        input.focus();
       }
     };
     okBtn.addEventListener("click", () => void submit());
     input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") void submit();
+      if (event.key === "Enter") {
+        // 한글 조합을 확정하는 Enter는 제출이 아니다 (#177). 크로미움(WebView2)은
+        // isComposing으로 알려 주고, 웹킷(맥 WKWebView)은 compositionend가 먼저 와
+        // isComposing이 false인 채 keyCode 229만 남는 것으로 알려져 있다(이 앱에서는
+        // 미실측) — 둘 다 거른다.
+        if (event.isComposing || event.keyCode === 229) return;
+        void submit();
+      }
       if (event.key === "Escape") row.remove();
     });
     row.append(input, okBtn);
