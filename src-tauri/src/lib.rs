@@ -402,11 +402,20 @@ objc2::define_class!(
     }
 );
 
-/// 왼쪽 버튼이 눌려 있는가 — 투과 중엔 웹뷰가 클릭을 못 받으므로 시스템에 직접 묻는다
+/// 주 버튼이 눌려 있는가 — 투과 중엔 웹뷰가 클릭을 못 받으므로 시스템에 직접 묻는다
 #[cfg(any(windows, target_os = "macos"))]
 fn primary_button_down() -> bool {
+    // GetAsyncKeyState는 논리 버튼이 아니라 물리 버튼을 본다 (Microsoft 문서). 마우스
+    // 버튼을 바꾼 사용자(왼손잡이 설정)의 주 버튼은 물리 오른쪽이라 VK_RBUTTON(0x02)을
+    // 봐야 더블클릭 전환·☰ 정착 판정이 반대 버튼에 걸리지 않는다 (#177).
+    // 설정을 실행 중에 바꿀 수 있으므로 매번 묻는다 (값 하나 읽기라 25ms 폴링에도 가볍다).
     #[cfg(windows)]
-    return (unsafe { GetAsyncKeyState(0x01) } as u16 & 0x8000) != 0;
+    return {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_SWAPBUTTON};
+        let swapped = unsafe { GetSystemMetrics(SM_SWAPBUTTON) } != 0;
+        let vk = if swapped { 0x02 } else { 0x01 };
+        (unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000) != 0
+    };
     #[cfg(target_os = "macos")]
     return unsafe { CGEventSourceButtonState(0, 0) };
 }
