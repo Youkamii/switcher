@@ -521,9 +521,21 @@ async fn clamshell_cycle(app: tauri::AppHandle) -> Result<i8, String> {
     .map_err(|e| format!("클램셸 전환 실패: {e}"))?
 }
 
+/// force_retry는 사용자가 새로고침 버튼을 직접 눌렀을 때만 true — 자동 조회 백오프를
+/// 한 번 우회한다. 생략(자동·상태 변경 렌더)은 백오프를 존중한다 (#122)
 #[tauri::command]
-async fn fetch_usage(provider: String, profile: Option<String>) -> Result<usage::Usage, String> {
-    usage::fetch(&Env::real()?, Provider::parse(&provider)?, profile.as_deref()).await
+async fn fetch_usage(
+    provider: String,
+    profile: Option<String>,
+    force_retry: Option<bool>,
+) -> Result<usage::Usage, String> {
+    usage::fetch_with_options(
+        &Env::real()?,
+        Provider::parse(&provider)?,
+        profile.as_deref(),
+        force_retry.unwrap_or(false),
+    )
+    .await
 }
 
 /// 로그인을 시작하고 사용자가 원하는 브라우저에 붙여넣을 주소를 돌려준다.
@@ -569,10 +581,14 @@ async fn submit_login_code(
         .parse::<u64>()
         .map_err(|_| "로그인 세션 ID가 올바르지 않습니다")?;
     tauri::async_runtime::spawn_blocking(move || {
-        login::submit_code(&Env::real()?, &code, generation)
+        let env = Env::real()?;
+        let outcome = login::submit_code(&env, &code, generation)?;
+        // 새 인증정보를 받은 계정은 이전 조회 실패의 백오프를 상속하지 않는다 (#122)
+        usage::clear_profile_backoff(&env, outcome.provider, &outcome.profile);
+        Ok::<_, String>(outcome)
     })
-        .await
-        .map_err(|e| format!("로그인 완료 실패: {e}"))?
+    .await
+    .map_err(|e| format!("로그인 완료 실패: {e}"))?
 }
 
 /// 브라우저 쪽에서 로그인이 끝나기를 기다린다 (코덱스)
@@ -581,9 +597,15 @@ async fn await_device_login(session_id: String) -> Result<login::LoginOutcome, S
     let generation = session_id
         .parse::<u64>()
         .map_err(|_| "로그인 세션 ID가 올바르지 않습니다")?;
-    tauri::async_runtime::spawn_blocking(move || login::wait_device(&Env::real()?, generation))
-        .await
-        .map_err(|e| format!("로그인 대기 실패: {e}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        let env = Env::real()?;
+        let outcome = login::wait_device(&env, generation)?;
+        // 새 인증정보를 받은 계정은 이전 조회 실패의 백오프를 상속하지 않는다 (#122)
+        usage::clear_profile_backoff(&env, outcome.provider, &outcome.profile);
+        Ok::<_, String>(outcome)
+    })
+    .await
+    .map_err(|e| format!("로그인 대기 실패: {e}"))?
 }
 
 /// 취소는 taskkill 대기(≤3초)·자식 종료 대기(≤2초)·임시 폴더 삭제 재시도(≤1.5초)를

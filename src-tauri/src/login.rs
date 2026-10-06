@@ -69,6 +69,10 @@ pub struct LoginOutcome {
     pub email: Option<String>,
     /// 이미 저장돼 있던 계정을 다시 로그인한 경우 (새 계정이 아님)
     pub updated_existing: bool,
+    /// 어느 프로바이더의 로그인이었나 — 호출부가 그 프로필의 사용량 백오프를 지운다 (#122).
+    /// 프론트로는 보내지 않는다
+    #[serde(skip)]
+    pub provider: Provider,
 }
 
 #[derive(Serialize, Debug, PartialEq, Eq)]
@@ -1320,6 +1324,7 @@ fn import_inner(
         profile: name,
         email: ident.email,
         updated_existing,
+        provider,
     })
 }
 

@@ -53,6 +53,34 @@ test("places Type1 refresh immediately before the view button", () => {
   );
 });
 
+test("manual usage refresh bypasses backoff without changing automatic refresh", () => {
+  assert.match(
+    mainSource,
+    /getElementById\("refresh"\)![\s\S]*?addEventListener\("click",[\s\S]*?render\(\{ forceUsage: true \}\)/,
+    "the user refresh button must request one forced usage retry",
+  );
+  assert.match(
+    mainSource,
+    /setInterval\(\(\) => \{[\s\S]*?if \(!userIsBusy\(\)\) void render\(\);[\s\S]*?5 \* 60 \* 1000/,
+    "the automatic five-minute refresh must continue to respect backoff",
+  );
+  assert.match(
+    mainSource,
+    /JSON\.stringify\(\[provider, accountId, forceRetry\]\)[\s\S]*?invoke<Usage>\("fetch_usage", \{ provider, profile, forceRetry \}\)/,
+    "forced and automatic requests must not share a frontend in-flight entry",
+  );
+  assert.match(
+    mainSource,
+    /if \(opts\?\.forceUsage\) queuedForceUsage = true;[\s\S]*?thisForceUsage = thisForceUsage \|\| queuedForceUsage;/,
+    "a click received during rendering must preserve the forced retry intent",
+  );
+  assert.match(
+    mainSource,
+    /retry_after_secs[\s\S]*?t\("usageRetry", \{ n: Math\.max\(1, Math\.ceil\(secs \/ 60\)\) \}\)/,
+    "structured backend backoff must be shown as a localized remaining time",
+  );
+});
+
 test("keeps the icon buttons in the bottom dock, not the title bar", () => {
   const dockBlock = htmlSource.match(/<footer class="dock">([\s\S]*?)<\/footer>/);
   assert.ok(dockBlock, "the dock footer must exist");
