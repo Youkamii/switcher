@@ -62,13 +62,73 @@ fn memo_path(store: &Path) -> PathBuf {
     store.join("memo.json")
 }
 
-/// 파일이 없거나 깨져 있으면 빈 탭 5개 기본값 — 메모창은 언제나 뜬다
+/// 저장 직렬화 잠금 (save 참고). 깨진 파일 보관(load)도 이 잠금 아래서 해
+/// 저장이 막 써 넣은 정상 파일을 "깨진 파일"로 옮기는 엇갈림을 막는다.
+static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// 파일이 없거나 깨져 있으면 빈 탭 5개 기본값 — 메모창은 언제나 뜬다.
+/// 필드별로 너그럽게 읽는다 (#177): 예전엔 필드 하나만 범위를 벗어나도(alpha 300,
+/// active -1) serde가 통째로 실패해 5탭 전체가 기본값이 됐고, 메모창의 다음 자동
+/// 저장(블러 때마다 돈다)이 그 빈 탭을 파일에 영구화했다.
+/// 탭을 알아볼 수 없을 만큼 깨진 파일은 덮어쓰이기 전에 `memo.json.corrupt-<초>`로
+/// 옮겨 보관한다 — 손으로라도 살릴 기회를 남긴다.
 pub fn load(store: &Path) -> MemoData {
-    fs::read_to_string(memo_path(store))
-        .ok()
-        .and_then(|text| serde_json::from_str::<MemoData>(&text).ok())
-        .unwrap_or_default()
-        .normalize()
+    let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let path = memo_path(store);
+    let Ok(bytes) = fs::read(&path) else {
+        return MemoData::default();
+    };
+    match parse_lenient(&bytes) {
+        Some(data) => data.normalize(),
+        None => {
+            quarantine(&path);
+            MemoData::default()
+        }
+    }
+}
+
+/// 필드마다 따로 읽고 범위를 맞춘다. JSON이 아니거나(잘못된 UTF-8 포함), 최상위가
+/// 객체가 아니거나, `tabs`가 배열이 아니면 None — 탭을 살릴 수 없으니 보관 대상이다.
+fn parse_lenient(bytes: &[u8]) -> Option<MemoData> {
+    use serde_json::Value;
+    let value: Value = serde_json::from_slice(bytes).ok()?;
+    let obj = value.as_object()?;
+    let mut data = MemoData::default();
+    match obj.get("tabs") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(items)) => {
+            // 문자열이 아닌 칸도 버리지 않고 글자로 남긴다 (null만 빈 탭)
+            data.tabs = items
+                .iter()
+                .map(|item| match item {
+                    Value::String(text) => text.clone(),
+                    Value::Null => String::new(),
+                    other => other.to_string(),
+                })
+                .collect();
+        }
+        Some(_) => return None,
+    }
+    // 음수·범위 밖·숫자 아님은 첫 탭 — normalize의 "범위 밖이면 0" 규칙과 같다
+    data.active = obj
+        .get("active")
+        .and_then(Value::as_f64)
+        .filter(|n| *n >= 0.0 && *n < TAB_COUNT as f64)
+        .map_or(0, |n| n as usize);
+    // 투명도는 0~100으로 자른다 (메모창 슬라이더 범위). 숫자가 아니면 기본값 유지
+    if let Some(n) = obj.get("alpha").and_then(Value::as_f64) {
+        data.alpha = n.clamp(0.0, 100.0).round() as u8;
+    }
+    Some(data)
+}
+
+/// 깨진 메모 파일을 `memo.json.corrupt-<초>`로 옮긴다. 옮겨 두면 다음 load가 같은
+/// 파일을 또 보관하지 않는다. 옮기기가 실패하면(다른 프로그램이 잡고 있는 등) 복사라도 남긴다.
+fn quarantine(path: &Path) {
+    let backup = path.with_extension(format!("json.corrupt-{}", crate::accounts::now()));
+    if fs::rename(path, &backup).is_err() {
+        let _ = fs::copy(path, &backup);
+    }
 }
 
 /// 임시 파일 + rename 원자적 쓰기 — 쓰다 만 파일이 남으면 메모 전체가 유실된다
@@ -81,7 +141,6 @@ pub fn save(store: &Path, data: MemoData) -> Result<MemoData, String> {
     // tmp 파일에 두 태스크가 쓰다 rename이 꼬일 수 있다 — 저장을 직렬화한다
     // (red-review). 나중 스냅샷이 먼저 완료되는 순서 역전까지 막지는 못하지만
     // (발생 창 µs, 다음 플러시가 치유) 반쪽 상태·무음 rename 실패는 사라진다.
-    static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     fs::create_dir_all(store).map_err(|e| format!("메모 폴더 생성 실패: {e}"))?;
     let data = data.normalize();
@@ -174,6 +233,100 @@ mod tests {
         let loaded = load(&store);
         assert!(loaded.tabs[0].len() <= TAB_MAX_BYTES);
         assert!(loaded.tabs[0].chars().all(|c| c == '가'));
+    }
+
+    fn corrupt_backups(store: &Path) -> Vec<PathBuf> {
+        fs::read_dir(store)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("memo.json.corrupt-"))
+            })
+            .collect()
+    }
+
+    /// 필드 하나가 범위를 벗어나도 탭은 살고 그 필드만 맞춰진다 (#177)
+    #[test]
+    fn out_of_range_field_keeps_tabs() {
+        let store = test_store("lenient");
+        fs::create_dir_all(&store).unwrap();
+        fs::write(
+            memo_path(&store),
+            r#"{"tabs":["a","b","c","d","e"],"active":-1,"alpha":300}"#,
+        )
+        .unwrap();
+        let data = load(&store);
+        assert_eq!(data.tabs, vec!["a", "b", "c", "d", "e"]);
+        assert_eq!(data.active, 0);
+        assert_eq!(data.alpha, 100);
+
+        // 범위 안 값은 그대로, 음수 투명도는 0, 문자열이 아닌 칸도 글자로 남는다
+        fs::write(
+            memo_path(&store),
+            r#"{"tabs":["a",null,3],"active":2,"alpha":-5}"#,
+        )
+        .unwrap();
+        let data = load(&store);
+        assert_eq!(data.tabs, vec!["a", "", "3", "", ""]);
+        assert_eq!(data.active, 2);
+        assert_eq!(data.alpha, 0);
+
+        // 거대한 수·숫자 아닌 값도 그 필드만 기본값
+        fs::write(
+            memo_path(&store),
+            r#"{"tabs":["x"],"active":1e30,"alpha":"half"}"#,
+        )
+        .unwrap();
+        let data = load(&store);
+        assert_eq!(data.tabs[0], "x");
+        assert_eq!(data.active, 0);
+        assert_eq!(data.alpha, 100);
+        // 너그럽게 읽힌 파일은 보관 대상이 아니다
+        assert!(corrupt_backups(&store).is_empty());
+    }
+
+    /// JSON으로 읽히지 않는 파일은 덮어쓰이기 전에 원본 그대로 보관된다 (#177)
+    #[test]
+    fn unparsable_file_is_kept_before_overwrite() {
+        let store = test_store("quarantine");
+        fs::create_dir_all(&store).unwrap();
+        // 한글 탭 본문이 든 채 중간에 잘린 JSON
+        let original: &[u8] = b"{\"tabs\":[\"\xEC\xA4\x91\xEC\x9A\x94\", oops";
+        fs::write(memo_path(&store), original).unwrap();
+        assert_eq!(load(&store), MemoData::default());
+        let backups = corrupt_backups(&store);
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read(&backups[0]).unwrap(), original);
+
+        // 다음 저장이 새 파일을 써도 보관본은 그대로 남고, 다시 읽어도 또 보관하지 않는다
+        let mut data = MemoData::default();
+        data.tabs[0] = "새 메모".to_string();
+        save(&store, data.clone()).unwrap();
+        assert_eq!(load(&store), data);
+        assert_eq!(corrupt_backups(&store), backups);
+        assert_eq!(fs::read(&backups[0]).unwrap(), original);
+    }
+
+    /// 탭 자리가 배열이 아니거나, 최상위가 객체가 아니거나, UTF-8이 깨졌으면
+    /// 탭을 살릴 수 없으므로 역시 보관한다
+    #[test]
+    fn unrecoverable_shapes_are_kept() {
+        let cases: [(&str, &[u8]); 3] = [
+            ("tabs-type", br#"{"tabs":"oops","alpha":50}"#),
+            ("top-array", br#"["a","b"]"#),
+            ("bad-utf8", b"{\"tabs\":[\"\xFF\xFE\"]}"),
+        ];
+        for (tag, bytes) in cases {
+            let store = test_store(tag);
+            fs::create_dir_all(&store).unwrap();
+            fs::write(memo_path(&store), bytes).unwrap();
+            assert_eq!(load(&store), MemoData::default(), "{tag}");
+            let backups = corrupt_backups(&store);
+            assert_eq!(backups.len(), 1, "{tag}");
+            assert_eq!(fs::read(&backups[0]).unwrap(), bytes, "{tag}");
+        }
     }
 
     #[test]
