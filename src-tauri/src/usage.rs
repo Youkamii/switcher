@@ -354,6 +354,63 @@ const EXPIRED_LOGIN_MESSAGE: &str =
 /// 경합을 피하고, 활성 계정은 CLI가 스스로 갱신하기 때문이다.
 /// (예외 하나: POST 도중 그 프로필로 전환된 경우의 사후 복구 — 함수 끝 참조)
 async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Result<(), FetchErr> {
+    let token_url = match provider {
+        Provider::Claude => CLAUDE_TOKEN_URL,
+        Provider::Codex => CODEX_TOKEN_URL,
+    };
+    ensure_fresh_profile_at(env, provider, name, token_url).await
+}
+
+/// 토큰 엔드포인트 전송 결과 — 회전된 응답은 이미 사이드카에 착지한 뒤다
+enum TokenPost {
+    Landed {
+        body: Value,
+        pending_error: Option<String>,
+    },
+    Transient(Option<u64>),
+    Rejected,
+    Parse(String),
+}
+
+/// 전송 → 상태 판정 → 응답 파싱 → 사이드카 착지. 호출자가 기다리기를 포기해도(퓨처 드롭)
+/// 끝까지 가야 하므로 소유한 값만 받는다 — 서버가 토큰 패밀리를 회전시킨 뒤 응답이
+/// 착지하기 전에 끊기면 새 리프레시 토큰 유일본이 사라진다 (#177, TFSD 90초 timeout)
+async fn post_refresh_and_land(
+    request: reqwest::RequestBuilder,
+    path: std::path::PathBuf,
+    refresh_token: String,
+) -> TokenPost {
+    let resp = match request.send().await {
+        Ok(resp) => resp,
+        Err(_) => return TokenPost::Transient(None),
+    };
+    let status = resp.status();
+    if status.as_u16() == 429 || status.is_server_error() {
+        return TokenPost::Transient(retry_after_secs(&resp));
+    }
+    if !status.is_success() {
+        return TokenPost::Rejected;
+    }
+    let body: Value = match resp.json().await {
+        Ok(body) => body,
+        Err(e) => return TokenPost::Parse(format!("갱신 응답 파싱 실패: {e}")),
+    };
+    // 회전된 새 토큰의 유일본(응답)을 본 파일을 만지기 전에 착지시킨다 —
+    // 아래 병합·쓰기가 실패해도 사이드카가 살아 다음 기회에 복구된다 (#18 견고성)
+    let pending_error = write_pending(&path, &refresh_token, &body).err();
+    TokenPost::Landed {
+        body,
+        pending_error,
+    }
+}
+
+/// token_url은 테스트가 로컬 서버를 주입하기 위한 것 — 실코드는 ensure_fresh_profile을 쓴다
+async fn ensure_fresh_profile_at(
+    env: &Env,
+    provider: Provider,
+    name: &str,
+    token_url: &str,
+) -> Result<(), FetchErr> {
     let path = credential_path(env, provider, Some(name))?;
     if !path.exists() {
         return Ok(()); // 이후 조회 단계가 기존 방식대로 안내한다
@@ -368,7 +425,7 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
     // 때까지 삭제는 기다리고, 전환은 회전 전 토큰을 복사할 수 없다.
     let _inflight =
         crate::accounts::refresh_begin(crate::accounts::refresh_key(env, provider, name))
-            .map_err(|_| FetchErr::Transient)?;
+            .map_err(|_| FetchErr::Transient(None))?;
     if !path.exists() {
         return Ok(());
     }
@@ -404,51 +461,55 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
     let backoff_key = format!("{}:{}", provider.dir_name(), meta.id);
     let backoff_epoch_before = backoff_epoch(&backoff_key);
 
-    let client = reqwest::Client::builder()
-        // 토큰 엔드포인트는 리다이렉트를 따라가지 않는다 — 307/308이 리프레시 토큰이
-        // 담긴 본문을 다른 호스트로 재전송하는 것을 차단
-        .redirect(reqwest::redirect::Policy::none())
-        // REFRESH_LOCK을 쥔 채 도는 요청 — 무응답 서버가 전체 갱신을 멈추지 않게
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|_| FetchErr::Transient)?;
+    let client = token_client().ok_or(FetchErr::Transient(None))?;
     let request = match provider {
-        Provider::Claude => client.post(CLAUDE_TOKEN_URL).json(&serde_json::json!({
+        Provider::Claude => client.post(token_url).json(&serde_json::json!({
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
             "client_id": CLAUDE_CLIENT_ID,
         })),
-        Provider::Codex => client.post(CODEX_TOKEN_URL).json(&serde_json::json!({
+        Provider::Codex => client.post(token_url).json(&serde_json::json!({
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
             "client_id": CODEX_CLIENT_ID,
             "scope": "openid profile email",
         })),
-    };
-    let resp = request.send().await.map_err(|_| FetchErr::Transient)?;
-    let status = resp.status();
-    if status.as_u16() == 429 || status.is_server_error() {
-        return Err(FetchErr::Transient);
     }
-    if !status.is_success() {
-        // 리프레시 토큰이 거부됨 — 재시도해도 소용없다. 백오프를 걸어 5분 렌더 주기마다
-        // 무의미한 POST가 반복되는 것을 막되, 안내 문구를 함께 기록해 백오프 중에도
-        // "대기중" 대신 재로그인 안내가 보이게 한다 (#173)
-        let _ = backoff_bump_if_epoch(
-            &backoff_key,
-            backoff_epoch_before,
-            Some(EXPIRED_LOGIN_MESSAGE),
-        );
-        return Err(FetchErr::Msg(EXPIRED_LOGIN_MESSAGE.into()));
-    }
-    let body: Value = resp
-        .json()
-        .await
-        .map_err(|e| FetchErr::Msg(format!("갱신 응답 파싱 실패: {e}")))?;
+    // REFRESH_LOCK을 쥔 채 도는 요청 — 무응답 서버가 전체 갱신을 멈추지 않게
+    .timeout(std::time::Duration::from_secs(15));
 
-    // 회전된 새 토큰의 유일본(응답)을 본 파일을 만지기 전에 착지시킨다 —
-    // 아래 병합·쓰기가 실패해도 사이드카가 살아 다음 기회에 복구된다 (#18 견고성)
-    let pending_error = write_pending(&path, &refresh_token, &body).err();
+    // 취소 불가 구간: 전송~사이드카 착지를 별도 태스크로 띄워 이 퓨처가 드롭돼도(TFSD의
+    // 90초 timeout 등) 회전된 응답이 땅에 닿게 한다. 다음 갱신 기회가 pending을 복구한다
+    let posted = {
+        let task = post_refresh_and_land(request, path.clone(), refresh_token.clone());
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => handle
+                .spawn(task)
+                .await
+                .unwrap_or(TokenPost::Transient(None)),
+            Err(_) => task.await,
+        }
+    };
+    let (body, pending_error) = match posted {
+        TokenPost::Landed {
+            body,
+            pending_error,
+        } => (body, pending_error),
+        TokenPost::Transient(hint) => return Err(FetchErr::Transient(hint)),
+        TokenPost::Rejected => {
+            // 리프레시 토큰이 거부됨 — 재시도해도 소용없다. 백오프를 걸어 5분 렌더 주기마다
+            // 무의미한 POST가 반복되는 것을 막되, 안내 문구를 함께 기록해 백오프 중에도
+            // "대기중" 대신 재로그인 안내가 보이게 한다 (#173)
+            let _ = backoff_bump_if_epoch(
+                &backoff_key,
+                backoff_epoch_before,
+                Some(EXPIRED_LOGIN_MESSAGE),
+                None,
+            );
+            return Err(FetchErr::Msg(EXPIRED_LOGIN_MESSAGE.into()));
+        }
+        TokenPost::Parse(message) => return Err(FetchErr::Msg(message)),
+    };
 
     // 파일 반영 구간만 변이 잠금 (저장·전환과 직렬화, 잠금 중 await 없음)
     let _guard = MUTATION_LOCK
@@ -630,7 +691,8 @@ fn parse_claude_usage(body: &Value) -> Usage {
 /// 화면에 문구를 띄우지 않는다. 그 외(토큰 만료 등)는 사용자에게 보여준다.
 #[derive(Debug)]
 enum FetchErr {
-    Transient,
+    /// 일시 장애(네트워크·429·5xx). Some(초)면 서버가 Retry-After로 알린 대기 시간 (#176)
+    Transient(Option<u64>),
     Msg(String),
 }
 
@@ -640,14 +702,50 @@ impl From<String> for FetchErr {
     }
 }
 
+/// 서버의 Retry-After 헤더(초 단위만; HTTP-date 형식은 무시) — 백오프가 그보다 짧으면 늘린다
+fn parse_retry_after(value: &str) -> Option<u64> {
+    value.trim().parse::<u64>().ok()
+}
+
+fn retry_after_secs(resp: &reqwest::Response) -> Option<u64> {
+    resp.headers()
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()
+        .and_then(parse_retry_after)
+}
+
+/// 재사용 HTTP 클라이언트 — 요청마다 새로 만들면 rustls 설정·커넥션 풀이 매번 버려져
+/// keep-alive가 한 번도 재사용되지 않았다 (#176). 타임아웃은 요청별로 건다.
+fn http_client() -> Option<&'static reqwest::Client> {
+    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| reqwest::Client::builder().build().ok())
+        .as_ref()
+}
+
+/// 토큰 엔드포인트용 — 리다이렉트를 따라가지 않는다: 307/308이 리프레시 토큰이 담긴
+/// 본문을 다른 호스트로 재전송하는 것을 차단
+fn token_client() -> Option<&'static reqwest::Client> {
+    static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .ok()
+        })
+        .as_ref()
+}
+
 async fn get_json(request: reqwest::RequestBuilder) -> Result<Value, FetchErr> {
     let resp = request
         .send()
         .await
-        .map_err(|_| FetchErr::Transient)?; // 네트워크 단절도 일시 장애로 취급
+        .map_err(|_| FetchErr::Transient(None))?; // 네트워크 단절도 일시 장애로 취급
     let status = resp.status();
     if status.as_u16() == 429 || status.is_server_error() {
-        return Err(FetchErr::Transient);
+        return Err(FetchErr::Transient(retry_after_secs(&resp)));
     }
     if !status.is_success() {
         return Err(FetchErr::Msg(format!(
@@ -817,15 +915,13 @@ async fn sync_claude_plan(env: &Env, token: &str, account_id: &str) {
     ) {
         return;
     }
-    let Ok(client) = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-    else {
+    let Some(client) = http_client() else {
         return;
     };
     let Ok(body) = get_json(
         client
             .get(CLAUDE_PROFILE_URL)
+            .timeout(std::time::Duration::from_secs(10))
             .bearer_auth(token)
             .header("anthropic-beta", CLAUDE_OAUTH_BETA),
     )
@@ -853,11 +949,10 @@ async fn fetch_claude_attempt(
         Err(message) => return Err(refresh_err.unwrap_or(FetchErr::Msg(message))),
     };
     let body = get_json(
-        reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(20))
-            .build()
-            .map_err(|_| FetchErr::Transient)?
+        http_client()
+            .ok_or(FetchErr::Transient(None))?
             .get(CLAUDE_USAGE_URL)
+            .timeout(std::time::Duration::from_secs(20))
             .bearer_auth(&token)
             .header("anthropic-beta", CLAUDE_OAUTH_BETA),
     )
@@ -961,11 +1056,10 @@ async fn fetch_codex_attempt(
         Ok(pair) => pair,
         Err(message) => return Err(refresh_err.unwrap_or(FetchErr::Msg(message))),
     };
-    let mut req = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-        .map_err(|_| FetchErr::Transient)?
+    let mut req = http_client()
+        .ok_or(FetchErr::Transient(None))?
         .get(CODEX_USAGE_URL)
+        .timeout(std::time::Duration::from_secs(20))
         .bearer_auth(&token);
     if let Some(id) = account_id {
         req = req.header("ChatGPT-Account-Id", id);
@@ -1216,12 +1310,15 @@ fn backoff_bump(key: &str) -> u64 {
     let mut map = backoff()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    bump_backoff(map.entry(key.to_string()).or_default())
+    bump_backoff(map.entry(key.to_string()).or_default(), None)
 }
 
-fn bump_backoff(state: &mut BackoffState) -> u64 {
+/// 2분→4분→8분→15분 단계. 서버가 Retry-After로 더 긴 시간을 알리면 그걸 따른다(최대 60분) —
+/// 더 짧게는 줄이지 않는다 (#176)
+fn bump_backoff(state: &mut BackoffState, retry_hint: Option<u64>) -> u64 {
     state.failure_count = state.failure_count.saturating_add(1);
-    let secs = (120u64 << (state.failure_count - 1).min(3)).min(900); // 120·240·480·900
+    let standard = (120u64 << (state.failure_count - 1).min(3)).min(900); // 120·240·480·900
+    let secs = retry_hint.map_or(standard, |hint| standard.max(hint)).min(3600);
     state.until = Some(std::time::Instant::now() + std::time::Duration::from_secs(secs));
     secs
 }
@@ -1240,7 +1337,12 @@ fn backoff_epoch(key: &str) -> u64 {
 /// permanent가 Some이면 영구 실패(토큰 재발급 거부)의 안내 문구를 함께 기록해 백오프 관문이
 /// "대기중" 대신 그 안내를 보여준다 (#173); None(일시 실패)은 이전 안내를 지운다 — 재발급이
 /// 성공한 뒤의 429가 옛 "만료" 안내를 되살리지 않게.
-fn backoff_bump_if_epoch(key: &str, expected_epoch: u64, permanent: Option<&str>) -> Option<u64> {
+fn backoff_bump_if_epoch(
+    key: &str,
+    expected_epoch: u64,
+    permanent: Option<&str>,
+    retry_hint: Option<u64>,
+) -> Option<u64> {
     let mut map = backoff()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1249,7 +1351,7 @@ fn backoff_bump_if_epoch(key: &str, expected_epoch: u64, permanent: Option<&str>
         return None;
     }
     state.permanent = permanent.map(str::to_string);
-    Some(bump_backoff(state))
+    Some(bump_backoff(state, retry_hint))
 }
 
 /// 강제(수동) 재시도를 지금 허용할지 — 직전 강제 시도에서 FORCE_MIN_INTERVAL이 지났으면
@@ -1484,15 +1586,27 @@ pub(crate) async fn fetch_with_options(
                     .strip_prefix("claude:")
                     .filter(|id| !id.starts_with('<')),
             ) {
-                sync_claude_plan(env, token, account_id).await;
+                // 호출자(렌더)를 기다리게 하지 않는다 — 프로필 API 왕복(최대 10초)이 카드
+                // 교체를 그만큼 늦췄다 (#176). 런타임 밖(동기 테스트)에서는 인라인으로
+                let env = env.clone();
+                let token = token.to_string();
+                let account_id = account_id.to_string();
+                match tokio::runtime::Handle::try_current() {
+                    Ok(handle) => {
+                        handle.spawn(async move {
+                            sync_claude_plan(&env, &token, &account_id).await;
+                        });
+                    }
+                    Err(_) => sync_claude_plan(&env, &token, &account_id).await,
+                }
             }
             Ok(usage)
         }
-        Err(FetchErr::Transient) => {
+        Err(FetchErr::Transient(retry_hint)) => {
             // 요청 제한·서버 오류 — 재시도를 자제하고 마지막 수치로 조용히 버틴다.
             // 요청 중 인증이 갱신됐으면(세대 변경) 이 실패로 새 세대의 백오프를 되살리지 않는다
             let Some(retry_after_secs) =
-                backoff_bump_if_epoch(&actual_key, request_epoch, None)
+                backoff_bump_if_epoch(&actual_key, request_epoch, None, retry_hint)
             else {
                 // 낡은 요청의 실패 — 오류가 아니라 "버렸다"는 정상 경합. 이전 수치가 있으면
                 // 그걸, 없으면 빈 목록을 돌려주고 다음(즉시) 렌더가 새 세대로 다시 조회한다
@@ -2368,6 +2482,85 @@ mod tests {
         backoff_clear(key);
     }
 
+    /// 서버 Retry-After는 백오프를 늘리기만 한다(최대 60분) — 더 짧게 줄이지 않는다 (#176).
+    #[test]
+    fn retry_after_hint_extends_but_never_shortens_backoff() {
+        let mut state = BackoffState::default();
+        assert_eq!(bump_backoff(&mut state, Some(30)), 120);
+        assert_eq!(bump_backoff(&mut state, Some(1800)), 1800);
+        assert_eq!(bump_backoff(&mut state, Some(100_000)), 3600);
+        assert_eq!(bump_backoff(&mut state, None), 900);
+        assert_eq!(parse_retry_after("12"), Some(12));
+        assert_eq!(parse_retry_after(" 7 "), Some(7));
+        assert_eq!(parse_retry_after("Wed, 21 Oct 2026 07:28:00 GMT"), None);
+    }
+
+    /// TFSD의 90초 timeout처럼 호출자가 기다리기를 포기해도(퓨처 드롭) 회전된 토큰 응답은
+    /// 사이드카에 착지한다 — 유일본 유실 방지 (#177). 400ms 뒤 응답하는 로컬 서버와
+    /// 100ms 타임아웃으로 재현한다.
+    #[test]
+    fn refresh_lands_pending_even_if_caller_stops_waiting() {
+        use std::io::{Read, Write};
+        let env = test_env("refresh-uncancellable");
+        let profile = env.profiles_dir(Provider::Claude).join("p");
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(
+            profile.join("meta.json"),
+            r#"{"id":"uuid-rp","email":null,"saved_at":1}"#,
+        )
+        .unwrap();
+        let cred = profile.join("credentials.json");
+        fs::write(
+            &cred,
+            r#"{"claudeAiOauth":{"accessToken":"old","refreshToken":"r1","expiresAt":1000}}"#,
+        )
+        .unwrap();
+        // 활성은 다른 계정(비활성 프로필만 재발급 대상)
+        fs::write(
+            env.home.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-live-other"}}"#,
+        )
+        .unwrap();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 8192];
+                let _ = stream.read(&mut buf);
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                let body = r#"{"access_token":"new","refresh_token":"r2","expires_in":3600}"#;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.flush();
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/oauth/token");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // timeout·sleep은 런타임 컨텍스트 안에서 만들어야 한다 (타이머 드라이버 핸들)
+        let outcome = rt.block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                ensure_fresh_profile_at(&env, Provider::Claude, "p", &url),
+            )
+            .await
+        });
+        assert!(outcome.is_err(), "호출자는 100ms에 기다리기를 포기한다");
+        // 포기한 뒤에도 런타임이 돌면 띄워 둔 태스크가 응답을 받아 사이드카를 쓴다
+        rt.block_on(async { tokio::time::sleep(std::time::Duration::from_millis(1500)).await });
+        let pending =
+            fs::read_to_string(pending_path(&cred)).expect("회전 응답이 사이드카에 착지해야 한다");
+        assert!(pending.contains("\"r2\""), "새 리프레시 토큰이 사이드카에 있어야 한다");
+    }
+
     /// 토큰 재발급 거부(4xx)는 백오프 중에도 "대기중"이 아니라 재로그인 안내로 보이고,
     /// stale 수치가 있으면 수치가 우선하며, 해당 프로필 백오프 해제 뒤에는 사라진다 (#173).
     #[test]
@@ -2389,7 +2582,7 @@ mod tests {
         backoff_clear(key);
         let epoch = backoff_epoch(key);
         assert_eq!(
-            backoff_bump_if_epoch(key, epoch, Some("PERM-TEST 재로그인")),
+            backoff_bump_if_epoch(key, epoch, Some("PERM-TEST 재로그인"), None),
             Some(120)
         );
         assert_eq!(backoff_permanent_message(key).as_deref(), Some("PERM-TEST 재로그인"));
@@ -2432,12 +2625,12 @@ mod tests {
         );
 
         // 그 뒤의 일시 실패 기록은 옛 '만료' 안내를 지운다 (재발급 성공 뒤 429)
-        assert_eq!(backoff_bump_if_epoch(key, epoch, None), Some(240));
+        assert_eq!(backoff_bump_if_epoch(key, epoch, None, None), Some(240));
         assert!(backoff_permanent_message(key).is_none());
 
         // 세대가 바뀐 뒤 도착한 낡은 거부는 기록되지 않는다
         clear_profile_backoff(&env, Provider::Claude, "dead");
-        assert_eq!(backoff_bump_if_epoch(key, epoch, Some("낡은 거부")), None);
+        assert_eq!(backoff_bump_if_epoch(key, epoch, Some("낡은 거부"), None), None);
         assert!(backoff_permanent_message(key).is_none());
         assert!(!backoff_active(key));
         backoff_clear(key);
@@ -2514,7 +2707,7 @@ mod tests {
         clear_profile_backoff(&env, Provider::Claude, "target");
 
         assert_eq!(
-            backoff_bump_if_epoch(&old_request.key, old_request.backoff_epoch, None),
+            backoff_bump_if_epoch(&old_request.key, old_request.backoff_epoch, None, None),
             None,
             "인증 변경 전에 시작한 실패는 백오프를 되살리면 안 된다"
         );
@@ -2523,7 +2716,7 @@ mod tests {
 
         let new_request = auth_snapshot(&env, Provider::Claude, Some("target")).unwrap();
         assert_eq!(
-            backoff_bump_if_epoch(&new_request.key, new_request.backoff_epoch, None),
+            backoff_bump_if_epoch(&new_request.key, new_request.backoff_epoch, None, None),
             Some(120),
             "인증 변경 뒤 시작한 새 실패는 정상적으로 기록해야 한다"
         );

@@ -27,8 +27,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-# sync: 토큰 재발급 직렬화(REFRESH_LOCK), time: TFSD 감시 루프의 주기 슬립
-tokio = { version = "1", features = ["sync", "time"] }
+# sync: 토큰 재발급 직렬화(REFRESH_LOCK), time: TFSD 감시 루프의 주기 슬립,
+# rt: 토큰 회전 응답 착지·티어 동기화를 호출자와 분리해 띄우는 Handle::spawn (#176·#177)
+tokio = { version = "1", features = ["sync", "time", "rt"] }
 # CLI 로그인 화면(TUI)을 읽으려면 진짜 콘솔이 필요하다 — 파이프로는 화면이 그려지지 않는다
 portable-pty = "0.9"
 # 시스템 모니터(stats.rs) — 쓰는 것만: system(cpu·mem·프로세스 디스크 I/O)·network.

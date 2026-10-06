@@ -46,6 +46,7 @@ impl Provider {
 /// 활성 클로드 자격증명이 사는 곳.
 /// 윈도우·테스트는 파일이고, macOS 실환경은 키체인이다 — 맥의 claude CLI는 토큰을
 /// 키체인 항목 "Claude Code-credentials"에 보관하며 파일은 구버전 잔재다 (실측 2026-07-29).
+#[derive(Clone)]
 pub enum ClaudeLiveStore {
     /// 윈도우·리눅스 실환경과 모든 플랫폼의 테스트가 쓴다 (맥 실환경은 Keychain)
     #[cfg_attr(target_os = "macos", allow(dead_code))]
@@ -60,6 +61,8 @@ pub enum ClaudeLiveStore {
 }
 
 /// 홈·보관소 경로 묶음. 테스트에서는 임시 디렉토리를 주입한다.
+/// Clone: 티어 동기화처럼 호출자와 분리해 띄우는 태스크가 자기 사본을 쥔다 (usage.rs)
+#[derive(Clone)]
 pub struct Env {
     pub home: PathBuf,
     pub store: PathBuf,
