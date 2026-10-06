@@ -131,7 +131,9 @@ const titlebarEl = document.querySelector(".titlebar") as HTMLElement;
 const dockEl = document.querySelector(".dock") as HTMLElement;
 // 플랫폼 글꼴 보정용 — 맥의 시스템 글꼴(SF)은 Pretendard·맑은 고딕보다 숫자가 넓어
 // Type4의 좁은 열(22px)에서 남은 시간 표기가 넘친다 (#152). CSS `body.mac`이 받는다.
-document.body.classList.toggle("mac", navigator.platform.startsWith("Mac"));
+// 같은 판별을 밝기 슬라이더 하한(BRIGHTNESS_MIN)도 쓴다.
+const IS_MAC = navigator.platform.startsWith("Mac");
+document.body.classList.toggle("mac", IS_MAC);
 let startupState: FirstRunStartupState | "checking" = "checking";
 let starPromptOpen = false;
 let starPromptBusy = false;
@@ -1464,6 +1466,13 @@ function githubAddButton(section: HTMLElement) {
 
 type DisplayInfo = { id: number; name: string; brightness: number | null };
 
+/// 밝기 슬라이더 하한 — 맥은 1. DisplayServicesSetBrightness(0)은 내장 패널 백라이트를
+/// 완전히 꺼서 위젯·커서까지 화면 전체가 안 보인다 (CLAUDE.md macOS 절 "내장 패널
+/// 밝기 0 = 백라이트 완전 소등", #51 실측, #177). 윈도우(DDC/CI)는 기존대로 0부터.
+/// 하한보다 낮게 읽힌 값(맥의 0)은 슬라이더 시작값만 하한으로 올려 위치와 숫자 표기를
+/// 맞춘다 — 밝기를 실제로 보내는 건 사용자가 움직일 때뿐이다.
+const BRIGHTNESS_MIN = IS_MAC ? 1 : 0;
+
 /// DISPLAY 섹션 — 모니터별 밝기 슬라이더 (DDC/CI 실제 백라이트 명령).
 /// 모든 모니터를 카드 하나에 모니터당 한 줄(번호·슬라이더·%)로 — 모니터마다
 /// 카드·이름 헤더를 두던 이전 구조는 세로 여백이 과했다. 전체 이름은 번호 툴팁에.
@@ -1502,15 +1511,16 @@ async function renderDisplays(target: DocumentFragment, compact: boolean) {
           note.title = t("dspUnsupported");
           row.appendChild(note);
         } else {
+          const start = Math.max(BRIGHTNESS_MIN, monitor.brightness);
           const slider = document.createElement("input");
           slider.type = "range";
-          slider.min = "0";
+          slider.min = String(BRIGHTNESS_MIN);
           slider.max = "100";
           slider.step = "1";
-          slider.value = String(monitor.brightness);
+          slider.value = String(start);
           const pct = document.createElement("span");
           pct.className = "display-pct";
-          pct.textContent = `${monitor.brightness}%`;
+          pct.textContent = `${start}%`;
           // 밝기 명령은 모니터마다 수십~수백 ms — 드래그 중엔 표시만 갱신하고
           // 손을 잠깐 멈추면 마지막 값 하나만 보낸다
           let debounce: number | undefined;
@@ -1568,18 +1578,20 @@ async function renderDisplaysEdge(target: DocumentFragment) {
     const col = document.createElement("div");
     col.className = "edge-col";
     col.title = monitor.name;
+    // null은 위 filter가 걸렀다 — 하한(BRIGHTNESS_MIN, 맥 1)으로만 올린다
+    const start = Math.max(BRIGHTNESS_MIN, monitor.brightness ?? BRIGHTNESS_MIN);
     const slider = document.createElement("input");
     slider.type = "range";
-    slider.min = "0";
+    slider.min = String(BRIGHTNESS_MIN);
     slider.max = "100";
     slider.step = "1";
-    slider.value = String(monitor.brightness);
+    slider.value = String(start);
     slider.title = monitor.name;
     // 트랙 채움은 CSS 그라데이션 — 값(%)을 변수로 넘긴다 (네이티브 채움은 쓰지 않는다)
-    slider.style.setProperty("--edge-pct", `${monitor.brightness}%`);
+    slider.style.setProperty("--edge-pct", `${start}%`);
     const pct = document.createElement("span");
     pct.className = "edge-num edge-dsp-val"; // 꾹 누를 때도 남는다(대신할 남은 시간이 없다)
-    pct.textContent = String(monitor.brightness);
+    pct.textContent = String(start);
     let debounce: number | undefined;
     slider.addEventListener("input", () => {
       pct.textContent = slider.value;
