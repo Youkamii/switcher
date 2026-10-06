@@ -345,6 +345,10 @@ fn merge_refreshed_claude(root: &mut Value, resp: &Value) -> Result<(), String> 
 /// 동시에 두 번 회전시키면 두 번째가 거부돼 재로그인이 필요해질 수 있다.
 static REFRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// 리프레시 토큰이 거부됐을 때의 안내 — 재로그인만이 해결이라 백오프 중에도 보여준다 (#173)
+const EXPIRED_LOGIN_MESSAGE: &str =
+    "로그인이 만료됐습니다 — '계정 추가'에서 이 계정으로 다시 로그인하세요";
+
 /// 보관함 프로필의 토큰이 만료(임박)면 리프레시 토큰으로 재발급해 파일에 되쓴다.
 /// 활성 저장소(~/.claude·~/.codex)는 건드리지 않는다 — 실행 중 CLI와의 회전
 /// 경합을 피하고, 활성 계정은 CLI가 스스로 갱신하기 때문이다.
@@ -395,6 +399,10 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
     }
     let refresh_token = extract_refresh_token(provider, &root)
         .ok_or_else(|| FetchErr::Msg("토큰 파일에 리프레시 토큰이 없습니다".into()))?;
+    // 거부(4xx)를 기록할 백오프 키와 요청 시작 세대 — 응답이 올 때 세대가 바뀌어 있으면
+    // (그사이 재로그인) 기록하지 않는다 (#173·#122)
+    let backoff_key = format!("{}:{}", provider.dir_name(), meta.id);
+    let backoff_epoch_before = backoff_epoch(&backoff_key);
 
     let client = reqwest::Client::builder()
         // 토큰 엔드포인트는 리다이렉트를 따라가지 않는다 — 307/308이 리프레시 토큰이
@@ -423,12 +431,15 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
         return Err(FetchErr::Transient);
     }
     if !status.is_success() {
-        // 리프레시 토큰이 거부됨 — 재시도해도 소용없다. 백오프를 걸어 5분 렌더
-        // 주기마다 무의미한 POST가 영구 반복되는 것을 막고, 재로그인을 안내한다.
-        backoff_bump(&cache_key(env, provider, Some(name)));
-        return Err(FetchErr::Msg(
-            "로그인이 만료됐습니다 — '계정 추가'에서 이 계정으로 다시 로그인하세요".into(),
-        ));
+        // 리프레시 토큰이 거부됨 — 재시도해도 소용없다. 백오프를 걸어 5분 렌더 주기마다
+        // 무의미한 POST가 반복되는 것을 막되, 안내 문구를 함께 기록해 백오프 중에도
+        // "대기중" 대신 재로그인 안내가 보이게 한다 (#173)
+        let _ = backoff_bump_permanent_if_epoch(
+            &backoff_key,
+            backoff_epoch_before,
+            EXPIRED_LOGIN_MESSAGE,
+        );
+        return Err(FetchErr::Msg(EXPIRED_LOGIN_MESSAGE.into()));
     }
     let body: Value = resp
         .json()
@@ -1021,22 +1032,6 @@ fn fetch_gate(key: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
         .clone()
 }
 
-/// 캐시 키는 "누구의 사용량인가"(계정 id) 기준이다.
-/// 전환 직후 활성 파일의 계정이 바뀌면 키도 바뀌어 이전 계정 수치가 새 계정 카드에
-/// 붙는 일이 없다 (red-review 2라운드 지적).
-fn cache_key(env: &Env, provider: Provider, profile: Option<&str>) -> String {
-    let account = match profile {
-        None => live_identity(env, provider)
-            .ok()
-            .flatten()
-            .map(|l| l.id)
-            .unwrap_or_else(|| "<live-unknown>".to_string()),
-        Some(name) => read_meta(&env.profiles_dir(provider).join(name))
-            .map(|m| m.id)
-            .unwrap_or_else(|| format!("<name:{name}>")),
-    };
-    format!("{}:{account}", provider.dir_name())
-}
 
 /// 디스크 캐시 — 위젯을 재시작하면 메모리 캐시가 사라져, 재시작 직후 조회가
 /// 막히면(요청 제한 429 등) 보여줄 직전 값조차 없다. 마지막 성공 수치를
@@ -1170,11 +1165,14 @@ pub(crate) fn purge_account_cache(
 /// API를 아예 부르지 않는다. 거절이 반복되면 2분→4분→8분→최대 15분으로 늘린다.
 /// epoch는 로그인·전환으로 인증이 갱신될 때마다 오르며, 그 전에 시작한 요청의 실패는
 /// 백오프를 되살리지 못한다 (#122).
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 struct BackoffState {
     until: Option<std::time::Instant>,
     failure_count: u32,
     epoch: u64,
+    /// 영구 실패(리프레시 토큰 거부)의 안내 문구 — 백오프 중 "대기중" 대신 보여준다 (#173).
+    /// 성공·로그인·전환(invalidate)에서 지워진다
+    permanent: Option<String>,
 }
 
 fn backoff() -> &'static std::sync::Mutex<std::collections::HashMap<String, BackoffState>> {
@@ -1206,7 +1204,8 @@ fn backoff_active(key: &str) -> bool {
     backoff_remaining(key).is_some()
 }
 
-/// 실패를 기록하고 이번 자제 시간(초)을 돌려준다
+/// 실패를 기록하고 이번 자제 시간(초)을 돌려준다 (실코드는 세대 검사 판을 쓴다)
+#[cfg(test)]
 fn backoff_bump(key: &str) -> u64 {
     let mut map = backoff()
         .lock()
@@ -1245,7 +1244,31 @@ fn backoff_bump_if_epoch(key: &str, expected_epoch: u64) -> Option<u64> {
 fn invalidate_backoff(state: &mut BackoffState) {
     state.until = None;
     state.failure_count = 0;
+    state.permanent = None;
     state.epoch = state.epoch.wrapping_add(1);
+}
+
+/// 영구 실패(토큰 재발급 4xx)를 백오프와 함께 기록한다 — 무의미한 POST 반복은 자제하되,
+/// 백오프 관문이 "대기중" 대신 이 안내를 보여준다 (#173). 요청을 시작한 세대가 바뀌었으면
+/// (그사이 재로그인·전환) 낡은 거부로 새 세대를 더럽히지 않는다 (#122와 같은 규칙).
+fn backoff_bump_permanent_if_epoch(key: &str, expected_epoch: u64, message: &str) -> Option<u64> {
+    let mut map = backoff()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let state = map.entry(key.to_string()).or_default();
+    if state.epoch != expected_epoch {
+        return None;
+    }
+    state.permanent = Some(message.to_string());
+    Some(bump_backoff(state))
+}
+
+fn backoff_permanent_message(key: &str) -> Option<String> {
+    backoff()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(key)
+        .and_then(|state| state.permanent.clone())
 }
 
 #[cfg(test)]
@@ -1382,9 +1405,15 @@ pub(crate) async fn fetch_with_options(
     // 한 번 우회하며, 기다려야 한다면 남은 시간을 구조화해 돌려준다 (#122).
     if !force_retry {
         if let Some(retry_after_secs) = backoff_remaining(&key) {
-            return Ok(stale_value()
-                .map(|value| mark_stale(value, Some(retry_after_secs)))
-                .unwrap_or_else(|| waiting_usage(retry_after_secs)));
+            if let Some(value) = stale_value() {
+                return Ok(mark_stale(value, Some(retry_after_secs)));
+            }
+            // 보여줄 수치가 없는데 원인이 영구 실패(토큰 재발급 거부)면 "대기중"이 아니라
+            // 재로그인 안내를 — 기다려도 해결되지 않는 상태를 일시 장애로 오인하지 않게 (#173)
+            if let Some(message) = backoff_permanent_message(&key) {
+                return Err(message);
+            }
+            return Ok(waiting_usage(retry_after_secs));
         }
     }
 
@@ -2309,6 +2338,74 @@ mod tests {
             .block_on(fetch_with_options(&env, Provider::Claude, None, true))
             .unwrap_err();
         assert!(forced.contains("만료"), "강제 재시도가 토큰 검사까지 진행해야 한다");
+        backoff_clear(key);
+    }
+
+    /// 토큰 재발급 거부(4xx)는 백오프 중에도 "대기중"이 아니라 재로그인 안내로 보이고,
+    /// stale 수치가 있으면 수치가 우선하며, 해당 프로필 백오프 해제 뒤에는 사라진다 (#173).
+    #[test]
+    fn permanent_failure_message_shows_instead_of_waiting() {
+        let env = test_env("permanent-backoff-message");
+        let profile = env.profiles_dir(Provider::Claude).join("dead");
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(
+            profile.join("meta.json"),
+            r#"{"id":"uuid-dead","email":null,"saved_at":1}"#,
+        )
+        .unwrap();
+        fs::write(
+            profile.join("credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"expired","expiresAt":1000}}"#,
+        )
+        .unwrap();
+        let key = "claude:uuid-dead";
+        backoff_clear(key);
+        let epoch = backoff_epoch(key);
+        assert_eq!(
+            backoff_bump_permanent_if_epoch(key, epoch, "PERM-TEST 재로그인"),
+            Some(120)
+        );
+        assert_eq!(backoff_permanent_message(key).as_deref(), Some("PERM-TEST 재로그인"));
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        // stale 수치 없음 → 안내 문구가 오류로 노출
+        let err = rt
+            .block_on(fetch_with_options(&env, Provider::Claude, Some("dead"), false))
+            .unwrap_err();
+        assert_eq!(err, "PERM-TEST 재로그인");
+
+        // stale 수치가 있으면 수치가 우선하고 남은 시간이 붙는다
+        let usage = Usage {
+            windows: vec![UsageWindow {
+                key: "five_hour".into(),
+                label: "5h".into(),
+                percent: 12.0,
+                resets_at: None,
+            }],
+            stale: false,
+            stale_age_secs: None,
+            retry_after_secs: None,
+        };
+        disk_cache_store(&env, key, &usage).unwrap();
+        // 방금 저장한 캐시는 신선해서 관문에 닿지 않는다 — 3시간 전 값으로 늙힌다
+        let path = disk_cache_path(&env);
+        let mut root: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        root[key]["saved_at"] = serde_json::json!(now() - 3 * 3600);
+        fs::write(&path, serde_json::to_vec(&root).unwrap()).unwrap();
+        let stale = rt
+            .block_on(fetch_with_options(&env, Provider::Claude, Some("dead"), false))
+            .unwrap();
+        assert!(stale.stale);
+        assert!(matches!(stale.retry_after_secs, Some(1..=120)));
+
+        // 세대가 바뀐 뒤 도착한 낡은 거부는 기록되지 않는다
+        clear_profile_backoff(&env, Provider::Claude, "dead");
+        assert_eq!(backoff_bump_permanent_if_epoch(key, epoch, "낡은 거부"), None);
+        assert!(backoff_permanent_message(key).is_none());
+        assert!(!backoff_active(key));
         backoff_clear(key);
     }
 
