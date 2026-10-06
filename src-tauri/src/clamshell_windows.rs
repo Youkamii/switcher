@@ -62,6 +62,13 @@ const TIMER_ID: usize = 1;
 /// 끝난 뒤 다음 앱 실행까지 아무도 복원하지 않아 "덮개를 닫아도 절전 안 함"이 그대로 남는다.
 /// 5초보다 긴 일시적 전원 API 실패도 버티도록 늘렸다 (#174 리뷰 후속).
 const FAIL_SAFE_RESTORE_ATTEMPTS: u32 = 120;
+/// 전원값은 원래대로 돌려놨는데 상태 정리(종료 표식 쓰기·저널 삭제)만 실패할 때 정리를 다시
+/// 시도하는 최대 횟수 (#178). 일회성 복원 감시자(retry_once_restore)와 위젯의 죽은 감시자
+/// 복구(recover_dead_journal)가 함께 쓴다. 500ms 기준 약 60초로 fail-safe와 같은 시간이다.
+/// 디스크가 잠깐 가득 찼거나 다른 프로그램이 파일을 잠깐 잡은 일시적 실패는 이 안에 풀려
+/// 정리되고, 계속 실패해도 전원값은 이미 원래대로라 멈춰도 안전하다. 예전에는 정리 실패를
+/// 복원 실패로 보고 500ms마다 전원값을 다시 썼다.
+const STATE_CLEANUP_ATTEMPTS: u32 = 120;
 
 static OPERATION_LOCK: Mutex<()> = Mutex::new(());
 static HELPER: OnceLock<Mutex<HelperRuntime>> = OnceLock::new();
@@ -74,6 +81,9 @@ static CORRUPT_JOURNAL_LOGGED: AtomicBool = AtomicBool::new(false);
 /// 두는 것은, mode()(프론트가 언제든 부른다)가 로그 표식을 먼저 세우면 복구가 한 번도 돌지
 /// 못하기 때문이다. 격리에 성공하면 다시 내린다.
 static CORRUPT_RECOVERY_TRIED: AtomicBool = AtomicBool::new(false);
+/// 위젯이 죽은 감시자의 저널로 전원값을 되돌린 기억 (#178, recover_dead_journal). 프로세스
+/// 메모리에만 둔다 — 위젯을 다시 켜면 한 번 더 되돌리고 정리를 처음부터 다시 시도한다.
+static DEAD_HELPER_CLEANUP: Mutex<DeadHelperCleanup> = Mutex::new(DeadHelperCleanup::new());
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct SchemeJournal {
@@ -889,6 +899,72 @@ fn recover_dead<B: PowerBackend>(
     }
 }
 
+/// 위젯 감시 스레드가 죽은 감시자의 저널을 되돌린 기억 (#178). 감시 스레드는 500ms마다
+/// reconcile_dead_helper를 돌리는데, 전원값은 되돌렸지만 상태 정리(종료 표식 쓰기·저널 삭제)만
+/// 계속 실패하면(디스크 가득 등) 예전에는 그때마다 전원값을 다시 썼다.
+struct DeadHelperCleanup {
+    /// 전원값을 이미 되돌린 저널. 감시자·revision·원래 값 중 하나라도 다른 저널이면 다시 되돌린다.
+    restored: Option<State>,
+    /// 그 뒤 상태 정리가 연속으로 실패한 횟수 — STATE_CLEANUP_ATTEMPTS에서 멈춘다
+    cleanup_failures: u32,
+}
+
+impl DeadHelperCleanup {
+    const fn new() -> Self {
+        Self {
+            restored: None,
+            cleanup_failures: 0,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum DeadHelperRecovery {
+    /// 전원값을 되돌리고 저널도 정리했다
+    Done,
+    /// 전원값은 (이번에 또는 앞서) 되돌렸지만 상태 정리가 실패했다 — `failures`번째 연속 실패.
+    /// 다음 점검은 정리만 다시 한다.
+    CleanupFailed { failures: u32, error: String },
+    /// 정리가 STATE_CLEANUP_ATTEMPTS번 연속 실패해 이 저널은 더 건드리지 않는다. 사용자의
+    /// 클릭(cycle)이나 위젯 재시작이 다시 시도한다.
+    GaveUp,
+}
+
+/// 위젯 감시 스레드의 죽은 감시자 복구 몸통 (#178). recover_dead(restore_all)와 같은 일을 하되
+/// 전원값 복원과 상태 정리를 나눠, 같은 저널의 전원값은 한 번만 쓰고 정리만 실패하면 정리만
+/// STATE_CLEANUP_ATTEMPTS번까지 다시 한다 — 감시자 fail-safe 경로(#174)와 같은 방식이다.
+/// 전원값 쓰기 실패는 예전처럼 Err로 돌려주고 다음 점검이 다시 시도한다. 호출자는 감시자가
+/// 죽었고 어느 세션에도 감시자가 없음을(NamedOwner) 확인한 뒤 부른다.
+fn recover_dead_journal<B: PowerBackend>(
+    backend: &mut B,
+    state_path: &Path,
+    state: &State,
+    memo: &mut DeadHelperCleanup,
+) -> Result<DeadHelperRecovery, String> {
+    if memo.restored.as_ref() == Some(state) {
+        if memo.cleanup_failures >= STATE_CLEANUP_ATTEMPTS {
+            return Ok(DeadHelperRecovery::GaveUp);
+        }
+    } else {
+        restore_power(backend, &state.schemes)?;
+        memo.restored = Some(state.clone());
+        memo.cleanup_failures = 0;
+    }
+    match remove_state(state_path, &state.helper) {
+        Ok(()) => {
+            *memo = DeadHelperCleanup::new();
+            Ok(DeadHelperRecovery::Done)
+        }
+        Err(error) => {
+            memo.cleanup_failures += 1;
+            Ok(DeadHelperRecovery::CleanupFailed {
+                failures: memo.cleanup_failures,
+                error,
+            })
+        }
+    }
+}
+
 fn acquire_request_after_journal<B: PowerBackend>(
     backend: &mut B,
     state_path: &Path,
@@ -1095,12 +1171,24 @@ fn reconcile_dead_helper(app: &tauri::AppHandle, store: &Path) {
         cleanup_stale_helpers(store, Some(&state.helper));
         return;
     }
-    let mut backend = NativePower;
-    if let Err(error) = recover_dead(&mut backend, &path, &state, false) {
-        eprintln!("클램셸 감시자 복구 실패: {error}");
-    } else {
-        cleanup_stale_helpers(store, None);
-        let _ = app.emit("clamshell-changed", 0i8);
+    let Ok(mut memo) = DEAD_HELPER_CLEANUP.lock() else {
+        return;
+    };
+    match recover_dead_journal(&mut NativePower, &path, &state, &mut memo) {
+        Ok(DeadHelperRecovery::Done) => {
+            cleanup_stale_helpers(store, None);
+            let _ = app.emit("clamshell-changed", 0i8);
+        }
+        // 500ms마다 지나는 곳이라 정리 실패는 멈출 때 한 번만 알린다 (#178).
+        Ok(DeadHelperRecovery::CleanupFailed { failures, error }) => {
+            if failures >= STATE_CLEANUP_ATTEMPTS {
+                eprintln!(
+                    "클램셸 전원 설정은 되돌렸지만 상태 정리가 {STATE_CLEANUP_ATTEMPTS}번 연속 실패해 멈춥니다 (다시 누르거나 위젯을 다시 켜면 다시 시도): {error}"
+                );
+            }
+        }
+        Ok(DeadHelperRecovery::GaveUp) => {}
+        Err(error) => eprintln!("클램셸 감시자 복구 실패: {error}"),
     }
 }
 
@@ -1491,6 +1579,8 @@ fn helper_main(state_path: PathBuf, helper: String) -> Result<(), String> {
         fallback: state,
         seen_closed: false,
         once_restore_pending: false,
+        once_power_restored: false,
+        once_cleanup_failures: 0,
         fail_safe_restore_pending: false,
         fail_safe_failures: 0,
         request,
@@ -1607,6 +1697,11 @@ struct HelperRuntime<B: PowerBackend = NativePower> {
     fallback: State,
     seen_closed: bool,
     once_restore_pending: bool,
+    /// 일회성 복원에서 전원값은 이미 원래대로 돌려놨고 상태 정리(종료 표식 쓰기·저널 삭제)만
+    /// 남았다 (#178). 이 동안에는 전원값을 다시 쓰지도, 덮개 무시를 다시 걸지도 않는다.
+    once_power_restored: bool,
+    /// 그 상태 정리가 연속으로 실패한 횟수 — STATE_CLEANUP_ATTEMPTS에서 멈춘다 (#178)
+    once_cleanup_failures: u32,
     fail_safe_restore_pending: bool,
     /// fail-safe 복원에서 전원값 쓰기가 연속으로 실패한 횟수 — FAIL_SAFE_RESTORE_ATTEMPTS에서
     /// 멈춘다 (#174). 복원이 한 번 성공하면 0으로 되돌린다.
@@ -1636,6 +1731,14 @@ impl<B: PowerBackend> HelperRuntime<B> {
     }
 
     fn active_scheme_changed(&mut self) -> Result<bool, String> {
+        if self.once_power_restored {
+            // 일회성 복원으로 전원값을 이미 원래대로 돌려놨고 상태 정리만 남았다 (#178). 이때
+            // 오는 덮개 동작 변경 알림은 그 복원이 스스로 낸 것일 수 있다(실제 전원 API로는
+            // 미확인). 여기서 apply_active로 무시를 다시 걸면 복원이 뒤집히고, 틱은 전원값을
+            // 다시 쓰지 않으므로 정리가 끝나면 원래 값을 아는 저널까지 사라진다. 모드가
+            // 바뀌었는지는 다음 틱의 retry_once_restore가 저널로 확인해 이 표식을 내린다.
+            return Ok(false);
+        }
         let _named = NamedOperation::lock(&self.helper)?;
         let Some(mut state) = (match self.current_state() {
             Ok(state) => state,
@@ -1682,10 +1785,34 @@ impl<B: PowerBackend> HelperRuntime<B> {
             return Ok(true);
         };
         if state.mode != 1 {
+            // 복원 도중 "계속 켜 둠"이나 끄기로 바뀌었다. 전원값을 이미 되돌렸어도 다음
+            // 점검(active_scheme_changed)이 새 모드대로 다시 맞추게 표식을 내린다.
             self.once_restore_pending = false;
+            self.once_power_restored = false;
+            self.once_cleanup_failures = 0;
             return Ok(false);
         }
-        restore_all(&mut self.request.backend, &self.state_path, &state)?;
+        // 전원값 쓰기 실패는 예전처럼 다음 틱에 다시 시도한다. 한 번 성공하면 다시 쓰지 않는다.
+        if !self.once_power_restored {
+            restore_power(&mut self.request.backend, &state.schemes)?;
+            self.once_power_restored = true;
+        }
+        // 예전에는 restore_all 하나로 묶여, 종료 표식 쓰기만 계속 실패해도(디스크 가득 등)
+        // 500ms마다 전원값을 다시 썼다 (#178). 이제 정리만 정해진 횟수까지 다시 하고, 그래도
+        // 안 되면 한 번 알리고 끝낸다 — 전원값은 이미 원래대로다. 저널이 남으면 위젯의 죽은
+        // 감시자 복구가 정리를 이어 간다.
+        if let Err(error) = remove_state(&self.state_path, &state.helper) {
+            self.once_cleanup_failures += 1;
+            if self.once_cleanup_failures < STATE_CLEANUP_ATTEMPTS {
+                return Err(format!(
+                    "전원 설정은 복원했고 상태 정리만 다시 시도합니다 ({}/{STATE_CLEANUP_ATTEMPTS}): {error}",
+                    self.once_cleanup_failures
+                ));
+            }
+            eprintln!(
+                "클램셸 전원 설정은 복원했지만 상태 정리가 {STATE_CLEANUP_ATTEMPTS}번 연속 실패해 감시자를 끝냅니다: {error}"
+            );
+        }
         self.once_restore_pending = false;
         self.request.clear();
         Ok(true)
@@ -2204,6 +2331,8 @@ mod tests {
             fallback: journal.clone(),
             seen_closed: false,
             once_restore_pending: false,
+            once_power_restored: false,
+            once_cleanup_failures: 0,
             fail_safe_restore_pending: false,
             fail_safe_failures: 0,
             request,
@@ -2243,6 +2372,8 @@ mod tests {
             fallback: journal.clone(),
             seen_closed: false,
             once_restore_pending: false,
+            once_power_restored: false,
+            once_cleanup_failures: 0,
             fail_safe_restore_pending: false,
             fail_safe_failures: 0,
             request,
@@ -2522,6 +2653,8 @@ mod tests {
             fallback: journal.clone(),
             seen_closed: false,
             once_restore_pending: false,
+            once_power_restored: false,
+            once_cleanup_failures: 0,
             fail_safe_restore_pending: false,
             fail_safe_failures: 0,
             request,
@@ -2618,6 +2751,8 @@ mod tests {
             fallback: journal.clone(),
             seen_closed: false,
             once_restore_pending: false,
+            once_power_restored: false,
+            once_cleanup_failures: 0,
             fail_safe_restore_pending: false,
             fail_safe_failures: 0,
             request: RequestGuard {
@@ -2990,5 +3125,178 @@ mod tests {
             fail: Some("has-lid".into()),
             ..FakePower::default()
         }));
+    }
+
+    /// 종료 표식 자리에 폴더를 만들어 remove_state의 첫 단계(종료 표식 쓰기)를 실패시킨다 —
+    /// 디스크가 가득 차 쓰기만 실패하는 상황 (#178). 저널은 그대로 읽힌다. 폴더를 지우면 풀린다.
+    fn block_stop_marker(path: &Path) -> PathBuf {
+        let stop = stop_file(path).unwrap();
+        std::fs::create_dir(&stop).unwrap();
+        stop
+    }
+
+    fn restored_writes() -> [String; 2] {
+        [format!("ac:{A}:1"), format!("dc:{A}:2")]
+    }
+
+    #[test]
+    fn once_restore_writes_power_once_and_retries_only_cleanup_until_it_succeeds() {
+        let path = temp_state("once-cleanup-transient");
+        let journal = unique_journal(1, 1, 2);
+        write_state(&path, &journal).unwrap();
+        let stop = block_stop_marker(&path);
+        let mut runtime = fake_helper(&path, &journal, FakePower::with_scheme(A, 0, 0));
+        runtime.once_restore_pending = true;
+
+        // 예전에는 정리 실패를 복원 실패로 보고 틱마다 전원값을 다시 썼다.
+        for _ in 0..3 {
+            assert!(!runtime.tick().unwrap());
+            assert!(runtime.once_restore_pending);
+        }
+        assert_eq!(runtime.once_cleanup_failures, 3);
+        assert_eq!(power_writes(&runtime.request.backend), restored_writes());
+        assert_eq!(runtime.request.backend.values[A], (1, 2));
+        assert!(!runtime.request.backend.request);
+        assert_eq!(read_state(&path).unwrap(), Some(journal.clone()));
+
+        // 일시적 실패가 풀리면 정리가 끝나고 감시자도 끝난다 — 전원값은 그대로 한 번만 썼다.
+        std::fs::remove_dir(&stop).unwrap();
+        assert!(runtime.tick().unwrap());
+        assert!(!runtime.once_restore_pending);
+        assert!(!runtime.request.held);
+        assert_eq!(power_writes(&runtime.request.backend), restored_writes());
+        assert_eq!(read_state(&path).unwrap(), None);
+        assert!(intentionally_stopped(&path, &journal.helper));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn once_restore_gives_up_cleanup_after_bounded_failures_without_rewriting_power() {
+        let path = temp_state("once-cleanup-stuck");
+        let journal = unique_journal(1, 1, 2);
+        write_state(&path, &journal).unwrap();
+        block_stop_marker(&path);
+        let mut runtime = fake_helper(&path, &journal, FakePower::with_scheme(A, 0, 0));
+        runtime.once_restore_pending = true;
+
+        for _ in 1..STATE_CLEANUP_ATTEMPTS {
+            assert!(!runtime.tick().unwrap());
+            assert!(runtime.once_restore_pending);
+        }
+        // 마지막 정리도 실패하면 감시자는 끝난다 — 전원값은 이미 원래대로다.
+        assert!(runtime.tick().unwrap());
+        assert!(!runtime.once_restore_pending);
+        assert!(!runtime.request.held);
+        assert_eq!(runtime.once_cleanup_failures, STATE_CLEANUP_ATTEMPTS);
+        assert_eq!(power_writes(&runtime.request.backend), restored_writes());
+        assert_eq!(runtime.request.backend.values[A], (1, 2));
+        // 저널은 남아 위젯의 죽은 감시자 복구(recover_dead_journal)가 정리를 이어 간다.
+        assert_eq!(read_state(&path).unwrap(), Some(journal.clone()));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn once_restore_is_not_undone_by_its_own_lid_action_notification() {
+        let path = temp_state("once-cleanup-notification");
+        let journal = unique_journal(1, 1, 2);
+        write_state(&path, &journal).unwrap();
+        block_stop_marker(&path);
+        let mut runtime = fake_helper(&path, &journal, FakePower::with_scheme(A, 0, 0));
+        runtime.once_restore_pending = true;
+        assert!(!runtime.tick().unwrap());
+        assert_eq!(runtime.request.backend.values[A], (1, 2));
+
+        // 정리를 기다리는 동안 복원이 낸 덮개 동작 변경 알림이 와도 무시를 다시 걸지 않는다.
+        // 예전처럼 다시 걸면, 틱이 전원값을 다시 쓰지 않으므로 덮개 무시가 그대로 남는다.
+        assert!(!runtime.active_scheme_changed().unwrap());
+        assert_eq!(runtime.request.backend.values[A], (1, 2));
+        assert_eq!(power_writes(&runtime.request.backend), restored_writes());
+
+        // 사용자가 그사이 "계속 켜 둠"으로 바꿨으면 틱이 표식을 내리고 덮개 무시가 다시 걸린다.
+        let mut promoted = journal.clone();
+        promoted.mode = 2;
+        crate::accounts::atomic_write_existing_parent(
+            &path,
+            &serde_json::to_vec(&promoted).unwrap(),
+        )
+        .unwrap();
+        assert!(!runtime.tick().unwrap());
+        assert!(!runtime.once_restore_pending);
+        assert!(!runtime.once_power_restored);
+        assert!(!runtime.active_scheme_changed().unwrap());
+        assert_eq!(runtime.request.backend.values[A], (0, 0));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn widget_dead_helper_recovery_writes_power_once_while_cleanup_fails() {
+        let path = temp_state("dead-cleanup-transient");
+        let journal = unique_journal(2, 1, 2);
+        write_state(&path, &journal).unwrap();
+        let stop = block_stop_marker(&path);
+        let mut backend = FakePower::with_scheme(A, 0, 0);
+        let mut memo = DeadHelperCleanup::new();
+
+        // 위젯 감시 스레드가 500ms마다 부르는 상황. 예전(recover_dead)에는 매번 전원값을 다시 썼다.
+        for attempt in 1..=3 {
+            let outcome = recover_dead_journal(&mut backend, &path, &journal, &mut memo).unwrap();
+            assert!(
+                matches!(outcome, DeadHelperRecovery::CleanupFailed { failures, .. } if failures == attempt),
+                "{outcome:?}"
+            );
+        }
+        assert_eq!(power_writes(&backend), restored_writes());
+        assert_eq!(backend.values[A], (1, 2));
+        assert_eq!(read_state(&path).unwrap(), Some(journal.clone()));
+
+        // 일시적 실패가 풀리면 정리만 해서 끝낸다.
+        std::fs::remove_dir(&stop).unwrap();
+        assert_eq!(
+            recover_dead_journal(&mut backend, &path, &journal, &mut memo).unwrap(),
+            DeadHelperRecovery::Done
+        );
+        assert_eq!(power_writes(&backend), restored_writes());
+        assert_eq!(read_state(&path).unwrap(), None);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn widget_dead_helper_cleanup_stops_after_bound_and_a_new_journal_is_restored_again() {
+        let path = temp_state("dead-cleanup-stuck");
+        let journal = unique_journal(2, 1, 2);
+        write_state(&path, &journal).unwrap();
+        let stop = block_stop_marker(&path);
+        let mut backend = FakePower::with_scheme(A, 0, 0);
+        let mut memo = DeadHelperCleanup::new();
+
+        for _ in 0..STATE_CLEANUP_ATTEMPTS {
+            let outcome = recover_dead_journal(&mut backend, &path, &journal, &mut memo).unwrap();
+            assert!(
+                matches!(outcome, DeadHelperRecovery::CleanupFailed { .. }),
+                "{outcome:?}"
+            );
+        }
+        // 상한을 넘기면 이 저널은 더 건드리지 않는다 — 클릭이나 위젯 재시작이 다시 시도한다.
+        std::fs::remove_dir(&stop).unwrap();
+        assert_eq!(
+            recover_dead_journal(&mut backend, &path, &journal, &mut memo).unwrap(),
+            DeadHelperRecovery::GaveUp
+        );
+        assert_eq!(power_writes(&backend), restored_writes());
+        assert_eq!(read_state(&path).unwrap(), Some(journal.clone()));
+
+        // 다른 저널(새 revision)은 기억과 상관없이 처음부터 되돌린다.
+        backend.values.insert(A.into(), (0, 0));
+        let mut next = journal.clone();
+        next.revision = token().unwrap();
+        write_state(&path, &next).unwrap();
+        assert_eq!(
+            recover_dead_journal(&mut backend, &path, &next, &mut memo).unwrap(),
+            DeadHelperRecovery::Done
+        );
+        assert_eq!(backend.values[A], (1, 2));
+        assert_eq!(power_writes(&backend).len(), 4);
+        assert_eq!(read_state(&path).unwrap(), None);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }
