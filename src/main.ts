@@ -125,6 +125,53 @@ const PROVIDERS = [
 type ProviderId = (typeof PROVIDERS)[number]["id"];
 type LoginProvider = ProviderId | "github";
 
+/// 프로바이더 픽셀 아이콘 (#104) — 8×8 격자를 문자열로 적는다 ('x'가 켜진 칸).
+/// 색은 CSS가 Type3 좌측 스트라이프와 같은 테마 변수(--accent-rgb / --accent-alt-rgb)로
+/// 칠한다 — 어느 모드·어느 색감에서 보든 "이 색 = 이 프로바이더"가 한 벌로 유지된다.
+const PROVIDER_ICONS: Record<ProviderId, string[]> = {
+  // 방사형 별 — 중앙에서 네 방향으로 뻗는 대칭 도형
+  claude: [
+    "..x..x..",
+    "...xx...",
+    "x.xxxx.x",
+    ".xxxxxx.",
+    ".xxxxxx.",
+    "x.xxxx.x",
+    "...xx...",
+    "..x..x..",
+  ],
+  // 로봇 얼굴 — 안테나 둘, 빈 칸이 눈, 아래 두 칸이 다리
+  codex: [
+    "..x..x..",
+    "..xxxx..",
+    ".xxxxxx.",
+    ".x.xx.x.",
+    ".xxxxxx.",
+    "..xxxx..",
+    "..x..x..",
+    ".x....x.",
+  ],
+};
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function providerIcon(provider: ProviderId): SVGElement {
+  // 켜진 칸을 전부 한 path의 서브패스로 넣는다 — 칸마다 rect를 만들면
+  // 아이콘 하나에 30여 노드가 생긴다. 모든 서브패스가 같은 회전방향이라
+  // fill-rule: nonzero에서 구멍이 뚫리지 않는다 (8월 적대 리뷰).
+  const d = PROVIDER_ICONS[provider]
+    .flatMap((row, y) => [...row].map((cell, x) => (cell === "x" ? `M${x} ${y}h1v1h-1z` : "")))
+    .join("");
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 8 8");
+  svg.setAttribute("class", `prov-icon prov-${provider}`);
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("d", d);
+  svg.appendChild(path);
+  return svg;
+}
+
 const app = document.getElementById("app")!;
 const shell = document.querySelector(".shell") as HTMLElement;
 const titlebarEl = document.querySelector(".titlebar") as HTMLElement;
@@ -224,6 +271,7 @@ function renderFirstRunBackdrop() {
     const heading = document.createElement("h2");
     heading.className = "section-title";
     heading.textContent = provider.title;
+    heading.prepend(providerIcon(provider.id));
     const hint = document.createElement("p");
     hint.className = "hint";
     hint.textContent = t("noAccounts");
@@ -1205,6 +1253,8 @@ async function renderProvider(
   const heading = document.createElement("h2");
   heading.className = "section-title";
   heading.textContent = title;
+  // 아이콘은 글자를 넣은 뒤에 앞으로 끼운다 (textContent가 자식을 갈아엎는다)
+  heading.prepend(providerIcon(provider));
   section.appendChild(heading);
 
   try {
@@ -2251,7 +2301,7 @@ async function renderProviderCompact(
       head.className = "compact-head";
       const name = document.createElement("span");
       name.textContent = title;
-      head.appendChild(name);
+      head.append(providerIcon(provider), name);
       section.appendChild(head);
     }
 

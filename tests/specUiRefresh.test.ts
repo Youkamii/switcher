@@ -40,3 +40,37 @@ test("privacy blur targets the name only, so the dot stays sharp", () => {
   assert.ok(blur, "privacy blur rule must exist");
   assert.doesNotMatch(cssSource, /body\.privacy[^{]*\.status-dot/);
 });
+
+/// #104 — 프로바이더 픽셀 아이콘. Type1 섹션 제목(계정 유무 모두)과 Type2 컴팩트
+/// 머리글 앞에 붙고, 색은 Type3 스트라이프와 같은 테마 변수를 쓴다.
+test("provider pixel icon is prepended to Type1 titles and Type2 compact heads", () => {
+  const prepends = mainSource.match(/heading\.prepend\(providerIcon\(provider(?:\.id)?\)\);/g) ?? [];
+  assert.equal(prepends.length, 2, "renderProvider and the empty-state section both get the icon");
+  assert.match(mainSource, /head\.append\(providerIcon\(provider\), name\);/, "compact head gets the icon");
+  // SYSTEM 제목(.mon-title)과 Type4에는 붙지 않는다
+  assert.doesNotMatch(mainSource, /mon-title[\s\S]{0,400}providerIcon\(/);
+  const edge = mainSource.match(/async function renderProviderEdge\([\s\S]*?\n}\n/)?.[0];
+  assert.ok(edge, "renderProviderEdge must exist");
+  assert.doesNotMatch(edge, /providerIcon\(/);
+});
+
+test("provider icon is one path per icon, coloured by theme variables, sized to whole cells", () => {
+  const fn = mainSource.match(/function providerIcon\([\s\S]*?\n}\n/)?.[0];
+  assert.ok(fn, "providerIcon must exist");
+  assert.match(fn, /createElementNS\(SVG_NS, "path"\)/);
+  assert.doesNotMatch(fn, /createElementNS\(SVG_NS, "rect"\)/);
+  assert.doesNotMatch(fn, /setAttribute\("fill"/, "colour comes from CSS, not the element");
+  assert.match(fn, /`prov-icon prov-\$\{provider\}`/);
+  // 격자는 8줄 × 8칸
+  const grids = mainSource.match(/const PROVIDER_ICONS[\s\S]*?\n};\n/)?.[0] ?? "";
+  const rows = grids.match(/"[.x]{8}"/g) ?? [];
+  assert.equal(rows.length, 16, "two 8x8 grids");
+  const icon = cssSource.match(/\.prov-icon \{[^}]*\}/)?.[0];
+  assert.ok(icon, ".prov-icon rule must exist");
+  assert.match(icon, /width: 16px;\s*height: 16px;/);
+  assert.match(icon, /shape-rendering: crispEdges;/);
+  assert.match(icon, /opacity: var\(--fg-alpha\);/, "fades with the title text");
+  assert.match(cssSource, /\.prov-icon\.prov-claude \{\s*fill: rgb\(var\(--accent-rgb\)\);/);
+  assert.match(cssSource, /\.prov-icon\.prov-codex \{\s*fill: rgb\(var\(--accent-alt-rgb\)\);/);
+  assert.match(cssSource, /\.compact-head \.prov-icon \{\s*width: 8px;\s*height: 8px;/);
+});
