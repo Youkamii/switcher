@@ -517,9 +517,10 @@ fn unparsable_journals(path: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(unparsable)
 }
 
-/// read_state 실패가 저널 손상(2벌 모두 해석 불가) 때문인지. 처음 발견했을 때만 로그를
+/// read_state 실패가 저널 손상(2벌 모두 해석 불가) 때문이면 그 사실을 로그로 남기고 true.
+/// 판정만 하는 함수가 아니라 기록도 하므로 이름에 드러낸다. 로그는 처음 발견했을 때 한 번만
 /// 남긴다 — mode()와 reconcile_dead_helper가 500ms마다 부르기 때문이다 (#174).
-fn journals_corrupt(path: &Path, error: &str) -> bool {
+fn note_corrupt_journals(path: &Path, error: &str) -> bool {
     if !matches!(unparsable_journals(path), Ok(files) if !files.is_empty()) {
         return false;
     }
@@ -760,7 +761,7 @@ pub fn mode(store: &Path) -> i8 {
             // 해석 불가 저널은 켜짐으로 보지 않는다. 감시자가 살아 있으면 메모리 사본으로 곧
             // 다시 쓰고, 죽었으면 되돌릴 원래 값도 읽을 수 없다. "꺼짐"으로 보여 주고 다음
             // 클릭(cycle)이 격리한 뒤 새로 켤 수 있게 한다 (#174). 읽기 오류는 예전 그대로.
-            if journals_corrupt(&files(store), &error) {
+            if note_corrupt_journals(&files(store), &error) {
                 return 0;
             }
             eprintln!("클램셸 상태 확인 실패: {error}");
@@ -874,9 +875,9 @@ fn reconcile_dead_helper(app: &tauri::AppHandle, store: &Path) {
     let candidate = match read_state(&path) {
         Ok(state) => state,
         Err(error) => {
-            // 손상 저널은 journals_corrupt가 한 번만 알린다 — 감시 스레드가 500ms마다 여기를
+            // 손상 저널은 note_corrupt_journals가 한 번만 알린다 — 감시 스레드가 500ms마다 여기를
             // 지나므로 같은 로그를 쌓지 않는다. 격리는 사용자의 다음 클릭(cycle)이 한다 (#174).
-            if !journals_corrupt(&path, &error) {
+            if !note_corrupt_journals(&path, &error) {
                 eprintln!("클램셸 시작 상태 확인 실패: {error}");
             }
             return;
