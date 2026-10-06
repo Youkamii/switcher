@@ -87,8 +87,9 @@ pub fn load(store: &Path) -> MemoData {
     }
 }
 
-/// 필드마다 따로 읽고 범위를 맞춘다. JSON이 아니거나(잘못된 UTF-8 포함), 최상위가
-/// 객체가 아니거나, `tabs`가 배열이 아니면 None — 탭을 살릴 수 없으니 보관 대상이다.
+/// 필드마다 따로 읽어 타입만 맞춘다 — 범위(탭 개수·활성 탭·투명도)는 normalize 한 곳이
+/// 정한다 (load가 이어서 부른다). JSON이 아니거나(잘못된 UTF-8 포함), 최상위가 객체가
+/// 아니거나, `tabs`가 배열이 아니면 None — 탭을 살릴 수 없으니 보관 대상이다.
 fn parse_lenient(bytes: &[u8]) -> Option<MemoData> {
     use serde_json::Value;
     let value: Value = serde_json::from_slice(bytes).ok()?;
@@ -109,15 +110,14 @@ fn parse_lenient(bytes: &[u8]) -> Option<MemoData> {
         }
         Some(_) => return None,
     }
-    // 음수·범위 밖·숫자 아님은 첫 탭 — normalize의 "범위 밖이면 0" 규칙과 같다
-    data.active = obj
-        .get("active")
-        .and_then(Value::as_f64)
-        .filter(|n| *n >= 0.0 && *n < TAB_COUNT as f64)
-        .map_or(0, |n| n as usize);
-    // 투명도는 0~100으로 자른다 (메모창 슬라이더 범위). 숫자가 아니면 기본값 유지
+    // 숫자가 아니면 기본값을 둔다. f64 → 정수 `as`는 필드 타입 끝값으로 포화하므로(음수는
+    // 0, 너무 큰 수는 최댓값) 어떤 숫자든 담긴다 — 활성 탭 범위 밖·투명도 100 초과는
+    // normalize가 첫 탭·100으로 맞춘다.
+    if let Some(n) = obj.get("active").and_then(Value::as_f64) {
+        data.active = n as usize;
+    }
     if let Some(n) = obj.get("alpha").and_then(Value::as_f64) {
-        data.alpha = n.clamp(0.0, 100.0).round() as u8;
+        data.alpha = n.round() as u8;
     }
     Some(data)
 }
@@ -280,6 +280,19 @@ mod tests {
         assert_eq!(data.alpha, 100);
         // 너그럽게 읽힌 파일은 보관 대상이 아니다
         assert!(corrupt_backups(&store).is_empty());
+    }
+
+    /// 범위는 normalize 한 곳이 맞춘다 — parse_lenient는 타입만 바꿔 담는다
+    #[test]
+    fn parse_lenient_converts_types_and_normalize_owns_ranges() {
+        let raw = parse_lenient(br#"{"tabs":["a"],"active":9,"alpha":300}"#).unwrap();
+        assert_eq!(raw.tabs, vec!["a"]);
+        assert_eq!(raw.active, 9);
+        assert_eq!(raw.alpha, u8::MAX);
+        let data = raw.normalize();
+        assert_eq!(data.tabs.len(), TAB_COUNT);
+        assert_eq!(data.active, 0);
+        assert_eq!(data.alpha, 100);
     }
 
     /// JSON으로 읽히지 않는 파일은 덮어쓰이기 전에 원본 그대로 보관된다 (#177)
