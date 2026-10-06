@@ -86,13 +86,19 @@ test("provider icon is one path per icon, coloured by theme variables, sized to 
 test("card actions are hidden by default and shown on hover or keyboard focus in Type1", () => {
   const base = cssSource.match(/\.card-actions \{[^}]*\}/)?.[0];
   assert.ok(base, ".card-actions rule must exist");
-  assert.match(base, /display: none;/);
-  assert.match(cssSource, /#app:not\(\.locked\) \.card:hover \.card-actions \{[^}]*display: flex;/);
+  // display:none이면 Tab으로 카드→버튼 이동 순간 버튼이 포커스 불가가 돼 body로 떨어진다 (CDP 실측)
+  // — 높이 0 + overflow hidden으로 접어 버튼은 포커스 가능한 채 보이지만 않게 한다
+  assert.match(base, /display: flex;/);
+  assert.match(base, /height: 0;/);
+  assert.match(base, /overflow: hidden;/);
+  assert.doesNotMatch(base, /display: none/);
+  const expanded = /\{[^}]*height: auto;[^}]*overflow: visible;/;
+  assert.match(cssSource, new RegExp("#app:not\\(\\.locked\\) \\.card:hover \\.card-actions " + expanded.source));
   // 키보드 경로는 :focus-within이 아니라 :has(:focus-visible) — 마우스로 누른 버튼의 포커스로
   // 버튼 줄이 눌러붙지 않게. 호버 규칙과 다른 규칙이어야 :has 미지원 엔진에서 호버가 산다
-  assert.match(cssSource, /#app:not\(\.locked\) \.card:has\(:focus-visible\) \.card-actions \{[^}]*display: flex;/);
-  // :has는 자손만 — Tab이 카드 자체에 멈춘 순간도 버튼 줄이 보여야 다음 Tab이 버튼에 들어간다
-  assert.match(cssSource, /#app:not\(\.locked\) \.card:focus-visible \.card-actions \{[^}]*display: flex;/);
+  assert.match(cssSource, new RegExp("#app:not\\(\\.locked\\) \\.card:has\\(:focus-visible\\) \\.card-actions " + expanded.source));
+  // :has는 자손만 — Tab이 카드 자체에 멈춘 순간도 버튼 줄이 보인다
+  assert.match(cssSource, new RegExp("#app:not\\(\\.locked\\) \\.card:focus-visible \\.card-actions " + expanded.source));
   assert.doesNotMatch(cssSource, /\.card:focus-within/);
   // 전환 후보 카드의 호버 신호는 테마 accent를 따른다 (색감 6종 이후 고정색 금지)
   const hover = cssSource.match(/#app:not\(\.locked\) \.card\.switchable:hover \{[\s\S]*?\}/)?.[0];
