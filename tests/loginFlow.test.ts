@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
+import { decideFailedLogin } from "../src/loginLifecycle";
 
 const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
 const stylesSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
@@ -19,6 +20,61 @@ function loadVisibleHitRect() {
     viewportWidth: number,
     viewportHeight: number,
   ) => [number, number, number, number] | null;
+}
+
+type FailedLoginCalls = {
+  lookups: unknown[];
+  retained: [string, string, number][];
+  toasts: [string, boolean | undefined][];
+  finished: number[];
+};
+
+/// main.ts의 closeOrRetainFailedLogin을 떼어 내, 실제 decideFailedLogin과 가짜 백엔드·UI로 실행한다
+function loadCloseOrRetainFailedLogin(options: {
+  findSession: () => Promise<string | null>;
+  current?: boolean;
+  cancelingAttempt?: number | null;
+}) {
+  const source = mainSource.match(/async function closeOrRetainFailedLogin\([\s\S]*?\n\}/)?.[0];
+  assert.ok(source, "post-prompt failure helper must exist");
+  const javascript = ts.transpileModule(source, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const calls: FailedLoginCalls = { lookups: [], retained: [], toasts: [], finished: [] };
+  const run = Function(
+    "decideFailedLogin",
+    "invoke",
+    "isCurrentLogin",
+    "loginCancelingAttempt",
+    "retainFailedLoginForCancel",
+    "toast",
+    "finishLogin",
+    `${javascript}\nreturn closeOrRetainFailedLogin;`,
+  )(
+    decideFailedLogin,
+    (command: string, args: unknown) => {
+      calls.lookups.push([command, args]);
+      return options.findSession();
+    },
+    () => options.current ?? true,
+    options.cancelingAttempt ?? null,
+    (message: string, sessionId: string, attempt: number) => {
+      calls.retained.push([message, sessionId, attempt]);
+    },
+    (message: string, error?: boolean) => {
+      calls.toasts.push([message, error]);
+    },
+    (attempt: number) => {
+      calls.finished.push(attempt);
+    },
+  ) as (
+    message: string,
+    requestId: string,
+    sessionId: string,
+    attempt: number,
+    closeToast: string,
+  ) => Promise<void>;
+  return { run, calls };
 }
 
 test("resizes the window after account login panels are mounted", () => {
@@ -192,6 +248,95 @@ test("retains exact cancel controls when a Claude or Codex start leaves a live s
     mainSource,
     /function retainFailedLoginForCancel[\s\S]*?loginSessionId = sessionId;[\s\S]*?cancelBtn\.addEventListener\("click", \(\) => void cancelActiveLogin\(attempt\)\)[\s\S]*?mountLoginPanel\(panel, attempt\);/,
     "the retained panel must keep the exact session ID and an enabled retry-cancel action",
+  );
+});
+
+test("keeps retry-cancel controls when a post-prompt failure left this exact session alive (#177)", async () => {
+  const { run, calls } = loadCloseOrRetainFailedLogin({ findSession: async () => "42" });
+
+  await run("timed out; kill failed", "request-177", "42", 7, "timed out — start over");
+
+  assert.deepEqual(calls.lookups, [
+    ["login_session_for_request", { requestId: "request-177" }],
+  ]);
+  assert.deepEqual(calls.retained, [["timed out; kill failed", "42", 7]]);
+  assert.deepEqual(calls.finished, [], "the panel must stay open so cancel can be retried");
+  assert.deepEqual(calls.toasts, [], "the retained panel shows the error itself");
+});
+
+test("closes with the start-over guidance when the backend already cleaned the session (#177)", async () => {
+  const { run, calls } = loadCloseOrRetainFailedLogin({ findSession: async () => null });
+
+  await run("timed out — cleaned", "request-177", "42", 7, "timed out — start over");
+
+  assert.deepEqual(calls.retained, []);
+  assert.deepEqual(calls.toasts, [["timed out — start over", true]]);
+  assert.deepEqual(calls.finished, [7]);
+});
+
+test("does not adopt a different surviving session after a post-prompt failure (#177)", async () => {
+  const { run, calls } = loadCloseOrRetainFailedLogin({ findSession: async () => "99" });
+
+  await run("failed", "request-177", "42", 7, "failed");
+
+  assert.deepEqual(calls.retained, []);
+  assert.deepEqual(calls.finished, [7]);
+});
+
+test("a failed session lookup closes with both errors instead of guessing (#177)", async () => {
+  const { run, calls } = loadCloseOrRetainFailedLogin({
+    findSession: async () => {
+      throw new Error("lookup failed");
+    },
+  });
+
+  await run("failed", "request-177", "42", 7, "failed — start over");
+
+  assert.deepEqual(calls.retained, []);
+  assert.deepEqual(calls.toasts, [["failed — start over; Error: lookup failed", true]]);
+  assert.deepEqual(calls.finished, [7]);
+});
+
+test("a cancel started during the lookup owns the panel (#177)", async () => {
+  const canceling = loadCloseOrRetainFailedLogin({
+    findSession: async () => "42",
+    cancelingAttempt: 7,
+  });
+  await canceling.run("failed", "request-177", "42", 7, "failed");
+  const replaced = loadCloseOrRetainFailedLogin({ findSession: async () => null, current: false });
+  await replaced.run("failed", "request-177", "42", 7, "failed");
+
+  for (const { calls } of [canceling, replaced]) {
+    assert.deepEqual(calls.retained, []);
+    assert.deepEqual(calls.toasts, []);
+    assert.deepEqual(calls.finished, []);
+  }
+});
+
+test("routes every Claude and Codex post-prompt failure through the session check (#177)", () => {
+  assert.match(
+    mainSource,
+    /mountLoginPanel\(loginPanel\(prompt, attempt, requestId\), attempt\);/,
+    "the login panel must know its request ID to look up a surviving session",
+  );
+  const routed =
+    mainSource.match(
+      /await closeOrRetainFailedLogin\(\s*message,\s*requestId,\s*prompt\.session_id,\s*attempt,/g,
+    ) ?? [];
+  assert.equal(
+    routed.length,
+    3,
+    "Claude approval wait, Claude code submit, and Codex device wait must all check before closing",
+  );
+  assert.match(
+    mainSource,
+    /if \(isLoginCompletedElsewhere\(error\)\) return;\s*(?:\/\/[^\n]*\n\s*)*await closeOrRetainFailedLogin\(\s*message,\s*requestId,\s*prompt\.session_id,\s*attempt,\s*t\("retryFromStart", \{ error: message \}\),?\s*\);\s*return;/,
+    "a generic code-submit failure must not close the panel before the session check",
+  );
+  assert.doesNotMatch(
+    mainSource,
+    /toast\(t\("retryFromStart", \{ error: message \}\), true\);\s*\}\s*finishLogin\(attempt\);/,
+    "the old unconditional close after a submit failure must be gone",
   );
 });
 

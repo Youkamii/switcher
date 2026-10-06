@@ -679,6 +679,47 @@ function retainFailedLoginForCancel(error: string, sessionId: string, attempt: n
   mountLoginPanel(panel, attempt);
 }
 
+/// 프롬프트를 받은 뒤(승인 대기·코드 제출)의 실패를 마무리한다 (#177).
+/// 백엔드는 실패를 정리하다 로그인 프로세스 종료에 실패하면 세션을 지우지 않고 오류만
+/// 돌려준다(login.rs terminate_and_take_session). 그때 패널을 닫아 버리면 남은 세션 때문에
+/// 앱을 다시 켤 때까지 '계정 추가'가 "이미 로그인이 진행 중"으로 막혔다. 그래서 닫기 전에
+/// 시작 실패 경로와 같은 판정(decideFailedLogin)으로 이 요청의 세션이 아직 있는지 묻고,
+/// 이 패널의 바로 그 세션이 남았으면 취소를 다시 누를 수 있는 화면
+/// (retainFailedLoginForCancel)으로 바꾼다. 세션이 정리됐으면 지금처럼 안내 후 닫는다.
+/// 오류 문구로 가르지 않는 이유: 종료 실패 문구는 taskkill·종료 대기 초과·상태 확인 실패
+/// 등 경로마다 달라 빠뜨리기 쉽고, 세션이 남았는지를 직접 묻는 쪽이 정확하다.
+async function closeOrRetainFailedLogin(
+  message: string,
+  requestId: string,
+  sessionId: string,
+  attempt: number,
+  closeToast: string,
+) {
+  try {
+    // 프롬프트까지 받은 요청이라 세션이 있었다 — 조회를 건너뛰지 않게 reserved: true
+    const decision = await decideFailedLogin({
+      reserved: true,
+      requestId,
+      findSession: (failedRequestId) =>
+        invoke<string | null>("login_session_for_request", {
+          requestId: failedRequestId,
+        }),
+    });
+    if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+    if (decision.action === "retain" && decision.sessionId === sessionId) {
+      retainFailedLoginForCancel(message, sessionId, attempt);
+      return;
+    }
+  } catch (lookupError) {
+    if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
+    toast(`${closeToast}; ${String(lookupError)}`, true);
+    finishLogin(attempt);
+    return;
+  }
+  toast(closeToast, true);
+  finishLogin(attempt);
+}
+
 async function cancelActiveLogin(attempt: number) {
   if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
   loginCancelingAttempt = attempt;
@@ -817,7 +858,7 @@ function beginLogin(provider: LoginProvider): number {
 
 /// 로그인 패널은 loginHost 안의 같은 DOM 노드로 유지된다. 완료 콜백은 시도 번호를
 /// 확인해 취소된 이전 waiter가 더 새 로그인 화면을 닫지 못하게 한다.
-function loginPanel(prompt: LoginPrompt, attempt: number): HTMLElement {
+function loginPanel(prompt: LoginPrompt, attempt: number, requestId: string): HTMLElement {
   const panel = document.createElement("div");
   panel.className = "login-panel";
 
@@ -854,7 +895,10 @@ function loginPanel(prompt: LoginPrompt, attempt: number): HTMLElement {
         if (activeAccountWait === wait) activeAccountWait = null;
         if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
         if (isLoginCompletedElsewhere(error)) return;
-        toast(String(error), true);
+        // 대기 시간 초과 정리 중 프로세스 종료가 실패하면 세션이 남는다 — 닫지 않는다 (#177)
+        const message = String(error);
+        await closeOrRetainFailedLogin(message, requestId, prompt.session_id, attempt, message);
+        return;
       }
       finishLogin(attempt);
     })();
@@ -901,9 +945,17 @@ function loginPanel(prompt: LoginPrompt, attempt: number): HTMLElement {
         }
         // 브라우저 승인 대기가 먼저 끝냈다 — 그쪽이 보고·마무리한다
         if (isLoginCompletedElsewhere(error)) return;
-        // 그 외 실패는 세션이 이미 끝난 상태라 재시도가 불가능하다 —
-        // 패널을 닫고 처음부터 다시 시작하게 안내한다
-        toast(t("retryFromStart", { error: message }), true);
+        // 그 외 실패는 대개 세션이 이미 정리돼 같은 패널에서 재시도할 수 없다 —
+        // 처음부터 다시 시작하게 안내하고 닫는다. 단 정리 중 프로세스 종료가 실패해
+        // 세션이 남았으면 닫지 않고 취소 재시도 화면으로 바꾼다 (#177)
+        await closeOrRetainFailedLogin(
+          message,
+          requestId,
+          prompt.session_id,
+          attempt,
+          t("retryFromStart", { error: message }),
+        );
+        return;
       }
       finishLogin(attempt);
     };
@@ -937,7 +989,10 @@ function loginPanel(prompt: LoginPrompt, attempt: number): HTMLElement {
       } catch (error) {
         if (activeAccountWait === wait) activeAccountWait = null;
         if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
-        toast(String(error), true);
+        // 대기 시간 초과 정리 중 프로세스 종료가 실패하면 세션이 남는다 — 닫지 않는다 (#177)
+        const message = String(error);
+        await closeOrRetainFailedLogin(message, requestId, prompt.session_id, attempt, message);
+        return;
       }
       finishLogin(attempt);
     })();
@@ -1046,7 +1101,7 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
       }
       activeLoginStart = null;
       loginSessionId = prompt.session_id;
-      mountLoginPanel(loginPanel(prompt, attempt), attempt);
+      mountLoginPanel(loginPanel(prompt, attempt, requestId), attempt);
     } catch (error) {
       if (!isCurrentLogin(attempt) || loginCancelingAttempt === attempt) return;
       const message = String(error);
