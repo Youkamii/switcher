@@ -1548,6 +1548,49 @@ const BRIGHTNESS_MIN = IS_MAC ? 1 : 0;
 /// 모든 모니터를 카드 하나에 모니터당 한 줄(번호·슬라이더·%)로 — 모니터마다
 /// 카드·이름 헤더를 두던 이전 구조는 세로 여백이 과했다. 전체 이름은 번호 툴팁에.
 /// Type 2/3(클릭 투과)에서도 조작된다 — reportHitRegions가 줄을 히트 영역으로 보고.
+/// 밝기 명령 전송기 (Type1/컴팩트·Type4 공용). 밝기 명령은 모니터마다 수십~수백 ms라
+/// 드래그 중엔 표시만 갱신하고 손을 잠깐 멈추면(250ms) 마지막 값 하나만 보낸다.
+/// flush(change)는 손을 떼는 사용자 동작이라 타이머가 죽은 비활성 웹뷰(맥)에서도 마지막
+/// 값이 반드시 전송된다 (#178). 전송은 한 번에 하나만 — 방향키 연타처럼 change가 초당
+/// 수십 번 와도 DDC 쓰기를 겹치지 않고, 진행 중이면 가장 최신 값 하나만 뒤이어 보낸다
+/// (latest-wins; 먼저 끝난 요청이 더 새 값을 덮는 역전 방지, review).
+/// name을 함께 보내 목록 이후 모니터 구성이 바뀐 경우 엉뚱한 모니터에 쓰지 않게 한다
+/// (Rust가 대조 후 불일치면 에러).
+function brightnessSender(monitor: DisplayInfo, slider: HTMLInputElement) {
+  let debounce: number | undefined;
+  let inflight = false;
+  let queued = false;
+  const send = (): void => {
+    window.clearTimeout(debounce);
+    debounce = undefined;
+    if (inflight) {
+      queued = true;
+      return;
+    }
+    inflight = true;
+    void invoke("display_set_brightness", {
+      id: monitor.id,
+      percent: Number(slider.value),
+      name: monitor.name,
+    })
+      .catch((error) => toast(String(error), true))
+      .finally(() => {
+        inflight = false;
+        if (queued) {
+          queued = false;
+          send();
+        }
+      });
+  };
+  return {
+    schedule: () => {
+      window.clearTimeout(debounce);
+      debounce = window.setTimeout(send, 250);
+    },
+    flush: send,
+  };
+}
+
 async function renderDisplays(target: DocumentFragment, compact: boolean) {
   const section = document.createElement("section");
   section.dataset.collapsible = "display";
@@ -1594,27 +1637,12 @@ async function renderDisplays(target: DocumentFragment, compact: boolean) {
           pct.textContent = `${start}%`;
           // 밝기 명령은 모니터마다 수십~수백 ms — 드래그 중엔 표시만 갱신하고
           // 손을 잠깐 멈추면 마지막 값 하나만 보낸다
-          let debounce: number | undefined;
-          // name을 함께 보내 목록 이후 모니터 구성이 바뀐 경우 엉뚱한 모니터에
-          // 쓰지 않게 한다 (Rust가 대조 후 불일치면 에러)
-          const send = () => {
-            window.clearTimeout(debounce);
-            debounce = undefined;
-            void invoke("display_set_brightness", {
-              id: monitor.id,
-              percent: Number(slider.value),
-              name: monitor.name,
-            }).catch((error) => toast(String(error), true));
-          };
+          const sender = brightnessSender(monitor, slider);
           slider.addEventListener("input", () => {
             pct.textContent = `${slider.value}%`;
-            window.clearTimeout(debounce);
-            debounce = window.setTimeout(send, 250);
+            sender.schedule();
           });
-          // 손을 떼는 순간(change)은 사용자 동작이라 타이머가 죽은 비활성 웹뷰(맥)에서도
-          // 마지막 값이 반드시 전송된다 (#178). 타이머가 먼저 보냈으면 같은 값을 한 번 더
-          // 보내는 정도 — 드래그 중 디바운스는 그대로.
-          slider.addEventListener("change", send);
+          slider.addEventListener("change", sender.flush);
           row.append(slider, pct);
         }
         card.appendChild(row);
@@ -1670,24 +1698,13 @@ async function renderDisplaysEdge(target: DocumentFragment) {
     const pct = document.createElement("span");
     pct.className = "edge-num edge-dsp-val"; // 꾹 누를 때도 남는다(대신할 남은 시간이 없다)
     pct.textContent = String(start);
-    let debounce: number | undefined;
-    const send = () => {
-      window.clearTimeout(debounce);
-      debounce = undefined;
-      void invoke("display_set_brightness", {
-        id: monitor.id,
-        percent: Number(slider.value),
-        name: monitor.name,
-      }).catch((error) => toast(String(error), true));
-    };
+    const sender = brightnessSender(monitor, slider);
     slider.addEventListener("input", () => {
       pct.textContent = slider.value;
       slider.style.setProperty("--edge-pct", `${slider.value}%`);
-      window.clearTimeout(debounce);
-      debounce = window.setTimeout(send, 250);
+      sender.schedule();
     });
-    // 손을 떼는 순간은 사용자 동작 — 타이머가 죽은 비활성 웹뷰(맥)에서도 마지막 값 전송 (#178)
-    slider.addEventListener("change", send);
+    slider.addEventListener("change", sender.flush);
     const lab = document.createElement("span");
     lab.className = "edge-lab";
     lab.textContent = String(monitor.id + 1);
@@ -2640,7 +2657,12 @@ function setEdgeOut(out: boolean) {
   if (!edgeActive) return;
   // 타이머 없는 백업: 러스트 폴링의 호버 신호는 사용자 동작마다 오므로, 연출이 걸린 채
   // 1.5초가 지났으면 여기서 먼저 매듭짓고 새 신호를 정상 처리한다
-  if (edgeAnimating && Date.now() - edgeAnimStartedAt > EDGE_ANIM_MAX_MS) edgeAnimationDone();
+  if (edgeAnimating && Date.now() - edgeAnimStartedAt > EDGE_ANIM_MAX_MS) {
+    // 방금 온 신호가 최신이다 — 멈춰 있던 동안 쌓인 낡은 pending을 먼저 적용하면 판이
+    // 닫혔다 다시 열리는 펄럭임이 난다 (review)
+    edgePending = null;
+    edgeAnimationDone();
+  }
   if (edgeAnimating) {
     edgePending = out;
     return;

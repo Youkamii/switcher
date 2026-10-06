@@ -15,16 +15,18 @@ test("delete confirmation disarms on outside interaction, not only on a timer", 
 });
 
 test("brightness sliders send the final value on change, not only after the debounce", () => {
-  const changes = mainSource.match(/slider\.addEventListener\("change", send\);/g) ?? [];
+  const changes = mainSource.match(/slider\.addEventListener\("change", sender\.flush\);/g) ?? [];
   assert.equal(changes.length, 2, "both the Type1/compact and the Type4 sliders flush on change");
-  const debounces = mainSource.match(/debounce = window\.setTimeout\(send, 250\);/g) ?? [];
-  assert.equal(debounces.length, 2, "drag debounce stays at 250ms in both");
+  const sender = mainSource.match(/function brightnessSender\([\s\S]*?\n}\n/)?.[0];
+  assert.ok(sender, "shared brightness sender must exist");
+  assert.match(sender, /debounce = window\.setTimeout\(send, 250\);/, "drag debounce stays at 250ms");
+  assert.match(sender, /if \(inflight\) \{\s*queued = true;\s*return;\s*\}/, "sends are serialized, latest wins");
 });
 
 test("Type4 animation state machine unsticks from the next Rust hover signal", () => {
   assert.match(
     mainSource,
-    /if \(edgeAnimating && Date\.now\(\) - edgeAnimStartedAt > EDGE_ANIM_MAX_MS\) edgeAnimationDone\(\);/,
+    /if \(edgeAnimating && Date\.now\(\) - edgeAnimStartedAt > EDGE_ANIM_MAX_MS\) \{[\s\S]*?edgePending = null;\s*edgeAnimationDone\(\);/,
   );
   assert.match(mainSource, /edgeAnimStartedAt = Date\.now\(\);/);
 });

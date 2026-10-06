@@ -1094,12 +1094,31 @@ pub(crate) const COMPLETED_ELSEWHERE: &str = "이미 완료된 로그인입니�
 /// 클로드는 승인 대기와 코드 제출이 같은 세션을 지켜보므로(#167), 제출 쪽 타임아웃이 세션을
 /// 거두면 승인 대기 쪽은 세션이 사라진 것만 본다 — 사유를 세대에 묶어 두지 않으면 사용자에게
 /// "로그인을 취소했습니다"라는 틀린 문구가 간다 (#178)
-static LAST_CANCEL_REASON: std::sync::Mutex<Option<(u64, String)>> = std::sync::Mutex::new(None);
+/// 세대 → 사유. 슬롯 하나면 다른 세대의 기록이 끼어들어 사유를 잃는다(병렬 테스트·연속
+/// 로그인) — 세대별로 두고 오래된 것부터 버린다. 임계 구역이 대입뿐이라 오염돼도 값은
+/// 유효하므로 into_inner로 관용한다
+static LAST_CANCEL_REASON: std::sync::Mutex<Vec<(u64, String)>> = std::sync::Mutex::new(Vec::new());
+const CANCEL_REASON_KEEP: usize = 8;
 
 fn record_cancel_reason(generation: u64, reason: &str) {
-    if let Ok(mut slot) = LAST_CANCEL_REASON.lock() {
-        *slot = Some((generation, reason.to_string()));
+    let mut reasons = LAST_CANCEL_REASON
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    reasons.retain(|(gen, _)| *gen != generation);
+    reasons.push((generation, reason.to_string()));
+    if reasons.len() > CANCEL_REASON_KEEP {
+        let drop = reasons.len() - CANCEL_REASON_KEEP;
+        reasons.drain(..drop);
     }
+}
+
+fn recorded_cancel_reason(generation: u64) -> Option<String> {
+    LAST_CANCEL_REASON
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(gen, _)| *gen == generation)
+        .map(|(_, reason)| reason.clone())
 }
 
 /// 세션이 사라진 이유를 구분한다: 같은 세대를 완료 경로가 가져갔으면 "이미 완료", 대기자가
@@ -1109,12 +1128,8 @@ fn session_gone_error(generation: u64) -> String {
         return COMPLETED_ELSEWHERE.to_string();
     }
     if generation != 0 {
-        if let Ok(slot) = LAST_CANCEL_REASON.lock() {
-            if let Some((gen, reason)) = slot.as_ref() {
-                if *gen == generation {
-                    return reason.clone();
-                }
-            }
+        if let Some(reason) = recorded_cancel_reason(generation) {
+            return reason;
         }
     }
     "로그인을 취소했습니다".to_string()
@@ -1961,7 +1976,14 @@ mod tests {
         assert_eq!(session_gone_error(81), "로그인을 취소했습니다");
         record_cancel_reason(77, "상태 확인 실패");
         assert_eq!(session_gone_error(77), COMPLETED_ELSEWHERE);
-        record_cancel_reason(0, "none");
+        // 다른 세대의 기록이 끼어도 80의 사유는 남는다 (세대별 보관)
+        record_cancel_reason(82, "다른 세대");
+        assert_eq!(session_gone_error(80), "시간이 초과됐습니다 — 처음부터 다시 시도하세요");
+        // 보관 상한을 넘기면 오래된 것부터 사라진다
+        for gen in 100..100 + CANCEL_REASON_KEEP as u64 {
+            record_cancel_reason(gen, "채우기");
+        }
+        assert_eq!(session_gone_error(80), "로그인을 취소했습니다");
         assert_eq!(session_gone_error(77), COMPLETED_ELSEWHERE);
         assert_eq!(session_gone_error(78), "로그인을 취소했습니다");
         assert_eq!(session_gone_error(0), "로그인을 취소했습니다");
