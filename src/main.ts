@@ -393,6 +393,19 @@ async function loadUsage(
   fitHeight();
 }
 
+/// 활성 표시 dot (#102) — 카드 테두리·이름 색은 --fg-alpha를 따라 사라지지만
+/// dot은 사용량 바와 같은 --bar-alpha를 따른다. 골조만 남는 투명도에서
+/// 어느 계정이 활성인지 가리키는 표식은 이것 하나뿐이다. Type1·Type2 카드
+/// 머리에만 붙는다 — Type3는 머리가 없고 왼쪽 스트라이프가 같은 역할, Type4는
+/// 이름 앞 표식(.edge-name::before)이 이미 있다. 비활성 점은 툴팁이 없다 —
+/// 회색 점마다 "대기 중"이 뜨면 잡음이다 (8월 적대 리뷰).
+function statusDot(active: boolean): HTMLElement {
+  const dot = document.createElement("span");
+  dot.className = "status-dot";
+  if (active) dot.title = t("activeDot");
+  return dot;
+}
+
 function profileCard(
   provider: ProviderId,
   profile: ProfileInfo,
@@ -409,7 +422,7 @@ function profileCard(
   email.className = "card-name";
   email.textContent = profile.email ?? profile.name;
   email.title = t("profileNameTooltip", { name: profile.name });
-  head.append(email);
+  head.append(statusDot(profile.active), email);
   if (profile.plan) {
     const plan = document.createElement("span");
     plan.className = "badge plan";
@@ -1825,7 +1838,7 @@ function compactCard(
     email.className = "card-name";
     email.textContent = profile.email ?? profile.name;
     email.title = t("profileNameTooltip", { name: profile.name });
-    head.appendChild(email);
+    head.append(statusDot(profile.active), email);
     if (profile.plan) {
       const plan = document.createElement("span");
       plan.className = "badge plan";
