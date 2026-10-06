@@ -159,11 +159,23 @@ pub(crate) mod keychain {
         Ok(Some(data))
     }
 
-    pub(crate) fn item_exists(service: &str) -> bool {
+    /// 항목이 있으면 Ok(true), 없으면 Ok(false). security 실행 자체가 실패하거나 "없음" 외의
+    /// 오류(키체인 잠김 등)면 Err — 예전처럼 false로 삼키면 호출자가 "로그인 없음"으로
+    /// 오인해 백업 없이 활성 항목을 덮어쓸 수 있다 (#175).
+    pub(crate) fn item_exists(service: &str) -> Result<bool, String> {
         // -w 없이 조회하면 비밀에 접근하지 않고 존재만 확인한다
-        run_security(&["find-generic-password", "-s", service])
-            .map(|out| out.status.success())
-            .unwrap_or(false)
+        let out = run_security(&["find-generic-password", "-s", service])?;
+        if out.status.success() {
+            return Ok(true);
+        }
+        let err = String::from_utf8_lossy(&out.stderr);
+        // "없음"은 read_item·delete_item과 같은 문구에 더해 종료 코드 44로도 판정한다 —
+        // security는 OSStatus의 하위 8비트를 종료 코드로 내고 errSecItemNotFound(-25300)는
+        // 44다. 문구가 달라도 "없음"을 조회 실패로 오인해 전환을 막지 않게 (맥 미검증)
+        if out.status.code() == Some(44) || err.contains("could not be found") {
+            return Ok(false);
+        }
+        Err(format!("키체인 조회 실패 ({service}): {}", err.trim()))
     }
 
     pub(crate) fn write_item(service: &str, account: &str, data: &[u8]) -> Result<(), String> {
@@ -222,7 +234,7 @@ pub(crate) mod keychain {
             let svc = format!("switcher-selftest-{}", std::process::id());
             let payload = br#"{"probe":"not-a-secret"}"#;
             write_item(&svc, &username(), payload).unwrap();
-            assert!(item_exists(&svc));
+            assert!(item_exists(&svc).unwrap());
             let read = read_item(&svc).unwrap().expect("방금 쓴 항목이 있어야 한다");
             assert_eq!(read, payload);
             // 같은 항목 갱신(-U)도 되어야 한다 (전환마다 일어나는 일)
@@ -230,7 +242,7 @@ pub(crate) mod keychain {
             write_item(&svc, &username(), payload2).unwrap();
             assert_eq!(read_item(&svc).unwrap().unwrap(), payload2);
             delete_item(&svc).unwrap();
-            assert!(!item_exists(&svc));
+            assert!(!item_exists(&svc).unwrap());
             assert!(read_item(&svc).unwrap().is_none(), "삭제 후에는 None");
         }
     }
@@ -668,20 +680,43 @@ fn read_live_cred_raw(env: &Env, provider: Provider) -> Result<Vec<u8>, String> 
     }
 }
 
-/// 활성 자격증명이 존재하는가 (전환·저장 가능 여부 판단)
-pub(crate) fn live_cred_exists(env: &Env, provider: Provider) -> bool {
+#[cfg(test)]
+thread_local! {
+    /// 테스트 전용 — 맥 키체인 존재 확인 실패(security 실행 실패 등)를 어느 플랫폼에서든
+    /// 흉내 낸다. 스레드 로컬이라 병렬로 도는 다른 테스트에 새지 않는다.
+    static FAIL_LIVE_PROBE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// 활성 자격증명이 존재하는가 — 확인 자체가 실패하면 Err (맥: security 실행 실패·키체인
+/// 조회 오류). 전환·저장처럼 이 판단 뒤에 쓰기가 오는 곳은 이 함수를 써서, 확인 실패를
+/// "로그인 없음"으로 뭉개지 않는다 (#175). 파일 저장소는 예전처럼 exists()로 본다.
+pub(crate) fn live_cred_exists_checked(env: &Env, provider: Provider) -> Result<bool, String> {
+    #[cfg(test)]
+    {
+        if FAIL_LIVE_PROBE.with(|fail| fail.get()) {
+            return Err("security 실행 실패 (테스트 주입)".into());
+        }
+    }
     match provider {
-        Provider::Codex => env.live_credential_path(Provider::Codex).exists(),
+        Provider::Codex => Ok(env.live_credential_path(Provider::Codex).exists()),
         Provider::Claude => match &env.claude_live {
-            ClaudeLiveStore::File(path) => path.exists(),
+            ClaudeLiveStore::File(path) => Ok(path.exists()),
             #[cfg(target_os = "macos")]
             ClaudeLiveStore::Keychain {
                 service,
                 legacy_file,
                 ..
-            } => keychain::item_exists(service) || legacy_file.exists(),
+            } => Ok(keychain::item_exists(service)? || legacy_file.exists()),
         },
     }
+}
+
+/// 활성 자격증명이 존재하는가 — 관대한 판. 확인이 실패하면 "있다"고 본다.
+/// 이 판을 쓰는 곳(usage.rs 갱신 경로)은 모두 "신원 불명 + 자격증명 있음"이면 재발급·
+/// 복구를 보류하는 분기라, 모를 때 보류하는 쪽이 안전하다 — "없다"로 보면 활성 계정일 수
+/// 있는 프로필을 회전시키거나 갱신 복구 파일을 지운다 (#175).
+pub(crate) fn live_cred_exists(env: &Env, provider: Provider) -> bool {
+    live_cred_exists_checked(env, provider).unwrap_or(true)
 }
 
 /// 활성 자격증명 쓰기 (전환 2단계). 키체인 모드에서는 구버전 파일이 남아 있으면
@@ -1048,7 +1083,10 @@ pub(crate) fn claude_apply_oauth_block(env: &Env, profile_dir: &Path) -> Result<
 pub fn save_current(env: &Env, provider: Provider, name: &str) -> Result<String, String> {
     // 변이 함수가 스스로 잠근다 — 호출자가 잠금을 잊을 수 없게 (관례 단일화)
     let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
-    if !live_cred_exists(env, provider) {
+    // 확인 실패(맥 키체인 조회 오류)를 "로그인 정보가 없습니다"로 뭉개지 않고 원인을 알린다
+    let exists = live_cred_exists_checked(env, provider)
+        .map_err(|e| format!("활성 자격증명 존재 확인 실패 — 저장하지 않았습니다: {e}"))?;
+    if !exists {
         return Err("로그인 정보가 없습니다 — 먼저 해당 CLI에서 로그인하세요".into());
     }
     let ident = live_identity(env, provider)?
@@ -1079,7 +1117,8 @@ pub fn save_current(env: &Env, provider: Provider, name: &str) -> Result<String,
 /// (격리 로그인은 활성 파일을 건드리지 않고, 임포트는 계정 id로 폴더를 찾는다).
 /// 저장했으면 그 이름을, 할 일이 없었으면 None을 돌려준다.
 pub fn ensure_live_saved(env: &Env, provider: Provider) -> Result<Option<String>, String> {
-    if !live_cred_exists(env, provider) {
+    // 확인 실패는 오류로 올린다 — 목록 쪽 호출자가 오류면 등록 없이 1차 목록을 그대로 쓴다
+    if !live_cred_exists_checked(env, provider)? {
         return Ok(None);
     }
     let Some(ident) = live_identity(env, provider)? else {
@@ -1192,10 +1231,16 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
     }
 
     // 1) 백업 — 현재 활성 계정을 자기 프로필(없으면 자동 생성)에 저장
+    // 존재 확인이 실패하면(맥: security 실행 실패·키체인 조회 오류) "로그인 없음"으로 보지
+    // 않고 중단한다 — 없다고 보면 백업을 건너뛴 채 활성 항목을 덮어써, 떠나는 계정의
+    // 최신 토큰을 잃는다 (#175).
+    let live_exists = live_cred_exists_checked(env, provider).map_err(|e| {
+        format!("활성 자격증명 존재 확인 실패 — 전환을 중단했습니다 (백업 없이 덮어쓰지 않도록): {e}")
+    })?;
     let mut backed_up_to = None;
     // 방금 백업한 활성 토큰 바이트 — 2단계가 반쯤 실패하면 활성 위치를 이것으로 되돌린다
     let mut previous_live = None;
-    if live_cred_exists(env, provider) {
+    if live_exists {
         match live_identity(env, provider)? {
             Some(live) => {
                 let back_name = match find_profile_by_id(env, provider, &live.id)? {
@@ -1571,6 +1616,52 @@ mod tests {
         assert_eq!(result.backed_up_to.as_deref(), Some("main"));
         let main_after = fs::read_to_string(&main_cred).unwrap();
         assert!(main_after.contains("tok-a3") && !main_after.contains("tok-b1"));
+        assert!(live_token(&env).contains("tok-b1"));
+    }
+
+    /// 활성 자격증명 존재 확인이 실패하면(맥 security 실행 실패를 흉내) 전환은 백업도
+    /// 덮어쓰기도 하지 않고 중단한다 — "로그인 없음"으로 오인해 백업 없이 덮어쓰던
+    /// fail-open의 회귀 방지 (#175). 맥 키체인 판정 자체는 이 테스트 범위 밖이다.
+    #[test]
+    fn switch_aborts_without_writing_when_live_probe_fails() {
+        let env = test_env("switch-probe-fail");
+        login_claude(&env, "uuid-b", "bob@test.dev", "tok-b1");
+        save_current(&env, Provider::Claude, "second").unwrap();
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a1");
+        save_current(&env, Provider::Claude, "main").unwrap();
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a2"); // 저장 후 CLI가 갱신
+        let main_cred = env
+            .profiles_dir(Provider::Claude)
+            .join("main")
+            .join("credentials.json");
+        let live_before = fs::read(env.live_credential_path(Provider::Claude)).unwrap();
+        let main_before = fs::read(&main_cred).unwrap();
+        let claude_json_before = fs::read(env.claude_json_path()).unwrap();
+
+        FAIL_LIVE_PROBE.with(|fail| fail.set(true));
+        let switched = switch(&env, Provider::Claude, "second");
+        let saved = save_current(&env, Provider::Claude, "main");
+        let auto_saved = ensure_live_saved(&env, Provider::Claude);
+        let lenient = live_cred_exists(&env, Provider::Claude);
+        FAIL_LIVE_PROBE.with(|fail| fail.set(false));
+
+        let err = switched.unwrap_err();
+        assert!(err.contains("존재 확인 실패") && err.contains("중단"), "{err}");
+        assert!(saved.unwrap_err().contains("존재 확인 실패"));
+        assert!(auto_saved.is_err());
+        assert!(lenient, "관대한 판은 모를 때 '있다'로 본다 (갱신·복구 보류 쪽)");
+        assert_eq!(
+            fs::read(env.live_credential_path(Provider::Claude)).unwrap(),
+            live_before,
+            "활성 토큰을 덮어쓰지 않는다"
+        );
+        assert_eq!(fs::read(&main_cred).unwrap(), main_before, "백업도 쓰지 않는다");
+        assert_eq!(fs::read(env.claude_json_path()).unwrap(), claude_json_before);
+
+        // 확인이 회복되면 정상적으로 백업 후 전환된다
+        let result = switch(&env, Provider::Claude, "second").unwrap();
+        assert_eq!(result.backed_up_to.as_deref(), Some("main"));
+        assert!(fs::read_to_string(&main_cred).unwrap().contains("tok-a2"));
         assert!(live_token(&env).contains("tok-b1"));
     }
 
