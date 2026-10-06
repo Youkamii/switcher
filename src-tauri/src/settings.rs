@@ -134,24 +134,50 @@ fn save_value_checked(store: &Path, key: &str, value: Value) -> Result<(), Strin
     write_settings(store, &root)
 }
 
-/// 키 하나를 갱신해 저장. 다른 키는 보존하고, 임시 파일 + rename으로 원자적으로 쓴다 —
-/// 쓰다 만 파일이 남으면 다음 시작에서 모든 설정이 기본값으로 뒤집힌다 (자동 실행 재등록 등).
+/// 키 하나를 갱신해 저장. 다른 키는 보존하고, 임시 파일 + fsync + rename으로 원자적으로
+/// 쓴다 — 쓰다 만 파일이 남으면 다음 시작에서 모든 설정이 기본값으로 뒤집힌다 (자동 실행
+/// 재등록 등). 기존 파일이 손상돼 분석할 수 없으면 덮어쓰지 않고 옆으로 옮겨 둔 뒤 새로
+/// 쓴다 (#175) — 트레이 토글 하나가 {key}만 든 파일로 언어·표시 설정을 조용히 지우지 않게.
 fn save_value(store: &Path, key: &str, value: Value) -> Result<(), String> {
     fs::create_dir_all(store).map_err(|e| format!("설정 폴더 생성 실패: {e}"))?;
-    let mut root = match read_settings(store) {
-        Some(v @ Value::Object(_)) => v,
-        _ => Value::Object(Default::default()),
+    let path = settings_path(store);
+    let mut root = match fs::read(&path) {
+        Ok(bytes) => match serde_json::from_slice::<Value>(&bytes) {
+            Ok(v @ Value::Object(_)) => v,
+            // 분석 불가(0바이트·잘린 파일·깨진 바이트)이거나 객체가 아니면 손상으로 본다
+            _ => {
+                quarantine_corrupt(&path)?;
+                Value::Object(Default::default())
+            }
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Value::Object(Default::default())
+        }
+        // 잠금·권한 같은 읽기 실패는 손상이라 단정할 수 없다 — 격리도 덮어쓰기도 하지 않는다
+        Err(error) => return Err(format!("설정 읽기 실패: {error}")),
     };
     root[key] = value;
     write_settings(store, &root)
 }
 
+/// 손상된 settings.json을 settings.json.corrupt-<유닉스 초>로 옮겨 보존한다 (#175).
+/// 옮기지 못하면 오류 — 옛 설정을 지우는 덮어쓰기로 넘어가지 않는다.
+fn quarantine_corrupt(path: &Path) -> Result<(), String> {
+    let aside = path.with_file_name(format!("settings.json.corrupt-{}", crate::accounts::now()));
+    fs::rename(path, &aside).map_err(|e| format!("손상된 설정 파일 격리 실패: {e}"))?;
+    eprintln!(
+        "설정 파일을 읽을 수 없어 {}로 옮기고 새로 만듭니다",
+        aside.display()
+    );
+    Ok(())
+}
+
+/// 임시 파일 + sync_all + rename (accounts::atomic_write) — 전원이 끊겨도 0바이트·반쪽
+/// 파일이 남지 않고, 임시 파일 이름이 겹쳐 동시 저장이 서로를 덮지 않는다 (#175).
 fn write_settings(store: &Path, root: &Value) -> Result<(), String> {
     let text = serde_json::to_string_pretty(root).map_err(|e| format!("설정 직렬화 실패: {e}"))?;
-    let path = settings_path(store);
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, text).map_err(|e| format!("설정 저장 실패: {e}"))?;
-    fs::rename(&tmp, &path).map_err(|e| format!("설정 저장 실패: {e}"))
+    crate::accounts::atomic_write(&settings_path(store), text.as_bytes())
+        .map_err(|e| format!("설정 저장 실패: {e}"))
 }
 
 /// 트레이 라벨 — [열기, 숨기기, 설정, 언어, 색감, 자동 업데이트, 부팅 시 자동 실행,
@@ -383,6 +409,80 @@ mod tests {
             fs::read_to_string(settings_path(&store)).unwrap(),
             "{not json"
         );
+    }
+
+    fn corrupt_copies(store: &Path) -> Vec<PathBuf> {
+        let mut found: Vec<PathBuf> = fs::read_dir(store)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("settings.json.corrupt-")
+            })
+            .collect();
+        found.sort();
+        found
+    }
+
+    /// 손상된 settings.json은 덮어쓰지 않고 settings.json.corrupt-<초>로 옮겨 보존한 뒤
+    /// 새 파일에 저장한다 — 잘린 파일·0바이트(전원 차단)·객체 아닌 JSON 모두 (#175)
+    #[test]
+    fn save_quarantines_corrupt_settings_instead_of_overwriting() {
+        for (tag, corrupt) in [
+            ("quarantine-truncated", r#"{"lang":"en","show_codex":fal"#),
+            ("quarantine-empty", ""),
+            ("quarantine-array", "[]"),
+        ] {
+            let store = test_store(tag);
+            fs::create_dir_all(&store).unwrap();
+            fs::write(settings_path(&store), corrupt).unwrap();
+
+            save_flag(&store, KEY_AUTO_UPDATE, false).unwrap();
+
+            let saved: Value =
+                serde_json::from_str(&fs::read_to_string(settings_path(&store)).unwrap())
+                    .unwrap();
+            assert_eq!(saved, serde_json::json!({ "auto_update": false }), "{tag}");
+            let aside = corrupt_copies(&store);
+            assert_eq!(aside.len(), 1, "{tag}: {aside:?}");
+            assert_eq!(fs::read_to_string(&aside[0]).unwrap(), corrupt, "{tag}");
+        }
+    }
+
+    /// 손상이라 단정할 수 없는 읽기 실패(여기서는 settings.json 자리에 폴더)는 격리도
+    /// 덮어쓰기도 하지 않고 오류로 끝낸다 (#175)
+    #[test]
+    fn save_refuses_when_settings_cannot_be_read() {
+        let store = test_store("unreadable");
+        fs::create_dir_all(settings_path(&store)).unwrap();
+
+        assert!(save_flag(&store, KEY_AUTO_UPDATE, false).is_err());
+        assert!(save_language(&store, "en").is_err());
+        assert!(settings_path(&store).is_dir());
+        assert!(corrupt_copies(&store).is_empty());
+    }
+
+    /// 저장은 accounts::atomic_write(임시 파일 + fsync + rename)로 하고, 끝나면 임시 파일이
+    /// 남지 않는다 — 예전 고정 이름 settings.json.tmp도 쓰지 않는다 (#175)
+    #[test]
+    fn atomic_save_leaves_only_settings_json() {
+        let store = test_store("atomic");
+        save_language(&store, "en").unwrap();
+        save_flag(&store, KEY_TFSD, true).unwrap();
+        save_flag_checked(&store, KEY_AUTO_START, true).unwrap();
+        save_accent_theme(&store, "sky").unwrap();
+
+        let names: Vec<String> = fs::read_dir(&store)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["settings.json".to_string()]);
+        assert_eq!(load_language(&store), "en");
+        assert!(load_flag(&store, KEY_TFSD, false));
+        assert!(load_flag(&store, KEY_AUTO_START, false));
+        assert_eq!(load_accent_theme(&store), "sky");
     }
 
     #[test]
