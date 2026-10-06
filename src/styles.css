@@ -1198,6 +1198,20 @@ body.minimal .dock-tray button {
   filter: none;
 }
 
+/* 맥 Type1 — 비활성 패널은 WKWebView :hover를 받지 못한다 (WebKit WebViewImpl.mm
+   trackingAreaOptions: NSTrackingActiveInKeyWindow). 러스트 커서 폴링이 붙이는
+   .hit-hover가 위 :hover 규칙과 같은 효과를 낸다 (main.ts applyPolledHover) */
+#app:not(.locked) .card.hit-hover .card-actions {
+  height: auto;
+  margin-top: 8px;
+  overflow: visible;
+}
+
+#app:not(.locked) .card.switchable.hit-hover {
+  border-color: rgba(var(--accent-rgb), calc(0.75 * var(--fg-alpha)));
+  filter: none;
+}
+
 /* 카드 자체는 키보드 도달점일 뿐 — 눌러서 뭔가 되는 곳이 아니므로
    포커스 링은 은은하게만 */
 #app:not(.locked) .card:focus-visible {

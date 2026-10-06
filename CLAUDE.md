@@ -59,6 +59,8 @@
 - **☰ 드래그 중 잠깐 멈추면 moved 이벤트가 180ms 끊겨 "이동 끝"으로 오판**해 Type4가 가까운 벽으로 되돌리던 문제 → `pointer_button_down`(전역 버튼 상태)으로 버튼을 놓을 때까지 정착을 미룬다 (main.ts `settleMonitorSync`). 화면 중앙을 넘겨 놓아야 반대편 벽에 붙는 규칙은 그대로.
 - **앱이 비활성이면 WKWebView 페이지가 `visibilityState=hidden`이 될 수 있다** (위젯은 비활성 패널이라 상시 해당). hidden 페이지는 rAF 완전 정지·타이머 ≥0.5~1초 지연이고, 정지가 겹치면 setTimeout도 사실상 죽는다 — **해제·종료 같은 필수 동작을 웹뷰 타이머·rAF 완료 콜백에 걸지 말 것** (#52 실측: 흔들기 해제 연출이 얼며 검은 화면 고착). 대책 패턴: 웹뷰는 감지 즉시 invoke(예약)만 하고, 확실한 마무리는 러스트가 진다. 또한 비활성 앱의 창은 마우스 이벤트 자체를 못 받으므로 전역 폴링(CGEventCreate 커서 좌표 — 권한 불필요) 기반 네이티브 백업이 필요하다 (lib.rs `ShakeTracker`).
 
+- **비활성 패널은 WKWebView 마우스 이동(:hover·pointermove)을 받지 못한다** (WebKit 소스 확인 2026-10-07: `Source/WebKit/UIProcess/mac/WebViewImpl.mm` `trackingAreaOptions()`가 `NSTrackingActiveInKeyWindow` — 시스템 설정이 레거시 스크롤바(마우스 연결 등)일 때만 `ActiveAlways`). 위젯 패널은 `becomesKeyOnlyIfNeeded`라 입력칸을 누를 때만 키 윈도우가 되므로 Type1의 CSS :hover는 맥에서 사실상 오지 않는다. 그래서 Type1 호버 버튼(#103)은 러스트 커서 폴링(`set_hover_poll` → `hover-poll {idx,x,y}` → main.ts `applyPolledHover`가 `.hit-hover` + 합성 pointerenter/leave)으로 만든다 — Type2/3의 `card-hover`, Type4의 `edge-hover`와 같은 방식. 클릭(`acceptFirstMouse`)·키보드는 그대로 온다.
+
 ## 배포·서명 (사용자 결정 2026-10-02)
 
 - 코드 서명·공증은 하지 않는다 — 유료 계정(코드 서명 인증서, Apple Developer Program)을 쓰지 않기로 결정. 다시 제안하지 말 것. 첫 실행 경고는 README 설치 절의 NOTE(Windows "추가 정보 → 실행", macOS "그래도 열기" 또는 `xattr -dr com.apple.quarantine`)로 안내한다.

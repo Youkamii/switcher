@@ -26,6 +26,14 @@ use std::sync::Mutex;
 static CLICK_THROUGH_MODE: AtomicBool = AtomicBool::new(false);
 static HIT_REGIONS: Mutex<Vec<HitRegion>> = Mutex::new(Vec::new());
 static ACCOUNT_SWITCHING: AtomicBool = AtomicBool::new(false);
+/// Type1 호버 폴링(#103, 맥). 비활성 패널은 WKWebView가 마우스 이동을 받지 못한다 —
+/// WebKit WebViewImpl.mm `trackingAreaOptions()`가 NSTrackingActiveInKeyWindow(레거시
+/// 스크롤바 설정일 때만 ActiveAlways)이고, 위젯 패널은 becomesKeyOnlyIfNeeded라
+/// 입력칸을 누를 때만 키 윈도우가 된다. 그래서 CSS :hover 대신 커서를 폴링해
+/// 어느 카드 위인지 `hover-poll` 이벤트로 알린다 (Type2/3의 card-hover와 같은 방식).
+/// 프론트가 Type1일 때 켠다. 윈도우는 WebView2가 호버를 직접 받으므로 끈 채 두고,
+/// SWITCHER_HOVER_POLL=1 환경변수로만 켜서 같은 경로를 검증한다.
+static HOVER_POLL: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "macos")]
 fn cursor_position_in_window(window: &tauri::WebviewWindow) -> Option<tauri::LogicalPosition<f64>> {
@@ -3163,6 +3171,13 @@ fn set_edge_zone(zone: Option<EdgeZone>) {
     }
 }
 
+/// Type1 호버 폴링 켜기/끄기 (#103). 맥에서만 의미가 있다 — 위 HOVER_POLL 주석 참조.
+#[tauri::command]
+fn set_hover_poll(enabled: bool) {
+    let supported = cfg!(target_os = "macos") || std::env::var("SWITCHER_HOVER_POLL").is_ok();
+    HOVER_POLL.store(enabled && supported, Ordering::Relaxed);
+}
+
 /// 고정 모드 진입/해제 — 해제 시 투과를 즉시 끈다
 #[tauri::command]
 fn set_click_through(app: tauri::AppHandle, enabled: bool) {
@@ -3529,6 +3544,8 @@ pub fn run() {
                     let mut ignoring = false;
                     let mut prev_down = false;
                     let mut hover_idx: i64 = -1;
+                    // Type1 호버 폴링(맥)의 마지막 카드 — 바뀔 때만 알린다
+                    let mut poll_hover_idx: i64 = -1;
                     let mut last_click: Option<(std::time::Instant, usize)> = None;
                     let mut edge_hover = EdgeHover::new();
                     loop {
@@ -3536,12 +3553,21 @@ pub fn run() {
                         let Some(window) = handle.get_webview_window("main") else {
                             continue;
                         };
-                        if !CLICK_THROUGH_MODE.load(Ordering::Relaxed) {
+                        let click_through = CLICK_THROUGH_MODE.load(Ordering::Relaxed);
+                        let hover_poll = !click_through && HOVER_POLL.load(Ordering::Relaxed);
+                        if !hover_poll && poll_hover_idx != -1 {
+                            // 모드가 바뀌어 폴링이 꺼지면 남은 호버 표시를 거둔다
+                            poll_hover_idx = -1;
+                            let _ = handle.emit("hover-poll", serde_json::json!({ "idx": -1 }));
+                        }
+                        if !click_through {
                             if ignoring {
                                 let _ = window.set_ignore_cursor_events(false);
                                 ignoring = false;
                             }
-                            continue;
+                            if !hover_poll {
+                                continue;
+                            }
                         }
                         if !window.is_visible().unwrap_or(false) {
                             continue;
@@ -3549,6 +3575,26 @@ pub fn run() {
                         let Some(cursor) = cursor_position_in_window(&window) else {
                             continue;
                         };
+                        if hover_poll {
+                            // Type1(#103, 맥): 투과·더블클릭 없이 "어느 카드 위인가"만 알린다.
+                            // 커서 좌표를 함께 보내 프론트가 진입 지점(버튼 줄 높이인지)으로
+                            // 클릭 유예를 판정한다. 창 밖이면 어느 영역에도 안 걸려 -1.
+                            let regions: Vec<HitRegion> = HIT_REGIONS
+                                .lock()
+                                .map(|guard| guard.clone())
+                                .unwrap_or_default();
+                            let over = hit_region_at(&regions, cursor)
+                                .map(|i| i as i64)
+                                .unwrap_or(-1);
+                            if over != poll_hover_idx {
+                                poll_hover_idx = over;
+                                let _ = handle.emit(
+                                    "hover-poll",
+                                    serde_json::json!({ "idx": over, "x": cursor.x, "y": cursor.y }),
+                                );
+                            }
+                            continue;
+                        }
                         // Type4 벽 붙임: 손잡이/창 진입·이탈을 여기서 판정해 웹뷰에 알린다
                         let edge_zone = EDGE_ZONE.lock().ok().and_then(|guard| guard.clone());
                         if let Some(state) = edge_hover.update(
@@ -3766,6 +3812,7 @@ pub fn run() {
             login_session_for_request,
             set_hit_regions,
             set_click_through,
+            set_hover_poll,
             set_edge_zone,
             pointer_button_down,
             set_window_shadow,

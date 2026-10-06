@@ -482,6 +482,14 @@ function hoverActions(card: HTMLElement, disarm?: () => void): () => boolean {
     // 무음으로 사라진다 (review). 진입 시점엔 :hover가 이미 적용돼 버튼 줄의
     // 위치를 잴 수 있다 — 커서가 그 줄 높이 안에 있을 때만 유예를 건다.
     // 터치·펜은 탭마다 enter→click이 수 ms라 유예를 걸면 전환·삭제가 영영 안 된다.
+    // 폴링 호버(맥, .hit-hover)가 이미 판정한 카드에 오는 진짜 pointerenter는 유예를
+    // 건드리지 않는다 — 마우스 추적이 없는 비활성 패널은 클릭 직전에야 경계 이벤트를
+    // 합성하므로, 여기서 유예를 다시 걸면 버튼 줄 높이의 첫 클릭이 매번 삼켜진다
+    // (윈도우 CDP 실측: 폴링 진입 뒤 즉시 클릭이 무시됨). 창 높이만 다시 맞춘다
+    if (event.isTrusted && card.classList.contains("hit-hover")) {
+      refit();
+      return;
+    }
     shownAt = 0;
     if (event.pointerType !== "mouse") return;
     const actions = card.querySelector<HTMLElement>(".card-actions");
@@ -2622,6 +2630,11 @@ function applyViewMode() {
   }
   // 위젯 모드에서는 카드·버튼 위가 아니면 마우스가 뒤 창으로 통과한다
   void invoke("set_click_through", { enabled: nativeLocked });
+  // Type1 호버 폴링(#103, 맥) — 비활성 패널은 WKWebView :hover가 오지 않으므로 러스트가
+  // 커서를 폴링해 hover-poll로 알린다 (아래 applyPolledHover). 다른 모드에서는 끈다
+  const hoverPoll = viewMode === "normal" && !starPromptOpen;
+  void invoke("set_hover_poll", { enabled: hoverPoll });
+  if (!hoverPoll) applyPolledHover(null, 0, 0);
   refreshHitRegionsAfterLayout();
 }
 
@@ -2705,8 +2718,14 @@ function reportHitRegions() {
         ".tb-actions > *, #dock-toggle, #drag-handle, .display-row, .collapsible",
       )
       .forEach((el) => pushVisible(el, null));
+  } else if (!interactionPanelOpen) {
+    // Type1: 호버 폴링(맥)용 카드 영역. 투과는 없으므로 action은 비운다 — 러스트는
+    // 폴링이 켜졌을 때만 이 목록을 본다 (hover-poll)
+    app.querySelectorAll<HTMLElement>(".card").forEach((el) => pushVisible(el, null));
   }
   void invoke("set_hit_regions", { regions });
+  // 렌더로 카드가 새 노드가 됐어도 커서가 같은 자리면 호버 표시를 이어 간다
+  syncPolledHover();
   if (edgeActive) reportEdgeZone();
 }
 
@@ -2926,6 +2945,45 @@ void listen<number>("card-hover", (event) => {
   const idx = event.payload;
   if (idx >= 0) hitElements[idx]?.classList.add("hit-hover");
 });
+
+// ── Type1 호버 폴링 (#103, 맥) ──
+// 맥의 위젯은 비활성 패널이라 WKWebView가 마우스 이동(:hover·pointerenter)을 받지
+// 못한다 — WebKit WebViewImpl.mm trackingAreaOptions()가 키 윈도우에서만 추적하고,
+// 패널은 입력칸을 누를 때만 키가 된다. 러스트가 커서를 폴링해 어느 카드 위인지
+// (hover-poll {idx, x, y}) 알리면 여기서 .hit-hover(:hover와 같은 CSS)를 붙이고
+// 합성 pointerenter/leave를 보내 hoverActions(창 높이·클릭 유예·삭제 확인 해제)가
+// 윈도우와 같은 경로로 돈다. 클래스를 먼저 붙여야 pointerenter에서 펼쳐진 버튼 줄의
+// 위치를 재 "버튼이 커서 밑에 생긴 진입"을 판정할 수 있다.
+let polledHoverIdx = -1;
+let polledHoverPos = { x: 0, y: 0 };
+let polledHoverEl: HTMLElement | null = null;
+function applyPolledHover(el: HTMLElement | null, x: number, y: number) {
+  if (el === polledHoverEl) return;
+  const prev = polledHoverEl;
+  polledHoverEl = el;
+  if (prev) {
+    prev.classList.remove("hit-hover");
+    if (prev.isConnected) {
+      prev.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse", clientX: x, clientY: y }));
+    }
+  }
+  if (el) {
+    el.classList.add("hit-hover");
+    el.dispatchEvent(new PointerEvent("pointerenter", { pointerType: "mouse", clientX: x, clientY: y }));
+  }
+}
+void listen<{ idx: number; x?: number; y?: number }>("hover-poll", (event) => {
+  const { idx, x = 0, y = 0 } = event.payload;
+  polledHoverIdx = idx;
+  polledHoverPos = { x, y };
+  applyPolledHover(idx >= 0 ? (hitElements[idx] ?? null) : null, x, y);
+});
+/// 렌더 교체·재보고 뒤 같은 인덱스의 새 카드로 호버 표시를 옮긴다 (러스트는 인덱스가
+/// 바뀔 때만 보내므로 커서가 가만히 있으면 새 노드가 표시를 못 받는다)
+function syncPolledHover() {
+  if (polledHoverIdx < 0 || locked) return;
+  applyPolledHover(hitElements[polledHoverIdx] ?? null, polledHoverPos.x, polledHoverPos.y);
+}
 
 // 데모(GIF)용 플래그 — 켜지면 전환 완료 안내를 띄우지 않고 반투명하게 시작한다
 let demoMode = false;

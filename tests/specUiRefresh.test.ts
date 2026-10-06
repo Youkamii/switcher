@@ -116,7 +116,8 @@ test("hoverActions refits the window, grants a click grace after appearing, and 
   // 유예는 마우스가 버튼 줄 높이로 들어온 진입에만, 터치·펜은 제외 (review)
   const enter = fn.match(/card\.addEventListener\("pointerenter", \(event\) => \{[\s\S]*?\n  \}\);/)?.[0];
   assert.ok(enter, "pointerenter handler must exist");
-  assert.match(enter, /shownAt = 0;/);
+  // 폴링 호버가 판정한 카드의 진짜 pointerenter(맥은 클릭 직전에 합성)는 유예를 다시 걸지 않는다
+  assert.match(enter, /if \(event\.isTrusted && card\.classList\.contains\("hit-hover"\)\) \{\s*refit\(\);\s*return;\s*\}\s*shownAt = 0;/);
   assert.match(enter, /if \(event\.pointerType !== "mouse"\) return;/);
   assert.match(enter, /rect\.height > 0 && event\.clientY >= rect\.top\) shownAt = Date\.now\(\);/);
   assert.match(enter, /refit\(\);/);
@@ -180,4 +181,28 @@ test("a window resting on the work-area bottom keeps its bottom edge when conten
   assert.match(fit, /const y = anchorBottom !== null \? anchorBottom - newSize\.height : topY;/);
   // Type4는 벽 스냅이 맡으므로 제외
   assert.match(fit, /!edgeActive && currentWorkArea/);
+});
+
+/// #103 맥 — 비활성 패널은 WKWebView :hover를 받지 못하므로(WebKit WebViewImpl.mm
+/// trackingAreaOptions: NSTrackingActiveInKeyWindow) 러스트 커서 폴링으로 호버를 만든다.
+test("Type1 hover on macOS is driven by Rust cursor polling (hover-poll), mirroring :hover", () => {
+  const apply = mainSource.match(/function applyViewMode\(\) \{[\s\S]*?\n}\n/)?.[0];
+  assert.ok(apply, "applyViewMode must exist");
+  assert.match(apply, /const hoverPoll = viewMode === "normal" && !starPromptOpen;/);
+  assert.match(apply, /invoke\("set_hover_poll", \{ enabled: hoverPoll \}\)/);
+  assert.match(apply, /if \(!hoverPoll\) applyPolledHover\(null, 0, 0\);/);
+  // Type1에서는 모든 카드 영역을 보고한다 (투과 없음 → action null)
+  const report = mainSource.match(/function reportHitRegions\(\) \{[\s\S]*?\n}\n/)?.[0];
+  assert.ok(report, "reportHitRegions must exist");
+  assert.match(report, /\} else if \(!interactionPanelOpen\) \{\s*(?:\/\/[^\n]*\n\s*)*app\.querySelectorAll<HTMLElement>\("\.card"\)\.forEach\(\(el\) => pushVisible\(el, null\)\);/);
+  assert.match(report, /syncPolledHover\(\);/);
+  // 클래스를 먼저 붙이고 합성 pointerenter — hoverActions의 유예 판정이 펼쳐진 버튼 줄을 잰다
+  const fn = mainSource.match(/function applyPolledHover\([\s\S]*?\n}\n/)?.[0];
+  assert.ok(fn, "applyPolledHover must exist");
+  assert.match(fn, /el\.classList\.add\("hit-hover"\);\s*el\.dispatchEvent\(new PointerEvent\("pointerenter", \{ pointerType: "mouse", clientX: x, clientY: y \}\)\);/);
+  assert.match(fn, /prev\.classList\.remove\("hit-hover"\);[\s\S]*?new PointerEvent\("pointerleave", \{ pointerType: "mouse"/);
+  assert.match(mainSource, /listen<\{ idx: number; x\?: number; y\?: number \}>\("hover-poll"/);
+  // CSS: .hit-hover가 :hover와 같은 펼침·테두리
+  assert.match(cssSource, /#app:not\(\.locked\) \.card\.hit-hover \.card-actions \{[^}]*height: auto;[^}]*overflow: visible;/);
+  assert.match(cssSource, /#app:not\(\.locked\) \.card\.switchable\.hit-hover \{[^}]*rgba\(var\(--accent-rgb\)/);
 });
