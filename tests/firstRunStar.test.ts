@@ -159,7 +159,8 @@ test("renders the default interface before the overlay and blocks background inp
     mainSource,
     /const mode = starPromptOpen \? "normal" : viewMode;/,
   );
-  assert.match(mainSource, /if \(!visibility\[key\] && !starPromptOpen\) continue;/);
+  // 섹션 빌더가 병렬 클로저가 되면서(#176) 건너뛰기는 continue 대신 return이다
+  assert.match(mainSource, /if \(!visibility\[key\] && !starPromptOpen\) (?:continue|return);/);
   assert.match(mainSource, /titlebarEl\.inert = true;\s*app\.inert = true;/);
   assert.match(mainSource, /titlebarEl\.inert = false;\s*app\.inert = false;/);
   assert.match(mainSource, /const nativeLocked = viewMode !== "normal";/);

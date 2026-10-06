@@ -2273,52 +2273,61 @@ async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
         mode === "edge"
           ? [...sectionOrder.filter((k) => k === "claude" || k === "codex"), "system", "display"]
           : sectionOrder;
-      for (const key of keys) {
-        const before = buffer.lastElementChild;
-        if (key === "claude" || key === "codex") {
-          if (mode === "edge" && !visibility[key]) {
-            // 숨긴 프로바이더의 옛 게이지 값이 손잡이에 남지 않게
-            edgeGaugeByProvider.delete(key);
-            applyEdgeGauge();
+      // 섹션 빌더는 서로 독립이라 동시에 띄운다 — 직렬로 기다리면 매 렌더가 앞 섹션의
+      // IPC 왕복(특히 Type4의 display_list: 모니터마다 DDC 조회, 수십~수백 ms)을 다 거친
+      // 뒤에야 화면을 바꿨다 (#176). 각자 자기 조각(fragment)에 그리고, 끝난 뒤 keys
+      // 순서대로 버퍼에 붙여 섹션 순서는 그대로 둔다. 한 빌더가 던져도 나머지는 붙인다.
+      const parts = keys.map((key) => ({ key, frag: document.createDocumentFragment() }));
+      await Promise.allSettled(
+        parts.map(async ({ key, frag }) => {
+          if (key === "claude" || key === "codex") {
+            if (mode === "edge" && !visibility[key]) {
+              // 숨긴 프로바이더의 옛 게이지 값이 손잡이에 남지 않게
+              edgeGaugeByProvider.delete(key);
+              applyEdgeGauge();
+            }
+            if (!visibility[key] && !starPromptOpen) return;
+            const title = PROVIDERS.find((p) => p.id === key)!.title;
+            if (mode === "edge") {
+              await renderProviderEdge(key, title, frag, pending, thisForceRetry);
+            } else if (mode !== "normal") {
+              await renderProviderCompact(
+                key,
+                title,
+                frag,
+                mode === "minimal",
+                pending,
+                thisForceRetry,
+              );
+            } else {
+              await renderProvider(key, title, frag, pending, thisForceRetry);
+            }
+          } else if (key === "github") {
+            if (!visibility.github || mode === "minimal") return;
+            if (mode === "compact") {
+              await renderGithubCompact(frag);
+            } else {
+              await renderGithub(frag);
+            }
+          } else if (key === "display") {
+            if (!visibility.display || mode === "minimal") return;
+            if (mode === "edge") await renderDisplaysEdge(frag);
+            else await renderDisplays(frag, mode === "compact");
+          } else if (key === "system") {
+            if (mode === "edge") renderMonitorEdge(frag);
+            else renderMonitor(frag);
           }
-          if (!visibility[key] && !starPromptOpen) continue;
-          const title = PROVIDERS.find((p) => p.id === key)!.title;
-          if (mode === "edge") {
-            await renderProviderEdge(key, title, buffer, pending, thisForceRetry);
-          } else if (mode !== "normal") {
-            await renderProviderCompact(
-              key,
-              title,
-              buffer,
-              mode === "minimal",
-              pending,
-              thisForceRetry,
-            );
-          } else {
-            await renderProvider(key, title, buffer, pending, thisForceRetry);
-          }
-        } else if (key === "github") {
-          if (!visibility.github || mode === "minimal") continue;
-          if (mode === "compact") {
-            await renderGithubCompact(buffer);
-          } else {
-            await renderGithub(buffer);
-          }
-        } else if (key === "display") {
-          if (!visibility.display || mode === "minimal") continue;
-          if (mode === "edge") await renderDisplaysEdge(buffer);
-          else await renderDisplays(buffer, mode === "compact");
-        } else if (key === "system") {
-          if (mode === "edge") renderMonitorEdge(buffer);
-          else renderMonitor(buffer);
-        }
-        // 방금 붙은 섹션에 순서 키를 달고 Type1이면 드래그 이동을 붙인다
-        // (렌더 함수가 아무것도 안 붙였을 수 있어 lastElementChild 변화로 판별)
-        const added = buffer.lastElementChild as HTMLElement | null;
-        if (added && added !== before && added.tagName === "SECTION") {
+        }),
+      );
+      for (const { key, frag } of parts) {
+        // 조각의 섹션에 순서 키를 달고 Type1이면 드래그 이동을 붙인다
+        // (렌더 함수가 아무것도 안 붙였을 수 있어 lastElementChild로 판별)
+        const added = frag.lastElementChild as HTMLElement | null;
+        if (added && added.tagName === "SECTION") {
           added.dataset.key = key;
           enableSectionDrag(added, key, mode);
         }
+        buffer.appendChild(frag);
       }
       if (!thisImmediate && app.childElementCount > 0 && !renderQueued) {
         // 스무스 새로고침: 기존 화면을 그대로 둔 채 사용량까지 받아진 뒤 교체한다.
