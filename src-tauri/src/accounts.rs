@@ -455,7 +455,23 @@ pub(crate) fn now() -> u64 {
 }
 
 /// 프로필 이름은 경로에 들어가므로 엄격히 제한한다 (경로 탈출 방지).
+/// 문자 규칙에 더해 Windows 예약 장치명도 막는다 (#177). 실측(Windows 11 26200):
+/// `nul` 폴더는 생성이 거짓 성공한 뒤 안쪽 파일 쓰기가 "경로를 찾을 수 없습니다"로
+/// 실패하고, `aux`·`con` 같은 이름은 이 판에서는 만들어지지만 구버전 Windows와 다른
+/// 도구(git 등)가 다루지 못한다. 플랫폼마다 규칙이 다르면 같은 이름이 한쪽에서만
+/// 깨지므로 맥에서도 똑같이 거부한다.
 pub(crate) fn validate_name(name: &str) -> Result<(), String> {
+    validate_name_chars(name)?;
+    if is_reserved_device_name(name) {
+        return Err(format!(
+            "'{name}'은 Windows 예약 장치명이라 프로필 이름으로 쓸 수 없습니다 — 다른 이름을 쓰세요"
+        ));
+    }
+    Ok(())
+}
+
+/// 경로 안전성만 보는 문자 규칙 (영문·숫자·`-`·`_` 1~32자).
+fn validate_name_chars(name: &str) -> Result<(), String> {
     let ok = !name.is_empty()
         && name.len() <= 32
         && name
@@ -465,6 +481,21 @@ pub(crate) fn validate_name(name: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err("프로필 이름은 영문·숫자·하이픈·언더스코어 1~32자만 가능합니다".into())
+    }
+}
+
+/// Windows 예약 장치명인가 (대소문자 무시). Microsoft 파일 이름 규칙 문서의 목록대로
+/// COM0·LPT0까지 넣는다. `aux.txt`처럼 확장자를 붙인 꼴도 예약이지만 프로필 이름은
+/// `.`을 허용하지 않으므로 이름 전체만 비교하면 된다.
+fn is_reserved_device_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    match upper.as_str() {
+        "CON" | "PRN" | "AUX" | "NUL" => true,
+        _ => {
+            upper.len() == 4
+                && (upper.starts_with("COM") || upper.starts_with("LPT"))
+                && upper.as_bytes()[3].is_ascii_digit()
+        }
     }
 }
 
@@ -959,7 +990,9 @@ pub(crate) fn auto_name(env: &Env, provider: Provider, ident: &LiveIdentity) -> 
             ident.email.as_deref().and_then(|e| e.split('@').next()).unwrap_or(""),
             20,
         );
-        if from_email.is_empty() {
+        // con@·aux@ 같은 메일이면 앞부분이 예약 장치명이라 validate_name을 못 넘는다 (#177)
+        // — 빈 앞부분처럼 계정 id 기반 이름으로 돌린다
+        if from_email.is_empty() || is_reserved_device_name(&from_email) {
             let id_part = clean(&ident.id, 8);
             if id_part.is_empty() {
                 "account".to_string()
@@ -1063,7 +1096,9 @@ pub fn ensure_live_saved(env: &Env, provider: Provider) -> Result<Option<String>
 /// 옛 이름에 삭제 표식은 남기지 않는다 — 그 표식의 유일한 소비자(로그인 임포트)가
 /// 진행 중이던 로그인 결과를 "삭제됨"으로 오인해 폐기하기 때문 (red-review).
 pub fn rename(env: &Env, provider: Provider, from: &str, to: &str) -> Result<(), String> {
-    validate_name(from)?;
+    // 옛 이름은 문자 규칙(경로 안전)만 본다 — 예약 장치명 거부(#177) 이전에 맥 등에서
+    // 이미 만들어진 `aux` 같은 프로필도 전환·삭제는 막히지만 새 이름으로 옮겨 나올 수는 있게
+    validate_name_chars(from)?;
     validate_name(to)?;
     if from == to {
         return Ok(());
@@ -1800,6 +1835,64 @@ mod tests {
         assert!(rename(&env, Provider::Codex, "alice", "alice").is_ok());
         assert!(env.profiles_dir(Provider::Codex).join("alice").exists());
         assert!(env.profiles_dir(Provider::Codex).join("bob").exists());
+    }
+
+    /// Windows 예약 장치명은 대소문자와 무관하게 거부하고, 비슷하지만 다른 이름은 통과한다 (#177)
+    #[test]
+    fn validate_name_rejects_windows_reserved_device_names() {
+        for bad in [
+            "con", "CON", "Prn", "aux", "NUL", "com1", "COM9", "lpt1", "Lpt9", "com0", "lpt0",
+        ] {
+            let err = validate_name(bad).unwrap_err();
+            assert!(err.contains("예약 장치명"), "{bad}: {err}");
+        }
+        for ok in [
+            "console", "auxx", "con-1", "nul_", "com10", "lpt", "com", "comA", "a-con",
+        ] {
+            assert!(validate_name(ok).is_ok(), "{ok}");
+        }
+        // 기존 문자 규칙은 그대로
+        assert!(validate_name("aux.txt").is_err());
+        assert!(validate_name("").is_err());
+        assert!(validate_name(&"a".repeat(33)).is_err());
+    }
+
+    /// 예약 장치명은 저장·이름 바꾸기의 새 이름으로 쓸 수 없고, 자동 작명도 피한다 (#177)
+    #[test]
+    fn reserved_names_are_rejected_for_new_profiles() {
+        let env = test_env("reserved");
+        login_codex(&env, "acct-a", "alice@test.dev", "ctok-a1");
+        let err = save_current(&env, Provider::Codex, "AUX").unwrap_err();
+        assert!(err.contains("예약 장치명"), "{err}");
+        save_current(&env, Provider::Codex, "alice").unwrap();
+        let err = rename(&env, Provider::Codex, "alice", "nul").unwrap_err();
+        assert!(err.contains("예약 장치명"), "{err}");
+        assert!(read_meta(&env.profiles_dir(Provider::Codex).join("alice")).is_some());
+
+        // con@ 메일은 메일 앞부분 대신 계정 id로 자동 작명한다
+        login_codex(&env, "acct-c", "con@test.dev", "ctok-c1");
+        let name = save_current(&env, Provider::Codex, "").unwrap();
+        assert!(validate_name(&name).is_ok(), "생성된 이름: {name}");
+        assert!(name.starts_with("account-"), "생성된 이름: {name}");
+    }
+
+    /// 예약명 거부 이전에 만들어진 프로필(맥 등)도 새 이름으로 옮겨 나올 수 있다 (#177)
+    #[test]
+    fn legacy_reserved_profile_can_be_renamed_out() {
+        let env = test_env("reserved-legacy");
+        login_codex(&env, "acct-a", "alice@test.dev", "ctok-a1");
+        save_current(&env, Provider::Codex, "alice").unwrap();
+        let root = env.profiles_dir(Provider::Codex);
+        // 이 이름의 폴더를 만들 수 없는 OS(구버전 Windows 등)에는 구출할 옛 프로필도 없다
+        if fs::rename(root.join("alice"), root.join("aux")).is_err()
+            || read_meta(&root.join("aux")).is_none()
+        {
+            return;
+        }
+        assert!(switch(&env, Provider::Codex, "aux").is_err());
+        rename(&env, Provider::Codex, "aux", "alice2").unwrap();
+        let meta = read_meta(&root.join("alice2")).expect("옮겨진 프로필");
+        assert_eq!(meta.email.as_deref(), Some("alice@test.dev"));
     }
 
     #[test]
