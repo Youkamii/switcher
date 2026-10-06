@@ -74,3 +74,55 @@ test("provider icon is one path per icon, coloured by theme variables, sized to 
   assert.match(cssSource, /\.prov-icon\.prov-codex \{\s*fill: rgb\(var\(--accent-alt-rgb\)\);/);
   assert.match(cssSource, /\.compact-head \.prov-icon \{\s*width: 8px;\s*height: 8px;/);
 });
+
+/// #103 — Type1 조작 버튼은 호버·포커스에만. 창 높이 보정, 커서 밑 생성 직후 클릭
+/// 유예, 카드 이탈 시 삭제 확인 해제, 키보드 도달 경로가 한 벌로 있어야 한다.
+test("card actions are hidden by default and shown on hover or keyboard focus in Type1", () => {
+  const base = cssSource.match(/\.card-actions \{[^}]*\}/)?.[0];
+  assert.ok(base, ".card-actions rule must exist");
+  assert.match(base, /display: none;/);
+  assert.match(
+    cssSource,
+    /#app:not\(\.locked\) \.card:hover \.card-actions,\s*#app:not\(\.locked\) \.card:focus-within \.card-actions \{\s*display: flex;/,
+  );
+  // 전환 후보 카드의 호버 신호는 테마 accent를 따른다 (색감 6종 이후 고정색 금지)
+  const hover = cssSource.match(/#app:not\(\.locked\) \.card\.switchable:hover,[\s\S]*?\}/)?.[0];
+  assert.ok(hover, "switchable hover rule must exist");
+  assert.match(hover, /rgba\(var\(--accent-rgb\), calc\(0\.75 \* var\(--fg-alpha\)\)\)/);
+  assert.doesNotMatch(hover, /167, 139, 250/);
+  // 고정 모드(Type2/3)의 통째 숨김은 그대로
+  assert.match(cssSource, /#app\.locked \.card-actions,/);
+});
+
+test("hoverActions refits the window, grants a click grace after appearing, and disarms on leave", () => {
+  const fn = mainSource.match(/function hoverActions\([\s\S]*?\n}\n/)?.[0];
+  assert.ok(fn, "hoverActions must exist");
+  assert.match(mainSource, /const ACTION_GRACE_MS = 250;/);
+  assert.match(fn, /card\.addEventListener\("pointerenter", \(\) => \{\s*shownAt = Date\.now\(\);\s*refit\(\);/);
+  assert.match(fn, /card\.addEventListener\("pointerleave", \(\) => \{\s*disarm\?\.\(\);\s*refit\(\);/);
+  assert.match(fn, /card\.addEventListener\("focusin", refit\);/);
+  assert.match(fn, /card\.addEventListener\("focusout", \(\) => \{\s*disarm\?\.\(\);/);
+  assert.match(fn, /return \(\) => Date\.now\(\) - shownAt < ACTION_GRACE_MS;/);
+  assert.match(fn, /if \(!app\.classList\.contains\("locked"\)\) fitHeight\(\);/, "no refit in widget modes");
+});
+
+test("profile and GitHub cards are keyboard-reachable and guard switch/delete clicks right after appearing", () => {
+  const profile = mainSource.match(/function profileCard\([\s\S]*?\n}\n/)?.[0];
+  assert.ok(profile, "profileCard must exist");
+  assert.match(profile, /card\.tabIndex = 0;/);
+  assert.match(profile, /const justShown = hoverActions\(card, \(\) => disarm\(\)\);/);
+  assert.match(profile, /switchBtn\.addEventListener\("click", \(\) => \{\s*if \(justShown\(\)\) return;\s*void doSwitch\(switchBtn\);/);
+  assert.match(profile, /deleteBtn\.addEventListener\("click", async \(\) => \{[\s\S]*?if \(justShown\(\)\) return;\s*if \(!armed\) \{/);
+  // #178의 해제 경로(바깥 클릭·blur·3초)는 그대로 남는다
+  assert.match(profile, /document\.addEventListener\("pointerdown", disarmOutside, true\);/);
+  assert.match(profile, /disarmTimer = window\.setTimeout\(disarm, 3000\);/);
+  const github = mainSource.match(/function githubCard\([\s\S]*?\n}\n/)?.[0];
+  assert.ok(github, "githubCard must exist");
+  assert.match(github, /if \(!compact\) \{[\s\S]*?card\.tabIndex = 0;\s*const justShown = hoverActions\(card\);/);
+  assert.match(github, /switchBtn\.addEventListener\("click", async \(\) => \{\s*if \(justShown\(\)\) return;/);
+  // 컴팩트 카드·Type4 묶음에는 호버 버튼이 없으므로 hoverActions도 없다
+  const compact = mainSource.match(/function compactCard\([\s\S]*?\n}\n/)?.[0] ?? "";
+  assert.doesNotMatch(compact, /hoverActions\(/);
+  const edge = mainSource.match(/function edgeAccount\([\s\S]*?\n}\n/)?.[0] ?? "";
+  assert.doesNotMatch(edge, /hoverActions\(/);
+});

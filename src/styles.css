@@ -1142,11 +1142,40 @@ body.minimal .dock-tray button {
   margin: 3px 0;
 }
 
+/* 조작 버튼 줄은 기본 숨김 — Type1은 호버·포커스에 나타나고(아래),
+   Type2/3(#app.locked)은 조작 요소를 통째로 숨긴다 (#103) */
 .card-actions {
-  display: flex;
+  display: none;
   gap: 6px;
   margin-top: 8px;
   justify-content: flex-end;
+}
+
+/* Type1 조작 버튼은 카드에 마우스를 올렸을 때만 (#103) — 계정마다 상시
+   노출하면 계정 수만큼 세로가 늘어난다. 나타나며 카드 높이가 바뀌므로 창
+   높이도 따라 맞춘다 (hoverActions → fitHeight).
+   :focus-within은 키보드 경로다 — 카드가 tabindex를 갖고 있어(profileCard·
+   githubCard) 탭으로 카드에 닿으면 버튼이 나타나고, 다음 탭이 버튼에 들어간다.
+   이게 없으면 숨은 버튼은 포커스 트리 밖이라 키보드로 영영 도달하지 못한다 */
+#app:not(.locked) .card:hover .card-actions,
+#app:not(.locked) .card:focus-within .card-actions {
+  display: flex;
+}
+
+/* 버튼이 숨어 있어도 "여기 뭔가 있다"가 보이게 — 전환 후보 카드는 호버에
+   테두리가 살아난다 (고정 모드의 .hit-hover와 같은 신호, 색은 테마 accent) */
+#app:not(.locked) .card.switchable:hover,
+#app:not(.locked) .card.switchable:focus-within {
+  border-color: rgba(var(--accent-rgb), calc(0.75 * var(--fg-alpha)));
+  /* 비활성 카드의 낮춘 채도(.card:not(.active))도 함께 살아난다 */
+  filter: none;
+}
+
+/* 카드 자체는 키보드 도달점일 뿐 — 눌러서 뭔가 되는 곳이 아니므로
+   포커스 링은 은은하게만 */
+#app:not(.locked) .card:focus-visible {
+  outline: 1px solid rgba(var(--accent-rgb), 0.7);
+  outline-offset: 1px;
 }
 
 .save-row {

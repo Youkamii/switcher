@@ -454,6 +454,39 @@ function statusDot(active: boolean): HTMLElement {
   return dot;
 }
 
+const ACTION_GRACE_MS = 250;
+
+/// 호버로 조작 버튼이 드나드는 카드의 공통 처리 (#103):
+/// 1) 버튼이 나고 들며 카드 높이가 바뀌므로 창을 다시 맞춘다 (fitHeight)
+/// 2) 방금 나타난 버튼의 클릭인지 판정할 수 있게 시각을 남긴다 — 커서를 카드
+///    하단으로 밀어 넣으면 삭제 버튼이 정확히 커서 밑에 생성되는데, 그 상태의
+///    더블클릭은 확인 대기와 확정이 한 번에 일어나 계정이 지워졌다 (8월 실측)
+/// 3) 카드를 벗어나면 확인 대기(armed)를 거둔다 — 버튼이 숨은 채 남은 armed는
+///    다시 들어와 누르는 한 번에 삭제가 된다. 바깥 클릭·blur 해제(#178)와 겹치지
+///    않는 경로(클릭 없이 커서만 빠져나감)를 메운다.
+/// 키보드 경로(:focus-within)도 같은 높이 변화를 만든다. 이쪽은 커서 아래
+/// 생성이 없으므로 shownAt을 건드리지 않는다 — 유예도 걸리지 않는다.
+function hoverActions(card: HTMLElement, disarm?: () => void): () => boolean {
+  let shownAt = 0;
+  const refit = () => {
+    if (!app.classList.contains("locked")) fitHeight();
+  };
+  card.addEventListener("pointerenter", () => {
+    shownAt = Date.now();
+    refit();
+  });
+  card.addEventListener("pointerleave", () => {
+    disarm?.();
+    refit();
+  });
+  card.addEventListener("focusin", refit);
+  card.addEventListener("focusout", () => {
+    disarm?.();
+    refit();
+  });
+  return () => Date.now() - shownAt < ACTION_GRACE_MS;
+}
+
 function profileCard(
   provider: ProviderId,
   profile: ProfileInfo,
@@ -462,6 +495,10 @@ function profileCard(
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = "card" + (profile.active ? " active" : "");
+  // 조작 버튼이 호버·포커스에만 나타나므로 카드가 키보드 도달점이 된다 (#103)
+  card.tabIndex = 0;
+  // disarm은 삭제 버튼 쪽에서 선언된다 — 이벤트 시점에만 부르므로 지연 참조
+  const justShown = hoverActions(card, () => disarm());
 
   const head = document.createElement("div");
   head.className = "card-head";
@@ -533,7 +570,10 @@ function profileCard(
     const switchBtn = document.createElement("button");
     switchBtn.className = "primary";
     switchBtn.textContent = t("switchBtn");
-    switchBtn.addEventListener("click", () => void doSwitch(switchBtn));
+    switchBtn.addEventListener("click", () => {
+      if (justShown()) return;
+      void doSwitch(switchBtn);
+    });
     actions.appendChild(switchBtn);
   }
 
@@ -627,6 +667,8 @@ function profileCard(
     if (event.target !== deleteBtn) disarm();
   };
   deleteBtn.addEventListener("click", async () => {
+    // 방금 커서 밑에 생성된 버튼의 클릭은 무시 — 더블클릭 한 번에 삭제 방지 (#103)
+    if (justShown()) return;
     if (!armed) {
       armed = true;
       deleteBtn.textContent = t("delConfirm");
@@ -1443,12 +1485,16 @@ function githubCard(acc: GithubAccount, compact = false): HTMLElement {
     card.dataset.provider = "github";
     card.dataset.name = acc.login;
     if (!compact) {
+      // Type1 카드와 같은 호버 노출·높이 보정·키보드 경로 (#103)
+      card.tabIndex = 0;
+      const justShown = hoverActions(card);
       const actions = document.createElement("div");
       actions.className = "card-actions";
       const switchBtn = document.createElement("button");
       switchBtn.className = "primary";
       switchBtn.textContent = t("switchBtn");
       switchBtn.addEventListener("click", async () => {
+        if (justShown()) return;
         if (loginOpen) {
           toast(t("loginBusy"), true);
           return;
