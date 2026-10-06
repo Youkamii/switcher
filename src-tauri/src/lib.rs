@@ -420,25 +420,38 @@ fn double_click_window() -> std::time::Duration {
     return std::time::Duration::from_millis(DOUBLE_CLICK_MS.load(Ordering::Relaxed));
 }
 
+/// 동기(`fn`) 커맨드는 Tauri 2에서 메인(UI) 스레드에서 돈다 — 아래 커맨드들은 파일 I/O·
+/// 프로필 잠금 대기(최대 20초)·프로세스 종료 대기를 하므로 전부 `spawn_blocking`으로
+/// 뺀다. 메인에서 기다리면 창 이동·트레이·다른 IPC까지 같이 멈춘다 (#171).
 #[tauri::command]
-fn list_profiles(provider: String) -> Result<Snapshot, String> {
-    let env = Env::real()?;
+async fn list_profiles(provider: String) -> Result<Snapshot, String> {
     let provider = Provider::parse(&provider)?;
-    let snap = accounts::list(&env, provider)?;
-    // 로그인됐지만 아직 프로필로 없는 활성 계정만 이름을 묻지 않고 자동 등록한다 (#168).
-    // 이미 저장된 흔한 경우엔 추가 I/O가 없다. 실패하면 방금 만든 목록을 그대로 쓴다
-    // (화면이 비는 것보다 입력칸 폴백이 낫다).
-    if snap.live.is_some() && !snap.live_saved {
-        if let Ok(Some(_)) = accounts::ensure_live_saved(&env, provider) {
-            return accounts::list(&env, provider);
+    tauri::async_runtime::spawn_blocking(move || {
+        let env = Env::real()?;
+        let snap = accounts::list(&env, provider)?;
+        // 로그인됐지만 아직 프로필로 없는 활성 계정만 이름을 묻지 않고 자동 등록한다 (#168).
+        // 이미 저장된 흔한 경우엔 추가 I/O가 없다. 등록이 실패하거나 2차 목록 조회가
+        // 실패하면 방금 만든 1차 목록을 그대로 쓴다 (화면이 비는 것보다 입력칸 폴백이 낫다).
+        if snap.live.is_some() && !snap.live_saved {
+            if let Ok(Some(_)) = accounts::ensure_live_saved(&env, provider) {
+                return Ok(accounts::list(&env, provider).unwrap_or(snap));
+            }
         }
-    }
-    Ok(snap)
+        Ok(snap)
+    })
+    .await
+    .map_err(|e| format!("프로필 목록 조회 실패: {e}"))?
 }
 
 #[tauri::command]
-fn rename_profile(provider: String, from: String, to: String) -> Result<(), String> {
-    accounts::rename(&Env::real()?, Provider::parse(&provider)?, &from, &to)
+async fn rename_profile(provider: String, from: String, to: String) -> Result<(), String> {
+    let provider = Provider::parse(&provider)?;
+    // 그 프로필의 토큰 재발급이 끝날 때까지(최대 20초) 기다릴 수 있다 — 메인 스레드 밖에서 (#171)
+    tauri::async_runtime::spawn_blocking(move || {
+        accounts::rename(&Env::real()?, provider, &from, &to)
+    })
+    .await
+    .map_err(|e| format!("이름 변경 실패: {e}"))?
 }
 
 #[tauri::command]
@@ -482,8 +495,12 @@ fn disengage_tfsd(app: &tauri::AppHandle) {
 }
 
 #[tauri::command]
-fn delete_profile(provider: String, name: String) -> Result<(), String> {
-    accounts::delete(&Env::real()?, Provider::parse(&provider)?, &name)
+async fn delete_profile(provider: String, name: String) -> Result<(), String> {
+    let provider = Provider::parse(&provider)?;
+    // rename과 같은 프로필 잠금 대기 — 메인 스레드 밖에서 (#171)
+    tauri::async_runtime::spawn_blocking(move || accounts::delete(&Env::real()?, provider, &name))
+        .await
+        .map_err(|e| format!("프로필 삭제 실패: {e}"))?
 }
 
 /// 클램셸 슬립 방지 현재 모드: -1 미지원 · 0 꺼짐 · 1 일회성 · 2 지속
@@ -569,18 +586,24 @@ async fn await_device_login(session_id: String) -> Result<login::LoginOutcome, S
         .map_err(|e| format!("로그인 대기 실패: {e}"))?
 }
 
+/// 취소는 taskkill 대기(≤3초)·자식 종료 대기(≤2초)·임시 폴더 삭제 재시도(≤1.5초)를
+/// 한다 — 시작·제출·대기 커맨드와 같이 메인 스레드 밖에서 (#171)
 #[tauri::command]
-fn cancel_login(session_id: String) -> Result<login::CancelOutcome, String> {
+async fn cancel_login(session_id: String) -> Result<login::CancelOutcome, String> {
     let generation = session_id
         .parse::<u64>()
         .map_err(|_| "로그인 세션 ID가 올바르지 않습니다")?;
-    login::cancel_session(generation)
+    tauri::async_runtime::spawn_blocking(move || login::cancel_session(generation))
+        .await
+        .map_err(|e| format!("로그인 취소 실패: {e}"))?
 }
 
 /// 로그인 주소를 아직 받는 중이라 세션 ID가 프런트에 도착하지 않았을 때도 취소한다.
 #[tauri::command]
-fn cancel_login_start(request_id: String) -> Result<login::CancelOutcome, String> {
-    login::cancel_start(&request_id)
+async fn cancel_login_start(request_id: String) -> Result<login::CancelOutcome, String> {
+    tauri::async_runtime::spawn_blocking(move || login::cancel_start(&request_id))
+        .await
+        .map_err(|e| format!("로그인 취소 실패: {e}"))?
 }
 
 #[tauri::command]
@@ -1279,12 +1302,20 @@ fn black_window_session(label: &str) -> Option<u64> {
     parts.next().is_none().then_some(generation)
 }
 
-/// 블랙 모니터 끄기 — (흔들기·ESC·어느 모니터에서든)
+/// 블랙 모니터 끄기 — (흔들기·ESC·어느 모니터에서든).
+/// BLACK_TRANSITION 대기를 메인 스레드 밖에서 한다: black_on은 그 잠금을 쥔 채 오버레이
+/// 창 생성을 메인 루프에 요청하므로, 동기 커맨드로 메인에서 같은 잠금을 기다리면 둘이
+/// 서로를 기다린다(멀티 모니터에서 창 생성 중 흔들기) (#171)
 #[tauri::command]
-fn black_off(app: tauri::AppHandle, window: tauri::WebviewWindow) {
-    if let Some(session_gen) = black_window_session(window.label()) {
+async fn black_off(app: tauri::AppHandle, window: tauri::WebviewWindow) {
+    let Some(session_gen) = black_window_session(window.label()) else {
+        return;
+    };
+    drop(window);
+    let _ = tauri::async_runtime::spawn_blocking(move || {
         close_black_overlays_if_current(&app, session_gen);
-    }
+    })
+    .await;
 }
 
 /// 예약 해제 (#51) — 해제 연출을 시작하는 순간 웹뷰가 먼저 이걸 부른다.
@@ -1376,17 +1407,22 @@ async fn github_login_wait(session_id: String) -> Result<String, String> {
         .map_err(|e| format!("GitHub 로그인 대기 실패: {e}"))?
 }
 
+/// 취소는 gh 프로세스 종료 대기(≤2초)와 출력 드레인을 한다 — 메인 스레드 밖에서 (#171)
 #[tauri::command]
-fn github_login_cancel(session_id: String) -> Result<bool, String> {
+async fn github_login_cancel(session_id: String) -> Result<bool, String> {
     let generation = session_id
         .parse::<u64>()
         .map_err(|_| "GitHub 로그인 세션 ID가 올바르지 않습니다")?;
-    github::login_cancel(generation)
+    tauri::async_runtime::spawn_blocking(move || github::login_cancel(generation))
+        .await
+        .map_err(|e| format!("GitHub 로그인 취소 실패: {e}"))?
 }
 
 #[tauri::command]
-fn github_login_cancel_start(request_id: String) -> Result<bool, String> {
-    github::login_cancel_start(&request_id)
+async fn github_login_cancel_start(request_id: String) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || github::login_cancel_start(&request_id))
+        .await
+        .map_err(|e| format!("GitHub 로그인 취소 실패: {e}"))?
 }
 
 #[tauri::command]
