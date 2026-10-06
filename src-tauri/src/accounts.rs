@@ -1114,11 +1114,49 @@ pub fn rename(env: &Env, provider: Provider, from: &str, to: &str) -> Result<(),
     if read_meta(&src).is_none() {
         return Err(format!("프로필 '{from}'이 없습니다"));
     }
-    if dst.exists() {
-        return Err(format!("'{to}'은 이미 있는 프로필 이름입니다 — 다른 이름을 쓰세요"));
+    if from.eq_ignore_ascii_case(to) {
+        // 대소문자만 바꾸는 경우 (#177): 대소문자 무시 파일시스템(Windows·기본 macOS)에선
+        // dst.exists()가 원본 자신을 봐서 alice→Alice가 거부됐다. 정확히 같은 이름의
+        // 항목이 from과 to 둘 다 있을 때만 서로 다른 폴더(대소문자 구분 FS)라 막는다.
+        let names: Vec<std::ffi::OsString> = fs::read_dir(&root)
+            .map_err(|e| format!("읽기 실패 {}: {e}", root.display()))?
+            .flatten()
+            .map(|entry| entry.file_name())
+            .collect();
+        if names.iter().any(|n| n == to) && names.iter().any(|n| n == from) {
+            return Err(format!("'{to}'은 이미 있는 프로필 이름입니다 — 다른 이름을 쓰세요"));
+        }
+        // 대소문자만 다른 직접 이동은 파일시스템마다 처리(무시·거부)가 다를 수 있어(이 PC의
+        // NTFS는 직접 이동도 됐다 — 실측) 같은 폴더의 임시 이름을 거쳐 2단계로 옮긴다.
+        // 두 단계 사이에 앱이 죽으면 프로필은 파일이
+        // 그대로인 채 `<to>.renaming-<초>` 폴더에 남는다 — 목록에는 그 이름으로 보이고
+        // (이름에 `.`이 있어 전환·삭제는 거부됨), 폴더 이름을 `<to>`로 바꾸면 복구된다.
+        let tmp = root.join(format!("{to}.renaming-{}", now()));
+        if tmp.exists() {
+            return Err(format!("이름 변경 임시 폴더가 이미 있습니다: {}", tmp.display()));
+        }
+        fs::rename(&src, &tmp)
+            .map_err(|e| format!("이름 변경 실패 {} → {}: {e}", src.display(), tmp.display()))?;
+        if let Err(e) = fs::rename(&tmp, &dst) {
+            // 2단계가 실패하면 원래 이름으로 되돌린다. 되돌리기마저 실패하면 임시 폴더
+            // 위치를 알려 손으로 복구할 수 있게 한다 (프로필 파일은 그대로 있다).
+            return Err(match fs::rename(&tmp, &src) {
+                Ok(()) => format!("이름 변경 실패 {} → {}: {e}", src.display(), dst.display()),
+                Err(back) => format!(
+                    "이름 변경 실패 {} → {}: {e} — 원래 이름 복구도 실패({back}), 프로필은 {}에 있습니다",
+                    src.display(),
+                    dst.display(),
+                    tmp.display()
+                ),
+            });
+        }
+    } else {
+        if dst.exists() {
+            return Err(format!("'{to}'은 이미 있는 프로필 이름입니다 — 다른 이름을 쓰세요"));
+        }
+        fs::rename(&src, &dst)
+            .map_err(|e| format!("이름 변경 실패 {} → {}: {e}", src.display(), dst.display()))?;
     }
-    fs::rename(&src, &dst)
-        .map_err(|e| format!("이름 변경 실패 {} → {}: {e}", src.display(), dst.display()))?;
     crate::usage::purge_account_cache(env, provider, None, from);
     Ok(())
 }
@@ -1835,6 +1873,53 @@ mod tests {
         assert!(rename(&env, Provider::Codex, "alice", "alice").is_ok());
         assert!(env.profiles_dir(Provider::Codex).join("alice").exists());
         assert!(env.profiles_dir(Provider::Codex).join("bob").exists());
+    }
+
+    /// 대소문자만 바꾸는 이름 변경도 된다 (#177). 대소문자 무시 FS(Windows·기본 macOS)에선
+    /// 원본 자신이 dst.exists()에 걸려 거부되던 경로 — 이 테스트가 실제 2단계 이동을 탄다.
+    #[test]
+    fn rename_allows_case_only_change() {
+        let env = test_env("rename-case");
+        login_codex(&env, "acct-b", "bob@test.dev", "ctok-b1");
+        save_current(&env, Provider::Codex, "bob").unwrap();
+        login_codex(&env, "acct-a", "alice@test.dev", "ctok-a1");
+        save_current(&env, Provider::Codex, "alice").unwrap();
+        let root = env.profiles_dir(Provider::Codex);
+        let disk_names = || -> Vec<String> {
+            fs::read_dir(&root)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect()
+        };
+
+        // 활성 프로필이어도 된다 — 디스크의 실제 이름이 바뀌고 임시 폴더는 남지 않는다
+        rename(&env, Provider::Codex, "alice", "Alice").unwrap();
+        let names = disk_names();
+        assert!(names.iter().any(|n| n == "Alice"), "{names:?}");
+        assert!(
+            !names.iter().any(|n| n == "alice" || n.contains(".renaming-")),
+            "{names:?}"
+        );
+        let snap = list(&env, Provider::Codex).unwrap();
+        let active: Vec<_> = snap.profiles.iter().filter(|p| p.active).collect();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].name, "Alice");
+        assert_eq!(active[0].email.as_deref(), Some("alice@test.dev"));
+
+        // 바뀐 이름으로 전환된다 (떠나는 bob 백업 → Alice 복사)
+        switch(&env, Provider::Codex, "bob").unwrap();
+        switch(&env, Provider::Codex, "Alice").unwrap();
+        assert!(String::from_utf8_lossy(&codex_live_bytes(&env)).contains("ctok-a1"));
+
+        // 한 번 더 바꿔도 되고, 다른 프로필은 그대로다
+        rename(&env, Provider::Codex, "Alice", "ALICE").unwrap();
+        let names = disk_names();
+        assert!(names.iter().any(|n| n == "ALICE"), "{names:?}");
+        assert!(names.iter().any(|n| n == "bob"), "{names:?}");
+        assert_eq!(names.len(), 2, "{names:?}");
+        // 없는 프로필의 대소문자 변경은 여전히 "없음"
+        assert!(rename(&env, Provider::Codex, "ghost", "Ghost").is_err());
     }
 
     /// Windows 예약 장치명은 대소문자와 무관하게 거부하고, 비슷하지만 다른 이름은 통과한다 (#177)
