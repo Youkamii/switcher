@@ -1090,13 +1090,34 @@ static LAST_COMPLETED_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 /// 프론트가 이 문구로 "다른 경로가 먼저 완료" 상황을 판별한다 (main.ts isLoginCompletedElsewhere)
 pub(crate) const COMPLETED_ELSEWHERE: &str = "이미 완료된 로그인입니다";
 
-/// 세션이 사라진 이유를 구분한다: 같은 세대를 완료 경로가 가져갔으면 "이미 완료", 아니면 취소
+/// 대기자(타임아웃·상태 확인 실패·코드 전달 실패)가 세션을 정리한 마지막 세대와 그 사유.
+/// 클로드는 승인 대기와 코드 제출이 같은 세션을 지켜보므로(#167), 제출 쪽 타임아웃이 세션을
+/// 거두면 승인 대기 쪽은 세션이 사라진 것만 본다 — 사유를 세대에 묶어 두지 않으면 사용자에게
+/// "로그인을 취소했습니다"라는 틀린 문구가 간다 (#178)
+static LAST_CANCEL_REASON: std::sync::Mutex<Option<(u64, String)>> = std::sync::Mutex::new(None);
+
+fn record_cancel_reason(generation: u64, reason: &str) {
+    if let Ok(mut slot) = LAST_CANCEL_REASON.lock() {
+        *slot = Some((generation, reason.to_string()));
+    }
+}
+
+/// 세션이 사라진 이유를 구분한다: 같은 세대를 완료 경로가 가져갔으면 "이미 완료", 대기자가
+/// 사유를 남기고 거뒀으면 그 사유, 그 밖에는 사용자 취소
 fn session_gone_error(generation: u64) -> String {
     if generation != 0 && LAST_COMPLETED_GEN.load(std::sync::atomic::Ordering::SeqCst) == generation {
-        COMPLETED_ELSEWHERE.to_string()
-    } else {
-        "로그인을 취소했습니다".to_string()
+        return COMPLETED_ELSEWHERE.to_string();
     }
+    if generation != 0 {
+        if let Ok(slot) = LAST_CANCEL_REASON.lock() {
+            if let Some((gen, reason)) = slot.as_ref() {
+                if *gen == generation {
+                    return reason.clone();
+                }
+            }
+        }
+    }
+    "로그인을 취소했습니다".to_string()
 }
 
 
@@ -1638,6 +1659,8 @@ fn cancel_generation(generation: u64) -> Result<CancelOutcome, String> {
 }
 
 fn cancel_generation_with_reason(generation: u64, reason: String) -> String {
+    // 세션을 거두기 전에 사유를 남긴다 — 거둔 직후 다른 대기자가 "세션 없음"을 보면 이 사유를 돌려준다
+    record_cancel_reason(generation, &reason);
     match cancel_generation(generation) {
         Ok(CancelOutcome {
             cancelled: true,
@@ -1932,6 +1955,13 @@ mod tests {
     #[test]
     fn session_gone_distinguishes_completion_from_cancel() {
         LAST_COMPLETED_GEN.store(77, std::sync::atomic::Ordering::SeqCst);
+        // 대기자가 남긴 사유는 그 세대에만 적용되고, 완료가 먼저면 완료가 이긴다 (#178)
+        record_cancel_reason(80, "시간이 초과됐습니다 — 처음부터 다시 시도하세요");
+        assert_eq!(session_gone_error(80), "시간이 초과됐습니다 — 처음부터 다시 시도하세요");
+        assert_eq!(session_gone_error(81), "로그인을 취소했습니다");
+        record_cancel_reason(77, "상태 확인 실패");
+        assert_eq!(session_gone_error(77), COMPLETED_ELSEWHERE);
+        record_cancel_reason(0, "none");
         assert_eq!(session_gone_error(77), COMPLETED_ELSEWHERE);
         assert_eq!(session_gone_error(78), "로그인을 취소했습니다");
         assert_eq!(session_gone_error(0), "로그인을 취소했습니다");

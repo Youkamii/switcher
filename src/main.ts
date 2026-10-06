@@ -548,18 +548,34 @@ function profileCard(
   const deleteBtn = document.createElement("button");
   deleteBtn.textContent = t("del");
   let armed = false;
+  let disarmTimer: number | undefined;
+  // 확인 단계 해제는 타이머만 믿지 않는다 — 맥 비활성 웹뷰는 타이머가 수 초씩 늦거나 죽어
+  // (CLAUDE.md macOS 절) 무장 상태가 다음 렌더까지 남고 한 번 클릭에 삭제된다 (#178).
+  // 버튼 밖 아무 곳을 누르거나 창이 포커스를 잃으면 즉시 해제한다 (사용자 동작 기반).
+  const disarm = () => {
+    window.clearTimeout(disarmTimer);
+    disarmTimer = undefined;
+    document.removeEventListener("pointerdown", disarmOutside, true);
+    window.removeEventListener("blur", disarm);
+    if (!armed) return;
+    armed = false;
+    deleteBtn.textContent = t("del");
+    deleteBtn.classList.remove("danger-armed");
+  };
+  const disarmOutside = (event: Event) => {
+    if (event.target !== deleteBtn) disarm();
+  };
   deleteBtn.addEventListener("click", async () => {
     if (!armed) {
       armed = true;
       deleteBtn.textContent = t("delConfirm");
       deleteBtn.classList.add("danger-armed");
-      window.setTimeout(() => {
-        armed = false;
-        deleteBtn.textContent = t("del");
-        deleteBtn.classList.remove("danger-armed");
-      }, 3000);
+      document.addEventListener("pointerdown", disarmOutside, true);
+      window.addEventListener("blur", disarm);
+      disarmTimer = window.setTimeout(disarm, 3000);
       return;
     }
+    disarm();
     deleteBtn.disabled = true;
     try {
       await invoke("delete_profile", { provider, name: profile.name });
@@ -1579,19 +1595,26 @@ async function renderDisplays(target: DocumentFragment, compact: boolean) {
           // 밝기 명령은 모니터마다 수십~수백 ms — 드래그 중엔 표시만 갱신하고
           // 손을 잠깐 멈추면 마지막 값 하나만 보낸다
           let debounce: number | undefined;
+          // name을 함께 보내 목록 이후 모니터 구성이 바뀐 경우 엉뚱한 모니터에
+          // 쓰지 않게 한다 (Rust가 대조 후 불일치면 에러)
+          const send = () => {
+            window.clearTimeout(debounce);
+            debounce = undefined;
+            void invoke("display_set_brightness", {
+              id: monitor.id,
+              percent: Number(slider.value),
+              name: monitor.name,
+            }).catch((error) => toast(String(error), true));
+          };
           slider.addEventListener("input", () => {
             pct.textContent = `${slider.value}%`;
             window.clearTimeout(debounce);
-            debounce = window.setTimeout(() => {
-              // name을 함께 보내 목록 이후 모니터 구성이 바뀐 경우 엉뚱한 모니터에
-              // 쓰지 않게 한다 (Rust가 대조 후 불일치면 에러)
-              void invoke("display_set_brightness", {
-                id: monitor.id,
-                percent: Number(slider.value),
-                name: monitor.name,
-              }).catch((error) => toast(String(error), true));
-            }, 250);
+            debounce = window.setTimeout(send, 250);
           });
+          // 손을 떼는 순간(change)은 사용자 동작이라 타이머가 죽은 비활성 웹뷰(맥)에서도
+          // 마지막 값이 반드시 전송된다 (#178). 타이머가 먼저 보냈으면 같은 값을 한 번 더
+          // 보내는 정도 — 드래그 중 디바운스는 그대로.
+          slider.addEventListener("change", send);
           row.append(slider, pct);
         }
         card.appendChild(row);
@@ -1648,18 +1671,23 @@ async function renderDisplaysEdge(target: DocumentFragment) {
     pct.className = "edge-num edge-dsp-val"; // 꾹 누를 때도 남는다(대신할 남은 시간이 없다)
     pct.textContent = String(start);
     let debounce: number | undefined;
+    const send = () => {
+      window.clearTimeout(debounce);
+      debounce = undefined;
+      void invoke("display_set_brightness", {
+        id: monitor.id,
+        percent: Number(slider.value),
+        name: monitor.name,
+      }).catch((error) => toast(String(error), true));
+    };
     slider.addEventListener("input", () => {
       pct.textContent = slider.value;
       slider.style.setProperty("--edge-pct", `${slider.value}%`);
       window.clearTimeout(debounce);
-      debounce = window.setTimeout(() => {
-        void invoke("display_set_brightness", {
-          id: monitor.id,
-          percent: Number(slider.value),
-          name: monitor.name,
-        }).catch((error) => toast(String(error), true));
-      }, 250);
+      debounce = window.setTimeout(send, 250);
     });
+    // 손을 떼는 순간은 사용자 동작 — 타이머가 죽은 비활성 웹뷰(맥)에서도 마지막 값 전송 (#178)
+    slider.addEventListener("change", send);
     const lab = document.createElement("span");
     lab.className = "edge-lab";
     lab.textContent = String(monitor.id + 1);
@@ -2603,9 +2631,16 @@ function gooBlur(id: "goo-up" | "goo-down") {
 let edgeAnimating: "rise" | "sink" | null = null;
 let edgePending: boolean | null = null;
 let edgeAnimTimer: number | undefined;
+/// 연출 시작 시각 — animationend도 안전 타이머도 안 오면(맥 비활성 웹뷰) 다음 러스트
+/// 호버 신호가 올 때 경과 시간으로 "끝난 것"으로 판정해 상태기계를 푼다 (#178)
+let edgeAnimStartedAt = 0;
+const EDGE_ANIM_MAX_MS = 1500;
 
 function setEdgeOut(out: boolean) {
   if (!edgeActive) return;
+  // 타이머 없는 백업: 러스트 폴링의 호버 신호는 사용자 동작마다 오므로, 연출이 걸린 채
+  // 1.5초가 지났으면 여기서 먼저 매듭짓고 새 신호를 정상 처리한다
+  if (edgeAnimating && Date.now() - edgeAnimStartedAt > EDGE_ANIM_MAX_MS) edgeAnimationDone();
   if (edgeAnimating) {
     edgePending = out;
     return;
@@ -2613,8 +2648,9 @@ function setEdgeOut(out: boolean) {
   if (edgeOut === out) return;
   edgeOut = out;
   edgeAnimating = out ? "rise" : "sink";
+  edgeAnimStartedAt = Date.now();
   window.clearTimeout(edgeAnimTimer);
-  edgeAnimTimer = window.setTimeout(edgeAnimationDone, 1500);
+  edgeAnimTimer = window.setTimeout(edgeAnimationDone, EDGE_ANIM_MAX_MS);
   if (!out) endEdgeHold();
   document.body.classList.remove("edge-noanim");
   document.body.classList.toggle("edge-out", out);
