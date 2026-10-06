@@ -128,12 +128,6 @@ body.locked #memobtn {
 /* ── 시스템 모니터 섹션 (위젯 본체 안, 상시) ──
    행별 파스텔 색: CPU 보라 / MEM 초록 / DSK 노랑 / NET 파랑.
    바는 기존 .bar를 재사용해 --bar-alpha 투명도 규칙을 그대로 따른다 */
-.mon-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
 #mon-beat {
   width: 6px;
   height: 6px;
@@ -931,8 +925,8 @@ body.minimal #privacybtn {
   white-space: nowrap;
 }
 
-/* 고정 모드: 조작 요소를 전부 숨겨 사용량 전용 위젯이 된다 */
-#app.locked .card-actions,
+/* 고정 모드: 조작 요소를 전부 숨겨 사용량 전용 위젯이 된다
+   (.card-actions는 기본값이 none이고 Type1(:not(.locked))에서만 켜지므로 여기 없다) */
 #app.locked .add-row,
 #app.locked .save-row,
 #app.locked .login-panel,
@@ -1153,21 +1147,40 @@ body.minimal .dock-tray button {
 
 /* Type1 조작 버튼은 카드에 마우스를 올렸을 때만 (#103) — 계정마다 상시
    노출하면 계정 수만큼 세로가 늘어난다. 나타나며 카드 높이가 바뀌므로 창
-   높이도 따라 맞춘다 (hoverActions → fitHeight).
-   :focus-within은 키보드 경로다 — 카드가 tabindex를 갖고 있어(profileCard·
-   githubCard) 탭으로 카드에 닿으면 버튼이 나타나고, 다음 탭이 버튼에 들어간다.
-   이게 없으면 숨은 버튼은 포커스 트리 밖이라 키보드로 영영 도달하지 못한다 */
-#app:not(.locked) .card:hover .card-actions,
-#app:not(.locked) .card:focus-within .card-actions {
+   높이도 따라 맞춘다 (hoverActions → fitHeight). */
+#app:not(.locked) .card:hover .card-actions {
+  display: flex;
+}
+
+/* 키보드 경로 — 카드가 tabindex를 갖고 있어(profileCard·githubCard) 탭으로
+   카드에 닿으면 버튼이 나타나고, 다음 탭이 버튼에 들어간다. 이게 없으면 숨은
+   버튼은 포커스 트리 밖이라 키보드로 영영 도달하지 못한다.
+   :focus-within이 아니라 :has(:focus-visible)인 이유 — 마우스로 누른 버튼도
+   포커스를 쥐므로 :focus-within이면 삭제 버튼을 한 번 누른 뒤 커서를 빼도 버튼
+   줄이 안 접힌다 (CDP 실측: 떠난 뒤 display flex·창 866px 유지). :focus-visible은
+   키보드 포커스(와 입력칸)에만 켜진다. 호버 규칙과 분리해 둔 것은 :has를 모르는
+   엔진에서 셀렉터 목록 전체가 버려져 호버까지 죽는 일을 막기 위해서다 */
+#app:not(.locked) .card:has(:focus-visible) .card-actions {
+  display: flex;
+}
+
+/* Tab이 카드 자체에 멈춘 순간 — :has는 자손만 보므로 카드 본체의 키보드 포커스는
+   따로. 이게 없으면 버튼이 display:none이라 다음 Tab이 카드를 통째로 건너뛴다 */
+#app:not(.locked) .card:focus-visible .card-actions {
   display: flex;
 }
 
 /* 버튼이 숨어 있어도 "여기 뭔가 있다"가 보이게 — 전환 후보 카드는 호버에
    테두리가 살아난다 (고정 모드의 .hit-hover와 같은 신호, 색은 테마 accent) */
-#app:not(.locked) .card.switchable:hover,
-#app:not(.locked) .card.switchable:focus-within {
+#app:not(.locked) .card.switchable:hover {
   border-color: rgba(var(--accent-rgb), calc(0.75 * var(--fg-alpha)));
   /* 비활성 카드의 낮춘 채도(.card:not(.active))도 함께 살아난다 */
+  filter: none;
+}
+
+#app:not(.locked) .card.switchable:has(:focus-visible),
+#app:not(.locked) .card.switchable:focus-visible {
+  border-color: rgba(var(--accent-rgb), calc(0.75 * var(--fg-alpha)));
   filter: none;
 }
 

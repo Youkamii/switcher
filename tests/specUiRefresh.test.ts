@@ -11,10 +11,12 @@ const i18nSource = readFileSync(new URL("../src/i18n.ts", import.meta.url), "utf
 test("status dot is attached to Type1 and Type2 card heads only", () => {
   const dots = mainSource.match(/head\.append\(statusDot\(profile\.active\), email\);/g) ?? [];
   assert.equal(dots.length, 2, "profileCard and compactCard both prepend the dot to the email");
-  // Type3(minimal)는 머리를 만들지 않는다 — compactCard의 머리가 !minimal 안에 있어야 dot도 안 붙는다
+  assert.match(mainSource, /head\.append\(statusDot\(acc\.active\), name\);/, "GitHub cards get the same dot");
+  // Type3(minimal)는 머리를 만들지 않는다 — compactCard의 머리가 !minimal 블록 안에서 닫히기 전에
+  // dot이 붙어야 한다 (블록 닫힘 "\n  }\n"을 넘지 않는 tempered 패턴)
   const compact = mainSource.match(/function compactCard\([\s\S]*?\n}\n/)?.[0];
   assert.ok(compact, "compactCard must exist");
-  assert.match(compact, /if \(!minimal\) \{\s*head\.className = "card-head";[\s\S]*?statusDot\(profile\.active\)/);
+  assert.match(compact, /if \(!minimal\) \{(?:(?!\n  \}\n)[\s\S])*?statusDot\(profile\.active\)/);
   // Type4(edgeAccount)에는 붙지 않는다 — 이름 앞 ::before 표식이 그 역할
   const edge = mainSource.match(/function edgeAccount\([\s\S]*?\n}\n/)?.[0];
   assert.ok(edge, "edgeAccount must exist");
@@ -67,12 +69,16 @@ test("provider icon is one path per icon, coloured by theme variables, sized to 
   assert.equal(rows.length, 16, "two 8x8 grids");
   const icon = cssSource.match(/\.prov-icon \{[^}]*\}/)?.[0];
   assert.ok(icon, ".prov-icon rule must exist");
-  assert.match(icon, /width: 16px;\s*height: 16px;/);
+  assert.match(icon, /width: 16px;/);
+  assert.match(icon, /height: 16px;/);
   assert.match(icon, /shape-rendering: crispEdges;/);
   assert.match(icon, /opacity: var\(--fg-alpha\);/, "fades with the title text");
-  assert.match(cssSource, /\.prov-icon\.prov-claude \{\s*fill: rgb\(var\(--accent-rgb\)\);/);
-  assert.match(cssSource, /\.prov-icon\.prov-codex \{\s*fill: rgb\(var\(--accent-alt-rgb\)\);/);
-  assert.match(cssSource, /\.compact-head \.prov-icon \{\s*width: 8px;\s*height: 8px;/);
+  assert.match(cssSource, /\.prov-icon\.prov-claude \{[^}]*fill: rgb\(var\(--accent-rgb\)\);/);
+  assert.match(cssSource, /\.prov-icon\.prov-codex \{[^}]*fill: rgb\(var\(--accent-alt-rgb\)\);/);
+  const compactIcon = cssSource.match(/\.compact-head \.prov-icon \{[^}]*\}/)?.[0];
+  assert.ok(compactIcon, "compact icon rule must exist");
+  assert.match(compactIcon, /width: 8px;/);
+  assert.match(compactIcon, /height: 8px;/);
 });
 
 /// #103 — Type1 조작 버튼은 호버·포커스에만. 창 높이 보정, 커서 밑 생성 직후 클릭
@@ -81,27 +87,39 @@ test("card actions are hidden by default and shown on hover or keyboard focus in
   const base = cssSource.match(/\.card-actions \{[^}]*\}/)?.[0];
   assert.ok(base, ".card-actions rule must exist");
   assert.match(base, /display: none;/);
-  assert.match(
-    cssSource,
-    /#app:not\(\.locked\) \.card:hover \.card-actions,\s*#app:not\(\.locked\) \.card:focus-within \.card-actions \{\s*display: flex;/,
-  );
+  assert.match(cssSource, /#app:not\(\.locked\) \.card:hover \.card-actions \{[^}]*display: flex;/);
+  // 키보드 경로는 :focus-within이 아니라 :has(:focus-visible) — 마우스로 누른 버튼의 포커스로
+  // 버튼 줄이 눌러붙지 않게. 호버 규칙과 다른 규칙이어야 :has 미지원 엔진에서 호버가 산다
+  assert.match(cssSource, /#app:not\(\.locked\) \.card:has\(:focus-visible\) \.card-actions \{[^}]*display: flex;/);
+  // :has는 자손만 — Tab이 카드 자체에 멈춘 순간도 버튼 줄이 보여야 다음 Tab이 버튼에 들어간다
+  assert.match(cssSource, /#app:not\(\.locked\) \.card:focus-visible \.card-actions \{[^}]*display: flex;/);
+  assert.doesNotMatch(cssSource, /\.card:focus-within/);
   // 전환 후보 카드의 호버 신호는 테마 accent를 따른다 (색감 6종 이후 고정색 금지)
-  const hover = cssSource.match(/#app:not\(\.locked\) \.card\.switchable:hover,[\s\S]*?\}/)?.[0];
+  const hover = cssSource.match(/#app:not\(\.locked\) \.card\.switchable:hover \{[\s\S]*?\}/)?.[0];
   assert.ok(hover, "switchable hover rule must exist");
   assert.match(hover, /rgba\(var\(--accent-rgb\), calc\(0\.75 \* var\(--fg-alpha\)\)\)/);
   assert.doesNotMatch(hover, /167, 139, 250/);
-  // 고정 모드(Type2/3)의 통째 숨김은 그대로
-  assert.match(cssSource, /#app\.locked \.card-actions,/);
+  // 고정 모드(Type2/3)에는 .card-actions가 렌더되지 않고 기본값도 none — 따로 숨김 규칙이 없어야 한다
+  assert.doesNotMatch(cssSource, /#app\.locked \.card-actions/);
 });
 
 test("hoverActions refits the window, grants a click grace after appearing, and disarms on leave", () => {
   const fn = mainSource.match(/function hoverActions\([\s\S]*?\n}\n/)?.[0];
   assert.ok(fn, "hoverActions must exist");
   assert.match(mainSource, /const ACTION_GRACE_MS = 250;/);
-  assert.match(fn, /card\.addEventListener\("pointerenter", \(\) => \{\s*shownAt = Date\.now\(\);\s*refit\(\);/);
-  assert.match(fn, /card\.addEventListener\("pointerleave", \(\) => \{\s*disarm\?\.\(\);\s*refit\(\);/);
+  // 유예는 마우스가 버튼 줄 높이로 들어온 진입에만, 터치·펜은 제외 (review)
+  const enter = fn.match(/card\.addEventListener\("pointerenter", \(event\) => \{[\s\S]*?\n  \}\);/)?.[0];
+  assert.ok(enter, "pointerenter handler must exist");
+  assert.match(enter, /shownAt = 0;/);
+  assert.match(enter, /if \(event\.pointerType !== "mouse"\) return;/);
+  assert.match(enter, /rect\.height > 0 && event\.clientY >= rect\.top\) shownAt = Date\.now\(\);/);
+  assert.match(enter, /refit\(\);/);
+  const leave = fn.match(/card\.addEventListener\("pointerleave", \(event\) => \{[\s\S]*?\n  \}\);/)?.[0];
+  assert.ok(leave, "pointerleave handler must exist");
+  assert.match(leave, /if \(event\.pointerType === "mouse"\) disarm\?\.\(\);/);
+  assert.match(leave, /refit\(\);/);
   assert.match(fn, /card\.addEventListener\("focusin", refit\);/);
-  assert.match(fn, /card\.addEventListener\("focusout", \(\) => \{\s*disarm\?\.\(\);/);
+  assert.match(fn, /card\.addEventListener\("focusout", \(\) => \{[^}]*disarm\?\.\(\);/);
   assert.match(fn, /return \(\) => Date\.now\(\) - shownAt < ACTION_GRACE_MS;/);
   assert.match(fn, /if \(!app\.classList\.contains\("locked"\)\) fitHeight\(\);/, "no refit in widget modes");
 });
@@ -113,16 +131,47 @@ test("profile and GitHub cards are keyboard-reachable and guard switch/delete cl
   assert.match(profile, /const justShown = hoverActions\(card, \(\) => disarm\(\)\);/);
   assert.match(profile, /switchBtn\.addEventListener\("click", \(\) => \{\s*if \(justShown\(\)\) return;\s*void doSwitch\(switchBtn\);/);
   assert.match(profile, /deleteBtn\.addEventListener\("click", async \(\) => \{[\s\S]*?if \(justShown\(\)\) return;\s*if \(!armed\) \{/);
-  // #178의 해제 경로(바깥 클릭·blur·3초)는 그대로 남는다
-  assert.match(profile, /document\.addEventListener\("pointerdown", disarmOutside, true\);/);
-  assert.match(profile, /disarmTimer = window\.setTimeout\(disarm, 3000\);/);
+  // #178의 해제 경로(바깥 클릭·blur·3초)는 tests/hiddenWebviewTimers.test.ts가 지킨다
   const github = mainSource.match(/function githubCard\([\s\S]*?\n}\n/)?.[0];
   assert.ok(github, "githubCard must exist");
-  assert.match(github, /if \(!compact\) \{[\s\S]*?card\.tabIndex = 0;\s*const justShown = hoverActions\(card\);/);
+  assert.match(github, /if \(!compact\) \{(?:(?!\n    \}\n)[\s\S])*?card\.tabIndex = 0;\s*const justShown = hoverActions\(card\);/);
   assert.match(github, /switchBtn\.addEventListener\("click", async \(\) => \{\s*if \(justShown\(\)\) return;/);
   // 컴팩트 카드·Type4 묶음에는 호버 버튼이 없으므로 hoverActions도 없다
   const compact = mainSource.match(/function compactCard\([\s\S]*?\n}\n/)?.[0] ?? "";
   assert.doesNotMatch(compact, /hoverActions\(/);
   const edge = mainSource.match(/function edgeAccount\([\s\S]*?\n}\n/)?.[0] ?? "";
   assert.doesNotMatch(edge, /hoverActions\(/);
+});
+
+/// #103 리뷰 반영 — 호버 버튼이 생기며 드러난 주변 결함
+test("rename submission keeps focus (readOnly, not disabled) so the card does not collapse", () => {
+  const rename = mainSource.match(/const submit = async \(\) => \{[\s\S]*?\n    \};\n/)?.[0];
+  assert.ok(rename, "rename submit must exist");
+  assert.match(rename, /input\.readOnly = true;/);
+  assert.match(rename, /input\.readOnly = false;/);
+  assert.doesNotMatch(rename, /input\.disabled/);
+});
+
+test("optimistic switch moves the status-dot tooltip with the active class", () => {
+  const fn = mainSource.match(/function markActiveOptimistic\([\s\S]*?\n}\n/)?.[0];
+  assert.ok(fn, "markActiveOptimistic must exist");
+  assert.match(fn, /\.status-dot"\)\) dot\.removeAttribute\("title"\);/);
+  assert.match(fn, /if \(dot\) dot\.title = t\("activeDot"\);/);
+});
+
+test("smooth render restores keyboard focus to the same card slot", () => {
+  assert.match(
+    mainSource,
+    /const focusedCard = document\.activeElement\?\.closest\("\.card"\) \?\? null;[\s\S]*?app\.replaceChildren\(buffer\);[\s\S]*?commitEdgeGauge\(card\)\);\s*if \(focusedIdx >= 0\) \{\s*app\.querySelectorAll<HTMLElement>\("\.card"\)\[focusedIdx\]\?\.focus\(\{ preventScroll: true \}\);/,
+  );
+});
+
+test("a window resting on the work-area bottom keeps its bottom edge when content height changes", () => {
+  const fit = mainSource.match(/async function fitWindowToContent\(\) \{[\s\S]*?\n}\n/)?.[0];
+  assert.ok(fit, "fitWindowToContent must exist");
+  assert.match(mainSource, /const BOTTOM_ANCHOR_TOLERANCE = 4;/);
+  assert.match(fit, /anchorBottom = workBottom;/);
+  assert.match(fit, /const y = anchorBottom !== null \? anchorBottom - newSize\.height : topY;/);
+  // Type4는 벽 스냅이 맡으므로 제외
+  assert.match(fit, /!edgeActive && currentWorkArea/);
 });

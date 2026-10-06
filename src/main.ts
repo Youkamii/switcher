@@ -115,6 +115,11 @@ function markActiveOptimistic(card: HTMLElement) {
   }
   card.classList.add("active");
   card.classList.remove("switchable");
+  // 상태 dot 툴팁(#102)도 함께 옮긴다 — 색은 .active로 바뀌지만 title은 생성 시 값이라
+  // 교체 렌더까지(최대 10초) 회색 점에 "사용 중"이 남았다 (review)
+  for (const dot of section.querySelectorAll<HTMLElement>(".status-dot")) dot.removeAttribute("title");
+  const dot = card.querySelector<HTMLElement>(".status-dot");
+  if (dot) dot.title = t("activeDot");
 }
 
 const PROVIDERS = [
@@ -464,19 +469,30 @@ const ACTION_GRACE_MS = 250;
 /// 3) 카드를 벗어나면 확인 대기(armed)를 거둔다 — 버튼이 숨은 채 남은 armed는
 ///    다시 들어와 누르는 한 번에 삭제가 된다. 바깥 클릭·blur 해제(#178)와 겹치지
 ///    않는 경로(클릭 없이 커서만 빠져나감)를 메운다.
-/// 키보드 경로(:focus-within)도 같은 높이 변화를 만든다. 이쪽은 커서 아래
-/// 생성이 없으므로 shownAt을 건드리지 않는다 — 유예도 걸리지 않는다.
+/// 키보드 경로(:has(:focus-visible))도 같은 높이 변화를 만든다. 이쪽은 커서
+/// 아래 생성이 없으므로 shownAt을 건드리지 않는다 — 유예도 걸리지 않는다.
 function hoverActions(card: HTMLElement, disarm?: () => void): () => boolean {
   let shownAt = 0;
   const refit = () => {
     if (!app.classList.contains("locked")) fitHeight();
   };
-  card.addEventListener("pointerenter", () => {
-    shownAt = Date.now();
+  card.addEventListener("pointerenter", (event) => {
+    // 유예는 "버튼이 커서 밑에 생성된" 진입에만 — 위·옆에서 들어와 버튼까지 내려가
+    // 누르는 보통의 빠른 조작(테두리 통과→클릭 250ms 안)까지 삼키면 첫 클릭이
+    // 무음으로 사라진다 (review). 진입 시점엔 :hover가 이미 적용돼 버튼 줄의
+    // 위치를 잴 수 있다 — 커서가 그 줄 높이 안에 있을 때만 유예를 건다.
+    // 터치·펜은 탭마다 enter→click이 수 ms라 유예를 걸면 전환·삭제가 영영 안 된다.
+    shownAt = 0;
+    if (event.pointerType !== "mouse") return;
+    const actions = card.querySelector<HTMLElement>(".card-actions");
+    const rect = actions?.getBoundingClientRect();
+    if (rect && rect.height > 0 && event.clientY >= rect.top) shownAt = Date.now();
     refit();
   });
-  card.addEventListener("pointerleave", () => {
-    disarm?.();
+  card.addEventListener("pointerleave", (event) => {
+    // 터치는 탭마다 leave가 click보다 먼저 와 확인 대기를 매번 되돌린다 — 그 경로의
+    // 해제는 #178의 바깥 클릭·3초·blur가 맡는다
+    if (event.pointerType === "mouse") disarm?.();
     refit();
   });
   card.addEventListener("focusin", refit);
@@ -608,9 +624,11 @@ function profileCard(
         row.remove();
         return;
       }
+      // 입력칸은 disabled가 아니라 readOnly — disabled는 포커스를 떨어뜨려 카드 focusout →
+      // 버튼 줄 접힘 → 창 높이가 실패 시 두 번 튄다 (#103 review). Enter 연타는 submitting이 막는다
       submitting = true;
       okBtn.disabled = true;
-      input.disabled = true;
+      input.readOnly = true;
       try {
         await invoke("rename_profile", { provider, from: profile.name, to });
         toast(t("renameDone", { from: profile.name, to }));
@@ -621,9 +639,9 @@ function profileCard(
       } catch (error) {
         toast(String(error), true);
         okBtn.disabled = false;
-        input.disabled = false;
+        input.readOnly = false;
         submitting = false;
-        // 비활성화로 빠진 포커스를 돌려준다 — 이름을 고쳐 바로 Enter로 다시 낼 수 있게
+        // 포커스가 남아 있어야 이름을 고쳐 바로 Enter로 다시 낼 수 있다
         input.focus();
       }
     };
@@ -1435,11 +1453,10 @@ let visibility: Visibility = {
 function tfsdWatermark(): HTMLElement {
   const badge = document.createElement("span");
   badge.className = "tfsd-watermark";
-  const svgNS = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(svgNS, "svg");
+  const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("aria-hidden", "true");
-  const logo = document.createElementNS(svgNS, "path");
+  const logo = document.createElementNS(SVG_NS, "path");
   logo.setAttribute(
     "d",
     "M12 5.362l2.475-3.026s4.245.09 8.471 2.054c-1.082 1.636-3.231 2.438-3.231 2.438-.146-1.439-1.154-1.79-4.354-1.79L12 24 8.619 5.034c-3.18 0-4.188.354-4.335 1.792 0 0-2.146-.795-3.229-2.43C5.28 2.431 9.525 2.34 9.525 2.34L12 5.362l-.004.002H12v-.002zm0-3.899c3.415-.03 7.326.528 11.328 2.28.535-.968.672-1.395.672-1.395C19.625.612 15.528.015 12 0 8.472.015 4.375.61 0 2.349c0 0 .195.525.672 1.396C4.674 1.989 8.585 1.435 12 1.46v.003z",
@@ -1477,7 +1494,8 @@ function githubCard(acc: GithubAccount, compact = false): HTMLElement {
   const name = document.createElement("span");
   name.className = "card-name";
   name.textContent = acc.login;
-  head.appendChild(name);
+  // 클로드·코덱스 카드와 같은 활성 dot (#102) — 한 줄만 점이 빠지면 버그로 보인다
+  head.append(statusDot(acc.active), name);
   card.appendChild(head);
   if (!acc.active) {
     // 위젯 모드 더블클릭 전환 대상 — Rust가 provider "github"를 gh 통로로 보낸다
@@ -2514,12 +2532,19 @@ async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
       }
       // 첫 화면은 뼈대를 먼저 보여주고 사용량은 채워지는 대로 붙는다
       if (shutdownState !== "idle") buffer.prepend(shutdownStatus);
+      // 카드가 키보드 도달점이 된 뒤(#103)로는 교체가 포커스를 body로 떨어뜨리면 버튼 줄이
+      // 사라지고 Enter가 죽는다 — 교체 뒤 같은 자리의 카드로 포커스를 되돌린다 (review)
+      const focusedCard = document.activeElement?.closest(".card") ?? null;
+      const focusedIdx = focusedCard ? [...app.querySelectorAll(".card")].indexOf(focusedCard) : -1;
       // 진행 중 로그인은 버퍼에서 새로 만들지 않고 같은 노드를 옮겨 입력값·세션을 보존한다.
       if (loginOpen) buffer.appendChild(loginHost);
       app.replaceChildren(buffer);
       // 교체 전에 응답이 온 Type4 활성 카드는 게이지 값을 맡겨만 뒀다 — 이제 화면에
       // 붙었으니 손잡이에 반영한다. 아직 응답 전인 카드는 응답 때 스스로 반영한다 (#177)
       app.querySelectorAll<HTMLElement>(".edge-account").forEach((card) => commitEdgeGauge(card));
+      if (focusedIdx >= 0) {
+        app.querySelectorAll<HTMLElement>(".card")[focusedIdx]?.focus({ preventScroll: true });
+      }
       // 새 SYSTEM 스켈레톤을 마지막 샘플로 즉시 채운다 — 스무스 교체마다
       // 이 섹션만 '--'로 깜빡이던 문제 (red-review). 다음 틱이 이어받는다
       if (monLastStats) {
@@ -3053,6 +3078,9 @@ async function keepWindowInsideCurrentWorkArea() {
   }
 }
 
+/// 바닥 고정 판정 여유(물리 px) — clamp는 정확히 바닥에 맞추므로 1~2px이면 충분하다
+const BOTTOM_ANCHOR_TOLERANCE = 4;
+
 function fitHeight() {
   fitRevision += 1;
   if (fitQueued || fitRunning) return;
@@ -3106,7 +3134,14 @@ async function fitWindowToContent() {
       const widthChanging = lastAppliedWidth !== 0 && lastAppliedWidth !== width;
       let rightEdge = 0;
       let topY = 0;
-      if (widthChanging) {
+      // 바닥 고정: 작업영역 바닥에 붙여 둔 창은 아래로 못 자라므로 setSize 뒤 clamp가
+      // 위로 밀어 올리는데, 줄어들 때는 돌아오지 않아 호버 한 번(#103)에 창이 34px
+      // 뛰어 오른 채 남았다 (review). 바닥에 닿아 있던 창은 높이가 바뀌어도 바닥 변을
+      // 그대로 둔다 — 위로 자라고, 줄면 다시 내려온다. Type4는 벽 스냅이 맡는다.
+      let anchorBottom: number | null = null;
+      let anchorX = 0;
+      const wantsPosition = widthChanging || (!edgeActive && currentWorkArea && monitorMoveTimer === undefined);
+      if (wantsPosition) {
         try {
           const [pos, size] = await Promise.all([
             appWindow.outerPosition(),
@@ -3114,6 +3149,13 @@ async function fitWindowToContent() {
           ]);
           rightEdge = pos.x + size.width;
           topY = pos.y;
+          if (!edgeActive && currentWorkArea) {
+            const workBottom = currentWorkArea.position.y + currentWorkArea.size.height;
+            if (Math.abs(pos.y + size.height - workBottom) <= BOTTOM_ANCHOR_TOLERANCE) {
+              anchorBottom = workBottom;
+              anchorX = pos.x;
+            }
+          }
         } catch {
           rightEdge = 0;
         }
@@ -3130,11 +3172,14 @@ async function fitWindowToContent() {
       // setSize가 시작된 뒤 새 요청이 와도 이 트랜잭션의 실제 폭부터 기록한다.
       // 루프가 곧 최신 요청을 다시 적용하므로 오래된 크기가 최종값으로 남지 않는다.
       lastAppliedWidth = width;
-      if (widthChanging && rightEdge !== 0) {
+      if ((widthChanging && rightEdge !== 0) || anchorBottom !== null) {
         try {
-          // 새 폭의 실제 바깥 크기(그림자 포함)로 우측 가장자리를 되살린다
+          // 새 폭의 실제 바깥 크기(그림자 포함)로 우측 가장자리를 되살리고,
+          // 바닥에 붙어 있던 창은 새 높이만큼 위로 올려 바닥 변을 지킨다
           const newSize = await appWindow.outerSize();
-          await appWindow.setPosition(new PhysicalPosition(rightEdge - newSize.width, topY));
+          const x = widthChanging && rightEdge !== 0 ? rightEdge - newSize.width : anchorX;
+          const y = anchorBottom !== null ? anchorBottom - newSize.height : topY;
+          await appWindow.setPosition(new PhysicalPosition(x, y));
         } catch {
           // 위치 보정 실패는 치명적이지 않다
         }
