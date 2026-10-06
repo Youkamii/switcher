@@ -1817,7 +1817,9 @@ mod tests {
         parent: &mut std::process::Child,
         pid_file: &Path,
     ) -> Result<u32, String> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        // 넉넉히 — 전체 스위트·병렬 cargo 빌드로 CPU가 포화되면 테스트 바이너리 두 벌을
+        // 띄우는 데만 수 초가 걸려 5초에서는 간헐 실패했다 (2026-10-06 실측)
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
         loop {
             match fs::read_to_string(pid_file) {
                 Ok(pid) => match pid.trim().parse::<u32>() {
@@ -2533,9 +2535,10 @@ mod tests {
             Some(TestProcessHandle::open(child_pid).expect("fixture 자식 handle 열기 실패"));
 
         run_windows_taskkill(tree.parent.id()).expect("System32 taskkill /T /F 실행 실패");
+        // 부하 중에는 종료 정리도 느리다 — 운영 상수(61회)가 아닌 테스트 전용 여유 (20초)
         wait_for_exit_with(
             "taskkill fixture 부모",
-            101,
+            401,
             false,
             || {
                 tree.parent
@@ -2547,7 +2550,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            tree.child.as_ref().unwrap().wait(5_000),
+            tree.child.as_ref().unwrap().wait(20_000),
             WAIT_OBJECT_0,
             "taskkill /T가 fixture 자식을 종료하지 못했습니다"
         );
