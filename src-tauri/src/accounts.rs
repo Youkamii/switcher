@@ -900,19 +900,23 @@ pub(crate) fn write_profile_parts(
 }
 
 /// 현재 활성 파일들을 지정 이름의 프로필로 저장한다 (덮어쓰기 허용).
+/// 저장한 활성 토큰 바이트를 돌려준다 — 전환 2단계가 반쯤 실패했을 때 활성 토큰을
+/// 이 바이트로 되돌리기 위해서다 (#175). 다시 읽지 않고 이 값을 쓰는 이유는
+/// "백업한 것 = 되돌릴 것"이 같은 바이트임을 보장하기 위해서다.
 fn write_profile(
     env: &Env,
     provider: Provider,
     name: &str,
     ident: &LiveIdentity,
-) -> Result<(), String> {
+) -> Result<Vec<u8>, String> {
     let data = read_live_cred(env, provider)?;
     let block = if provider == Provider::Claude {
         claude_oauth_block(env)?
     } else {
         None
     };
-    write_profile_parts(env, provider, name, ident, &data, block.as_ref())
+    write_profile_parts(env, provider, name, ident, &data, block.as_ref())?;
+    Ok(data)
 }
 
 /// name 프로필이 이미 다른 계정의 것이면 에러 — 다른 계정 토큰을 덮어쓰지 않는다
@@ -1189,6 +1193,8 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
 
     // 1) 백업 — 현재 활성 계정을 자기 프로필(없으면 자동 생성)에 저장
     let mut backed_up_to = None;
+    // 방금 백업한 활성 토큰 바이트 — 2단계가 반쯤 실패하면 활성 위치를 이것으로 되돌린다
+    let mut previous_live = None;
     if live_cred_exists(env, provider) {
         match live_identity(env, provider)? {
             Some(live) => {
@@ -1196,7 +1202,7 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
                     Some(existing) => existing,
                     None => auto_name(env, provider, &live),
                 };
-                write_profile(env, provider, &back_name, &live)?;
+                previous_live = Some(write_profile(env, provider, &back_name, &live)?);
                 backed_up_to = Some(back_name);
             }
             None => {
@@ -1206,7 +1212,7 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
                     id: format!("unknown-{}", now()),
                     email: None,
                 };
-                write_profile(env, provider, &rescue, &ident)?;
+                previous_live = Some(write_profile(env, provider, &rescue, &ident)?);
                 backed_up_to = Some(rescue);
             }
         }
@@ -1217,7 +1223,30 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
         .map_err(|e| format!("읽기 실패 {}: {e}", target_cred.display()))?;
     write_live_cred(env, provider, &data)?;
     if provider == Provider::Claude {
-        claude_apply_oauth_block(env, &profile_dir)?;
+        // 클로드는 토큰(활성 저장소)과 계정 정보(~/.claude.json)를 따로 쓰는 두 단계라
+        // 원자적이지 않다. 토큰만 대상 계정 B로 바뀌고 계정 정보가 A로 남으면, 다음 전환이
+        // live_identity=A로 판단해 B의 토큰을 A의 프로필에 백업한다 — 클로드 토큰에는
+        // 계정 id가 없어 이 어긋남을 교차 검증으로 잡을 수도 없다 (#175).
+        // 그래서 계정 정보 반영이 실패하면 활성 토큰을 백업 때 읽은 바이트로 되돌린다.
+        // 남은 틈(맥): 키체인 모드의 write_live_cred는 키체인 → legacy 파일 두 번 쓰기라,
+        // 키체인만 바뀐 채 파일 쓰기가 실패하면 위 `?`로 그대로 올라가 여기서 되돌리지
+        // 못한다. 되돌리기 자체도 같은 두 번 쓰기라 최선 노력이다.
+        if let Err(error) = claude_apply_oauth_block(env, &profile_dir) {
+            return Err(match previous_live.as_deref() {
+                Some(previous) => match write_live_cred(env, provider, previous) {
+                    Ok(()) => format!(
+                        "계정 정보 반영 실패 — 활성 토큰을 전환 전 상태로 되돌렸습니다: {error}"
+                    ),
+                    Err(restore_error) => format!(
+                        "계정 정보 반영 실패, 활성 토큰 되돌리기도 실패 — 토큰과 계정 정보가 어긋났을 수 있으니 CLI에서 다시 로그인하세요: {error} / 되돌리기 오류: {restore_error}"
+                    ),
+                },
+                // 전환 전 활성 토큰이 없었으면 되돌릴 바이트가 없다 — 사실만 알린다
+                None => format!(
+                    "계정 정보 반영 실패 — 전환 전 활성 토큰이 없어 되돌리지 못했습니다: {error}"
+                ),
+            });
+        }
     }
     // 인증 세대가 바뀐 계정은 이전 조회 실패의 백오프를 상속하지 않는다 — 이 코어를 쓰는
     // 버튼·고정 모드 더블클릭·TFSD 전환 모두에 동일하게 적용된다 (#122)
@@ -1499,6 +1528,83 @@ mod tests {
         let err = switch(&env, Provider::Claude, "rescue1").unwrap_err();
         assert!(err.contains("계정 정보"));
         assert!(live_token(&env).contains("tok-a1"), "활성 토큰은 불변");
+    }
+
+    /// 클로드 전환 2단계(계정 정보 반영)가 실패하면 활성 토큰이 전환 전 바이트로 되돌아가고,
+    /// 다음 전환이 대상 계정의 토큰을 떠나는 계정의 프로필에 백업하지 않는다 (#175)
+    #[test]
+    fn claude_switch_restores_live_token_when_account_info_apply_fails() {
+        let env = test_env("switch-rollback");
+        login_claude(&env, "uuid-b", "bob@test.dev", "tok-b1");
+        save_current(&env, Provider::Claude, "second").unwrap();
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a1");
+        save_current(&env, Provider::Claude, "main").unwrap();
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a3"); // 저장 후 CLI가 갱신
+        let second = env.profiles_dir(Provider::Claude).join("second");
+        let block_path = second.join("oauth_account.json");
+        let good_block = fs::read(&block_path).unwrap();
+        // 대상 프로필의 계정 정보 파일이 깨져 ~/.claude.json 반영 단계가 실패하게 만든다
+        // (토큰 쓰기는 이미 끝난 뒤의 실패 — 모든 플랫폼에서 결정적이다)
+        fs::write(&block_path, "{broken").unwrap();
+        let live_before = fs::read(env.live_credential_path(Provider::Claude)).unwrap();
+        let claude_json_before = fs::read(env.claude_json_path()).unwrap();
+
+        let err = switch(&env, Provider::Claude, "second").unwrap_err();
+
+        assert!(err.contains("되돌렸습니다"), "{err}");
+        assert!(!err.contains("tok-"), "오류에 토큰 값이 실리면 안 된다: {err}");
+        assert_eq!(
+            fs::read(env.live_credential_path(Provider::Claude)).unwrap(),
+            live_before,
+            "활성 토큰은 전환 전 바이트 그대로여야 한다"
+        );
+        assert_eq!(fs::read(env.claude_json_path()).unwrap(), claude_json_before);
+        let main_cred = env
+            .profiles_dir(Provider::Claude)
+            .join("main")
+            .join("credentials.json");
+        assert!(fs::read_to_string(&main_cred).unwrap().contains("tok-a3"));
+
+        // 고친 뒤 다시 전환해도 main에는 A의 토큰이 남는다 (B의 토큰으로 오염되지 않는다)
+        fs::write(&block_path, good_block).unwrap();
+        let result = switch(&env, Provider::Claude, "second").unwrap();
+        assert_eq!(result.backed_up_to.as_deref(), Some("main"));
+        let main_after = fs::read_to_string(&main_cred).unwrap();
+        assert!(main_after.contains("tok-a3") && !main_after.contains("tok-b1"));
+        assert!(live_token(&env).contains("tok-b1"));
+    }
+
+    /// 이슈 재현 시나리오 그대로: ~/.claude.json이 읽기 전용이면 교체(rename)가 실패한다.
+    /// 윈도우에서만 결정적이다 — 유닉스는 읽기 전용 파일 위로도 rename이 된다 (실측: 윈도우
+    /// rustc 1.96에서 PermissionDenied).
+    #[cfg(windows)]
+    #[test]
+    fn claude_switch_restores_live_token_when_claude_json_is_read_only() {
+        let env = test_env("switch-rollback-ro");
+        login_claude(&env, "uuid-b", "bob@test.dev", "tok-b1");
+        save_current(&env, Provider::Claude, "second").unwrap();
+        login_claude(&env, "uuid-a", "alice@test.dev", "tok-a1");
+        save_current(&env, Provider::Claude, "main").unwrap();
+        let live_before = fs::read(env.live_credential_path(Provider::Claude)).unwrap();
+        let set_read_only = |read_only: bool| {
+            let mut perms = fs::metadata(env.claude_json_path()).unwrap().permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(read_only);
+            fs::set_permissions(env.claude_json_path(), perms).unwrap();
+        };
+        set_read_only(true);
+
+        let result = switch(&env, Provider::Claude, "second");
+        set_read_only(false); // 단언이 실패해도 임시 폴더가 지워지도록 먼저 푼다
+
+        let err = result.unwrap_err();
+        assert!(err.contains("되돌렸습니다"), "{err}");
+        assert_eq!(
+            fs::read(env.live_credential_path(Provider::Claude)).unwrap(),
+            live_before
+        );
+        let root = read_json(&env.claude_json_path()).unwrap();
+        assert_eq!(root["oauthAccount"]["accountUuid"].as_str(), Some("uuid-a"));
     }
 
     #[test]
