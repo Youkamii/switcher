@@ -434,10 +434,10 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
         // 리프레시 토큰이 거부됨 — 재시도해도 소용없다. 백오프를 걸어 5분 렌더 주기마다
         // 무의미한 POST가 반복되는 것을 막되, 안내 문구를 함께 기록해 백오프 중에도
         // "대기중" 대신 재로그인 안내가 보이게 한다 (#173)
-        let _ = backoff_bump_permanent_if_epoch(
+        let _ = backoff_bump_if_epoch(
             &backoff_key,
             backoff_epoch_before,
-            EXPIRED_LOGIN_MESSAGE,
+            Some(EXPIRED_LOGIN_MESSAGE),
         );
         return Err(FetchErr::Msg(EXPIRED_LOGIN_MESSAGE.into()));
     }
@@ -1165,15 +1165,21 @@ pub(crate) fn purge_account_cache(
 /// API를 아예 부르지 않는다. 거절이 반복되면 2분→4분→8분→최대 15분으로 늘린다.
 /// epoch는 로그인·전환으로 인증이 갱신될 때마다 오르며, 그 전에 시작한 요청의 실패는
 /// 백오프를 되살리지 못한다 (#122).
-#[derive(Clone, Default)]
+#[derive(Default)]
 struct BackoffState {
     until: Option<std::time::Instant>,
     failure_count: u32,
     epoch: u64,
     /// 영구 실패(리프레시 토큰 거부)의 안내 문구 — 백오프 중 "대기중" 대신 보여준다 (#173).
-    /// 성공·로그인·전환(invalidate)에서 지워진다
+    /// 성공·로그인·전환(invalidate)과 그 뒤의 일시 실패 기록에서 지워진다
     permanent: Option<String>,
+    /// 마지막 강제(수동) 재시도 시각 — FORCE_MIN_INTERVAL 안의 연타는 자동 조회로 취급해
+    /// 새로고침 연타가 백오프를 계속 우회하지 못하게 한다 (#122 계약 "연타 요청을 막는다")
+    last_forced: Option<std::time::Instant>,
 }
+
+/// 같은 계정에 대한 강제 재시도 최소 간격
+const FORCE_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 fn backoff() -> &'static std::sync::Mutex<std::collections::HashMap<String, BackoffState>> {
     static BACKOFF: std::sync::OnceLock<
@@ -1229,8 +1235,12 @@ fn backoff_epoch(key: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// 요청을 시작한 세대가 그대로일 때만 실패를 기록한다 — 그사이 인증이 갱신됐으면 None
-fn backoff_bump_if_epoch(key: &str, expected_epoch: u64) -> Option<u64> {
+/// 요청을 시작한 세대가 그대로일 때만 실패를 기록한다 — 그사이 인증이 갱신됐으면(재로그인·
+/// 전환) None을 돌려주고 낡은 실패로 새 세대를 더럽히지 않는다 (#122).
+/// permanent가 Some이면 영구 실패(토큰 재발급 거부)의 안내 문구를 함께 기록해 백오프 관문이
+/// "대기중" 대신 그 안내를 보여준다 (#173); None(일시 실패)은 이전 안내를 지운다 — 재발급이
+/// 성공한 뒤의 429가 옛 "만료" 안내를 되살리지 않게.
+fn backoff_bump_if_epoch(key: &str, expected_epoch: u64, permanent: Option<&str>) -> Option<u64> {
     let mut map = backoff()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1238,7 +1248,26 @@ fn backoff_bump_if_epoch(key: &str, expected_epoch: u64) -> Option<u64> {
     if state.epoch != expected_epoch {
         return None;
     }
+    state.permanent = permanent.map(str::to_string);
     Some(bump_backoff(state))
+}
+
+/// 강제(수동) 재시도를 지금 허용할지 — 직전 강제 시도에서 FORCE_MIN_INTERVAL이 지났으면
+/// 시각을 갱신하고 true, 아니면 false(자동 조회로 취급)
+fn forced_retry_allowed(key: &str) -> bool {
+    let mut map = backoff()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let state = map.entry(key.to_string()).or_default();
+    let now = std::time::Instant::now();
+    if state
+        .last_forced
+        .is_some_and(|at| now.duration_since(at) < FORCE_MIN_INTERVAL)
+    {
+        return false;
+    }
+    state.last_forced = Some(now);
+    true
 }
 
 fn invalidate_backoff(state: &mut BackoffState) {
@@ -1246,21 +1275,6 @@ fn invalidate_backoff(state: &mut BackoffState) {
     state.failure_count = 0;
     state.permanent = None;
     state.epoch = state.epoch.wrapping_add(1);
-}
-
-/// 영구 실패(토큰 재발급 4xx)를 백오프와 함께 기록한다 — 무의미한 POST 반복은 자제하되,
-/// 백오프 관문이 "대기중" 대신 이 안내를 보여준다 (#173). 요청을 시작한 세대가 바뀌었으면
-/// (그사이 재로그인·전환) 낡은 거부로 새 세대를 더럽히지 않는다 (#122와 같은 규칙).
-fn backoff_bump_permanent_if_epoch(key: &str, expected_epoch: u64, message: &str) -> Option<u64> {
-    let mut map = backoff()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let state = map.entry(key.to_string()).or_default();
-    if state.epoch != expected_epoch {
-        return None;
-    }
-    state.permanent = Some(message.to_string());
-    Some(bump_backoff(state))
 }
 
 fn backoff_permanent_message(key: &str) -> Option<String> {
@@ -1403,14 +1417,20 @@ pub(crate) async fn fetch_with_options(
 
     // 3) 자동 조회는 백오프 중 API를 부르지 않는다. 사용자가 누른 새로고침만 이 관문을
     // 한 번 우회하며, 기다려야 한다면 남은 시간을 구조화해 돌려준다 (#122).
+    // 새로고침 연타는 같은 계정에 10초에 한 번만 강제 — 그 안의 클릭은 자동 조회로 취급
+    let force_retry = force_retry && forced_retry_allowed(&key);
     if !force_retry {
         if let Some(retry_after_secs) = backoff_remaining(&key) {
+            let permanent = backoff_permanent_message(&key);
             if let Some(value) = stale_value() {
-                return Ok(mark_stale(value, Some(retry_after_secs)));
+                // 영구 실패(토큰 재발급 거부)면 기다려도 해결되지 않으므로 "n분 후 재시도"를
+                // 약속하지 않는다 — 이전 수치만 나이와 함께 (#173)
+                let retry = permanent.is_none().then_some(retry_after_secs);
+                return Ok(mark_stale(value, retry));
             }
-            // 보여줄 수치가 없는데 원인이 영구 실패(토큰 재발급 거부)면 "대기중"이 아니라
-            // 재로그인 안내를 — 기다려도 해결되지 않는 상태를 일시 장애로 오인하지 않게 (#173)
-            if let Some(message) = backoff_permanent_message(&key) {
+            // 보여줄 수치가 없는데 원인이 영구 실패면 "대기중"이 아니라 재로그인 안내를 —
+            // 기다려도 해결되지 않는 상태를 일시 장애로 오인하지 않게 (#173)
+            if let Some(message) = permanent {
                 return Err(message);
             }
             return Ok(waiting_usage(retry_after_secs));
@@ -1471,12 +1491,19 @@ pub(crate) async fn fetch_with_options(
         Err(FetchErr::Transient) => {
             // 요청 제한·서버 오류 — 재시도를 자제하고 마지막 수치로 조용히 버틴다.
             // 요청 중 인증이 갱신됐으면(세대 변경) 이 실패로 새 세대의 백오프를 되살리지 않는다
-            let Some(retry_after_secs) = backoff_bump_if_epoch(&actual_key, request_epoch) else {
-                return stale_value()
+            let Some(retry_after_secs) =
+                backoff_bump_if_epoch(&actual_key, request_epoch, None)
+            else {
+                // 낡은 요청의 실패 — 오류가 아니라 "버렸다"는 정상 경합. 이전 수치가 있으면
+                // 그걸, 없으면 빈 목록을 돌려주고 다음(즉시) 렌더가 새 세대로 다시 조회한다
+                return Ok(stale_value()
                     .map(|value| mark_stale(value, None))
-                    .ok_or_else(|| {
-                        "인증정보가 변경되어 이전 사용량 조회 결과를 무시했습니다".to_string()
-                    });
+                    .unwrap_or_else(|| Usage {
+                        windows: Vec::new(),
+                        stale: false,
+                        stale_age_secs: None,
+                        retry_after_secs: None,
+                    }));
             };
             let actual_stale = || -> Option<(Usage, u64)> {
                 if let Ok(map) = cache().lock() {
@@ -1770,7 +1797,7 @@ mod tests {
     #[test]
     fn expired_token_falls_back_to_last_value_with_age() {
         let env = test_env("stale-age");
-        // 만료된 활성 토큰 + 계정 신원 (cache_key가 ~/.claude.json의 계정 id를 쓴다)
+        // 만료된 활성 토큰 + 계정 신원 (auth_snapshot이 ~/.claude.json의 계정 id를 키로 쓴다)
         fs::write(
             env.live_credential_path(Provider::Claude),
             r#"{"claudeAiOauth":{"accessToken":"fake","expiresAt":1000}}"#,
@@ -2362,7 +2389,7 @@ mod tests {
         backoff_clear(key);
         let epoch = backoff_epoch(key);
         assert_eq!(
-            backoff_bump_permanent_if_epoch(key, epoch, "PERM-TEST 재로그인"),
+            backoff_bump_if_epoch(key, epoch, Some("PERM-TEST 재로그인")),
             Some(120)
         );
         assert_eq!(backoff_permanent_message(key).as_deref(), Some("PERM-TEST 재로그인"));
@@ -2399,13 +2426,38 @@ mod tests {
             .block_on(fetch_with_options(&env, Provider::Claude, Some("dead"), false))
             .unwrap();
         assert!(stale.stale);
-        assert!(matches!(stale.retry_after_secs, Some(1..=120)));
+        assert!(
+            stale.retry_after_secs.is_none(),
+            "영구 실패에는 '재시도' 라벨을 약속하지 않는다"
+        );
+
+        // 그 뒤의 일시 실패 기록은 옛 '만료' 안내를 지운다 (재발급 성공 뒤 429)
+        assert_eq!(backoff_bump_if_epoch(key, epoch, None), Some(240));
+        assert!(backoff_permanent_message(key).is_none());
 
         // 세대가 바뀐 뒤 도착한 낡은 거부는 기록되지 않는다
         clear_profile_backoff(&env, Provider::Claude, "dead");
-        assert_eq!(backoff_bump_permanent_if_epoch(key, epoch, "낡은 거부"), None);
+        assert_eq!(backoff_bump_if_epoch(key, epoch, Some("낡은 거부")), None);
         assert!(backoff_permanent_message(key).is_none());
         assert!(!backoff_active(key));
+        backoff_clear(key);
+    }
+
+    /// 새로고침 연타: 같은 계정의 강제 재시도는 10초에 한 번만 — 그 안의 클릭은 자동 조회
+    /// 취급이라 백오프를 지킨다 (#122 계약 "연타 요청을 막는다").
+    #[test]
+    fn forced_retry_is_rate_limited_per_account() {
+        let key = "claude:uuid-force-limit";
+        backoff_clear(key);
+        assert!(forced_retry_allowed(key), "첫 강제 시도는 허용");
+        assert!(!forced_retry_allowed(key), "10초 안의 두 번째는 자동 조회로");
+        let mut map = backoff()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        map.get_mut(key).unwrap().last_forced =
+            Some(std::time::Instant::now() - FORCE_MIN_INTERVAL);
+        drop(map);
+        assert!(forced_retry_allowed(key), "간격이 지나면 다시 허용");
         backoff_clear(key);
     }
 
@@ -2418,12 +2470,12 @@ mod tests {
         fs::create_dir_all(&profile).unwrap();
         fs::write(
             profile.join("meta.json"),
-            r#"{"id":"uuid-target","email":null,"saved_at":1}"#,
+            r#"{"id":"uuid-clear-target","email":null,"saved_at":1}"#,
         )
         .unwrap();
-        let account_key = "claude:uuid-target";
+        let account_key = "claude:uuid-clear-target";
         let name_key = "claude:<name:target>";
-        let other_key = "claude:uuid-other";
+        let other_key = "claude:uuid-clear-other";
         for key in [account_key, name_key, other_key] {
             backoff_clear(key);
             backoff_bump(key);
@@ -2445,7 +2497,7 @@ mod tests {
         fs::create_dir_all(&profile).unwrap();
         fs::write(
             profile.join("meta.json"),
-            r#"{"id":"uuid-target","email":null,"saved_at":1}"#,
+            r#"{"id":"uuid-epoch-target","email":null,"saved_at":1}"#,
         )
         .unwrap();
         fs::write(
@@ -2455,14 +2507,14 @@ mod tests {
         .unwrap();
 
         let old_request = auth_snapshot(&env, Provider::Claude, Some("target")).unwrap();
-        let other_key = "claude:uuid-other";
+        let other_key = "claude:uuid-epoch-other";
         backoff_clear(other_key);
         backoff_bump(other_key);
 
         clear_profile_backoff(&env, Provider::Claude, "target");
 
         assert_eq!(
-            backoff_bump_if_epoch(&old_request.key, old_request.backoff_epoch),
+            backoff_bump_if_epoch(&old_request.key, old_request.backoff_epoch, None),
             None,
             "인증 변경 전에 시작한 실패는 백오프를 되살리면 안 된다"
         );
@@ -2471,7 +2523,7 @@ mod tests {
 
         let new_request = auth_snapshot(&env, Provider::Claude, Some("target")).unwrap();
         assert_eq!(
-            backoff_bump_if_epoch(&new_request.key, new_request.backoff_epoch),
+            backoff_bump_if_epoch(&new_request.key, new_request.backoff_epoch, None),
             Some(120),
             "인증 변경 뒤 시작한 새 실패는 정상적으로 기록해야 한다"
         );

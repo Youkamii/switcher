@@ -56,7 +56,7 @@ test("places Type1 refresh immediately before the view button", () => {
 test("manual usage refresh bypasses backoff without changing automatic refresh", () => {
   assert.match(
     mainSource,
-    /getElementById\("refresh"\)![\s\S]*?addEventListener\("click",[\s\S]*?render\(\{ forceUsage: true \}\)/,
+    /getElementById\("refresh"\)![\s\S]*?addEventListener\("click",[\s\S]*?render\(\{ forceRetry: true \}\)/,
     "the user refresh button must request one forced usage retry",
   );
   assert.match(
@@ -71,7 +71,7 @@ test("manual usage refresh bypasses backoff without changing automatic refresh",
   );
   assert.match(
     mainSource,
-    /if \(opts\?\.forceUsage\) queuedForceUsage = true;[\s\S]*?thisForceUsage = thisForceUsage \|\| queuedForceUsage;/,
+    /if \(opts\?\.forceRetry\) queuedForceRetry = true;[\s\S]*?thisForceRetry = thisForceRetry \|\| queuedForceRetry;[\s\S]*?thisForceRetry = false;/,
     "a click received during rendering must preserve the forced retry intent",
   );
   assert.match(

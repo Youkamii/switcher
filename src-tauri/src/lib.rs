@@ -527,13 +527,13 @@ async fn clamshell_cycle(app: tauri::AppHandle) -> Result<i8, String> {
 async fn fetch_usage(
     provider: String,
     profile: Option<String>,
-    force_retry: Option<bool>,
+    force_retry: bool,
 ) -> Result<usage::Usage, String> {
     usage::fetch_with_options(
         &Env::real()?,
         Provider::parse(&provider)?,
         profile.as_deref(),
-        force_retry.unwrap_or(false),
+        force_retry,
     )
     .await
 }

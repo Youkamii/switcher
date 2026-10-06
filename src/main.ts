@@ -2118,13 +2118,13 @@ function flushDeferredRender() {
 }
 
 /// 큐된 재요청 중 사용자의 수동 새로고침이 하나라도 있으면 백오프 우회 의도를 보존한다 (#122)
-let queuedForceUsage = false;
+let queuedForceRetry = false;
 
 /// immediate: 전환·삭제·모드 변경처럼 "지금 상태가 바뀐" 렌더 — 새 목록을 바로
 /// 보여주고 사용량은 교체된 카드에 이어서 채운다. 생략(스무스)은 주기·수동
 /// 새로고침 — 기존 화면을 그대로 둔 채 다 받아진 뒤 한 번에 교체한다.
-/// forceUsage: 사용자가 직접 누른 새로고침만 — 자동 조회 백오프를 한 번 우회한다 (#122).
-async function render(opts?: { immediate?: boolean; forceUsage?: boolean }) {
+/// forceRetry: 사용자가 직접 누른 새로고침만 — 자동 조회 백오프를 한 번 우회한다 (#122).
+async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
   // 선택값을 읽는 동안만 기다린다. 안내 중에는 기본 인터페이스를 먼저 그리고
   // 전체 오버레이로 조작만 막아 앱이 무엇인지 보이는 상태를 유지한다.
   if (startupState === "checking") return;
@@ -2133,21 +2133,21 @@ async function render(opts?: { immediate?: boolean; forceUsage?: boolean }) {
   if (rendering) {
     renderQueued = true;
     if (opts?.immediate) queuedImmediate = true;
-    if (opts?.forceUsage) queuedForceUsage = true;
+    if (opts?.forceRetry) queuedForceRetry = true;
     // 진행 중인 스무스 대기는 낡은 버퍼를 기다리는 중 — 즉시 끝내고 다시 그리게
     renderAbort?.();
     return;
   }
   rendering = true;
   let thisImmediate = opts?.immediate ?? false;
-  let thisForceUsage = opts?.forceUsage ?? false;
+  let thisForceRetry = opts?.forceRetry ?? false;
   try {
     do {
       renderQueued = false;
       thisImmediate = thisImmediate || queuedImmediate;
-      thisForceUsage = thisForceUsage || queuedForceUsage;
+      thisForceRetry = thisForceRetry || queuedForceRetry;
       queuedImmediate = false;
-      queuedForceUsage = false;
+      queuedForceRetry = false;
       // 그리는 도중 모드가 바뀌어도 한 화면은 단일 모드로 —
       // 프로바이더마다 다른 모드로 그려지는 혼종 화면 방지
       const mode = starPromptOpen ? "normal" : viewMode;
@@ -2178,7 +2178,7 @@ async function render(opts?: { immediate?: boolean; forceUsage?: boolean }) {
           if (!visibility[key] && !starPromptOpen) continue;
           const title = PROVIDERS.find((p) => p.id === key)!.title;
           if (mode === "edge") {
-            await renderProviderEdge(key, title, buffer, pending, thisForceUsage);
+            await renderProviderEdge(key, title, buffer, pending, thisForceRetry);
           } else if (mode !== "normal") {
             await renderProviderCompact(
               key,
@@ -2186,10 +2186,10 @@ async function render(opts?: { immediate?: boolean; forceUsage?: boolean }) {
               buffer,
               mode === "minimal",
               pending,
-              thisForceUsage,
+              thisForceRetry,
             );
           } else {
-            await renderProvider(key, title, buffer, pending, thisForceUsage);
+            await renderProvider(key, title, buffer, pending, thisForceRetry);
           }
         } else if (key === "github") {
           if (!visibility.github || mode === "minimal") continue;
@@ -2248,6 +2248,9 @@ async function render(opts?: { immediate?: boolean; forceUsage?: boolean }) {
         drawMonSpark();
       }
       thisImmediate = false;
+      // 강제 우회는 클릭 1회 = 화면 교체 1회. 교체 뒤 큐된 자동·상태 변경 렌더는 백오프를
+      // 존중한다 (버퍼를 버린 continue 경로는 위에서 돌아 force를 이어 간다) (#122 review)
+      thisForceRetry = false;
     } while (renderQueued);
   } finally {
     rendering = false;
@@ -2908,7 +2911,7 @@ document.getElementById("refresh")!.addEventListener("click", () => {
     return;
   }
   // 사용자가 직접 누른 새로고침만 백오프를 우회한다 — 자동 5분 주기·상태 변경 렌더는 존중 (#122)
-  void render({ forceUsage: true });
+  void render({ forceRetry: true });
 });
 window.setInterval(() => {
   if (!userIsBusy()) void render();

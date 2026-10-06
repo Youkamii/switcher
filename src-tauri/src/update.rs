@@ -489,6 +489,8 @@ fn read_pending_version(staged: &Path) -> Result<String, String> {
 /// pending 분기 **앞**.
 #[cfg(windows)]
 pub fn claim_instance_mutex() -> bool {
+    // 한 프로세스가 두 번 CreateMutexW하면 자기 뮤텍스에 ERROR_ALREADY_EXISTS를 받아
+    // "다른 인스턴스"로 오판한다 — 첫 판정을 기억해 재호출에도 같은 답을 준다
     static CLAIMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *CLAIMED.get_or_init(|| claim_named_mutex("Local\\com.youkamii.switcher.instance").is_some())
 }
@@ -502,8 +504,10 @@ fn claim_named_mutex(name: &str) -> Option<windows_sys::Win32::Foundation::HANDL
     let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
     let handle = unsafe { CreateMutexW(std::ptr::null(), 0, wide.as_ptr()) };
     if handle.is_null() {
-        // 만들 수 없으면(이름 충돌·권한) 첫 인스턴스로 간주한다 — 기존 동작 유지
-        return Some(handle);
+        // 만들 수 없으면(같은 이름의 다른 커널 객체, 상위 무결성 인스턴스의 뮤텍스에 접근
+        // 거부 등) "이미 있음"으로 본다 — pending 업데이트를 한 번 건너뛰는 쪽은 다음 실행이
+        // 복구하지만, 잘못 띄운 helper는 표식을 지워 복구가 안 된다 (review: fail-safe 방향)
+        return None;
     }
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
         unsafe { CloseHandle(handle) };
