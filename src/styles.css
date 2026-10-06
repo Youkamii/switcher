@@ -1401,7 +1401,29 @@ body.edge.edge-out #edge-film {
      96px에서는 세 영역이 붙어 보여 세로를 늘리고 간격을 벌렸다 (사용자 지시) */
   border-radius: 15px 0 0 15px;
   transform-origin: right center;
-  animation: edge-drop-breathe 3.4s ease-in-out infinite;
+}
+
+/* 숨쉬기는 필터 바깥 래퍼(#edge-breathe)가 한다 — 필터(url(#goo)) 안에서 손잡이가 변형되면
+   매 프레임 층 전체를 다시 래스터·필터해 접힌 채로도 유휴 GPU 5%·CPU 2배였다 (실측
+   2026-10-06, Type1 0.6%/0.8% vs Type4 1.3%/5.0%, #178). 래퍼의 transform은 컴포지터가
+   처리해 필터 결과는 한 번만 만든다. 접힌 상태에서 층에 보이는 건 손잡이뿐이라 모양이
+   같다 — 원점을 손잡이의 right center(창 오른쪽 끝 + 8px, #edge-tab right:-8px)에 맞춰
+   기하가 정확히 일치한다 (헤드리스 A/B 렌더로 확인) */
+#edge-breathe {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  transform-origin: calc(100% + 8px) center;
+}
+
+body.edge.edge-left #edge-breathe {
+  transform-origin: -8px center;
+}
+
+/* 게이지(#edge-gauge)와 같은 박자(3.4s, 1.05s 지연) — 따로 놀면 테두리가 요동친다 */
+body.edge:not(.edge-out) #edge-breathe {
+  animation: edge-drop-breathe 3.4s 1.05s ease-in-out infinite;
 }
 
 
@@ -1626,9 +1648,8 @@ body.edge:not(.edge-out) #edge-body {
 /* 손잡이는 판이 다 들어온 뒤(0.55s) 받아내며 출렁인다 — 먼저 부풀면 손잡이가
    판보다 앞서 나온 것처럼 보인다 */
 body.edge:not(.edge-out) #edge-tab {
-  animation:
-    edge-drop-catch 0.5s 0.55s ease-out both,
-    edge-drop-breathe 3.4s 1.05s ease-in-out infinite;
+  /* 숨쉬기는 #edge-breathe 래퍼 몫 — 손잡이 자신은 받아내는 출렁임만 */
+  animation: edge-drop-catch 0.5s 0.55s ease-out both;
 }
 
 /* 내용: 판이 다 자란 뒤(0.7s, 판의 마지막 ±1% 출렁임과 겹쳐) 벽 쪽에서 떠오르고,
@@ -1662,10 +1683,11 @@ body.edge.edge-noanim :is(#edge-body, .edge-blob, .shell) {
   animation-delay: 0s;
 }
 
-/* 손잡이는 catch만 생략하고 숨쉬기는 게이지와 같은 박자로 — 손잡이만 멈추면
-   게이지가 정지한 캡슐 위에서 혼자 요동한다 (review) */
+/* 진입 직후엔 손잡이의 받아내기(catch)만 생략한다 — 숨쉬기는 #edge-breathe 래퍼가
+   상태와 무관하게 게이지와 같은 박자로 이어 간다 (손잡이만 멈추면 게이지가 정지한
+   캡슐 위에서 혼자 요동한다, review) */
 body.edge.edge-noanim #edge-tab {
-  animation: edge-drop-breathe 3.4s 1.05s ease-in-out infinite;
+  animation: none;
 }
 
 @keyframes edge-drop-breathe {
