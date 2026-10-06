@@ -3237,9 +3237,13 @@ fn toggle_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let visible = window.is_visible().unwrap_or(false);
         let minimized = window.is_minimized().unwrap_or(false);
-        let focused = window.is_focused().unwrap_or(false);
-        // "보이는 상태"라도 다른 창에 묻혀 있으면 숨기지 말고 앞으로 끌어온다
-        if visible && !minimized && focused {
+        // 보이면 숨기고 아니면 연다 — 포커스는 보지 않는다 (#177).
+        // 예전엔 "보이지만 포커스가 없으면 다른 창에 묻힌 것"으로 보고 숨기는 대신 앞으로
+        // 끌어왔다 (#7, 항상 위가 토글이던 때). #10부터 위젯은 항상 위가 상시라 묻힐 일이
+        // 거의 없는 반면, 포커스를 받지 않는 창 — 맥의 비활성 패널, 위젯 모드의 클릭 투과 —
+        // 은 is_focused가 대개 false라 트레이 클릭이 숨기지 못하고 "열기"만 반복했다.
+        // 다른 항상 위 창에 가려진 경우는 트레이 메뉴의 "열기"가 무조건 앞으로 끌어온다.
+        if visible && !minimized {
             let _ = window.hide();
         } else {
             show_main_window(app);
