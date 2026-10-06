@@ -2278,7 +2278,7 @@ async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
       // 뒤에야 화면을 바꿨다 (#176). 각자 자기 조각(fragment)에 그리고, 끝난 뒤 keys
       // 순서대로 버퍼에 붙여 섹션 순서는 그대로 둔다. 한 빌더가 던져도 나머지는 붙인다.
       const parts = keys.map((key) => ({ key, frag: document.createDocumentFragment() }));
-      await Promise.allSettled(
+      const built = await Promise.allSettled(
         parts.map(async ({ key, frag }) => {
           if (key === "claude" || key === "codex") {
             if (mode === "edge" && !visibility[key]) {
@@ -2319,6 +2319,13 @@ async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
           }
         }),
       );
+      // 빌더는 invoke 실패를 안에서 삼키므로 여기 걸리는 건 프로그래밍 오류 — 조용히 빈
+      // 섹션이 되지 않게 콘솔에 남긴다 (review)
+      built.forEach((result, i) => {
+        if (result.status === "rejected") {
+          console.error(`섹션 렌더 실패 (${parts[i].key})`, result.reason);
+        }
+      });
       for (const { key, frag } of parts) {
         // 조각의 섹션에 순서 키를 달고 Type1이면 드래그 이동을 붙인다
         // (렌더 함수가 아무것도 안 붙였을 수 있어 lastElementChild로 판별)

@@ -7,16 +7,30 @@ const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf
 test("mac brightness sliders never reach 0, which turns the backlight off (#177)", () => {
   assert.match(
     mainSource,
-    /const IS_MAC = navigator\.platform\.startsWith\("Mac"\);\s*document\.body\.classList\.toggle\("mac", IS_MAC\);/,
+    /const IS_MAC = navigator\.platform\.startsWith\("Mac"\);/,
     "the slider floor must use the same platform check that sets body.mac",
+  );
+  assert.match(
+    mainSource,
+    /document\.body\.classList\.toggle\("mac", IS_MAC\);/,
+    "body.mac must be derived from the same IS_MAC constant",
   );
   assert.match(
     mainSource,
     /const BRIGHTNESS_MIN = IS_MAC \? 1 : 0;/,
     "macOS floor is 1 (DisplayServices 0 = backlight off); Windows keeps 0",
   );
+  // 밝기 슬라이더를 만드는 두 함수 본문 안에서만 검사한다 — 다른 range 입력이 0 하한을
+  // 쓰는 것까지 막지 않는다 (review)
+  const brightnessSource = [
+    /async function renderDisplays\([\s\S]*?\n}\n/,
+    /async function renderDisplaysEdge\([\s\S]*?\n}\n/,
+  ]
+    .map((pattern) => mainSource.match(pattern)?.[0] ?? "")
+    .join("\n");
+  assert.ok(brightnessSource.length > 0, "both brightness render functions must exist");
   assert.doesNotMatch(
-    mainSource,
+    brightnessSource,
     /slider\.min = "0"/,
     "no brightness slider may hard-code a 0 floor",
   );

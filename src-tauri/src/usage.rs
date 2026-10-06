@@ -12,10 +12,17 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 use crate::accounts::{
-    atomic_write, atomic_write_existing_parent, identity_from_value, jwt_payload, live_cred_exists,
-    live_identity, now, read_json, read_live_cred, read_meta, tier_from_rate_limit_tier, Env,
-    PlanOverride, Provider, MUTATION_LOCK,
+    atomic_write, atomic_write_existing_parent, identity_from_value, jwt_payload,
+    live_cred_exists_checked, live_identity, now, read_json, read_live_cred, read_meta,
+    tier_from_rate_limit_tier, Env, PlanOverride, Provider, MUTATION_LOCK,
 };
+
+/// 활성 자격증명이 "아마 있다" — 존재 확인 자체가 실패하면(맥 security 스폰 실패 등) 있다고
+/// 본다. 여기 호출자들은 전부 "활성 계정일지 모르면 재발급·복구를 미룬다" 분기라, 모를 때
+/// 미루는 쪽이 보수적이다. 전환·저장처럼 쓰기가 따르는 곳은 엄격판을 직접 써서 중단한다.
+fn live_cred_probably_exists(env: &Env, provider: Provider) -> bool {
+    live_cred_exists_checked(env, provider).unwrap_or(true)
+}
 use serde::Deserialize;
 
 const CLAUDE_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
@@ -286,7 +293,7 @@ fn apply_pending_rescue(
                 }
             }
         }
-        Ok(None) if live_cred_exists(env, provider) => {
+        Ok(None) if live_cred_probably_exists(env, provider) => {
             return Err("활성 계정 신원을 확인할 수 없어 갱신 복구를 보류합니다".into());
         }
         Ok(None) => {}
@@ -361,47 +368,60 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
     ensure_fresh_profile_at(env, provider, name, token_url).await
 }
 
-/// 토큰 엔드포인트 전송 결과 — 회전된 응답은 이미 사이드카에 착지한 뒤다
-enum TokenPost {
-    Landed {
-        body: Value,
-        pending_error: Option<String>,
-    },
-    Transient(Option<u64>),
-    Rejected,
-    Parse(String),
+/// 재발급 한 건이 쥐는 잠금 둘 — 전체 직렬화(REFRESH_LOCK)와 프로필 수명 잠금(inflight:
+/// 삭제·이름 변경은 기다리고 전환은 회전 전 토큰을 복사할 수 없다). 분리 태스크에 실어
+/// 보내 호출자 퓨처가 드롭돼도 사이드카 착지 전에는 풀리지 않게 한다 (review: 드롭 직후
+/// rename/delete가 끼면 회전된 토큰이 옛 경로에 떨어지거나 사라졌다)
+struct RefreshGuards {
+    _gate: tokio::sync::MutexGuard<'static, ()>,
+    _inflight: crate::accounts::RefreshInflightGuard,
 }
+
+/// 재발급 전송 결과 — Ok면 회전된 응답은 이미 사이드카에 착지한 뒤이고, 잠금을 호출자에게
+/// 돌려줘 파일 반영까지 계속 쥐게 한다. Err는 반환과 함께 잠금이 풀린다
+type RefreshLanding = Result<(Value, Option<String>, RefreshGuards), FetchErr>;
 
 /// 전송 → 상태 판정 → 응답 파싱 → 사이드카 착지. 호출자가 기다리기를 포기해도(퓨처 드롭)
 /// 끝까지 가야 하므로 소유한 값만 받는다 — 서버가 토큰 패밀리를 회전시킨 뒤 응답이
-/// 착지하기 전에 끊기면 새 리프레시 토큰 유일본이 사라진다 (#177, TFSD 90초 timeout)
+/// 착지하기 전에 끊기면 새 리프레시 토큰 유일본이 사라진다 (#177, TFSD 90초 timeout).
+/// 거부(4xx)의 영구 백오프 기록도 여기서 한다 — 호출자가 포기한 뒤 거부가 와도 다음 주기에
+/// 같은 POST가 또 나가지 않게 (review)
 async fn post_refresh_and_land(
     request: reqwest::RequestBuilder,
     path: std::path::PathBuf,
     refresh_token: String,
-) -> TokenPost {
-    let resp = match request.send().await {
-        Ok(resp) => resp,
-        Err(_) => return TokenPost::Transient(None),
-    };
+    guards: RefreshGuards,
+    backoff_key: String,
+    backoff_epoch_before: u64,
+) -> RefreshLanding {
+    let resp = request
+        .send()
+        .await
+        .map_err(|_| FetchErr::Transient(None))?;
     let status = resp.status();
     if status.as_u16() == 429 || status.is_server_error() {
-        return TokenPost::Transient(retry_after_secs(&resp));
+        return Err(FetchErr::Transient(retry_after_secs(&resp)));
     }
     if !status.is_success() {
-        return TokenPost::Rejected;
+        // 리프레시 토큰이 거부됨 — 재시도해도 소용없다. 백오프를 걸어 5분 렌더 주기마다
+        // 무의미한 POST가 반복되는 것을 막되, 안내 문구를 함께 기록해 백오프 중에도
+        // "대기중" 대신 재로그인 안내가 보이게 한다 (#173)
+        let _ = backoff_bump_if_epoch(
+            &backoff_key,
+            backoff_epoch_before,
+            Some(EXPIRED_LOGIN_MESSAGE),
+            None,
+        );
+        return Err(FetchErr::Msg(EXPIRED_LOGIN_MESSAGE.into()));
     }
-    let body: Value = match resp.json().await {
-        Ok(body) => body,
-        Err(e) => return TokenPost::Parse(format!("갱신 응답 파싱 실패: {e}")),
-    };
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| FetchErr::Msg(format!("갱신 응답 파싱 실패: {e}")))?;
     // 회전된 새 토큰의 유일본(응답)을 본 파일을 만지기 전에 착지시킨다 —
     // 아래 병합·쓰기가 실패해도 사이드카가 살아 다음 기회에 복구된다 (#18 견고성)
     let pending_error = write_pending(&path, &refresh_token, &body).err();
-    TokenPost::Landed {
-        body,
-        pending_error,
-    }
+    Ok((body, pending_error, guards))
 }
 
 /// token_url은 테스트가 로컬 서버를 주입하기 위한 것 — 실코드는 ensure_fresh_profile을 쓴다
@@ -420,12 +440,17 @@ async fn ensure_fresh_profile_at(
     if !has_pending && !token_expiring(provider, &read_json(&path).map_err(FetchErr::Msg)?) {
         return Ok(());
     }
-    let _gate = REFRESH_LOCK.lock().await;
+    let gate = REFRESH_LOCK.lock().await;
     // 전환·삭제와 같은 프로필 수명 잠금에 등록한다. 이 지점부터 응답 반영이 끝날
-    // 때까지 삭제는 기다리고, 전환은 회전 전 토큰을 복사할 수 없다.
-    let _inflight =
+    // 때까지 삭제는 기다리고, 전환은 회전 전 토큰을 복사할 수 없다. 두 잠금은 전송
+    // 구간에서 분리 태스크로 넘어갔다가(RefreshGuards) 착지 뒤 돌아온다.
+    let inflight =
         crate::accounts::refresh_begin(crate::accounts::refresh_key(env, provider, name))
             .map_err(|_| FetchErr::Transient(None))?;
+    let guards = RefreshGuards {
+        _gate: gate,
+        _inflight: inflight,
+    };
     if !path.exists() {
         return Ok(());
     }
@@ -450,7 +475,7 @@ async fn ensure_fresh_profile_at(
     match live_identity(env, provider) {
         Ok(Some(live)) if live.id == meta.id => return Ok(()), // 활성 계정 — CLI 소관
         Ok(Some(_)) => {}
-        Ok(None) if live_cred_exists(env, provider) => return Ok(()),
+        Ok(None) if live_cred_probably_exists(env, provider) => return Ok(()),
         Ok(None) => {}
         Err(_) => return Ok(()), // 신원 불명 — 보류 (fail-closed)
     }
@@ -479,37 +504,20 @@ async fn ensure_fresh_profile_at(
     .timeout(std::time::Duration::from_secs(15));
 
     // 취소 불가 구간: 전송~사이드카 착지를 별도 태스크로 띄워 이 퓨처가 드롭돼도(TFSD의
-    // 90초 timeout 등) 회전된 응답이 땅에 닿게 한다. 다음 갱신 기회가 pending을 복구한다
-    let posted = {
-        let task = post_refresh_and_land(request, path.clone(), refresh_token.clone());
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => handle
-                .spawn(task)
-                .await
-                .unwrap_or(TokenPost::Transient(None)),
-            Err(_) => task.await,
-        }
-    };
-    let (body, pending_error) = match posted {
-        TokenPost::Landed {
-            body,
-            pending_error,
-        } => (body, pending_error),
-        TokenPost::Transient(hint) => return Err(FetchErr::Transient(hint)),
-        TokenPost::Rejected => {
-            // 리프레시 토큰이 거부됨 — 재시도해도 소용없다. 백오프를 걸어 5분 렌더 주기마다
-            // 무의미한 POST가 반복되는 것을 막되, 안내 문구를 함께 기록해 백오프 중에도
-            // "대기중" 대신 재로그인 안내가 보이게 한다 (#173)
-            let _ = backoff_bump_if_epoch(
-                &backoff_key,
-                backoff_epoch_before,
-                Some(EXPIRED_LOGIN_MESSAGE),
-                None,
-            );
-            return Err(FetchErr::Msg(EXPIRED_LOGIN_MESSAGE.into()));
-        }
-        TokenPost::Parse(message) => return Err(FetchErr::Msg(message)),
-    };
+    // 90초 timeout 등) 회전된 응답이 땅에 닿게 한다. 다음 갱신 기회가 pending을 복구한다.
+    // 호출자는 Tauri 커맨드·TFSD 루프라 항상 tokio 런타임 안이다 (테스트도 block_on 안).
+    // 착지한 응답과 함께 잠금을 돌려받아 아래 파일 반영이 끝날 때까지 쥔다
+    let (body, pending_error, _guards) = tokio::runtime::Handle::current()
+        .spawn(post_refresh_and_land(
+            request,
+            path.clone(),
+            refresh_token.clone(),
+            guards,
+            backoff_key,
+            backoff_epoch_before,
+        ))
+        .await
+        .unwrap_or(Err(FetchErr::Transient(None)))?;
 
     // 파일 반영 구간만 변이 잠금 (저장·전환과 직렬화, 잠금 중 await 없음)
     let _guard = MUTATION_LOCK
@@ -582,7 +590,7 @@ async fn ensure_fresh_profile_at(
             }
         }
         Ok(Some(_)) => {}
-        Ok(None) if live_cred_exists(env, provider) => {
+        Ok(None) if live_cred_probably_exists(env, provider) => {
             let rescue_error = (!pending_path(&path).exists())
                 .then(|| write_pending(&path, &refresh_token, &body).err())
                 .flatten();
@@ -717,25 +725,24 @@ fn retry_after_secs(resp: &reqwest::Response) -> Option<u64> {
 
 /// 재사용 HTTP 클라이언트 — 요청마다 새로 만들면 rustls 설정·커넥션 풀이 매번 버려져
 /// keep-alive가 한 번도 재사용되지 않았다 (#176). 타임아웃은 요청별로 건다.
+fn cached_client(
+    cell: &'static std::sync::OnceLock<Option<reqwest::Client>>,
+    build: impl FnOnce(reqwest::ClientBuilder) -> reqwest::ClientBuilder,
+) -> Option<&'static reqwest::Client> {
+    cell.get_or_init(|| build(reqwest::Client::builder()).build().ok())
+        .as_ref()
+}
+
 fn http_client() -> Option<&'static reqwest::Client> {
     static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
-    CLIENT
-        .get_or_init(|| reqwest::Client::builder().build().ok())
-        .as_ref()
+    cached_client(&CLIENT, |b| b)
 }
 
 /// 토큰 엔드포인트용 — 리다이렉트를 따라가지 않는다: 307/308이 리프레시 토큰이 담긴
 /// 본문을 다른 호스트로 재전송하는 것을 차단
 fn token_client() -> Option<&'static reqwest::Client> {
     static CLIENT: std::sync::OnceLock<Option<reqwest::Client>> = std::sync::OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .ok()
-        })
-        .as_ref()
+    cached_client(&CLIENT, |b| b.redirect(reqwest::redirect::Policy::none()))
 }
 
 async fn get_json(request: reqwest::RequestBuilder) -> Result<Value, FetchErr> {
@@ -1587,18 +1594,13 @@ pub(crate) async fn fetch_with_options(
                     .filter(|id| !id.starts_with('<')),
             ) {
                 // 호출자(렌더)를 기다리게 하지 않는다 — 프로필 API 왕복(최대 10초)이 카드
-                // 교체를 그만큼 늦췄다 (#176). 런타임 밖(동기 테스트)에서는 인라인으로
+                // 교체를 그만큼 늦췄다 (#176). 호출자는 늘 tokio 런타임 안(Tauri 커맨드·TFSD)
                 let env = env.clone();
                 let token = token.to_string();
                 let account_id = account_id.to_string();
-                match tokio::runtime::Handle::try_current() {
-                    Ok(handle) => {
-                        handle.spawn(async move {
-                            sync_claude_plan(&env, &token, &account_id).await;
-                        });
-                    }
-                    Err(_) => sync_claude_plan(&env, &token, &account_id).await,
-                }
+                tokio::runtime::Handle::current().spawn(async move {
+                    sync_claude_plan(&env, &token, &account_id).await;
+                });
             }
             Ok(usage)
         }
@@ -2524,10 +2526,14 @@ mod tests {
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        // 서버가 요청을 받은 순간 알린다 — 그때 호출자가 포기해야 "전송 뒤 취소"가 보장된다
+        // (고정 시간 timeout은 부하 중에 스폰 전에 끝나 태스크 자체가 없을 수 있다, review)
+        let (received_tx, received_rx) = tokio::sync::oneshot::channel::<()>();
         std::thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
                 let mut buf = [0u8; 8192];
                 let _ = stream.read(&mut buf);
+                let _ = received_tx.send(());
                 std::thread::sleep(std::time::Duration::from_millis(400));
                 let body = r#"{"access_token":"new","refresh_token":"r2","expires_in":3600}"#;
                 let _ = write!(
@@ -2545,20 +2551,92 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
-        // timeout·sleep은 런타임 컨텍스트 안에서 만들어야 한다 (타이머 드라이버 핸들)
-        let outcome = rt.block_on(async {
-            tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                ensure_fresh_profile_at(&env, Provider::Claude, "p", &url),
-            )
-            .await
+        // 서버가 요청을 받으면 호출자 퓨처를 드롭한다 (select!의 다른 가지가 이김)
+        let gave_up = rt.block_on(async {
+            tokio::select! {
+                _ = ensure_fresh_profile_at(&env, Provider::Claude, "p", &url) => false,
+                _ = received_rx => true,
+            }
         });
-        assert!(outcome.is_err(), "호출자는 100ms에 기다리기를 포기한다");
+        assert!(gave_up, "서버가 요청을 받은 시점에 호출자가 기다리기를 포기한다");
         // 포기한 뒤에도 런타임이 돌면 띄워 둔 태스크가 응답을 받아 사이드카를 쓴다
         rt.block_on(async { tokio::time::sleep(std::time::Duration::from_millis(1500)).await });
         let pending =
             fs::read_to_string(pending_path(&cred)).expect("회전 응답이 사이드카에 착지해야 한다");
         assert!(pending.contains("\"r2\""), "새 리프레시 토큰이 사이드카에 있어야 한다");
+    }
+
+    /// 호출자가 포기한 직후 이름 변경이 끼어들어도, 분리 태스크가 쥔 프로필 잠금 때문에
+    /// 이름 변경은 착지가 끝난 뒤에 진행되고 사이드카는 새 폴더로 함께 옮겨진다 (review).
+    #[test]
+    fn rename_waits_for_detached_refresh_to_land() {
+        use std::io::{Read, Write};
+        let env = test_env("refresh-uncancellable-rename");
+        let profile = env.profiles_dir(Provider::Claude).join("p");
+        fs::create_dir_all(&profile).unwrap();
+        fs::write(
+            profile.join("meta.json"),
+            r#"{"id":"uuid-rp2","email":null,"saved_at":1}"#,
+        )
+        .unwrap();
+        fs::write(
+            profile.join("credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"old","refreshToken":"r1","expiresAt":1000}}"#,
+        )
+        .unwrap();
+        fs::write(
+            env.home.join(".claude.json"),
+            r#"{"oauthAccount":{"accountUuid":"uuid-live-other"}}"#,
+        )
+        .unwrap();
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // 서버가 요청을 받은 순간 알린다 — 그때 호출자가 포기해야 "전송 뒤 취소"가 보장된다
+        // (고정 시간 timeout은 부하 중에 스폰 전에 끝나 태스크 자체가 없을 수 있다, review)
+        let (received_tx, received_rx) = tokio::sync::oneshot::channel::<()>();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 8192];
+                let _ = stream.read(&mut buf);
+                let _ = received_tx.send(());
+                std::thread::sleep(std::time::Duration::from_millis(400));
+                let body = r#"{"access_token":"new","refresh_token":"r2","expires_in":3600}"#;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.flush();
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/oauth/token");
+
+        // 멀티스레드 런타임: 동기 rename이 이 스레드를 막는 동안 워커가 태스크를 돌린다
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let gave_up = rt.block_on(async {
+            tokio::select! {
+                _ = ensure_fresh_profile_at(&env, Provider::Claude, "p", &url) => false,
+                _ = received_rx => true,
+            }
+        });
+        assert!(gave_up, "서버가 요청을 받은 시점에 호출자가 기다리기를 포기한다");
+        let started = std::time::Instant::now();
+        crate::accounts::rename(&env, Provider::Claude, "p", "q").expect("이름 변경은 착지 뒤 성공");
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(200),
+            "이름 변경은 분리 태스크의 착지를 기다려야 한다"
+        );
+        let moved = env.profiles_dir(Provider::Claude).join("q").join("credentials.json");
+        assert!(!profile.exists(), "옛 폴더는 남지 않는다");
+        let pending = fs::read_to_string(pending_path(&moved))
+            .expect("사이드카가 새 폴더로 함께 옮겨져야 한다");
+        assert!(pending.contains("\"r2\""));
     }
 
     /// 토큰 재발급 거부(4xx)는 백오프 중에도 "대기중"이 아니라 재로그인 안내로 보이고,

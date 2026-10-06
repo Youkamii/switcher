@@ -483,6 +483,23 @@ pub(crate) fn validate_name(name: &str) -> Result<(), String> {
 }
 
 /// 경로 안전성만 보는 문자 규칙 (영문·숫자·`-`·`_` 1~32자).
+/// 이름 변경의 출발 이름 — 문자 규칙을 지키는 이름이거나, 2단계 이름 변경의 잔해
+/// `<문자 규칙 이름>.renaming-<숫자>` 폴더
+fn validate_rename_source(from: &str) -> Result<(), String> {
+    if validate_name_chars(from).is_ok() {
+        return Ok(());
+    }
+    if let Some((base, suffix)) = from.split_once(".renaming-") {
+        if validate_name_chars(base).is_ok()
+            && !suffix.is_empty()
+            && suffix.chars().all(|c| c.is_ascii_digit())
+        {
+            return Ok(());
+        }
+    }
+    Err("프로필 이름은 영문·숫자·하이픈·언더스코어 1~32자만 가능합니다".into())
+}
+
 fn validate_name_chars(name: &str) -> Result<(), String> {
     let ok = !name.is_empty()
         && name.len() <= 32
@@ -711,12 +728,19 @@ pub(crate) fn live_cred_exists_checked(env: &Env, provider: Provider) -> Result<
     }
 }
 
-/// 활성 자격증명이 존재하는가 — 관대한 판. 확인이 실패하면 "있다"고 본다.
-/// 이 판을 쓰는 곳(usage.rs 갱신 경로)은 모두 "신원 불명 + 자격증명 있음"이면 재발급·
-/// 복구를 보류하는 분기라, 모를 때 보류하는 쪽이 안전하다 — "없다"로 보면 활성 계정일 수
-/// 있는 프로필을 회전시키거나 갱신 복구 파일을 지운다 (#175).
-pub(crate) fn live_cred_exists(env: &Env, provider: Provider) -> bool {
-    live_cred_exists_checked(env, provider).unwrap_or(true)
+
+/// 활성 저장소가 두 번 쓰기(키체인 + legacy 파일)인가 — 부분 실패가 가능한 유일한 구성.
+/// 파일 저장소(윈도우·테스트)는 원자 쓰기라 false
+fn live_store_is_two_step(env: &Env) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        matches!(env.claude_live, ClaudeLiveStore::Keychain { .. })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = env;
+        false
+    }
 }
 
 /// 활성 자격증명 쓰기 (전환 2단계). 키체인 모드에서는 구버전 파일이 남아 있으면
@@ -1140,8 +1164,10 @@ pub fn ensure_live_saved(env: &Env, provider: Provider) -> Result<Option<String>
 /// 진행 중이던 로그인 결과를 "삭제됨"으로 오인해 폐기하기 때문 (red-review).
 pub fn rename(env: &Env, provider: Provider, from: &str, to: &str) -> Result<(), String> {
     // 옛 이름은 문자 규칙(경로 안전)만 본다 — 예약 장치명 거부(#177) 이전에 맥 등에서
-    // 이미 만들어진 `aux` 같은 프로필도 전환·삭제는 막히지만 새 이름으로 옮겨 나올 수는 있게
-    validate_name_chars(from)?;
+    // 이미 만들어진 `aux` 같은 프로필도 전환·삭제는 막히지만 새 이름으로 옮겨 나올 수는 있게.
+    // 2단계 이름 변경 사이에 앱이 죽어 남은 `<이름>.renaming-<초>` 폴더도 같은 길로 구출한다
+    // (review: 그 폴더는 목록에 보이지만 전환·삭제·이름 변경이 전부 거부돼 토큰이 갇혔다)
+    validate_rename_source(from)?;
     validate_name(to)?;
     if from == to {
         return Ok(());
@@ -1266,16 +1292,30 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
     // 2) 대상 프로필을 활성 위치로 복사
     let data = fs::read(&target_cred)
         .map_err(|e| format!("읽기 실패 {}: {e}", target_cred.display()))?;
-    write_live_cred(env, provider, &data)?;
+    if let Err(error) = write_live_cred(env, provider, &data) {
+        // 파일 저장소는 원자 쓰기라 실패해도 이전 토큰이 그대로다 — 되돌려 쓰면 그사이 CLI가
+        // 갱신한 토큰을 덮을 수 있어 손대지 않는다. 키체인 모드(맥)는 키체인 → legacy 파일
+        // 두 번 쓰기라 키체인만 바뀐 채 실패할 수 있으므로 백업 때 읽은 바이트로 두 저장소를
+        // 전환 전 상태로 맞춘다 (최선 노력, review)
+        if live_store_is_two_step(env) {
+            if let Some(previous) = previous_live.as_deref() {
+                return Err(match write_live_cred(env, provider, previous) {
+                    Ok(()) => format!("활성 토큰 쓰기 실패 — 전환 전 상태로 되돌렸습니다: {error}"),
+                    Err(restore_error) => format!(
+                        "활성 토큰 쓰기 실패, 되돌리기도 실패 — 키체인과 파일이 어긋났을 수 있으니 CLI에서 다시 로그인하세요: {error} / 되돌리기 오류: {restore_error}"
+                    ),
+                });
+            }
+        }
+        return Err(error);
+    }
     if provider == Provider::Claude {
         // 클로드는 토큰(활성 저장소)과 계정 정보(~/.claude.json)를 따로 쓰는 두 단계라
         // 원자적이지 않다. 토큰만 대상 계정 B로 바뀌고 계정 정보가 A로 남으면, 다음 전환이
         // live_identity=A로 판단해 B의 토큰을 A의 프로필에 백업한다 — 클로드 토큰에는
         // 계정 id가 없어 이 어긋남을 교차 검증으로 잡을 수도 없다 (#175).
         // 그래서 계정 정보 반영이 실패하면 활성 토큰을 백업 때 읽은 바이트로 되돌린다.
-        // 남은 틈(맥): 키체인 모드의 write_live_cred는 키체인 → legacy 파일 두 번 쓰기라,
-        // 키체인만 바뀐 채 파일 쓰기가 실패하면 위 `?`로 그대로 올라가 여기서 되돌리지
-        // 못한다. 되돌리기 자체도 같은 두 번 쓰기라 최선 노력이다.
+        // 되돌리기 자체도 맥에선 두 번 쓰기라 최선 노력이다.
         if let Err(error) = claude_apply_oauth_block(env, &profile_dir) {
             return Err(match previous_live.as_deref() {
                 Some(previous) => match write_live_cred(env, provider, previous) {
@@ -1642,14 +1682,14 @@ mod tests {
         let switched = switch(&env, Provider::Claude, "second");
         let saved = save_current(&env, Provider::Claude, "main");
         let auto_saved = ensure_live_saved(&env, Provider::Claude);
-        let lenient = live_cred_exists(&env, Provider::Claude);
+        let lenient = live_cred_exists_checked(&env, Provider::Claude).unwrap_or(true);
         FAIL_LIVE_PROBE.with(|fail| fail.set(false));
 
         let err = switched.unwrap_err();
         assert!(err.contains("존재 확인 실패") && err.contains("중단"), "{err}");
         assert!(saved.unwrap_err().contains("존재 확인 실패"));
         assert!(auto_saved.is_err());
-        assert!(lenient, "관대한 판은 모를 때 '있다'로 본다 (갱신·복구 보류 쪽)");
+        assert!(lenient, "갱신·복구 경로(usage.rs)는 모를 때 '있다'로 보고 미룬다");
         assert_eq!(
             fs::read(env.live_credential_path(Provider::Claude)).unwrap(),
             live_before,
@@ -2072,6 +2112,28 @@ mod tests {
         assert!(env.profiles_dir(Provider::Codex).join("bob").exists());
     }
 
+    /// 2단계 이름 변경 잔해(`<to>.renaming-<초>`)는 rename으로 원하는 이름을 되찾을 수 있다 (review)
+    #[test]
+    fn rename_rescues_leftover_renaming_folder() {
+        let env = test_env("rename-leftover");
+        let root = env.profiles_dir(Provider::Claude);
+        let leftover = root.join("Alice.renaming-1700000000");
+        fs::create_dir_all(&leftover).unwrap();
+        fs::write(
+            leftover.join("meta.json"),
+            r#"{"id":"uuid-leftover","email":null,"saved_at":1}"#,
+        )
+        .unwrap();
+        fs::write(leftover.join("credentials.json"), b"{}").unwrap();
+        assert!(validate_rename_source("Alice.renaming-1700000000").is_ok());
+        assert!(validate_rename_source("Alice.renaming-").is_err());
+        assert!(validate_rename_source("Alice.renaming-x1").is_err());
+        assert!(validate_rename_source("..renaming-1").is_err());
+        rename(&env, Provider::Claude, "Alice.renaming-1700000000", "Alice").unwrap();
+        assert!(root.join("Alice").join("meta.json").exists());
+        assert!(!leftover.exists());
+    }
+
     /// 대소문자만 바꾸는 이름 변경도 된다 (#177). 대소문자 무시 FS(Windows·기본 macOS)에선
     /// 원본 자신이 dst.exists()에 걸려 거부되던 경로 — 이 테스트가 실제 2단계 이동을 탄다.
     #[test]
@@ -2203,7 +2265,7 @@ mod tests {
     /// CI에서는 돌지 않는다: `cargo test -- --ignored` 로만 실행.
     fn real_self_switch(provider: Provider) {
         let env = Env::real().unwrap();
-        if !live_cred_exists(&env, provider) {
+        if !live_cred_exists_checked(&env, provider).unwrap_or(false) {
             panic!("로그인 정보가 없어 실환경 검증 불가");
         }
         let before_cred = read_live_cred(&env, provider).unwrap();
