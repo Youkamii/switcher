@@ -3237,7 +3237,10 @@ pub fn run() {
         }
         // 자동 확인이 준비해 둔 .new는 다음 앱 실행에서, UI 초기화 전에 helper로
         // 넘긴다. 현재 run()이 즉시 끝나야 helper가 기존 exe를 교체할 수 있다.
-        if update::launch_pending_windows_update() {
+        // 단, 이미 떠 있는 인스턴스가 있으면 건너뛴다 — 그 인스턴스가 exe를 잠그고
+        // 있어 helper의 교체가 실패하고 표식까지 지워 준비된 업데이트가 버려졌다 (#172).
+        // 이 경우 아래 단일 인스턴스 플러그인이 기존 창을 앞으로 보내고 끝난다.
+        if update::claim_instance_mutex() && update::launch_pending_windows_update() {
             return;
         }
     }

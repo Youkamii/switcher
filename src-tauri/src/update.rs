@@ -480,6 +480,38 @@ fn read_pending_version(staged: &Path) -> Result<String, String> {
     Ok(version.to_string())
 }
 
+/// 이 프로세스가 이 사용자 세션의 첫 switcher 인스턴스인지 — 이름 있는 뮤텍스를 잡아
+/// 프로세스가 끝날 때까지 쥔다(핸들을 닫지 않는다). 두 번째 인스턴스는 `ERROR_ALREADY_EXISTS`를
+/// 받는다. 단일 인스턴스 플러그인(lib.rs Builder)보다 먼저 판정해야 하는 이유: 플러그인 전에
+/// 도는 pending 업데이트 분기가 helper를 띄우고 즉시 종료하는데, 이미 떠 있는 첫 인스턴스가
+/// exe를 잠그고 있으면 helper의 교체가 실패해 준비된 업데이트 표식을 지워 버렸다 (#172).
+/// 호출 순서: helper 분기 **뒤**(helper 복사본이 뮤텍스를 쥔 채 새 exe를 띄우면 안 된다) ·
+/// pending 분기 **앞**.
+#[cfg(windows)]
+pub fn claim_instance_mutex() -> bool {
+    static CLAIMED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CLAIMED.get_or_init(|| claim_named_mutex("Local\\com.youkamii.switcher.instance").is_some())
+}
+
+/// 이름 있는 뮤텍스를 새로 만들면 핸들을, 이미 있으면(다른 인스턴스가 쥠) None을 돌려준다.
+/// 돌려받은 핸들은 일부러 닫지 않는다 — 프로세스 종료가 해제다.
+#[cfg(windows)]
+fn claim_named_mutex(name: &str) -> Option<windows_sys::Win32::Foundation::HANDLE> {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let handle = unsafe { CreateMutexW(std::ptr::null(), 0, wide.as_ptr()) };
+    if handle.is_null() {
+        // 만들 수 없으면(이름 충돌·권한) 첫 인스턴스로 간주한다 — 기존 동작 유지
+        return Some(handle);
+    }
+    if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        unsafe { CloseHandle(handle) };
+        return None;
+    }
+    Some(handle)
+}
+
 #[cfg(windows)]
 fn pending_windows_update(current: &Path) -> Option<(PathBuf, String)> {
     let staged = current.with_extension("exe.new");
@@ -938,6 +970,23 @@ fn extract_zip(zip: &Path, dir: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 같은 이름의 인스턴스 뮤텍스는 첫 호출만 잡고 두 번째는 "이미 있음"이다 (#172).
+    /// 첫 핸들을 닫으면 다시 잡을 수 있다 — 첫 인스턴스가 끝나면 다음 실행이 첫 인스턴스가 된다.
+    #[cfg(windows)]
+    #[test]
+    fn instance_mutex_second_holder_sees_existing() {
+        let name = format!("Local\\switcher-test-{}", std::process::id());
+        let first = claim_named_mutex(&name).expect("첫 인스턴스는 뮤텍스를 잡아야 한다");
+        assert!(!first.is_null());
+        assert!(
+            claim_named_mutex(&name).is_none(),
+            "두 번째 인스턴스는 이미 있음을 봐야 한다"
+        );
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(first) };
+        let again = claim_named_mutex(&name).expect("첫 인스턴스가 끝나면 다시 잡힌다");
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(again) };
+    }
 
     #[test]
     fn version_parsing_and_ordering() {
