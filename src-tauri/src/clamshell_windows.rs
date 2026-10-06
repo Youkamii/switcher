@@ -69,6 +69,11 @@ static WATCHDOG_STARTED: AtomicBool = AtomicBool::new(false);
 /// 해석 불가 저널 로그를 한 번만 남기기 위한 표식 — 감시 스레드가 500ms마다 상태를 읽으므로
 /// 매번 찍으면 로그가 넘친다 (#174). 격리에 성공하면 다시 내린다.
 static CORRUPT_JOURNAL_LOGGED: AtomicBool = AtomicBool::new(false);
+/// 위젯 쪽 손상 저널 복구(recover_corrupt_journals_once)를 손상 한 건에 한 번만 하기 위한
+/// 표식 — 500ms마다 실패한 전원값 쓰기를 되풀이하지 않게 (#174 리뷰 후속). 로그 표식과 따로
+/// 두는 것은, mode()(프론트가 언제든 부른다)가 로그 표식을 먼저 세우면 복구가 한 번도 돌지
+/// 못하기 때문이다. 격리에 성공하면 다시 내린다.
+static CORRUPT_RECOVERY_TRIED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct SchemeJournal {
@@ -503,15 +508,16 @@ fn read_state(path: &Path) -> Result<Option<State>, String> {
     }
 }
 
-/// 저널 2벌 중 "있지만 해석할 수 없는" 파일 목록. 해석되는 사본이 하나라도 있으면 빈 목록
-/// (read_state가 그 사본을 쓴다). 읽기 자체가 실패(권한·공유 위반 등)하면 일시적일 수
-/// 있으므로 손상으로 보지 않고 Err를 돌려준다 (#174).
-fn unparsable_journals(path: &Path) -> Result<Vec<PathBuf>, String> {
+/// 저널 2벌 중 "있지만 해석할 수 없는" 파일과 그 내용. 해석되는 사본이 하나라도 있으면 빈
+/// 목록 (read_state가 그 사본을 쓴다). 읽기 자체가 실패(권한·공유 위반 등)하면 일시적일 수
+/// 있으므로 손상으로 보지 않고 Err를 돌려준다 (#174). 내용은 원래 값을 건지는 데
+/// (salvage_journals) 다시 읽지 않고 쓴다.
+fn unparsable_journals(path: &Path) -> Result<Vec<(PathBuf, Vec<u8>)>, String> {
     let mut unparsable = Vec::new();
     for file in [path.to_path_buf(), recovery_file(path)?] {
         match std::fs::read(&file) {
             Ok(bytes) if parse_state(&bytes).is_ok() => return Ok(Vec::new()),
-            Ok(_) => unparsable.push(file),
+            Ok(bytes) => unparsable.push((file, bytes)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(format!("클램셸 상태 읽기 실패: {error}")),
         }
@@ -528,32 +534,185 @@ fn note_corrupt_journals(path: &Path, error: &str) -> bool {
     }
     if !CORRUPT_JOURNAL_LOGGED.swap(true, Ordering::SeqCst) {
         eprintln!(
-            "클램셸 상태 파일을 해석할 수 없어 꺼짐으로 표시합니다 (다음 클릭 때 격리): {error}"
+            "클램셸 상태 파일을 해석할 수 없어 꺼짐으로 표시합니다 (원래 값을 건질 수 있으면 되돌리고, 아니면 다음 클릭 때 알리고 격리): {error}"
         );
     }
     true
 }
 
-/// cycle 전용: 저널 2벌이 모두 해석 불가면 지우지 않고 `<파일>.corrupt-<유닉스 밀리초>`로
-/// 옮겨 둔 뒤(공용 accounts::quarantine_corrupt — 이름이 겹치면 -n 접미사) "꺼짐"으로 이어
-/// 간다. 예전에는 mode()가 2를 돌려주고 cycle도 여기서 실패해, 사용자가 파일을 손으로 지우기
-/// 전엔 다시 켤 수 없었다 (#174). 옮긴 사본은 원래 덮개 동작 값을 손으로 확인할 수 있게 남긴다.
-fn read_state_or_quarantine(path: &Path) -> Result<Option<State>, String> {
+/// 손상 저널에서 너그럽게 건진 원래 덮개 동작 값 (salvage_journals)
+struct Salvage {
+    schemes: Vec<SchemeJournal>,
+    /// 형식이 어긋나 버린 항목이 있었거나, 두 사본의 같은 값이 엇갈렸다
+    damaged: bool,
+}
+
+impl Salvage {
+    /// 원래 값을 빠짐없이 건졌나 — 그래야 격리한 뒤 새로 켜도 원래 설정을 잃지 않는다
+    fn complete(&self) -> bool {
+        !self.damaged && !self.schemes.is_empty()
+    }
+}
+
+/// parse_state가 거부한 저널에서 원래 덮개 동작 값만 너그럽게 건진다 (#174 리뷰 후속).
+/// JSON으로는 읽히지만 version·mode·revision·helper가 어긋난 파일(미래 버전에서 되돌아옴,
+/// 손편집)이라도 `schemes[]`의 `scheme`·`ac`·`dc`가 멀쩡하면 원래 값을 되돌릴 수 있다.
+/// 항목은 GUID 형식의 scheme과 0~3(덮개 동작 범위)인 ac·dc가 모두 있어야 쓰고, 하나라도
+/// 어긋난 항목은 버리고 damaged로 표시한다. JSON 자체가 깨진 파일(잘림)에서는 건지지 않는다.
+/// 두 사본에 같은 scheme이 있으면 값마다 0이 아닌 쪽을 고른다 — 0은 "이 감시자가 바꾸지
+/// 않음" 표식이고 저널의 값은 0에서 원래 값으로 한 번만 바뀌므로(apply_active) 0이 아닌 쪽이
+/// 최신이다. 둘 다 0이 아닌데 다르면 damaged.
+fn salvage_journals(journals: &[(PathBuf, Vec<u8>)]) -> Salvage {
+    use serde_json::Value;
+    let mut salvage = Salvage {
+        schemes: Vec::new(),
+        damaged: false,
+    };
+    for (_, bytes) in journals {
+        let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+            continue;
+        };
+        let Some(entries) = value.get("schemes").and_then(Value::as_array) else {
+            continue;
+        };
+        for entry in entries {
+            let scheme = entry
+                .get("scheme")
+                .and_then(Value::as_str)
+                .filter(|scheme| parse_guid(scheme).is_ok());
+            let action = |key: &str| {
+                entry
+                    .get(key)
+                    .and_then(Value::as_u64)
+                    .filter(|value| *value <= 3)
+                    .map(|value| value as u32)
+            };
+            let (Some(scheme), Some(ac), Some(dc)) = (scheme, action("ac"), action("dc")) else {
+                salvage.damaged = true;
+                continue;
+            };
+            match salvage
+                .schemes
+                .iter_mut()
+                .find(|known| known.scheme.eq_ignore_ascii_case(scheme))
+            {
+                None => salvage.schemes.push(SchemeJournal {
+                    scheme: scheme.to_string(),
+                    ac,
+                    dc,
+                }),
+                Some(known) => {
+                    for (kept, seen) in [(&mut known.ac, ac), (&mut known.dc, dc)] {
+                        if *kept == 0 {
+                            *kept = seen;
+                        } else if seen != 0 && seen != *kept {
+                            salvage.damaged = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    salvage
+}
+
+/// 손상 저널을 지우지 않고 옆으로 옮긴다 (공용 accounts::quarantine_corrupt — 이름이 겹치면
+/// -n 접미사). 옮긴 사본은 원래 덮개 동작 값을 손으로 확인할 수 있게 남는다. 다 옮기면 다음
+/// 손상을 다시 한 번씩 알리고 복구를 시도하도록 표식을 내린다.
+fn quarantine_journals(journals: &[(PathBuf, Vec<u8>)]) -> Result<Vec<PathBuf>, String> {
+    let mut moved = Vec::new();
+    for (file, _) in journals {
+        let target = crate::accounts::quarantine_corrupt(file)
+            .map_err(|rename| format!("손상된 클램셸 상태 격리 실패: {rename}"))?;
+        eprintln!("손상된 클램셸 상태를 격리했습니다: {}", target.display());
+        moved.push(target);
+    }
+    CORRUPT_JOURNAL_LOGGED.store(false, Ordering::SeqCst);
+    CORRUPT_RECOVERY_TRIED.store(false, Ordering::SeqCst);
+    Ok(moved)
+}
+
+#[derive(Debug, PartialEq)]
+enum CorruptRecovery {
+    /// 손상이 아니다 — 해석되는 사본이 있거나 저널이 없다
+    NotCorrupt,
+    /// 원래 값을 빠짐없이 건지지 못해 아무것도 건드리지 않았다 (allow_partial = false)
+    Skipped,
+    /// 건진 값을 되돌리고 저널을 격리했다. complete가 false면 원래 값 일부(또는 전부)를
+    /// 건지지 못했다 — 사용자에게 알려야 한다.
+    Quarantined { complete: bool, moved: Vec<PathBuf> },
+}
+
+/// 해석 불가 저널(2벌 모두)의 복구 몸통 (#174 리뷰 후속). 예전에는 그냥 격리한 뒤 "꺼짐"에서
+/// 새로 켰는데, 감시자가 죽은 채 저널이 깨졌다면 전원 설정은 이미 "덮개 무시"(0)로 바뀐
+/// 상태라 새 저널이 그 0을 원래 값으로 기록했다 — 나중에 끄면 0을 "복원"해 원래 설정을 영영
+/// 잃고, 사용자는 알 길이 없었다. 그래서 격리 전에 건질 수 있는 원래 값부터 되돌린다.
+/// 되돌리기가 실패하면 격리하지 않고 Err — 다음 시도가 같은 파일에서 다시 건진다.
+/// `allow_partial`이 false면 빠짐없이 건질 수 있을 때만 손댄다(위젯 감시 스레드). true면
+/// 모자라도 건진 만큼 되돌리고 격리한다 — 호출자가 사용자에게 알릴 수 있을 때만(cycle).
+/// 전원값을 쓰므로 호출자는 어느 세션에도 감시자가 없음을(NamedOwner) 보장해야 한다 —
+/// 살아 있는 감시자의 덮개 무시를 풀어 버리지 않게.
+fn recover_corrupt_journals<B: PowerBackend>(
+    backend: &mut B,
+    path: &Path,
+    allow_partial: bool,
+) -> Result<CorruptRecovery, String> {
+    let journals = unparsable_journals(path)?;
+    if journals.is_empty() {
+        return Ok(CorruptRecovery::NotCorrupt);
+    }
+    let salvage = salvage_journals(&journals);
+    let complete = salvage.complete();
+    if !complete && !allow_partial {
+        return Ok(CorruptRecovery::Skipped);
+    }
+    if !salvage.schemes.is_empty() {
+        restore_power(backend, &salvage.schemes).map_err(|restore| {
+            format!("손상된 클램셸 상태에서 건진 원래 덮개 동작을 되돌리지 못했습니다: {restore}")
+        })?;
+    }
+    let moved = quarantine_journals(&journals)?;
+    Ok(CorruptRecovery::Quarantined { complete, moved })
+}
+
+/// cycle 전용: 저널 2벌이 모두 해석 불가면 recover_corrupt_journals로 건진 원래 값을 되돌리고
+/// 격리한다. 예전에는 mode()가 2를 돌려주고 cycle도 여기서 실패해, 사용자가 파일을 손으로
+/// 지우기 전엔 다시 켤 수 없었다 (#174).
+/// - 빠짐없이 건졌으면 "꺼짐"에서 이어 가 새 저널로 켠다.
+/// - 아니면 이번 클릭은 오류로 끝내 알린다 — 덮개 동작이 원래 설정이 아닐 수 있다. 격리했으므로
+///   다음 클릭은 그냥 켠다.
+fn read_state_or_recover<B: PowerBackend>(
+    backend: &mut B,
+    path: &Path,
+) -> Result<Option<State>, String> {
     let error = match read_state(path) {
         Ok(state) => return Ok(state),
         Err(error) => error,
     };
-    let unparsable = unparsable_journals(path)?;
-    if unparsable.is_empty() {
-        return Err(error);
+    match recover_corrupt_journals(backend, path, true)
+        .map_err(|recover| format!("{error}; {recover}"))?
+    {
+        CorruptRecovery::Quarantined { complete: true, .. } => {
+            eprintln!("손상된 클램셸 상태에서 원래 덮개 동작을 건져 되돌렸습니다");
+            read_state(path)
+        }
+        CorruptRecovery::Quarantined {
+            complete: false,
+            moved,
+        } => Err(corrupt_journal_notice(&moved)),
+        CorruptRecovery::NotCorrupt | CorruptRecovery::Skipped => Err(error),
     }
-    for file in &unparsable {
-        let target = crate::accounts::quarantine_corrupt(file)
-            .map_err(|rename| format!("{error}; 손상된 클램셸 상태 격리 실패: {rename}"))?;
-        eprintln!("손상된 클램셸 상태를 격리했습니다: {}", target.display());
-    }
-    CORRUPT_JOURNAL_LOGGED.store(false, Ordering::SeqCst);
-    read_state(path)
+}
+
+fn corrupt_journal_notice(moved: &[PathBuf]) -> String {
+    let moved: Vec<String> = moved
+        .iter()
+        .map(|file| file.display().to_string())
+        .collect();
+    format!(
+        "클램셸 상태 파일이 손상돼 격리했습니다 ({}). 지금 덮개 동작이 원래 설정이 아닐 수 있으니 Windows 전원 옵션의 '덮개를 닫으면' 설정을 확인하세요 — 다시 누르면 켭니다",
+        moved.join(", ")
+    )
 }
 
 fn write_state(path: &Path, state: &State) -> Result<(), String> {
@@ -669,16 +828,20 @@ fn restore_all<B: PowerBackend>(
     state_path: &Path,
     state: &State,
 ) -> Result<(), String> {
-    restore_power(backend, state)?;
+    restore_power(backend, &state.schemes)?;
     remove_state(state_path, &state.helper)
 }
 
 /// 전원값 복원만 한다 — 저널 정리(remove_state)는 호출자 몫이다. 감시자의 fail-safe 경로가
 /// "전원값 쓰기 실패"(다시 시도할 일)와 "정리만 실패"(복원은 끝남)를 구분해야 해서 나눴다
-/// (#174). 실패해도 시스템 절전 방지 요청은 내린다.
-fn restore_power<B: PowerBackend>(backend: &mut B, state: &State) -> Result<(), String> {
+/// (#174). 저널 전체가 아니라 항목 목록을 받는 것은, 손상 저널에서 건진 값(salvage_journals)도
+/// 같은 길로 되돌리기 위해서다. 실패해도 시스템 절전 방지 요청은 내린다.
+fn restore_power<B: PowerBackend>(
+    backend: &mut B,
+    schemes: &[SchemeJournal],
+) -> Result<(), String> {
     let mut errors = Vec::new();
-    for entry in &state.schemes {
+    for entry in schemes {
         match backend.scheme_exists(&entry.scheme) {
             Ok(true) => {}
             Ok(false) => continue,
@@ -746,8 +909,9 @@ pub fn mode(store: &Path) -> i8 {
         }
         Err(error) => {
             // 해석 불가 저널은 켜짐으로 보지 않는다. 감시자가 살아 있으면 메모리 사본으로 곧
-            // 다시 쓰고, 죽었으면 되돌릴 원래 값도 읽을 수 없다. "꺼짐"으로 보여 주고 다음
-            // 클릭(cycle)이 격리한 뒤 새로 켤 수 있게 한다 (#174). 읽기 오류는 예전 그대로.
+            // 다시 쓰고, 죽었으면 위젯 감시 스레드가 건질 수 있는 원래 값을 되돌린다
+            // (recover_corrupt_journals_once). "꺼짐"으로 보여 주고 다음 클릭(cycle)이 남은 것을
+            // 격리한 뒤 새로 켤 수 있게 한다 (#174). 읽기 오류는 예전 그대로.
             if note_corrupt_journals(&files(store), &error) {
                 return 0;
             }
@@ -769,7 +933,22 @@ pub fn cycle(app: &tauri::AppHandle, store: &Path) -> Result<i8, String> {
         .map_err(|_| "클램셸 작업 잠금 손상".to_string())?;
     let path = files(store);
     let mut backend = NativePower;
-    let candidate = read_state_or_quarantine(&path)?;
+    let candidate = match read_state(&path) {
+        Ok(state) => state,
+        Err(error) => {
+            if unparsable_journals(&path)?.is_empty() {
+                return Err(error);
+            }
+            // 손상 저널 복구는 건진 원래 값을 전원 설정에 되돌린다 — 어느 세션에든 감시자가
+            // 살아 있으면 손대지 않는다(그 감시자가 곧 메모리 사본으로 저널을 다시 쓴다).
+            let _transition = NamedTransition::lock()?;
+            let _owner = NamedOwner::acquire().map_err(|_| {
+                "클램셸 감시자가 실행 중이라 손상된 상태 파일을 정리할 수 없습니다. 잠시 후 다시 눌러 주세요"
+                    .to_string()
+            })?;
+            read_state_or_recover(&mut backend, &path)?
+        }
+    };
     let operation_helper = candidate
         .as_ref()
         .map(|state| Ok(state.helper.clone()))
@@ -863,8 +1042,11 @@ fn reconcile_dead_helper(app: &tauri::AppHandle, store: &Path) {
         Ok(state) => state,
         Err(error) => {
             // 손상 저널은 note_corrupt_journals가 한 번만 알린다 — 감시 스레드가 500ms마다 여기를
-            // 지나므로 같은 로그를 쌓지 않는다. 격리는 사용자의 다음 클릭(cycle)이 한다 (#174).
-            if !note_corrupt_journals(&path, &error) {
+            // 지나므로 같은 로그를 쌓지 않는다 (#174). 건질 수 있는 원래 값은 여기서 한 번
+            // 되돌리고, 모자라면 사용자의 다음 클릭(cycle)이 알리며 격리한다.
+            if note_corrupt_journals(&path, &error) {
+                recover_corrupt_journals_once(&path);
+            } else {
                 eprintln!("클램셸 시작 상태 확인 실패: {error}");
             }
             return;
@@ -919,6 +1101,38 @@ fn reconcile_dead_helper(app: &tauri::AppHandle, store: &Path) {
     } else {
         cleanup_stale_helpers(store, None);
         let _ = app.emit("clamshell-changed", 0i8);
+    }
+}
+
+/// 위젯 쪽 손상 저널 복구 (#174 리뷰 후속). 예전에는 감시자가 죽은 채 저널이 깨지면 여기서
+/// 그냥 돌아가, 전원 설정이 "덮개를 닫아도 절전 안 함"으로 바뀐 채 남았다(화면은 꺼짐). 원래
+/// 값을 빠짐없이 건질 수 있으면 되돌리고 격리한다. 모자라면 손대지 않고 사용자의 다음 클릭
+/// (cycle)이 알리며 격리하게 둔다 — 여기서 격리하면 알릴 길이 없다. 감시 스레드가 500ms마다
+/// 여기를 지나므로 손상 한 건에 한 번만 시도한다(CORRUPT_RECOVERY_TRIED, 격리하면 내림).
+fn recover_corrupt_journals_once(path: &Path) {
+    if CORRUPT_RECOVERY_TRIED.load(Ordering::SeqCst) {
+        return;
+    }
+    let Ok(_local) = OPERATION_LOCK.lock() else {
+        return;
+    };
+    let Ok(_transition) = NamedTransition::lock() else {
+        return;
+    };
+    // 어느 세션에든 감시자가 살아 있으면 그 감시자가 메모리 사본으로 저널을 곧 다시 쓴다 —
+    // 덮개 무시를 풀지 않는다. 시도 표식도 세우지 않아 다음 점검에서 다시 본다.
+    let Ok(_owner) = NamedOwner::acquire() else {
+        return;
+    };
+    if CORRUPT_RECOVERY_TRIED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    match recover_corrupt_journals(&mut NativePower, path, false) {
+        Ok(CorruptRecovery::Quarantined { .. }) => {
+            eprintln!("손상된 클램셸 상태에서 원래 덮개 동작을 건져 되돌리고 격리했습니다");
+        }
+        Ok(CorruptRecovery::NotCorrupt | CorruptRecovery::Skipped) => {}
+        Err(error) => eprintln!("{error} (다음 클릭 때 다시 시도합니다)"),
     }
 }
 
@@ -1504,7 +1718,7 @@ impl<B: PowerBackend> HelperRuntime<B> {
 
     fn retry_fail_safe_restore(&mut self) -> Result<bool, String> {
         let state = self.fallback.clone();
-        let restored = restore_power(&mut self.request.backend, &state);
+        let restored = restore_power(&mut self.request.backend, &state.schemes);
         // restore_power는 실패해도 시스템 절전 방지 요청을 내린다. 재시도 중에는
         // apply_active로 다시 들어가지 않는다.
         self.request.clear();
@@ -2530,12 +2744,14 @@ mod tests {
     }
 
     #[test]
-    fn unparsable_journals_read_as_off_and_are_quarantined_not_deleted() {
+    fn unrecoverable_journals_notify_once_then_the_next_click_turns_on() {
         let path = temp_state("corrupt-journals");
         let store = path.parent().unwrap().to_path_buf();
         let recovery = recovery_file(&path).unwrap();
         std::fs::write(&path, b"{").unwrap();
         std::fs::write(&recovery, br#"{"version":9}"#).unwrap();
+        // 감시자가 죽기 전에 덮개 동작을 "아무것도 안 함"(0)으로 바꿔 둔 상태
+        let mut backend = FakePower::with_scheme(A, 0, 0);
 
         assert!(read_state(&path).is_err());
         // 예전에는 2(켜짐)를 돌려줘, 파일을 손으로 지우기 전엔 버튼이 막다른 길이었다.
@@ -2544,14 +2760,203 @@ mod tests {
             path.exists() && recovery.exists(),
             "mode()는 파일을 건드리지 않는다"
         );
+        // 위젯 감시 스레드는 건질 값이 없으면 손대지 않는다 — 거기서 격리하면 알릴 길이 없다.
+        assert_eq!(
+            recover_corrupt_journals(&mut backend, &path, false).unwrap(),
+            CorruptRecovery::Skipped
+        );
+        assert!(path.exists() && recovery.exists());
 
-        assert_eq!(read_state_or_quarantine(&path).unwrap(), None);
-        assert!(!path.exists());
-        assert!(!recovery.exists());
-        assert_eq!(std::fs::read_dir(&store).unwrap().count(), 2);
+        // 첫 클릭: 격리하고 오류로 알린다. 예전에는 여기서 바로 켜, 지금 값(0/0)이 원래 값으로
+        // 새 저널에 박혔다 — 나중에 끄면 0을 "복원"해 원래 설정을 영영 잃었다.
+        let notice = read_state_or_recover(&mut backend, &path).unwrap_err();
+        assert!(notice.contains("Windows 전원 옵션"), "{notice}");
+        assert!(!path.exists() && !recovery.exists());
         assert_eq!(quarantined(&recovery), [br#"{"version":9}"#.to_vec()]);
         assert_eq!(quarantined(&path), [b"{".to_vec()]);
+        for copy in crate::accounts::corrupt_copies(&path)
+            .into_iter()
+            .chain(crate::accounts::corrupt_copies(&recovery))
+        {
+            assert!(notice.contains(&copy.display().to_string()), "{notice}");
+        }
+        assert!(power_writes(&backend).is_empty());
+
+        // 다음 클릭: 손상 저널이 없으니 예전처럼 켠다(꺼짐에서 이어 감).
+        assert_eq!(read_state_or_recover(&mut backend, &path).unwrap(), None);
+        assert_eq!(std::fs::read_dir(&store).unwrap().count(), 2);
         let _ = std::fs::remove_dir_all(&store);
+    }
+
+    /// 미래 버전(파서가 거부)이지만 schemes는 멀쩡한 저널과, 잘린 복구 사본
+    fn salvageable_journals(path: &Path) -> (Vec<u8>, Vec<u8>) {
+        let future = format!(
+            r#"{{"version":2,"mode":2,"revision":"r-2","helper":"h-2","schemes":[{{"scheme":"{A}","ac":1,"dc":2,"since":"2027"}}],"extra":[1]}}"#
+        )
+        .into_bytes();
+        let truncated = br#"{"version":1,"mode":2,"schemes":[{"sch"#.to_vec();
+        std::fs::write(path, &future).unwrap();
+        std::fs::write(recovery_file(path).unwrap(), &truncated).unwrap();
+        (future, truncated)
+    }
+
+    #[test]
+    fn click_restores_salvaged_values_before_quarantine_and_turns_on_with_them() {
+        let path = temp_state("salvage-click");
+        let recovery = recovery_file(&path).unwrap();
+        let (future, truncated) = salvageable_journals(&path);
+        let mut backend = FakePower::with_scheme(A, 0, 0);
+        assert_eq!(mode(path.parent().unwrap()), 0);
+
+        // 원래 값을 빠짐없이 건졌으므로 알릴 것 없이 되돌리고, 격리한 뒤 "꺼짐"에서 이어 간다.
+        assert_eq!(read_state_or_recover(&mut backend, &path).unwrap(), None);
+        assert_eq!(backend.values[A], (1, 2));
+        assert!(!path.exists() && !recovery.exists());
+        assert_eq!(quarantined(&path), [future]);
+        assert_eq!(quarantined(&recovery), [truncated]);
+
+        // 이어서 켜면 새 저널의 원래 값은 되돌린 1/2이고, 끄면 그 값으로 돌아간다.
+        let mut current = state(1, Vec::new());
+        activate(&mut backend, &path, &mut current).unwrap();
+        assert_eq!(
+            read_state(&path).unwrap().unwrap().schemes,
+            [SchemeJournal {
+                scheme: A.into(),
+                ac: 1,
+                dc: 2
+            }]
+        );
+        assert_eq!(backend.values[A], (0, 0));
+        restore_all(&mut backend, &path, &current).unwrap();
+        assert_eq!(backend.values[A], (1, 2));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn widget_recovery_restores_complete_salvage_and_quarantines_once() {
+        let path = temp_state("salvage-widget");
+        let recovery = recovery_file(&path).unwrap();
+        let (future, truncated) = salvageable_journals(&path);
+        let mut backend = FakePower::with_scheme(A, 0, 0);
+
+        let outcome = recover_corrupt_journals(&mut backend, &path, false).unwrap();
+
+        assert!(
+            matches!(&outcome, CorruptRecovery::Quarantined { complete: true, moved } if moved.len() == 2),
+            "{outcome:?}"
+        );
+        assert_eq!(backend.values[A], (1, 2));
+        assert_eq!(quarantined(&path), [future]);
+        assert_eq!(quarantined(&recovery), [truncated]);
+        // 격리한 뒤에는 손상이 아니다 — 다시 불러도 전원값을 또 쓰지 않는다.
+        let writes = power_writes(&backend).len();
+        assert_eq!(
+            recover_corrupt_journals(&mut backend, &path, false).unwrap(),
+            CorruptRecovery::NotCorrupt
+        );
+        assert_eq!(power_writes(&backend).len(), writes);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn failed_restore_of_salvaged_values_keeps_the_corrupt_journals() {
+        let path = temp_state("salvage-restore-fails");
+        salvageable_journals(&path);
+        let mut backend = FakePower::with_scheme(A, 0, 0);
+        backend.fail = Some(format!("dc:{A}:2"));
+
+        // 되돌리지 못했으면 격리하지 않는다 — 원래 값을 아는 파일은 그 자리에 남아 다음 시도가
+        // 다시 건진다.
+        assert!(read_state_or_recover(&mut backend, &path).is_err());
+        assert!(recover_corrupt_journals(&mut backend, &path, false).is_err());
+        assert!(path.exists());
+        assert!(quarantined(&path).is_empty());
+
+        backend.fail = None;
+        assert_eq!(read_state_or_recover(&mut backend, &path).unwrap(), None);
+        assert_eq!(backend.values[A], (1, 2));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn partially_salvageable_journals_restore_what_they_can_and_still_notify() {
+        let path = temp_state("salvage-partial");
+        let partial = format!(
+            r#"{{"version":2,"schemes":[{{"scheme":"{A}","ac":1,"dc":2}},{{"scheme":"{B}","ac":"sleep","dc":1}}]}}"#
+        )
+        .into_bytes();
+        std::fs::write(&path, &partial).unwrap();
+        let mut backend = FakePower::with_scheme(A, 0, 0);
+        backend.values.insert(B.into(), (0, 0));
+
+        // 위젯 감시 스레드는 모자라면 손대지 않는다.
+        assert_eq!(
+            recover_corrupt_journals(&mut backend, &path, false).unwrap(),
+            CorruptRecovery::Skipped
+        );
+        assert!(power_writes(&backend).is_empty());
+        assert!(path.exists());
+
+        // 클릭은 건진 A만 되돌리고 격리한 뒤 알린다. B의 원래 값은 알 수 없다.
+        let notice = read_state_or_recover(&mut backend, &path).unwrap_err();
+        assert!(notice.contains("Windows 전원 옵션"), "{notice}");
+        assert_eq!(backend.values[A], (1, 2));
+        assert_eq!(backend.values[B], (0, 0));
+        assert_eq!(quarantined(&path), [partial]);
+        assert_eq!(read_state_or_recover(&mut backend, &path).unwrap(), None);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn salvage_merges_both_copies_and_flags_damaged_entries() {
+        const C: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let journal = |text: String| (PathBuf::from("journal"), text.into_bytes());
+        let entry = |scheme: &str, ac: u32, dc: u32| SchemeJournal {
+            scheme: scheme.into(),
+            ac,
+            dc,
+        };
+
+        // 값마다 0이 아닌 쪽(최신)을 고르고, 대소문자만 다른 GUID는 같은 항목이다.
+        let merged = salvage_journals(&[
+            journal(format!(
+                r#"{{"version":2,"schemes":[{{"scheme":"{A}","ac":1,"dc":0}},{{"scheme":"{C}","ac":2,"dc":2}}]}}"#
+            )),
+            journal(format!(
+                r#"{{"version":2,"schemes":[{{"scheme":"{A}","ac":0,"dc":2}},{{"scheme":"{}","ac":2,"dc":2}},{{"scheme":"{B}","ac":3,"dc":1}}]}}"#,
+                C.to_uppercase()
+            )),
+        ]);
+        assert!(merged.complete());
+        assert_eq!(
+            merged.schemes,
+            [entry(A, 1, 2), entry(C, 2, 2), entry(B, 3, 1)]
+        );
+
+        // 범위 밖 값·GUID가 아닌 scheme 항목은 버리고 damaged
+        let damaged = salvage_journals(&[journal(format!(
+            r#"{{"schemes":[{{"scheme":"{A}","ac":1,"dc":2}},{{"scheme":"{B}","ac":7,"dc":1}},{{"scheme":"nope","ac":1,"dc":1}}]}}"#
+        ))]);
+        assert!(!damaged.complete());
+        assert_eq!(damaged.schemes, [entry(A, 1, 2)]);
+
+        // 두 사본의 값이 둘 다 0이 아닌데 엇갈리면 damaged (먼저 본 값을 둔다)
+        let conflict = salvage_journals(&[
+            journal(format!(
+                r#"{{"schemes":[{{"scheme":"{A}","ac":1,"dc":2}}]}}"#
+            )),
+            journal(format!(
+                r#"{{"schemes":[{{"scheme":"{A}","ac":3,"dc":2}}]}}"#
+            )),
+        ]);
+        assert!(!conflict.complete());
+        assert_eq!(conflict.schemes, [entry(A, 1, 2)]);
+
+        // 건질 값이 없음: JSON이 아님·schemes 없음·빈 목록
+        for text in ["{", r#"{"version":9}"#, r#"{"schemes":[]}"#] {
+            let nothing = salvage_journals(&[journal(text.to_string())]);
+            assert!(nothing.schemes.is_empty() && !nothing.complete(), "{text}");
+        }
     }
 
     #[test]
@@ -2560,11 +2965,16 @@ mod tests {
         let journal = unique_journal(2, 1, 2);
         write_state(&path, &journal).unwrap();
         std::fs::write(&path, b"{").unwrap();
+        let mut backend = FakePower::with_scheme(A, 0, 0);
 
-        assert_eq!(read_state_or_quarantine(&path).unwrap(), Some(journal));
+        assert_eq!(
+            read_state_or_recover(&mut backend, &path).unwrap(),
+            Some(journal)
+        );
         assert!(path.exists());
         assert!(quarantined(&path).is_empty());
         assert!(quarantined(&recovery_file(&path).unwrap()).is_empty());
+        assert!(power_writes(&backend).is_empty());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
