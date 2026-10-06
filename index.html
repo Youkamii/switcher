@@ -87,8 +87,8 @@
             values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 20 -9"
             result="goo"
           />
-          <!-- 윤곽 1px: 실루엣을 1px 팽창시켜 테두리색(styles.css #goo feFlood)으로 채우고
-               실루엣 밑에 깐다 — 판 색이 뒤 창 배경과 같으면 경계가 사라진다 (사용자 지적) -->
+          <!-- 윤곽 1px: 실루엣을 1px 팽창시켜 윤곽색(테마 accent, styles.css #goo feFlood)으로
+               채우고 실루엣 밑에 깐다 — 판 색이 뒤 창 배경과 같으면 경계가 사라진다 (사용자 지적) -->
           <feMorphology in="goo" operator="dilate" radius="1" result="ring" />
           <feFlood result="ring-color" />
           <feComposite in="ring-color" in2="ring" operator="in" result="outline" />

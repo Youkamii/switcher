@@ -1331,11 +1331,16 @@ body.edge #edge-liquid {
   display: block;
 }
 
-/* 판·손잡이 윤곽색 — 다른 모드의 .shell 테두리와 같은 색·농도 (index.html #goo의
-   feFlood가 읽는다). 투명도 슬라이더에 따라 골조와 함께 옅어진다 */
+/* 판·손잡이 윤곽색 (index.html #goo의 feFlood가 읽는다) — 테마 accent 70%. 다른
+   모드의 .shell 테두리(border-rgb 0.9)와 일부러 다르다: 접힌 손잡이는 36×116px
+   민무늬라 윤곽이 유일한 단서인데, 앱 배경색 손잡이에 회색 윤곽은 어두운 창·
+   바탕화면 위에서 사라졌다 (#170, 사용자 보고). 1px·0.7은 6테마×바탕 4종 헤드리스
+   렌더로 고른 값 — 2px는 밝은 바탕에서 헤일로(조명 인상)가 되고, 0.85는 활성 카드
+   테두리(accent 100%)와 같은 토큰으로 읽힌다. 펼친 판도 같은 윤곽 — 한 덩어리
+   액체라 상태별로 색을 바꾸지 않는다. 투명도 슬라이더에 따라 골조와 함께 옅어진다 */
 #goo feFlood {
-  flood-color: rgb(var(--border-rgb));
-  flood-opacity: calc(0.9 * var(--fg-alpha));
+  flood-color: rgb(var(--accent-rgb));
+  flood-opacity: calc(0.7 * var(--fg-alpha));
 }
 
 /* 왼쪽 벽: 도형 층을 통째로 좌우 반전한다 — 글자가 없는 층이라 안전하고, 좌/우
