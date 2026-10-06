@@ -70,7 +70,7 @@ static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// 필드별로 너그럽게 읽는다 (#177): 예전엔 필드 하나만 범위를 벗어나도(alpha 300,
 /// active -1) serde가 통째로 실패해 5탭 전체가 기본값이 됐고, 메모창의 다음 자동
 /// 저장(블러 때마다 돈다)이 그 빈 탭을 파일에 영구화했다.
-/// 탭을 알아볼 수 없을 만큼 깨진 파일은 덮어쓰이기 전에 `memo.json.corrupt-<초>`로
+/// 탭을 알아볼 수 없을 만큼 깨진 파일은 덮어쓰이기 전에 `memo.json.corrupt-<밀리초>`로
 /// 옮겨 보관한다 — 손으로라도 살릴 기회를 남긴다.
 pub fn load(store: &Path) -> MemoData {
     let _guard = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -122,11 +122,14 @@ fn parse_lenient(bytes: &[u8]) -> Option<MemoData> {
     Some(data)
 }
 
-/// 깨진 메모 파일을 `memo.json.corrupt-<초>`로 옮긴다. 옮겨 두면 다음 load가 같은
-/// 파일을 또 보관하지 않는다. 옮기기가 실패하면(다른 프로그램이 잡고 있는 등) 복사라도 남긴다.
+/// 깨진 메모 파일을 공용 accounts::quarantine_corrupt로 `memo.json.corrupt-<밀리초>`에
+/// 옮긴다 (이전 격리본과 이름이 겹치면 `-n` 접미사). 옮겨 두면 다음 load가 같은 파일을 또
+/// 보관하지 않는다. 옮기기가 실패하면(다른 프로그램이 잡고 있는 등) 복사라도 남긴다 — 다음
+/// 저장이 원본을 덮기 전에. 복사본 이름은 예전 규칙(초 단위)이라 밀리초 격리본과 겹치지 않고,
+/// 원본이 그대로 남은 경로라 같은 초에 다시 복사돼도 같은 내용이다.
 fn quarantine(path: &Path) {
-    let backup = path.with_extension(format!("json.corrupt-{}", crate::accounts::now()));
-    if fs::rename(path, &backup).is_err() {
+    if crate::accounts::quarantine_corrupt(path).is_err() {
+        let backup = path.with_extension(format!("json.corrupt-{}", crate::accounts::now()));
         let _ = fs::copy(path, &backup);
     }
 }
@@ -236,15 +239,7 @@ mod tests {
     }
 
     fn corrupt_backups(store: &Path) -> Vec<PathBuf> {
-        fs::read_dir(store)
-            .unwrap()
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with("memo.json.corrupt-"))
-            })
-            .collect()
+        crate::accounts::corrupt_copies(&memo_path(store))
     }
 
     /// 필드 하나가 범위를 벗어나도 탭은 살고 그 필드만 맞춰진다 (#177)

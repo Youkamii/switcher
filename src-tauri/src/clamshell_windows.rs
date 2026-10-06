@@ -533,9 +533,9 @@ fn note_corrupt_journals(path: &Path, error: &str) -> bool {
 }
 
 /// cycle 전용: 저널 2벌이 모두 해석 불가면 지우지 않고 `<파일>.corrupt-<유닉스 밀리초>`로
-/// 옮겨 둔 뒤 "꺼짐"으로 이어 간다. 예전에는 mode()가 2를 돌려주고 cycle도 여기서 실패해,
-/// 사용자가 파일을 손으로 지우기 전엔 다시 켤 수 없었다 (#174). 옮긴 사본은 원래 덮개 동작
-/// 값을 손으로 확인할 수 있게 남긴다.
+/// 옮겨 둔 뒤(공용 accounts::quarantine_corrupt — 이름이 겹치면 -n 접미사) "꺼짐"으로 이어
+/// 간다. 예전에는 mode()가 2를 돌려주고 cycle도 여기서 실패해, 사용자가 파일을 손으로 지우기
+/// 전엔 다시 켤 수 없었다 (#174). 옮긴 사본은 원래 덮개 동작 값을 손으로 확인할 수 있게 남긴다.
 fn read_state_or_quarantine(path: &Path) -> Result<Option<State>, String> {
     let error = match read_state(path) {
         Ok(state) => return Ok(state),
@@ -545,23 +545,8 @@ fn read_state_or_quarantine(path: &Path) -> Result<Option<State>, String> {
     if unparsable.is_empty() {
         return Err(error);
     }
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis())
-        .unwrap_or(0);
     for file in &unparsable {
-        let name = file
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or("클램셸 상태 파일 이름 오류")?;
-        let mut target = file.with_file_name(format!("{name}.corrupt-{stamp}"));
-        let mut suffix = 1u32;
-        // std::fs::rename은 대상을 덮어쓰므로, 이전 격리본을 지우지 않게 빈 이름을 찾는다.
-        while target.exists() {
-            target = file.with_file_name(format!("{name}.corrupt-{stamp}-{suffix}"));
-            suffix += 1;
-        }
-        std::fs::rename(file, &target)
+        let target = crate::accounts::quarantine_corrupt(file)
             .map_err(|rename| format!("{error}; 손상된 클램셸 상태 격리 실패: {rename}"))?;
         eprintln!("손상된 클램셸 상태를 격리했습니다: {}", target.display());
     }
@@ -2437,6 +2422,14 @@ mod tests {
         journal
     }
 
+    /// `file` 옆 격리본(accounts::corrupt_copies)의 내용 목록 — 이름순
+    fn quarantined(file: &Path) -> Vec<Vec<u8>> {
+        crate::accounts::corrupt_copies(file)
+            .iter()
+            .map(|copy| std::fs::read(copy).unwrap())
+            .collect()
+    }
+
     fn power_writes(backend: &FakePower) -> Vec<String> {
         backend
             .calls
@@ -2525,22 +2518,9 @@ mod tests {
         assert_eq!(read_state_or_quarantine(&path).unwrap(), None);
         assert!(!path.exists());
         assert!(!recovery.exists());
-        let mut kept: Vec<(String, Vec<u8>)> = std::fs::read_dir(&store)
-            .unwrap()
-            .flatten()
-            .map(|entry| {
-                (
-                    entry.file_name().to_string_lossy().into_owned(),
-                    std::fs::read(entry.path()).unwrap(),
-                )
-            })
-            .collect();
-        kept.sort();
-        assert_eq!(kept.len(), 2);
-        assert!(kept[0].0.starts_with(&format!("{RECOVERY_FILE}.corrupt-")));
-        assert_eq!(kept[0].1, br#"{"version":9}"#);
-        assert!(kept[1].0.starts_with(&format!("{STATE_FILE}.corrupt-")));
-        assert_eq!(kept[1].1, b"{");
+        assert_eq!(std::fs::read_dir(&store).unwrap().count(), 2);
+        assert_eq!(quarantined(&recovery), [br#"{"version":9}"#.to_vec()]);
+        assert_eq!(quarantined(&path), [b"{".to_vec()]);
         let _ = std::fs::remove_dir_all(&store);
     }
 
@@ -2553,10 +2533,8 @@ mod tests {
 
         assert_eq!(read_state_or_quarantine(&path).unwrap(), Some(journal));
         assert!(path.exists());
-        assert!(!std::fs::read_dir(path.parent().unwrap())
-            .unwrap()
-            .flatten()
-            .any(|entry| entry.file_name().to_string_lossy().contains(".corrupt-")));
+        assert!(quarantined(&path).is_empty());
+        assert!(quarantined(&recovery_file(&path).unwrap()).is_empty());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

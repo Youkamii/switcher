@@ -138,6 +138,8 @@ fn save_value_checked(store: &Path, key: &str, value: Value) -> Result<(), Strin
 /// 쓴다 — 쓰다 만 파일이 남으면 다음 시작에서 모든 설정이 기본값으로 뒤집힌다 (자동 실행
 /// 재등록 등). 기존 파일이 손상돼 분석할 수 없으면 덮어쓰지 않고 옆으로 옮겨 둔 뒤 새로
 /// 쓴다 (#175) — 트레이 토글 하나가 {key}만 든 파일로 언어·표시 설정을 조용히 지우지 않게.
+/// 옮기는 일은 공용 accounts::quarantine_corrupt가 한다 (`settings.json.corrupt-<밀리초>`).
+/// 옮기지 못하면 오류 — 옛 설정을 지우는 덮어쓰기로 넘어가지 않는다.
 fn save_value(store: &Path, key: &str, value: Value) -> Result<(), String> {
     fs::create_dir_all(store).map_err(|e| format!("설정 폴더 생성 실패: {e}"))?;
     let path = settings_path(store);
@@ -146,7 +148,12 @@ fn save_value(store: &Path, key: &str, value: Value) -> Result<(), String> {
             Ok(v @ Value::Object(_)) => v,
             // 분석 불가(0바이트·잘린 파일·깨진 바이트)이거나 객체가 아니면 손상으로 본다
             _ => {
-                quarantine_corrupt(&path)?;
+                let aside = crate::accounts::quarantine_corrupt(&path)
+                    .map_err(|e| format!("손상된 설정 파일 격리 실패: {e}"))?;
+                eprintln!(
+                    "설정 파일을 읽을 수 없어 {}로 옮기고 새로 만듭니다",
+                    aside.display()
+                );
                 Value::Object(Default::default())
             }
         },
@@ -158,18 +165,6 @@ fn save_value(store: &Path, key: &str, value: Value) -> Result<(), String> {
     };
     root[key] = value;
     write_settings(store, &root)
-}
-
-/// 손상된 settings.json을 settings.json.corrupt-<유닉스 초>로 옮겨 보존한다 (#175).
-/// 옮기지 못하면 오류 — 옛 설정을 지우는 덮어쓰기로 넘어가지 않는다.
-fn quarantine_corrupt(path: &Path) -> Result<(), String> {
-    let aside = path.with_file_name(format!("settings.json.corrupt-{}", crate::accounts::now()));
-    fs::rename(path, &aside).map_err(|e| format!("손상된 설정 파일 격리 실패: {e}"))?;
-    eprintln!(
-        "설정 파일을 읽을 수 없어 {}로 옮기고 새로 만듭니다",
-        aside.display()
-    );
-    Ok(())
 }
 
 /// 임시 파일 + sync_all + rename (accounts::atomic_write) — 전원이 끊겨도 0바이트·반쪽
@@ -412,21 +407,10 @@ mod tests {
     }
 
     fn corrupt_copies(store: &Path) -> Vec<PathBuf> {
-        let mut found: Vec<PathBuf> = fs::read_dir(store)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| {
-                path.file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .starts_with("settings.json.corrupt-")
-            })
-            .collect();
-        found.sort();
-        found
+        crate::accounts::corrupt_copies(&settings_path(store))
     }
 
-    /// 손상된 settings.json은 덮어쓰지 않고 settings.json.corrupt-<초>로 옮겨 보존한 뒤
+    /// 손상된 settings.json은 덮어쓰지 않고 settings.json.corrupt-<밀리초>로 옮겨 보존한 뒤
     /// 새 파일에 저장한다 — 잘린 파일·0바이트(전원 차단)·객체 아닌 JSON 모두 (#175)
     #[test]
     fn save_quarantines_corrupt_settings_instead_of_overwriting() {
@@ -449,6 +433,64 @@ mod tests {
             assert_eq!(aside.len(), 1, "{tag}: {aside:?}");
             assert_eq!(fs::read_to_string(&aside[0]).unwrap(), corrupt, "{tag}");
         }
+    }
+
+    /// 공용 격리 함수(accounts::quarantine_corrupt)는 같은 밀리초의 이전 격리본을 덮어쓰지
+    /// 않고 `-1` 접미사로 빈 이름을 찾는다 (#175, #177 리뷰 후속). 예전 설정 격리는 초 단위
+    /// 이름에 충돌 처리가 없어, 1초 안에 두 번 격리되면 먼저 옮긴 사본이 지워졌다.
+    #[test]
+    fn shared_quarantine_never_overwrites_an_earlier_copy() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let store = test_store("quarantine-collision");
+        let path = settings_path(&store);
+        let now_ms = || {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        };
+        // 시계를 고정할 수 없으니, 지금부터 100밀리초 동안의 격리 이름을 먼저 차지해 둔 채
+        // 격리한다. 그 사이 시계가 창을 넘어가 버리면(아주 느린 기계) 다시 시도한다.
+        for attempt in 0..5 {
+            let _ = fs::remove_dir_all(&store);
+            fs::create_dir_all(&store).unwrap();
+            let start = now_ms();
+            let window = start..start + 100;
+            for stamp in window.clone() {
+                fs::write(
+                    store.join(format!("settings.json.corrupt-{stamp}")),
+                    format!("earlier {stamp}"),
+                )
+                .unwrap();
+            }
+            fs::write(&path, format!("broken {attempt}")).unwrap();
+
+            let moved = crate::accounts::quarantine_corrupt(&path).unwrap();
+
+            assert!(!path.exists());
+            assert_eq!(
+                fs::read_to_string(&moved).unwrap(),
+                format!("broken {attempt}")
+            );
+            for stamp in window.clone() {
+                assert_eq!(
+                    fs::read_to_string(store.join(format!("settings.json.corrupt-{stamp}")))
+                        .unwrap(),
+                    format!("earlier {stamp}"),
+                    "이전 격리본이 덮어써졌다"
+                );
+            }
+            let name = moved.file_name().unwrap().to_string_lossy().into_owned();
+            let rest = name.strip_prefix("settings.json.corrupt-").unwrap();
+            if let Some((stamp, suffix)) = rest.split_once('-') {
+                assert!(window.contains(&stamp.parse::<u128>().unwrap()), "{name}");
+                assert_eq!(suffix, "1", "{name}");
+                // 미리 차지한 100개 + 이번 격리본 1개
+                assert_eq!(corrupt_copies(&store).len(), 101);
+                return;
+            }
+        }
+        panic!("같은 밀리초 충돌을 만들지 못했다 (시계가 매번 100밀리초 창을 넘김)");
     }
 
     /// 손상이라 단정할 수 없는 읽기 실패(여기서는 settings.json 자리에 폴더)는 격리도

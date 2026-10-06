@@ -589,6 +589,57 @@ fn atomic_replace_in_parent(path: &Path, data: &[u8], parent: &Path) -> Result<(
     })
 }
 
+/// 읽을 수 없는(손상된) 파일을 지우지 않고 같은 폴더의 `<파일 이름>.corrupt-<유닉스 밀리초>`로
+/// 옮겨 두고 옮긴 경로를 돌려준다 — 덮어쓰기 전에 손으로라도 살릴 기회를 남긴다.
+/// settings.json·memo.json·클램셸 저널이 함께 쓴다 (#175, #177 리뷰 후속: 셋이 이름 규칙·충돌
+/// 처리가 제각각인 사본이었다). fs::rename은 대상을 덮어쓰므로, 같은 밀리초의 이전 격리본이
+/// 있으면 `-1`, `-2`…를 붙여 빈 이름을 찾는다. 옮기지 못하면 Err — 복사로 대신할지 등은
+/// 호출자가 정한다.
+pub(crate) fn quarantine_corrupt(path: &Path) -> Result<PathBuf, String> {
+    let name = path
+        .file_name()
+        .ok_or_else(|| format!("경로 오류: {}", path.display()))?
+        .to_string_lossy()
+        .into_owned();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    let mut target = path.with_file_name(format!("{name}.corrupt-{stamp}"));
+    let mut suffix = 1u32;
+    // exists()는 깨진 바로가기(대상 없는 링크)를 "없음"으로 보므로 링크 자체를 본다
+    while fs::symlink_metadata(&target).is_ok() {
+        target = path.with_file_name(format!("{name}.corrupt-{stamp}-{suffix}"));
+        suffix += 1;
+    }
+    fs::rename(path, &target)
+        .map_err(|e| format!("손상 파일 격리 실패 {}: {e}", path.display()))?;
+    Ok(target)
+}
+
+/// 테스트 전용: `path` 옆에 quarantine_corrupt가 남긴 격리본 목록 (이름순)
+#[cfg(test)]
+pub(crate) fn corrupt_copies(path: &Path) -> Vec<PathBuf> {
+    let prefix = format!(
+        "{}.corrupt-",
+        path.file_name().unwrap_or_default().to_string_lossy()
+    );
+    let Some(Ok(entries)) = path.parent().map(fs::read_dir) else {
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|candidate| {
+            candidate
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+        })
+        .collect();
+    found.sort();
+    found
+}
+
 /// 자격증명 정규화 — claude CLI 2.1.223부터(실측 2026-08-07) 맥 키체인 값이
 /// "JSON의 16진수 문자열"로 저장되는 경우가 있다. CLI는 자기 형식을 스스로
 /// 디코드해 읽으므로 CLI는 멀쩡하지만, JSON을 기대하는 위젯의 사용량 조회·토큰
