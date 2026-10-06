@@ -56,10 +56,12 @@ const TRANSITION_MUTEX: &str = "Global\\SwitcherClamshellWindowsTransition-v1";
 const OWNER_MUTEX: &str = "Global\\SwitcherClamshellWindowsOwner-v1";
 const TIMER_ID: usize = 1;
 /// fail-safe 복원에서 전원값 쓰기가 연달아 실패할 때 감시자가 버티는 최대 시도 횟수 (#174).
-/// 500ms 타이머 기준 약 5초. 넘기면 저널을 그대로 둔 채 끝내고 위젯의 죽은 감시자 복구
+/// 500ms 타이머 기준 약 60초. 넘기면 저널을 그대로 둔 채 끝내고 위젯의 죽은 감시자 복구
 /// (reconcile_dead_helper·cycle)가 이어받는다 — 감시자가 소유 뮤텍스를 쥔 채 로그오프까지
-/// 돌며 위젯 버튼까지 막는 것보다 낫다.
-const FAIL_SAFE_RESTORE_ATTEMPTS: u32 = 10;
+/// 돌며 위젯 버튼까지 막는 것보다 낫다. 처음엔 10회(약 5초)였는데, 위젯이 꺼져 있으면 감시자가
+/// 끝난 뒤 다음 앱 실행까지 아무도 복원하지 않아 "덮개를 닫아도 절전 안 함"이 그대로 남는다.
+/// 5초보다 긴 일시적 전원 API 실패도 버티도록 늘렸다 (#174 리뷰 후속).
+const FAIL_SAFE_RESTORE_ATTEMPTS: u32 = 120;
 
 static OPERATION_LOCK: Mutex<()> = Mutex::new(());
 static HELPER: OnceLock<Mutex<HelperRuntime>> = OnceLock::new();
@@ -1392,7 +1394,8 @@ struct HelperRuntime<B: PowerBackend = NativePower> {
     seen_closed: bool,
     once_restore_pending: bool,
     fail_safe_restore_pending: bool,
-    /// fail-safe 복원에서 전원값 쓰기가 실패한 횟수 — FAIL_SAFE_RESTORE_ATTEMPTS에서 멈춘다 (#174)
+    /// fail-safe 복원에서 전원값 쓰기가 연속으로 실패한 횟수 — FAIL_SAFE_RESTORE_ATTEMPTS에서
+    /// 멈춘다 (#174). 복원이 한 번 성공하면 0으로 되돌린다.
     fail_safe_failures: u32,
     request: RequestGuard<B>,
 }
@@ -1519,6 +1522,8 @@ impl<B: PowerBackend> HelperRuntime<B> {
             self.fail_safe_restore_pending = false;
             return Ok(true);
         }
+        // "연속" 실패 횟수다 — 성공했으면 지난 실패를 다음 fail-safe 진입에 이월하지 않는다.
+        self.fail_safe_failures = 0;
         // 전원값은 이미 돌려놨다. 상태 정리 실패(예: 상태 폴더가 지워져 종료 표식을 못 씀)는
         // 다시 시도해도 같은 실패라, 예전에는 0.5초마다 전원값만 또 쓰며 로그오프까지 돌았다
         // (#174). 한 번 알리고 복원 완료로 끝낸다. 저널이 남아 있으면 위젯이 정리를 이어 간다.
@@ -2496,6 +2501,31 @@ mod tests {
         // 원래 값은 저널에 그대로 남고 종료 표식도 없어, 위젯의 죽은 감시자 복구가 되돌린다.
         assert_eq!(read_state(&path).unwrap(), Some(journal.clone()));
         assert!(!intentionally_stopped(&path, &journal.helper));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn fail_safe_failure_count_resets_after_a_successful_restore() {
+        let path = temp_state("failure-reset");
+        let journal = unique_journal(2, 1, 2);
+        write_state(&path, &journal).unwrap();
+        let mut backend = FakePower::with_scheme(A, 0, 0);
+        backend.fail = Some(format!("dc:{A}:2"));
+        let mut runtime = fake_helper(&path, &journal, backend);
+        runtime.fail_safe_restore_pending = true;
+
+        for _ in 0..3 {
+            assert!(runtime.tick().is_err());
+        }
+        assert_eq!(runtime.fail_safe_failures, 3);
+
+        // 일시적 실패가 풀리면 복원이 끝나고, 쌓인 실패 횟수는 지워진다.
+        runtime.request.backend.fail = None;
+        assert!(runtime.tick().unwrap());
+        assert_eq!(runtime.fail_safe_failures, 0);
+        assert!(!runtime.fail_safe_restore_pending);
+        assert_eq!(runtime.request.backend.values[A], (1, 2));
+        assert_eq!(read_state(&path).unwrap(), None);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
