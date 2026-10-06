@@ -55,10 +55,18 @@ const HELPER_FILE_PREFIX: &str = "clamshell-windows-helper-";
 const TRANSITION_MUTEX: &str = "Global\\SwitcherClamshellWindowsTransition-v1";
 const OWNER_MUTEX: &str = "Global\\SwitcherClamshellWindowsOwner-v1";
 const TIMER_ID: usize = 1;
+/// fail-safe 복원에서 전원값 쓰기가 연달아 실패할 때 감시자가 버티는 최대 시도 횟수 (#174).
+/// 500ms 타이머 기준 약 5초. 넘기면 저널을 그대로 둔 채 끝내고 위젯의 죽은 감시자 복구
+/// (reconcile_dead_helper·cycle)가 이어받는다 — 감시자가 소유 뮤텍스를 쥔 채 로그오프까지
+/// 돌며 위젯 버튼까지 막는 것보다 낫다.
+const FAIL_SAFE_RESTORE_ATTEMPTS: u32 = 10;
 
 static OPERATION_LOCK: Mutex<()> = Mutex::new(());
 static HELPER: OnceLock<Mutex<HelperRuntime>> = OnceLock::new();
 static WATCHDOG_STARTED: AtomicBool = AtomicBool::new(false);
+/// 해석 불가 저널 로그를 한 번만 남기기 위한 표식 — 감시 스레드가 500ms마다 상태를 읽으므로
+/// 매번 찍으면 로그가 넘친다 (#174). 격리에 성공하면 다시 내린다.
+static CORRUPT_JOURNAL_LOGGED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct SchemeJournal {
@@ -273,8 +281,10 @@ impl PowerBackend for NativePower {
     }
 }
 
-struct RequestGuard {
-    backend: NativePower,
+// 백엔드를 타입 인자로 둬 테스트가 가짜 전원 백엔드로 감시자 틱(HelperRuntime::tick)을
+// 돌려 볼 수 있게 한다 (#174). 기본값이 NativePower라 실제 코드의 표기는 그대로다.
+struct RequestGuard<B: PowerBackend = NativePower> {
+    backend: B,
     held: bool,
 }
 
@@ -287,7 +297,9 @@ impl RequestGuard {
             held: true,
         })
     }
+}
 
+impl<B: PowerBackend> RequestGuard<B> {
     fn clear(&mut self) {
         if self.held {
             self.backend.clear_request();
@@ -296,7 +308,7 @@ impl RequestGuard {
     }
 }
 
-impl Drop for RequestGuard {
+impl<B: PowerBackend> Drop for RequestGuard<B> {
     fn drop(&mut self) {
         self.clear();
     }
@@ -489,6 +501,73 @@ fn read_state(path: &Path) -> Result<Option<State>, String> {
     }
 }
 
+/// 저널 2벌 중 "있지만 해석할 수 없는" 파일 목록. 해석되는 사본이 하나라도 있으면 빈 목록
+/// (read_state가 그 사본을 쓴다). 읽기 자체가 실패(권한·공유 위반 등)하면 일시적일 수
+/// 있으므로 손상으로 보지 않고 Err를 돌려준다 (#174).
+fn unparsable_journals(path: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut unparsable = Vec::new();
+    for file in [path.to_path_buf(), recovery_file(path)?] {
+        match std::fs::read(&file) {
+            Ok(bytes) if parse_state(&bytes).is_ok() => return Ok(Vec::new()),
+            Ok(_) => unparsable.push(file),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("클램셸 상태 읽기 실패: {error}")),
+        }
+    }
+    Ok(unparsable)
+}
+
+/// read_state 실패가 저널 손상(2벌 모두 해석 불가) 때문인지. 처음 발견했을 때만 로그를
+/// 남긴다 — mode()와 reconcile_dead_helper가 500ms마다 부르기 때문이다 (#174).
+fn journals_corrupt(path: &Path, error: &str) -> bool {
+    if !matches!(unparsable_journals(path), Ok(files) if !files.is_empty()) {
+        return false;
+    }
+    if !CORRUPT_JOURNAL_LOGGED.swap(true, Ordering::SeqCst) {
+        eprintln!(
+            "클램셸 상태 파일을 해석할 수 없어 꺼짐으로 표시합니다 (다음 클릭 때 격리): {error}"
+        );
+    }
+    true
+}
+
+/// cycle 전용: 저널 2벌이 모두 해석 불가면 지우지 않고 `<파일>.corrupt-<유닉스 밀리초>`로
+/// 옮겨 둔 뒤 "꺼짐"으로 이어 간다. 예전에는 mode()가 2를 돌려주고 cycle도 여기서 실패해,
+/// 사용자가 파일을 손으로 지우기 전엔 다시 켤 수 없었다 (#174). 옮긴 사본은 원래 덮개 동작
+/// 값을 손으로 확인할 수 있게 남긴다.
+fn read_state_or_quarantine(path: &Path) -> Result<Option<State>, String> {
+    let error = match read_state(path) {
+        Ok(state) => return Ok(state),
+        Err(error) => error,
+    };
+    let unparsable = unparsable_journals(path)?;
+    if unparsable.is_empty() {
+        return Err(error);
+    }
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    for file in &unparsable {
+        let name = file
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("클램셸 상태 파일 이름 오류")?;
+        let mut target = file.with_file_name(format!("{name}.corrupt-{stamp}"));
+        let mut suffix = 1u32;
+        // std::fs::rename은 대상을 덮어쓰므로, 이전 격리본을 지우지 않게 빈 이름을 찾는다.
+        while target.exists() {
+            target = file.with_file_name(format!("{name}.corrupt-{stamp}-{suffix}"));
+            suffix += 1;
+        }
+        std::fs::rename(file, &target)
+            .map_err(|rename| format!("{error}; 손상된 클램셸 상태 격리 실패: {rename}"))?;
+        eprintln!("손상된 클램셸 상태를 격리했습니다: {}", target.display());
+    }
+    CORRUPT_JOURNAL_LOGGED.store(false, Ordering::SeqCst);
+    read_state(path)
+}
+
 fn write_state(path: &Path, state: &State) -> Result<(), String> {
     let bytes =
         serde_json::to_vec(state).map_err(|error| format!("클램셸 상태 직렬화 실패: {error}"))?;
@@ -602,6 +681,14 @@ fn restore_all<B: PowerBackend>(
     state_path: &Path,
     state: &State,
 ) -> Result<(), String> {
+    restore_power(backend, state)?;
+    remove_state(state_path, &state.helper)
+}
+
+/// 전원값 복원만 한다 — 저널 정리(remove_state)는 호출자 몫이다. 감시자의 fail-safe 경로가
+/// "전원값 쓰기 실패"(다시 시도할 일)와 "정리만 실패"(복원은 끝남)를 구분해야 해서 나눴다
+/// (#174). 실패해도 시스템 절전 방지 요청은 내린다.
+fn restore_power<B: PowerBackend>(backend: &mut B, state: &State) -> Result<(), String> {
     let mut errors = Vec::new();
     for entry in &state.schemes {
         match backend.scheme_exists(&entry.scheme) {
@@ -631,7 +718,7 @@ fn restore_all<B: PowerBackend>(
     }
     backend.clear_request();
     if errors.is_empty() {
-        remove_state(state_path, &state.helper)
+        Ok(())
     } else {
         Err(format!("전원 설정 복원 실패: {}", errors.join("; ")))
     }
@@ -670,6 +757,12 @@ pub fn mode(store: &Path) -> i8 {
             return state.mode.min(2) as i8;
         }
         Err(error) => {
+            // 해석 불가 저널은 켜짐으로 보지 않는다. 감시자가 살아 있으면 메모리 사본으로 곧
+            // 다시 쓰고, 죽었으면 되돌릴 원래 값도 읽을 수 없다. "꺼짐"으로 보여 주고 다음
+            // 클릭(cycle)이 격리한 뒤 새로 켤 수 있게 한다 (#174). 읽기 오류는 예전 그대로.
+            if journals_corrupt(&files(store), &error) {
+                return 0;
+            }
             eprintln!("클램셸 상태 확인 실패: {error}");
             return 2;
         }
@@ -688,7 +781,7 @@ pub fn cycle(app: &tauri::AppHandle, store: &Path) -> Result<i8, String> {
         .map_err(|_| "클램셸 작업 잠금 손상".to_string())?;
     let path = files(store);
     let mut backend = NativePower;
-    let candidate = read_state(&path)?;
+    let candidate = read_state_or_quarantine(&path)?;
     let operation_helper = candidate
         .as_ref()
         .map(|state| Ok(state.helper.clone()))
@@ -781,7 +874,11 @@ fn reconcile_dead_helper(app: &tauri::AppHandle, store: &Path) {
     let candidate = match read_state(&path) {
         Ok(state) => state,
         Err(error) => {
-            eprintln!("클램셸 시작 상태 확인 실패: {error}");
+            // 손상 저널은 journals_corrupt가 한 번만 알린다 — 감시 스레드가 500ms마다 여기를
+            // 지나므로 같은 로그를 쌓지 않는다. 격리는 사용자의 다음 클릭(cycle)이 한다 (#174).
+            if !journals_corrupt(&path, &error) {
+                eprintln!("클램셸 시작 상태 확인 실패: {error}");
+            }
             return;
         }
     };
@@ -837,8 +934,18 @@ fn reconcile_dead_helper(app: &tauri::AppHandle, store: &Path) {
     }
 }
 
+/// 덮개가 없다고 확실히 답한 컴퓨터(데스크톱)는 클램셸을 켤 수 없으므로 500ms 감시
+/// 스레드를 띄우지 않는다 (#174). 시작 시 한 번 도는 reconcile_dead_helper는 그대로다.
+/// 확인 자체가 실패하면 예전처럼 띄운다 — 남은 상태를 복구할 기회를 잃지 않게.
+fn watchdog_needed<B: PowerBackend>(backend: &mut B) -> bool {
+    !matches!(backend.has_lid(), Ok(false))
+}
+
 pub fn on_start(app: &tauri::AppHandle, store: &Path) {
     reconcile_dead_helper(app, store);
+    if !watchdog_needed(&mut NativePower) {
+        return;
+    }
     if WATCHDOG_STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -1183,6 +1290,7 @@ fn helper_main(state_path: PathBuf, helper: String) -> Result<(), String> {
         seen_closed: false,
         once_restore_pending: false,
         fail_safe_restore_pending: false,
+        fail_safe_failures: 0,
         request,
     };
 
@@ -1291,17 +1399,19 @@ fn helper_main(state_path: PathBuf, helper: String) -> Result<(), String> {
     Ok(())
 }
 
-struct HelperRuntime {
+struct HelperRuntime<B: PowerBackend = NativePower> {
     state_path: PathBuf,
     helper: String,
     fallback: State,
     seen_closed: bool,
     once_restore_pending: bool,
     fail_safe_restore_pending: bool,
-    request: RequestGuard,
+    /// fail-safe 복원에서 전원값 쓰기가 실패한 횟수 — FAIL_SAFE_RESTORE_ATTEMPTS에서 멈춘다 (#174)
+    fail_safe_failures: u32,
+    request: RequestGuard<B>,
 }
 
-impl HelperRuntime {
+impl<B: PowerBackend> HelperRuntime<B> {
     fn current_state(&mut self) -> Result<Option<State>, String> {
         if intentionally_stopped(&self.state_path, &self.helper) {
             return Ok(None);
@@ -1405,20 +1515,34 @@ impl HelperRuntime {
 
     fn retry_fail_safe_restore(&mut self) -> Result<bool, String> {
         let state = self.fallback.clone();
-        match restore_all(&mut self.request.backend, &self.state_path, &state) {
-            Ok(()) => {
-                self.request.clear();
-                self.fail_safe_restore_pending = false;
-                Ok(true)
+        let restored = restore_power(&mut self.request.backend, &state);
+        // restore_power는 실패해도 시스템 절전 방지 요청을 내린다. 재시도 중에는
+        // apply_active로 다시 들어가지 않는다.
+        self.request.clear();
+        if let Err(error) = restored {
+            self.fail_safe_failures += 1;
+            if self.fail_safe_failures < FAIL_SAFE_RESTORE_ATTEMPTS {
+                return Err(error);
             }
-            Err(error) => {
-                // restore_all clears the system request even when journal cleanup or
-                // one of the power writes fails. Keep the helper and its only known
-                // good copy alive, and never re-enter apply_active while retrying.
-                self.request.clear();
-                Err(error)
-            }
+            // 끝없는 재시도는 감시자가 소유 뮤텍스를 쥔 채 남아 위젯 버튼까지 막는다 (#174).
+            // 저널은 지우지도 종료 표식을 쓰지도 않고 남겨, 위젯의 죽은 감시자 복구가 원래
+            // 값을 되돌리는 일을 이어받게 한다.
+            eprintln!(
+                "클램셸 전원 설정 복원이 {FAIL_SAFE_RESTORE_ATTEMPTS}번 연속 실패해 감시자를 끝냅니다: {error}"
+            );
+            self.fail_safe_restore_pending = false;
+            return Ok(true);
         }
+        // 전원값은 이미 돌려놨다. 상태 정리 실패(예: 상태 폴더가 지워져 종료 표식을 못 씀)는
+        // 다시 시도해도 같은 실패라, 예전에는 0.5초마다 전원값만 또 쓰며 로그오프까지 돌았다
+        // (#174). 한 번 알리고 복원 완료로 끝낸다. 저널이 남아 있으면 위젯이 정리를 이어 간다.
+        if let Err(error) = remove_state(&self.state_path, &state.helper) {
+            eprintln!(
+                "클램셸 전원 설정은 복원했지만 상태 정리에 실패해 감시자를 끝냅니다: {error}"
+            );
+        }
+        self.fail_safe_restore_pending = false;
+        Ok(true)
     }
 
     fn shutdown(&mut self) -> Result<(), String> {
@@ -1678,6 +1802,7 @@ mod tests {
         fail: Option<String>,
         switch_on_apply: Option<String>,
         request: bool,
+        no_lid: bool,
     }
 
     impl FakePower {
@@ -1702,7 +1827,8 @@ mod tests {
 
     impl PowerBackend for FakePower {
         fn has_lid(&mut self) -> Result<bool, String> {
-            Ok(true)
+            self.maybe_fail("has-lid")?;
+            Ok(!self.no_lid)
         }
         fn check_access(&mut self) -> Result<(), String> {
             let call = "check-access".to_string();
@@ -1874,6 +2000,7 @@ mod tests {
             seen_closed: false,
             once_restore_pending: false,
             fail_safe_restore_pending: false,
+            fail_safe_failures: 0,
             request,
         };
 
@@ -1912,6 +2039,7 @@ mod tests {
             seen_closed: false,
             once_restore_pending: false,
             fail_safe_restore_pending: false,
+            fail_safe_failures: 0,
             request,
         };
 
@@ -2190,6 +2318,7 @@ mod tests {
             seen_closed: false,
             once_restore_pending: false,
             fail_safe_restore_pending: false,
+            fail_safe_failures: 0,
             request,
         };
 
@@ -2269,5 +2398,178 @@ mod tests {
         assert!(backend.request);
         restore_all(&mut backend, &path, &journal).unwrap();
         assert!(!backend.request);
+    }
+
+    /// 실제 감시자처럼 시스템 절전 방지 요청을 쥔 상태로 가짜 백엔드 감시자를 만든다.
+    fn fake_helper(
+        path: &Path,
+        journal: &State,
+        mut backend: FakePower,
+    ) -> HelperRuntime<FakePower> {
+        backend.request = true;
+        HelperRuntime {
+            state_path: path.to_path_buf(),
+            helper: journal.helper.clone(),
+            fallback: journal.clone(),
+            seen_closed: false,
+            once_restore_pending: false,
+            fail_safe_restore_pending: false,
+            fail_safe_failures: 0,
+            request: RequestGuard {
+                backend,
+                held: true,
+            },
+        }
+    }
+
+    /// 병렬 테스트끼리 같은 이름의 Global 작업 뮤텍스를 다투지 않게 감시자 식별자를 새로 뽑는다.
+    fn unique_journal(mode: u8, ac: u32, dc: u32) -> State {
+        let mut journal = state(
+            mode,
+            vec![SchemeJournal {
+                scheme: A.into(),
+                ac,
+                dc,
+            }],
+        );
+        journal.helper = token().unwrap();
+        journal
+    }
+
+    fn power_writes(backend: &FakePower) -> Vec<String> {
+        backend
+            .calls
+            .iter()
+            .filter(|call| call.starts_with("ac:") || call.starts_with("dc:"))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn helper_restores_once_and_quits_when_state_folder_is_gone() {
+        // 클램셸을 켠 채 %USERPROFILE%\.switcher가 지워진 상황 (#174). 예전에는 상태 정리
+        // 실패를 복원 실패로 보고 0.5초마다 전원값을 다시 쓰며 로그오프까지 돌았다.
+        // 첫 틱에서 fail-safe로 들어가는 경우와 이미 재시도 중이던 경우를 모두 본다.
+        for already_pending in [false, true] {
+            let path = temp_state("folder-gone");
+            let journal = unique_journal(2, 1, 2);
+            write_state(&path, &journal).unwrap();
+            std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+            let mut runtime = fake_helper(&path, &journal, FakePower::with_scheme(A, 0, 0));
+            runtime.fail_safe_restore_pending = already_pending;
+
+            assert!(runtime.tick().unwrap(), "pending={already_pending}");
+
+            let backend = &runtime.request.backend;
+            assert_eq!(backend.values[A], (1, 2));
+            assert_eq!(
+                power_writes(backend),
+                [format!("ac:{A}:1"), format!("dc:{A}:2")]
+            );
+            assert!(!backend.request);
+            assert!(!runtime.fail_safe_restore_pending);
+            assert!(!path.parent().unwrap().exists());
+        }
+    }
+
+    #[test]
+    fn fail_safe_restore_gives_up_after_bounded_power_write_failures() {
+        let path = temp_state("bounded-retry");
+        let journal = unique_journal(2, 1, 2);
+        write_state(&path, &journal).unwrap();
+        let mut backend = FakePower::with_scheme(A, 0, 0);
+        backend.fail = Some(format!("dc:{A}:2"));
+        let mut runtime = fake_helper(&path, &journal, backend);
+        runtime.fail_safe_restore_pending = true;
+
+        // 전원값 쓰기 실패는 복원이 끝나지 않은 것 — 정해진 횟수까지는 계속 시도한다.
+        for _ in 1..FAIL_SAFE_RESTORE_ATTEMPTS {
+            assert!(runtime.tick().is_err());
+            assert!(runtime.fail_safe_restore_pending);
+        }
+        // 마지막 시도도 실패하면 감시자는 끝난다 (소유 뮤텍스를 놓아 위젯이 복구를 이어받는다).
+        assert!(runtime.tick().unwrap());
+        assert!(!runtime.fail_safe_restore_pending);
+        let dc_attempts = runtime
+            .request
+            .backend
+            .calls
+            .iter()
+            .filter(|call| **call == format!("dc:{A}:2"))
+            .count();
+        assert_eq!(dc_attempts, FAIL_SAFE_RESTORE_ATTEMPTS as usize);
+        assert!(!runtime.request.backend.request);
+        // 원래 값은 저널에 그대로 남고 종료 표식도 없어, 위젯의 죽은 감시자 복구가 되돌린다.
+        assert_eq!(read_state(&path).unwrap(), Some(journal.clone()));
+        assert!(!intentionally_stopped(&path, &journal.helper));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn unparsable_journals_read_as_off_and_are_quarantined_not_deleted() {
+        let path = temp_state("corrupt-journals");
+        let store = path.parent().unwrap().to_path_buf();
+        let recovery = recovery_file(&path).unwrap();
+        std::fs::write(&path, b"{").unwrap();
+        std::fs::write(&recovery, br#"{"version":9}"#).unwrap();
+
+        assert!(read_state(&path).is_err());
+        // 예전에는 2(켜짐)를 돌려줘, 파일을 손으로 지우기 전엔 버튼이 막다른 길이었다.
+        assert_eq!(mode(&store), 0);
+        assert!(
+            path.exists() && recovery.exists(),
+            "mode()는 파일을 건드리지 않는다"
+        );
+
+        assert_eq!(read_state_or_quarantine(&path).unwrap(), None);
+        assert!(!path.exists());
+        assert!(!recovery.exists());
+        let mut kept: Vec<(String, Vec<u8>)> = std::fs::read_dir(&store)
+            .unwrap()
+            .flatten()
+            .map(|entry| {
+                (
+                    entry.file_name().to_string_lossy().into_owned(),
+                    std::fs::read(entry.path()).unwrap(),
+                )
+            })
+            .collect();
+        kept.sort();
+        assert_eq!(kept.len(), 2);
+        assert!(kept[0].0.starts_with(&format!("{RECOVERY_FILE}.corrupt-")));
+        assert_eq!(kept[0].1, br#"{"version":9}"#);
+        assert!(kept[1].0.starts_with(&format!("{STATE_FILE}.corrupt-")));
+        assert_eq!(kept[1].1, b"{");
+        let _ = std::fs::remove_dir_all(&store);
+    }
+
+    #[test]
+    fn readable_recovery_copy_is_never_quarantined() {
+        let path = temp_state("corrupt-primary-only");
+        let journal = unique_journal(2, 1, 2);
+        write_state(&path, &journal).unwrap();
+        std::fs::write(&path, b"{").unwrap();
+
+        assert_eq!(read_state_or_quarantine(&path).unwrap(), Some(journal));
+        assert!(path.exists());
+        assert!(!std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .any(|entry| entry.file_name().to_string_lossy().contains(".corrupt-")));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn watchdog_is_skipped_only_when_the_machine_reports_no_lid() {
+        assert!(watchdog_needed(&mut FakePower::default()));
+        assert!(!watchdog_needed(&mut FakePower {
+            no_lid: true,
+            ..FakePower::default()
+        }));
+        // 덮개 확인이 실패하면 예전처럼 감시를 유지한다.
+        assert!(watchdog_needed(&mut FakePower {
+            fail: Some("has-lid".into()),
+            ..FakePower::default()
+        }));
     }
 }
