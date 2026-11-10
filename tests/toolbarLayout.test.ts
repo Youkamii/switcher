@@ -215,7 +215,7 @@ test("keeps segmented bars visible at a fixed cell width", () => {
 test("sizes the window around the dock", () => {
   assert.match(
     mainSource,
-    /const dockHeight = dockEl\.offsetHeight;[\s\S]*?const total = tbHeight \+ content \+ dockHeight \+ 2;/,
+    /const dockHeight = dockEl\.offsetHeight;[\s\S]*?const total = Math\.max\(tbHeight \+ content \+ dockHeight \+ 2,/,
     "the dock sits outside main, so its height must be added explicitly",
   );
   assert.match(

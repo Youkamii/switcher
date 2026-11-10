@@ -7,7 +7,7 @@ const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf
 /// 맥 비활성 웹뷰는 타이머·rAF가 멈출 수 있다 (CLAUDE.md macOS 절) — 필수 동작은
 /// 사용자 동작이나 러스트 신호로도 끝나야 한다 (#178)
 test("delete confirmation disarms on outside interaction, not only on a timer", () => {
-  const block = mainSource.match(/const deleteBtn = document\.createElement\("button"\);[\s\S]*?actions\.appendChild\(deleteBtn\);/)?.[0];
+  const block = mainSource.match(/const deleteBtn = iconButton\("trash", t\("del"\), "action-delete"\);[\s\S]*?actions\.appendChild\(deleteBtn\);/)?.[0];
   assert.ok(block, "delete button block must exist");
   assert.match(block, /document\.addEventListener\("pointerdown", disarmOutside, true\)/);
   assert.match(block, /window\.addEventListener\("blur", disarm\)/);

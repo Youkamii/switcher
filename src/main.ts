@@ -27,7 +27,8 @@ import {
   type GithubStarPromptChoice,
 } from "./firstRunStar";
 import { applyAccentTheme, themeCssColor } from "./theme";
-import { apiConnections, apiIsBusy } from "./apiConnections";
+import { apiConnections, apiIsBusy, openApiRegistration } from "./apiConnections";
+import { icon, iconButton, setButtonIcon } from "./uiIcons";
 import { edgeGaugeLayout } from "./edgeGaugeLayout";
 
 type ProfileInfo = {
@@ -424,6 +425,7 @@ async function loadUsage(
       empty.className = "usage-note";
       empty.textContent = usage.issue ?? retryLabel(usage) ?? t("noUsage");
       box.appendChild(empty);
+      fitHeight();
       return;
     }
     for (const win of usage.windows) box.appendChild(usageRow(win));
@@ -435,7 +437,7 @@ async function loadUsage(
       overlay.className = "stale-overlay";
       const retry = retryLabel(usage);
       overlay.textContent = [staleLabel(usage), usage.issue ?? retry].filter(Boolean).join(" · ");
-      box.appendChild(overlay);
+      card.appendChild(overlay);
     }
   } catch (error) {
     // 백오프 대기는 이제 오류가 아니라 Ok(빈 창 목록 + retry_after_secs)로 온다 —
@@ -491,7 +493,7 @@ function profileCard(
   forceRetry: boolean,
 ): HTMLElement {
   const card = document.createElement("div");
-  card.className = "card" + (profile.active ? " active" : "");
+  card.className = "card profile-card" + (profile.active ? " active" : "");
   // 카드와 항상 보이는 조작 버튼 모두 키보드로 접근할 수 있다.
   card.tabIndex = 0;
   // disarm은 삭제 버튼 쪽에서 선언된다 — 이벤트 시점에만 부르므로 지연 참조
@@ -560,7 +562,8 @@ function profileCard(
   if (profile.active) {
     const active = document.createElement("span");
     active.className = "connection-active";
-    active.textContent = t("activeDot");
+    active.textContent = currentLang() === "ko" ? "사용 중" : "Active";
+    active.prepend(icon("check"));
     actions.append(active);
   }
   if (!profile.active) {
@@ -571,8 +574,9 @@ function profileCard(
     card.dataset.name = profile.name;
 
     const switchBtn = document.createElement("button");
-    switchBtn.className = "primary";
+    switchBtn.className = "profile-switch";
     switchBtn.textContent = currentLang() === "ko" ? "전환" : "Switch";
+    switchBtn.append(icon("arrow"));
     switchBtn.title = t("switchBtn");
     switchBtn.addEventListener("click", () => {
       void doSwitch(switchBtn);
@@ -582,11 +586,7 @@ function profileCard(
 
   // 이름 바꾸기 (#168) — 카드 아래 한 줄 입력칸. Enter로 적용, Esc로 접기.
   // 입력 중에는 userIsBusy가 주기 새로고침을 미룬다.
-  const renameBtn = document.createElement("button");
-  renameBtn.className = "action-rename";
-  renameBtn.textContent = currentLang() === "ko" ? "이름" : "Rename";
-  renameBtn.title = t("rename");
-  renameBtn.setAttribute("aria-label", t("rename"));
+  const renameBtn = iconButton("edit", t("rename"), "action-rename");
   renameBtn.addEventListener("click", () => {
     const open = card.querySelector<HTMLElement>(".rename-row");
     if (open) {
@@ -653,10 +653,9 @@ function profileCard(
     input.select();
   });
 
-  const deleteBtn = document.createElement("button");
-  deleteBtn.className = "action-delete";
-  deleteBtn.textContent = t("del");
+  const deleteBtn = iconButton("trash", t("del"), "action-delete");
   let armed = false;
+  let armedAt = 0;
   let disarmTimer: number | undefined;
   // 확인 단계 해제는 타이머만 믿지 않는다 — 맥 비활성 웹뷰는 타이머가 수 초씩 늦거나 죽어
   // (CLAUDE.md macOS 절) 무장 상태가 다음 렌더까지 남고 한 번 클릭에 삭제된다 (#178).
@@ -668,16 +667,18 @@ function profileCard(
     window.removeEventListener("blur", disarm);
     if (!armed) return;
     armed = false;
-    deleteBtn.textContent = t("del");
+    setButtonIcon(deleteBtn, "trash", t("del"));
     deleteBtn.classList.remove("danger-armed");
   };
   const disarmOutside = (event: Event) => {
-    if (event.target !== deleteBtn) disarm();
+    if (!deleteBtn.contains(event.target as Node)) disarm();
   };
   deleteBtn.addEventListener("click", async () => {
-    if (!armed) {
+    if (!armed || Date.now() < armedAt || Date.now() - armedAt > 3000) {
+      disarm();
       armed = true;
-      deleteBtn.textContent = t("delConfirm");
+      armedAt = Date.now();
+      setButtonIcon(deleteBtn, "check", t("delConfirm"));
       deleteBtn.classList.add("danger-armed");
       document.addEventListener("pointerdown", disarmOutside, true);
       window.addEventListener("blur", disarm);
@@ -695,9 +696,7 @@ function profileCard(
       deleteBtn.disabled = false;
     }
   });
-  const reconnect = document.createElement("button");
-  reconnect.className = "action-reconnect";
-  reconnect.textContent = currentLang() === "ko" ? "다시 연결" : "Reconnect";
+  const reconnect = iconButton("reconnect", currentLang() === "ko" ? "다시 연결" : "Reconnect", "action-reconnect");
   reconnect.title = currentLang() === "ko" ? "같은 계정으로 로그인하면 기존 프로필의 인증을 갱신합니다" : "Sign in with the same account to renew this profile";
   reconnect.addEventListener("click", () => void startAccountLogin(provider));
   actions.appendChild(reconnect);
@@ -1199,16 +1198,14 @@ function watchGithubLogin(
 }
 
 function addAccountButton(provider: ProviderId, section: HTMLElement) {
-  const row = document.createElement("div");
+  const row = document.createElement("span");
   row.className = "add-row";
-
   const addBtn = document.createElement("button");
-  addBtn.className = "primary";
-  addBtn.textContent = t("addAccount");
+  addBtn.className = "add-account";
+  addBtn.append(icon("plus"), t("addAccount").replace(/^[+＋]\s*/, ""));
   row.appendChild(addBtn);
   row.hidden = loginOpen;
-  section.appendChild(row);
-
+  (section.querySelector(".section-title") ?? section).appendChild(row);
   addBtn.addEventListener("click", () => void startAccountLogin(provider));
 }
 
@@ -1314,6 +1311,7 @@ async function renderProvider(
   // 아이콘은 글자를 넣은 뒤에 앞으로 끼운다 (textContent가 자식을 갈아엎는다)
   heading.prepend(providerIcon(provider));
   section.appendChild(heading);
+  addAccountButton(provider, section);
 
   try {
     const snap = await invoke<Snapshot>("list_profiles", { provider });
@@ -1323,8 +1321,7 @@ async function renderProvider(
       hint.className = "hint";
       hint.textContent = t("noAccounts");
       section.appendChild(hint);
-      addAccountButton(provider, section);
-    section.appendChild(await apiConnections(provider, { changed: () => render({ immediate: true }), fit: fitHeight, toast }));
+      section.appendChild(await apiConnections(provider, { changed: () => render({ immediate: true }), fit: fitHeight, toast }));
       target.appendChild(section);
       return;
     }
@@ -1340,7 +1337,6 @@ async function renderProvider(
       section.appendChild(profileCard(provider, profile, pending, forceRetry));
     }
 
-    addAccountButton(provider, section);
     section.appendChild(await apiConnections(provider, { changed: () => render({ immediate: true }), fit: fitHeight, toast }));
     if (snap.live && !snap.live_saved) {
       // 지금 로그인된 계정이 아직 프로필로 없을 때만 수동 저장 입력칸을 보여준다
@@ -2457,8 +2453,14 @@ async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
         intro.className = "workspace-heading";
         const title = document.createElement("h1");
         title.textContent = currentLang() === "ko" ? "연결 관리" : "Connections";
-        const hint = document.createElement("p");
-        hint.textContent = currentLang() === "ko" ? "구독 계정과 API 연결을 한곳에서" : "Subscription accounts and API connections";
+        const register = document.createElement("button");
+        register.className = "api-register";
+        register.dataset.apiFocus = "register";
+        register.append(icon("key"), currentLang() === "ko" ? "API 키 등록" : "Add API key");
+        register.onclick = () => {
+          if (loginOpen) { toast(t("loginBusy"), true); return; }
+          openApiRegistration({ changed: () => render({ immediate: true }), fit: fitHeight, toast });
+        };
         const modes = document.createElement("nav");
         modes.className = "mode-tabs";
         modes.setAttribute("aria-label", t("typeTooltip"));
@@ -2470,7 +2472,7 @@ async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
           button.addEventListener("click", () => selectViewMode(value));
           modes.append(button);
         });
-        intro.append(title, modes);
+        intro.append(title, register, modes);
         buffer.appendChild(intro);
       }
       const pending: Promise<unknown>[] = [];
@@ -3209,7 +3211,7 @@ async function fitWindowToContent() {
       // 하단 독은 main 밖(shell 직속)이라 content 계산에 안 잡힌다 — 따로 더한다.
       // 접힘/펼침으로 높이가 바뀌므로 매 바퀴 다시 잰다.
       const dockHeight = dockEl.offsetHeight;
-      const total = tbHeight + content + dockHeight + 2; // 테두리
+      const total = Math.max(tbHeight + content + dockHeight + 2, document.querySelector(".api-dialog") ? 550 : 0); // 테두리
       const max = Math.floor((currentWorkAreaHeight ?? window.screen.availHeight) * 0.9);
       // 배율이 소수인 화면에서 round가 1px을 깎아 하단을 자르지 않게 올림한다.
       // 논리→물리 변환의 최근접 반올림까지 버티도록 콘텐츠보다 1px 여유를 둔다.
