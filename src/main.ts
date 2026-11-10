@@ -58,6 +58,7 @@ type Usage = {
   stale_age_secs?: number | null;
   /// 백엔드 백오프가 남은 초 — 있으면 "n분 후 재시도"로 보여주고, 수동 새로고침이 우회한다 (#122)
   retry_after_secs?: number | null;
+  issue?: string | null;
 };
 
 /// 사용량 경고 단계 — 모든 막대·게이지 채움색 클래스의 단일 기준 (60% 경고, 85% 위험)
@@ -420,7 +421,7 @@ async function loadUsage(
       // 보여줄 이전 수치조차 없는 백오프 대기는 남은 시간을 작은 안내로 (#122)
       const empty = document.createElement("div");
       empty.className = "usage-note";
-      empty.textContent = retryLabel(usage) ?? t("noUsage");
+      empty.textContent = usage.issue ?? retryLabel(usage) ?? t("noUsage");
       box.appendChild(empty);
       return;
     }
@@ -432,7 +433,7 @@ async function loadUsage(
       const overlay = document.createElement("div");
       overlay.className = "stale-overlay";
       const retry = retryLabel(usage);
-      overlay.textContent = retry ? `${staleLabel(usage)} · ${retry}` : staleLabel(usage);
+      overlay.textContent = [staleLabel(usage), usage.issue ?? retry].filter(Boolean).join(" · ");
       box.appendChild(overlay);
     }
   } catch (error) {
@@ -445,6 +446,17 @@ async function loadUsage(
     box.appendChild(note);
   }
   fitHeight();
+}
+
+function showUsageIssue(card: HTMLElement, message: string, compact = false) {
+  card.title = [card.title, message].filter(Boolean).join(" · ");
+  const note = document.createElement("span");
+  note.className = "usage-issue";
+  note.textContent = compact ? "!" : message;
+  note.setAttribute("role", "status");
+  note.setAttribute("aria-label", message);
+  note.title = message;
+  card.appendChild(note);
 }
 
 /// 활성 표시 dot (#102) — 카드 테두리·이름 색은 --fg-alpha를 따라 사라지지만
@@ -1944,6 +1956,7 @@ function compactCard(
         forceRetry,
       );
       const retry = retryLabel(usage);
+      if (usage.issue) showUsageIssue(card, usage.issue, minimal);
       if (usage.windows.length === 0) {
         // 이전 수치조차 없는 백오프 대기 — 남은 시간만 한 줄 (#122)
         if (retry) {
@@ -2005,8 +2018,8 @@ function compactCard(
         }
         card.appendChild(row);
       }
-    } catch {
-      // 컴팩트 모드에서는 조회 실패를 조용히 넘긴다 — 다음 주기에 다시 시도
+    } catch (error) {
+      showUsageIssue(card, String(error), minimal);
     } finally {
       // 즉시 모드에서는 카드 골격을 먼저 붙인다. 사용량이 나중에 늘린 실제 높이를
       // 다시 맞추되, 이미 폐기된 렌더 버퍼는 창 크기에 영향을 주지 않게 한다.
@@ -2236,6 +2249,7 @@ function edgeAccount(
       );
       // Type4의 좁은 묶음에는 "n분 후 재시도"를 쓸 자리가 없다 — 툴팁에만 남긴다 (#122)
       const retry = retryLabel(usage);
+      if (usage.issue) showUsageIssue(card, usage.issue, true);
       if (retry) card.title = [card.title, retry].filter(Boolean).join(" · ");
       if (usage.stale) {
         // 이전 수치 — 채움만 흐리고, 이름 뒤 회색 점으로 이유를 알린다 (숫자는 살린다)
@@ -2286,8 +2300,8 @@ function edgeAccount(
         });
         commitEdgeGauge(card);
       }
-    } catch {
-      // 표시 전용 — 조회 실패는 다음 주기에
+    } catch (error) {
+      showUsageIssue(card, String(error), true);
     } finally {
       if (card.isConnected) fitHeight();
     }

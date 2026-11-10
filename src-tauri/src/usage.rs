@@ -65,6 +65,10 @@ pub struct Usage {
     /// 있다 — 프론트가 "n분 후 재시도"로 보여준다 (#122)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retry_after_secs: Option<u64>,
+    /// 마지막 성공 수치를 보여주더라도 현재 인증/조회 실패 원인을 숨기지 않는다.
+    /// 서버 응답 본문이나 자격증명은 넣지 않고 클라이언트의 안전한 안내만 전달한다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<String>,
 }
 
 /// 조회 대상 토큰 파일: 프로필 이름이 있으면 보관함, 없으면 활성 파일.
@@ -403,16 +407,17 @@ async fn post_refresh_and_land(
         return Err(FetchErr::Transient(retry_after_secs(&resp)));
     }
     if !status.is_success() {
-        // 리프레시 토큰이 거부됨 — 재시도해도 소용없다. 백오프를 걸어 5분 렌더 주기마다
-        // 무의미한 POST가 반복되는 것을 막되, 안내 문구를 함께 기록해 백오프 중에도
-        // "대기중" 대신 재로그인 안내가 보이게 한다 (#173)
+        // HTTP 4xx 자체는 만료 증거가 아니다. invalid_grant만 재로그인으로 분류하고
+        // 권한/클라이언트/주소 오류는 별도 안내한다. 서버의 임의 본문은 절대 노출하지 않는다.
+        let body = resp.json::<Value>().await.unwrap_or(Value::Null);
+        let message = refresh_failure_message(status.as_u16(), &body);
         let _ = backoff_bump_if_epoch(
             &backoff_key,
             backoff_epoch_before,
-            Some(EXPIRED_LOGIN_MESSAGE),
+            Some(message),
             None,
         );
-        return Err(FetchErr::Msg(EXPIRED_LOGIN_MESSAGE.into()));
+        return Err(FetchErr::Msg(message.into()));
     }
     let body: Value = resp
         .json()
@@ -692,6 +697,7 @@ fn parse_claude_usage(body: &Value) -> Usage {
         stale: false,
         stale_age_secs: None,
         retry_after_secs: None,
+        issue: None,
     }
 }
 
@@ -702,6 +708,17 @@ enum FetchErr {
     /// 일시 장애(네트워크·429·5xx). Some(초)면 서버가 Retry-After로 알린 대기 시간 (#176)
     Transient(Option<u64>),
     Msg(String),
+}
+
+fn refresh_failure_message(status: u16, body: &Value) -> &'static str {
+    let code = body.get("error").and_then(Value::as_str)
+        .or_else(|| body.pointer("/error/code").and_then(Value::as_str));
+    match (status, code) {
+        (400 | 401, Some("invalid_grant")) => EXPIRED_LOGIN_MESSAGE,
+        (403, _) => "토큰 갱신 권한이 거부됐습니다 — 계정·조직의 접근 정책을 확인하세요",
+        (401, _) => "토큰 갱신 인증이 거부됐습니다 — CLI 버전과 로그인 상태를 확인하세요",
+        _ => "토큰 갱신 요청이 거부됐습니다 — CLI 버전과 서비스 상태를 확인하세요 (만료 여부 미확인)",
+    }
 }
 
 impl From<String> for FetchErr {
@@ -755,6 +772,12 @@ async fn get_json(request: reqwest::RequestBuilder) -> Result<Value, FetchErr> {
         return Err(FetchErr::Transient(retry_after_secs(&resp)));
     }
     if !status.is_success() {
+        if status.as_u16() == 401 {
+            return Err(FetchErr::Msg("사용량 인증을 갱신해야 합니다 — 이 계정의 CLI를 실행한 뒤 새로고침하세요".into()));
+        }
+        if status.as_u16() == 403 {
+            return Err(FetchErr::Msg("사용량 조회 권한이 없습니다 — 계정·조직의 접근 정책을 확인하세요".into()));
+        }
         return Err(FetchErr::Msg(format!(
             "사용량 조회 실패: HTTP {}",
             status.as_u16()
@@ -1052,6 +1075,7 @@ fn parse_codex_usage(body: &Value) -> Usage {
         stale: false,
         stale_age_secs: None,
         retry_after_secs: None,
+        issue: None,
     }
 }
 
@@ -1441,6 +1465,7 @@ fn waiting_usage(retry_after_secs: u64) -> Usage {
         stale: false,
         stale_age_secs: None,
         retry_after_secs: Some(retry_after_secs),
+        issue: None,
     }
 }
 
@@ -1510,6 +1535,7 @@ pub(crate) async fn fetch_with_options(
         usage.stale = true;
         usage.stale_age_secs = Some(age);
         usage.retry_after_secs = retry_after_secs;
+        usage.issue = None;
         usage
     };
 
@@ -1519,7 +1545,11 @@ pub(crate) async fn fetch_with_options(
         Ok(auth) => auth,
         Err(error) => {
             return stale_value()
-                .map(|value| mark_stale(value, None))
+                .map(|value| {
+                    let mut usage = mark_stale(value, None);
+                    usage.issue = Some(error.clone());
+                    usage
+                })
                 .ok_or(error);
         }
     };
@@ -1535,7 +1565,9 @@ pub(crate) async fn fetch_with_options(
                 // 영구 실패(토큰 재발급 거부)면 기다려도 해결되지 않으므로 "n분 후 재시도"를
                 // 약속하지 않는다 — 이전 수치만 나이와 함께 (#173)
                 let retry = permanent.is_none().then_some(retry_after_secs);
-                return Ok(mark_stale(value, retry));
+                let mut usage = mark_stale(value, retry);
+                usage.issue = permanent;
+                return Ok(usage);
             }
             // 보여줄 수치가 없는데 원인이 영구 실패면 "대기중"이 아니라 재로그인 안내를 —
             // 기다려도 해결되지 않는 상태를 일시 장애로 오인하지 않게 (#173)
@@ -1619,6 +1651,7 @@ pub(crate) async fn fetch_with_options(
                         stale: false,
                         stale_age_secs: None,
                         retry_after_secs: None,
+                        issue: None,
                     }));
             };
             let actual_stale = || -> Option<(Usage, u64)> {
@@ -1650,7 +1683,11 @@ pub(crate) async fn fetch_with_options(
             }
             .or_else(|| disk_cache_load(env, &actual_key, STALE_MAX));
             actual_stale
-                .map(|value| mark_stale(value, None))
+                .map(|value| {
+                    let mut usage = mark_stale(value, None);
+                    usage.issue = Some(message.clone());
+                    usage
+                })
                 .ok_or(message)
         }
     }
@@ -1661,6 +1698,20 @@ mod tests {
     use super::*;
     use crate::accounts::test_support::{fake_jwt, test_env};
     use std::fs;
+
+    #[test]
+    fn refresh_errors_do_not_confuse_permission_or_endpoint_with_expiry() {
+        let secret = serde_json::json!({"error": "invalid_grant", "error_description": "SECRET-FIXTURE"});
+        assert_eq!(refresh_failure_message(400, &secret), EXPIRED_LOGIN_MESSAGE);
+        for status in [301, 400, 401, 403, 404, 422] {
+            let unknown = serde_json::json!({"error": "unknown", "access_token": "SECRET-FIXTURE"});
+            let message = refresh_failure_message(status, &unknown);
+            assert_ne!(message, EXPIRED_LOGIN_MESSAGE);
+            assert!(!message.contains("SECRET-FIXTURE"));
+        }
+        assert_ne!(refresh_failure_message(403, &secret), EXPIRED_LOGIN_MESSAGE);
+        assert_eq!(refresh_failure_message(401, &serde_json::json!({"error":{"code":"invalid_grant"}})), EXPIRED_LOGIN_MESSAGE);
+    }
 
     #[test]
     fn parse_real_shape_uses_limits_array() {
@@ -1827,6 +1878,7 @@ mod tests {
             stale: false,
             stale_age_secs: None,
             retry_after_secs: None,
+            issue: None,
         };
         disk_cache_store(&env, "claude:uuid-snapfb", &usage).unwrap();
 
@@ -1859,6 +1911,7 @@ mod tests {
             stale: false,
             stale_age_secs: None,
             retry_after_secs: None,
+            issue: None,
         };
         disk_cache_store(&env, "claude:acct-1", &usage).unwrap();
         let (loaded, age) = disk_cache_load(&env, "claude:acct-1", STALE_MAX)
@@ -1896,6 +1949,7 @@ mod tests {
                     stale: false,
                     stale_age_secs: None,
                     retry_after_secs: None,
+                    issue: None,
                 };
                 barrier.wait();
                 disk_cache_store(&env, &format!("claude:acct-{i}"), &usage).unwrap();
@@ -1936,6 +1990,7 @@ mod tests {
             stale: false,
             stale_age_secs: None,
             retry_after_secs: None,
+            issue: None,
         };
         disk_cache_store(&env, "claude:uuid-stale", &usage).unwrap();
         let path = disk_cache_path(&env);
@@ -2209,6 +2264,7 @@ mod tests {
             stale: false,
             stale_age_secs: None,
             retry_after_secs: None,
+            issue: None,
         };
         disk_cache_store(&env, "claude:uuid-live", &usage).unwrap();
         disk_cache_store(&env, "claude:uuid-gone", &usage).unwrap();
@@ -2686,6 +2742,7 @@ mod tests {
             stale: false,
             stale_age_secs: None,
             retry_after_secs: None,
+            issue: None,
         };
         disk_cache_store(&env, key, &usage).unwrap();
         // 방금 저장한 캐시는 신선해서 관문에 닿지 않는다 — 3시간 전 값으로 늙힌다
@@ -2697,6 +2754,7 @@ mod tests {
             .block_on(fetch_with_options(&env, Provider::Claude, Some("dead"), false))
             .unwrap();
         assert!(stale.stale);
+        assert_eq!(stale.issue.as_deref(), Some("PERM-TEST 재로그인"));
         assert!(
             stale.retry_after_secs.is_none(),
             "영구 실패에는 '재시도' 라벨을 약속하지 않는다"
