@@ -556,22 +556,7 @@ function profileCard(
   };
 
   const actions = document.createElement("div");
-  actions.className = "card-actions";
-  const menu = document.createElement("details");
-  menu.className = "account-menu";
-  const summary = document.createElement("summary");
-  summary.textContent = "···";
-  summary.title = `${t("rename")} / ${t("del")}`;
-  summary.setAttribute("aria-label", summary.title);
-  const menuItems = document.createElement("div");
-  menuItems.className = "account-menu-items";
-  menu.append(summary, menuItems);
-  menu.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") { menu.open = false; summary.focus(); }
-  });
-  menu.addEventListener("focusout", (event) => {
-    if (!menu.contains(event.relatedTarget as Node | null)) menu.open = false;
-  });
+  actions.className = "card-actions profile-actions";
   if (profile.active) {
     const active = document.createElement("span");
     active.className = "connection-active";
@@ -587,7 +572,8 @@ function profileCard(
 
     const switchBtn = document.createElement("button");
     switchBtn.className = "primary";
-    switchBtn.textContent = t("switchBtn");
+    switchBtn.textContent = currentLang() === "ko" ? "전환" : "Switch";
+    switchBtn.title = t("switchBtn");
     switchBtn.addEventListener("click", () => {
       void doSwitch(switchBtn);
     });
@@ -597,7 +583,8 @@ function profileCard(
   // 이름 바꾸기 (#168) — 카드 아래 한 줄 입력칸. Enter로 적용, Esc로 접기.
   // 입력 중에는 userIsBusy가 주기 새로고침을 미룬다.
   const renameBtn = document.createElement("button");
-  renameBtn.textContent = t("rename");
+  renameBtn.className = "action-rename";
+  renameBtn.textContent = currentLang() === "ko" ? "이름" : "Rename";
   renameBtn.title = t("rename");
   renameBtn.setAttribute("aria-label", t("rename"));
   renameBtn.addEventListener("click", () => {
@@ -607,7 +594,6 @@ function profileCard(
       fitHeight();
       return;
     }
-    menu.open = false;
     const row = document.createElement("div");
     row.className = "save-row rename-row";
     const input = document.createElement("input");
@@ -666,9 +652,9 @@ function profileCard(
     input.focus();
     input.select();
   });
-  menuItems.appendChild(renameBtn);
 
   const deleteBtn = document.createElement("button");
+  deleteBtn.className = "action-delete";
   deleteBtn.textContent = t("del");
   let armed = false;
   let disarmTimer: number | undefined;
@@ -709,13 +695,14 @@ function profileCard(
       deleteBtn.disabled = false;
     }
   });
-  menuItems.appendChild(deleteBtn);
   const reconnect = document.createElement("button");
+  reconnect.className = "action-reconnect";
   reconnect.textContent = currentLang() === "ko" ? "다시 연결" : "Reconnect";
   reconnect.title = currentLang() === "ko" ? "같은 계정으로 로그인하면 기존 프로필의 인증을 갱신합니다" : "Sign in with the same account to renew this profile";
   reconnect.addEventListener("click", () => void startAccountLogin(provider));
   actions.appendChild(reconnect);
-  actions.appendChild(menu);
+  actions.appendChild(renameBtn);
+  actions.appendChild(deleteBtn);
   card.appendChild(actions);
 
   return card;
@@ -2082,7 +2069,7 @@ function edgeBar(): HTMLElement {
   handle.title = t("dragHandle");
   const mode = document.createElement("button");
   mode.className = "edge-ui edge-mode";
-  mode.textContent = "Type4";
+  mode.textContent = currentLang() === "ko" ? "4 엣지" : "4 Edge";
   mode.title = t("typeTooltip");
   mode.addEventListener("click", () => lockBtn.click());
   bar.append(handle, mode);
@@ -2472,7 +2459,18 @@ async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
         title.textContent = currentLang() === "ko" ? "연결 관리" : "Connections";
         const hint = document.createElement("p");
         hint.textContent = currentLang() === "ko" ? "구독 계정과 API 연결을 한곳에서" : "Subscription accounts and API connections";
-        intro.append(title, hint);
+        const modes = document.createElement("nav");
+        modes.className = "mode-tabs";
+        modes.setAttribute("aria-label", t("typeTooltip"));
+        const labels = currentLang() === "ko" ? ["일반", "컴팩트", "미니멀", "엣지"] : ["Full", "Compact", "Minimal", "Edge"];
+        VIEW_CYCLE.forEach((value, index) => {
+          const button = document.createElement("button");
+          button.textContent = `${index + 1} ${labels[index]}`;
+          button.setAttribute("aria-current", value === mode ? "page" : "false");
+          button.addEventListener("click", () => selectViewMode(value));
+          modes.append(button);
+        });
+        intro.append(title, modes);
         buffer.appendChild(intro);
       }
       const pending: Promise<unknown>[] = [];
@@ -2656,7 +2654,7 @@ function applyViewMode() {
   document.body.classList.toggle("minimal", displayMode === "minimal");
   applyEdgeMode(displayMode === "edge");
   lockBtn.classList.toggle("pinned", locked);
-  const modeNames = currentLang() === "ko" ? ["관리", "위젯", "미니", "엣지"] : ["Manage", "Widget", "Mini", "Edge"];
+  const modeNames = currentLang() === "ko" ? ["1 일반", "2 컴팩트", "3 미니멀", "4 엣지"] : ["1 Full", "2 Compact", "3 Minimal", "4 Edge"];
   lockBtn.textContent = modeNames[VIEW_CYCLE.indexOf(displayMode)];
   // 위젯 모드에서는 ☰ 핸들을 잡아야만 창이 움직인다 — 타이틀바 전체 드래그를 끈다
   if (locked || starPromptOpen) {
@@ -3051,12 +3049,12 @@ void listen<{ ok: boolean; provider?: string; name?: string; error?: string }>(
   },
 );
 
-lockBtn.addEventListener("click", () => {
+function selectViewMode(mode: ViewMode) {
   if (apiIsBusy()) {
     toast(currentLang() === "ko" ? "API 키 입력을 저장하거나 취소한 뒤 보기를 바꾸세요" : "Save or cancel the API form before changing views");
     return;
   }
-  viewMode = VIEW_CYCLE[(VIEW_CYCLE.indexOf(viewMode) + 1) % VIEW_CYCLE.length];
+  viewMode = mode;
   localStorage.setItem("switcher.viewmode", viewMode);
   applyViewMode();
   // 새 모드 CSS가 줄인 현재 내용만으로도 창을 먼저 따라붙인다. 새 카드 목록은
@@ -3064,7 +3062,8 @@ lockBtn.addEventListener("click", () => {
   fitHeight();
   // 모드가 바뀌면 화면 구성을 다시 그리되, 열려 있던 로그인 패널 DOM은 그대로 옮긴다.
   void render({ immediate: true });
-});
+}
+lockBtn.addEventListener("click", () => selectViewMode(VIEW_CYCLE[(VIEW_CYCLE.indexOf(viewMode) + 1) % VIEW_CYCLE.length]));
 applyViewMode();
 
 // 투명도 — 2단계 커브.
@@ -3373,17 +3372,22 @@ function applyStaticText() {
   alphaSlider.title = t("alphaTooltip");
   lockBtn.title = t("typeTooltip");
   applyDockLabel();
+  const labels = currentLang() === "ko" ? ["메모", "자동 전환", "가리기", "잠자기 방지", "화면 끄기"] : ["Notes", "Auto", "Privacy", "Awake", "Blackout"];
+  ["memobtn", "tfsdbtn", "privacybtn", "clambtn", "blackbtn"].forEach((id, i) => {
+    const label = document.querySelector(`#${id} .tool-label`);
+    if (label) label.textContent = labels[i];
+  });
 }
 
 // ── 하단 도구 독 (#105) ────────────────────────────────────────────
-// 아이콘 버튼은 상시 필요하지 않다 — 창 맨 아래 손잡이를 눌러 펼친다.
-// 펼침 상태는 유지된다: 늘 쓰는 사람이 매 실행마다 다시 열 이유가 없다.
+// 네 모드 모두 도구를 기본으로 펼친다. 새 설정 키로 옛 자동 접힘 상태를 이관하지
+// 않고, 사용자가 이번 UI에서 직접 접은 선택만 복원한다.
 const dockToggle = document.getElementById("dock-toggle") as HTMLButtonElement;
-let dockOpen = localStorage.getItem("switcher.dock") === "1";
+let dockOpen = localStorage.getItem("switcher.tools.v2") !== "closed";
 
 function applyDockLabel() {
   const label = dockOpen ? t("dockClose") : t("dockOpen");
-  dockToggle.textContent = dockOpen ? "▼" : "▲";
+  dockToggle.textContent = `${currentLang() === "ko" ? "도구" : "Tools"} ${dockOpen ? "⌄" : "⌃"}`;
   dockToggle.title = label;
   dockToggle.setAttribute("aria-label", label);
   dockToggle.setAttribute("aria-expanded", dockOpen ? "true" : "false");
@@ -3399,7 +3403,7 @@ function applyDock() {
 
 dockToggle.addEventListener("click", () => {
   dockOpen = !dockOpen;
-  localStorage.setItem("switcher.dock", dockOpen ? "1" : "0");
+  localStorage.setItem("switcher.tools.v2", dockOpen ? "open" : "closed");
   applyDock();
 });
 

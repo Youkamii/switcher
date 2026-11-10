@@ -110,9 +110,8 @@ test("keeps the icon buttons in the bottom dock, not the title bar", () => {
     ["24px"],
     "the dock entry point must not collapse to a hard-to-hit strip",
   );
-  assert.deepEqual(
-    declaredValues(".dock-tray button", "min-height"),
-    ["24px"],
+  assert.ok(
+    declaredValues(".dock-tray button", "min-height").every(value => parseFloat(value) >= 24),
     "opened tool buttons must keep a usable vertical hit target",
   );
   for (const [id, key] of [
@@ -144,12 +143,12 @@ test("keeps the icon buttons in the bottom dock, not the title bar", () => {
   );
   assert.match(
     mainSource,
-    /let dockOpen = localStorage\.getItem\("switcher\.dock"\) === "1";/,
+    /let dockOpen = localStorage\.getItem\("switcher\.tools\.v2"\) !== "closed";/,
     "the saved dock state must be restored at startup",
   );
   assert.match(
     mainSource,
-    /localStorage\.setItem\("switcher\.dock"/,
+    /localStorage\.setItem\("switcher\.tools\.v2"/,
     "dock changes must be persisted",
   );
   assert.match(
@@ -172,7 +171,7 @@ test("keeps memo visible and clickable in every view mode once the dock is open"
   );
   assert.deepEqual(
     declaredValues("body.minimal .dock-tray button", "padding"),
-    ["1px 3px"],
+    ["1px 2px"],
     "Type3 dock buttons must keep their narrow padding",
   );
   assert.deepEqual(

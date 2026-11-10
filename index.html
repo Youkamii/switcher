@@ -29,8 +29,7 @@
         </div>
       </header>
       <main id="app"></main>
-      <!-- 도구 독 — 아이콘 버튼은 상시 필요하지 않다. 창 맨 아래 손잡이를
-           눌러 펼친다. tb-actions 클래스를 함께 달아 버튼 모양·누름 피드백·
+      <!-- 도구 독 — 기본 펼침. 사용자가 명시적으로 접었을 때만 접는다. tb-actions 클래스를 함께 달아 버튼 모양·누름 피드백·
            투명도 규칙을 타이틀바와 한 벌로 쓴다 (히트 영역 보고도 같은 셀렉터) -->
       <footer class="dock">
         <button
@@ -42,11 +41,11 @@
           title="도구 열기"
         >▲</button>
         <div id="dock-tray" class="tb-actions dock-tray">
-          <button id="memobtn" title="메모장 (탭 1~5)">📝</button>
-          <button id="tfsdbtn" title="TFSD 자율주행 자동 전환">🚗</button>
-          <button id="privacybtn" title="이메일 가리기 (블러)">🙈</button>
-          <button id="clambtn" hidden title="클램셸 슬립 방지">☕</button>
-          <button id="blackbtn" title="블랙 모니터 — 마우스를 흔들거나 ESC로 해제">🌙</button>
+          <button id="memobtn" title="메모장 (탭 1~5)"><svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h5"/></svg><span class="tool-label">메모</span></button>
+          <button id="tfsdbtn" title="TFSD 자율주행 자동 전환"><svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h15l-4-4M20 17H5l4 4M19 7v5M5 17v-5"/></svg><span class="tool-label">자동 전환</span></button>
+          <button id="privacybtn" title="이메일 가리기 (블러)"><svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path d="m3 3 18 18"/></svg><span class="tool-label">가리기</span></button>
+          <button id="clambtn" hidden title="클램셸 슬립 방지"><svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v11H5zM2 19h20M9 15v4M15 15v4"/></svg><span class="tool-label">잠자기 방지</span></button>
+          <button id="blackbtn" title="블랙 모니터 — 마우스를 흔들거나 ESC로 해제"><svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14A8 8 0 0 1 10 4a8 8 0 1 0 10 10Z"/></svg><span class="tool-label">화면 끄기</span></button>
         </div>
       </footer>
     </div>
