@@ -436,6 +436,7 @@ async fn ensure_fresh_profile_at(
     name: &str,
     token_url: &str,
 ) -> Result<(), FetchErr> {
+    env.check_codex_store(provider)?;
     let path = credential_path(env, provider, Some(name))?;
     if !path.exists() {
         return Ok(()); // 이후 조회 단계가 기존 방식대로 안내한다

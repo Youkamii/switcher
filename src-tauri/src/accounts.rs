@@ -66,6 +66,7 @@ pub enum ClaudeLiveStore {
 pub struct Env {
     pub home: PathBuf,
     pub store: PathBuf,
+    pub codex_home: PathBuf,
     pub claude_live: ClaudeLiveStore,
 }
 
@@ -76,6 +77,11 @@ impl Env {
             .map(PathBuf::from)
             .ok_or("홈 디렉토리를 찾을 수 없습니다")?;
         let store = home.join(".switcher");
+        let codex_home = std::env::var_os("CODEX_HOME").filter(|v| !v.is_empty())
+            .map(PathBuf::from).unwrap_or_else(|| home.join(".codex"));
+        let codex_home = if codex_home.is_absolute() { codex_home } else {
+            std::env::current_dir().map_err(|_| "CODEX_HOME 기준 경로를 확인하지 못했습니다")?.join(codex_home)
+        };
         let claude_file = home.join(".claude").join(".credentials.json");
         #[cfg(target_os = "macos")]
         let claude_live = ClaudeLiveStore::Keychain {
@@ -86,6 +92,7 @@ impl Env {
         #[cfg(not(target_os = "macos"))]
         let claude_live = ClaudeLiveStore::File(claude_file);
         Ok(Env {
+            codex_home,
             home,
             store,
             claude_live,
@@ -99,7 +106,25 @@ impl Env {
     pub(crate) fn live_credential_path(&self, provider: Provider) -> PathBuf {
         match provider {
             Provider::Claude => self.home.join(".claude").join(".credentials.json"),
-            Provider::Codex => self.home.join(".codex").join("auth.json"),
+            Provider::Codex => self.codex_home.join("auth.json"),
+        }
+    }
+
+    /// File storage is the supported OAuth adapter. Never mistake a stale auth.json
+    /// for the CLI's active credential when it is configured to use the OS keyring.
+    pub(crate) fn check_codex_store(&self, provider: Provider) -> Result<(), String> {
+        if provider != Provider::Codex { return Ok(()); }
+        let config = self.codex_home.join("config.toml");
+        let text = match fs::read_to_string(config) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err("Codex 인증 저장소 설정을 읽지 못했습니다".into()),
+        };
+        let config: toml::Value = toml::from_str(&text).map_err(|_| "Codex config.toml 형식을 확인하세요")?;
+        match config.get("cli_auth_credentials_store") {
+            None => Ok(()),
+            Some(value) if value.as_str() == Some("file") => Ok(()),
+            Some(_) => Err("Codex가 파일 외 인증 저장소를 사용합니다 — Switcher 구독 전환에는 cli_auth_credentials_store = \"file\" 설정과 해당 저장소로 다시 로그인이 필요합니다".into()),
         }
     }
 
@@ -724,6 +749,7 @@ pub(crate) fn read_live_cred(env: &Env, provider: Provider) -> Result<Vec<u8>, S
 }
 
 fn read_live_cred_raw(env: &Env, provider: Provider) -> Result<Vec<u8>, String> {
+    env.check_codex_store(provider)?;
     let read_file = |path: &Path| -> Result<Vec<u8>, String> {
         fs::read(path).map_err(|e| format!("읽기 실패 {}: {e}", path.display()))
     };
@@ -759,6 +785,7 @@ thread_local! {
 /// 조회 오류). 전환·저장처럼 이 판단 뒤에 쓰기가 오는 곳은 이 함수를 써서, 확인 실패를
 /// "로그인 없음"으로 뭉개지 않는다 (#175). 파일 저장소는 예전처럼 exists()로 본다.
 pub(crate) fn live_cred_exists_checked(env: &Env, provider: Provider) -> Result<bool, String> {
+    env.check_codex_store(provider)?;
     #[cfg(test)]
     {
         if FAIL_LIVE_PROBE.with(|fail| fail.get()) {
@@ -797,6 +824,7 @@ fn live_store_is_two_step(env: &Env) -> bool {
 /// 활성 자격증명 쓰기 (전환 2단계). 키체인 모드에서는 구버전 파일이 남아 있으면
 /// 함께 갱신한다 — 낡은 파일이 진실처럼 보이는 혼선을 막는다.
 pub(crate) fn write_live_cred(env: &Env, provider: Provider, data: &[u8]) -> Result<(), String> {
+    env.check_codex_store(provider)?;
     match provider {
         Provider::Codex => atomic_write(&env.live_credential_path(Provider::Codex), data),
         Provider::Claude => match &env.claude_live {
@@ -957,6 +985,7 @@ pub(crate) fn write_plan_override(
 
 /// 현재 로그인된 계정의 신원. 파일이 없거나 식별 불가면 Ok(None).
 pub(crate) fn live_identity(env: &Env, provider: Provider) -> Result<Option<LiveIdentity>, String> {
+    env.check_codex_store(provider)?;
     let path = match provider {
         Provider::Claude => env.claude_json_path(),
         Provider::Codex => env.live_credential_path(Provider::Codex),
@@ -1396,6 +1425,7 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
 
 /// 프로필 목록 + 현재 로그인 계정 상태
 pub fn list(env: &Env, provider: Provider) -> Result<Snapshot, String> {
+    env.check_codex_store(provider)?;
     // 표시용 목록은 신원 읽기가 일시적으로 실패해도 화면 전체를 깨뜨리지 않는다
     // (전환·저장 경로는 여전히 엄격하게 실패한다)
     let live = live_identity(env, provider).unwrap_or(None);
@@ -1471,11 +1501,34 @@ pub(crate) mod test_support {
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(base.join(".claude")).unwrap();
         Env {
+            codex_home: base.join(".codex"),
             home: base.clone(),
             store: base.join(".switcher"),
             // 테스트는 어느 플랫폼에서든 파일 저장소로 검증한다 (실키체인은 건드리지 않는다)
             claude_live: ClaudeLiveStore::File(base.join(".claude").join(".credentials.json")),
         }
+    }
+
+    #[test]
+    fn custom_codex_home_and_non_file_store_are_respected() {
+        let mut env = test_env("codex-storage-adapter");
+        env.codex_home = env.home.join("custom-codex");
+        fs::create_dir_all(&env.codex_home).unwrap();
+        let auth = env.codex_home.join("auth.json");
+        fs::write(&auth, b"original-fixture").unwrap();
+        assert_eq!(env.live_credential_path(Provider::Codex), auth);
+        for store in ["keyring", "auto", "ephemeral"] {
+            fs::write(env.codex_home.join("config.toml"), format!("cli_auth_credentials_store = '{store}'")).unwrap();
+            assert!(live_cred_exists_checked(&env, Provider::Codex).is_err());
+            assert!(write_live_cred(&env, Provider::Codex, b"must-not-write").is_err());
+            assert!(list(&env, Provider::Codex).is_err());
+            assert_eq!(fs::read(&auth).unwrap(), b"original-fixture");
+        }
+        fs::write(env.codex_home.join("config.toml"), "cli_auth_credentials_store = 'file'").unwrap();
+        assert_eq!(read_live_cred(&env, Provider::Codex).unwrap(), b"original-fixture");
+        fs::write(env.codex_home.join("config.toml"), "malformed = [ SECRET-FIXTURE").unwrap();
+        let err = env.check_codex_store(Provider::Codex).unwrap_err();
+        assert!(!err.contains("SECRET-FIXTURE"));
     }
 
     /// 가짜 JWT (서명 없음) — claims JSON을 그대로 payload로 쓴다
