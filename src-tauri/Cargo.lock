@@ -3606,6 +3606,7 @@ name = "switcher"
 version = "2.0.2"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "libc",
  "mslnk",
  "objc2",

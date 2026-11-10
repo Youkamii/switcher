@@ -27,7 +27,7 @@ import {
   type GithubStarPromptChoice,
 } from "./firstRunStar";
 import { applyAccentTheme, themeCssColor } from "./theme";
-import { apiConnections, apiIsBusy, openApiRegistration } from "./apiConnections";
+import { apiConnections, apiIsBusy, openConnectionRegistration, compactApiUsage } from "./apiConnections";
 import { icon, iconButton, setButtonIcon } from "./uiIcons";
 import { edgeGaugeLayout } from "./edgeGaugeLayout";
 
@@ -1203,11 +1203,16 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
   row.className = "add-row";
   const addBtn = document.createElement("button");
   addBtn.className = "add-account";
+  addBtn.dataset.provider = provider;
+  addBtn.dataset.apiFocus = `${provider}/add`;
   addBtn.append(icon("plus"), t("addAccount").replace(/^[+＋]\s*/, ""));
   row.appendChild(addBtn);
   row.hidden = loginOpen;
   (section.querySelector(".section-title") ?? section).appendChild(row);
-  addBtn.addEventListener("click", () => void startAccountLogin(provider));
+  addBtn.addEventListener("click", () => {
+    if (loginOpen) { toast(t("loginBusy"), true); return; }
+    openConnectionRegistration({ changed: () => render({ immediate: true }), fit: fitHeight, toast }, provider, () => void startAccountLogin(provider));
+  });
 }
 
 async function startAccountLogin(provider: ProviderId) {
@@ -2225,7 +2230,7 @@ async function renderProviderEdge(
     head.textContent = title;
     section.appendChild(head);
     if (snap.api_active) {
-      section.appendChild(apiActiveIndicator(snap.api_active));
+      section.appendChild(compactApiUsage(provider, snap.api_active));
       edgeGaugeByProvider.delete(provider);
       applyEdgeGauge();
     }
@@ -2393,7 +2398,7 @@ async function renderProviderCompact(
 
     // 카드 골격은 즉시 붙이고 사용량만 뒤에서 병렬로 채운다. 모드 전환이 네트워크
     // 조회를 기다리며 멎지 않게 하면서, 일반 새로고침은 pending을 기다려 한 번에 바뀐다.
-    if (snap.api_active) section.appendChild(apiActiveIndicator(snap.api_active));
+    if (snap.api_active) section.appendChild(compactApiUsage(provider, snap.api_active));
     const cards = snap.profiles.map((profile) =>
       compactCard(provider, profile, minimal, pending, forceRetry),
     );
@@ -2402,15 +2407,6 @@ async function renderProviderCompact(
   } catch {
     // 목록 실패도 조용히 — 컴팩트는 표시 전용
   }
-}
-
-function apiActiveIndicator(name: string): HTMLElement {
-  const row = document.createElement("div"); row.className = "compact-api-active";
-  row.title = `API · ${name} · ${currentLang() === "ko" ? "사용 중" : "active"}`;
-  const badge = document.createElement("strong"); badge.textContent = "API";
-  const label = document.createElement("span"); label.textContent = name;
-  row.append(badge, label);
-  return row;
 }
 
 let renderQueued = false;
@@ -2469,14 +2465,6 @@ async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
         intro.className = "workspace-heading";
         const title = document.createElement("h1");
         title.textContent = currentLang() === "ko" ? "연결 관리" : "Connections";
-        const register = document.createElement("button");
-        register.className = "api-register";
-        register.dataset.apiFocus = "register";
-        register.append(icon("key"), currentLang() === "ko" ? "API 키 등록" : "Add API key");
-        register.onclick = () => {
-          if (loginOpen) { toast(t("loginBusy"), true); return; }
-          openApiRegistration({ changed: () => render({ immediate: true }), fit: fitHeight, toast });
-        };
         const modes = document.createElement("nav");
         modes.className = "mode-tabs";
         modes.setAttribute("aria-label", t("typeTooltip"));
@@ -2488,7 +2476,7 @@ async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
           button.addEventListener("click", () => selectViewMode(value));
           modes.append(button);
         });
-        intro.append(title, register, modes);
+        intro.append(title, modes);
         buffer.appendChild(intro);
       }
       const pending: Promise<unknown>[] = [];

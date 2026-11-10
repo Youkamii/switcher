@@ -79,14 +79,19 @@ function dialog(hooks: Hooks, title: string, canClose = () => true) {
   return host;
 }
 
-export function openApiRegistration(hooks: Hooks, initialProvider = "claude", existing?: Connection) {
+export function openConnectionRegistration(hooks: Hooks, provider: string, login: () => void) {
+  openApiRegistration(hooks, provider, undefined, login);
+}
+
+export function openApiRegistration(hooks: Hooks, initialProvider = "claude", existing?: Connection, login?: () => void) {
   if (apiIsBusy()) return;
   const text = apiText();
   let saving = false;
-  const host = dialog(hooks, existing ? text.replace : text.add, () => !saving);
+  const providerTitle = initialProvider === "claude" ? "Claude" : "Codex";
+  const host = dialog(hooks, existing ? text.replace : login ? `${providerTitle} · ${currentLang() === "ko" ? "계정 추가" : "Add account"}` : text.add, () => !saving);
   let provider = existing?.provider ?? initialProvider;
   const form = document.createElement("form"); form.className = "api-form";
-  const providers = document.createElement("div"); providers.className = "api-providers"; providers.setAttribute("aria-label", "API provider");
+  const providers = document.createElement("div"); providers.className = "api-providers"; providers.hidden = Boolean(login); providers.setAttribute("aria-label", "API provider");
   const choices: HTMLButtonElement[] = [];
   const providerNote = paragraph(text.claudeNote);
   const key = document.createElement("input"); key.type = "password"; key.required = true; key.maxLength = 4096; key.minLength = 16; key.autocomplete = "new-password"; key.spellcheck = false; key.pattern = "sk-[!-~]+";
@@ -103,22 +108,50 @@ export function openApiRegistration(hooks: Hooks, initialProvider = "claude", ex
   const name = document.createElement("input"); name.name = "connection-name"; name.required = true; name.maxLength = 32; name.pattern = "[A-Za-z0-9_-]+"; name.autocomplete = "off";
   name.placeholder = text.nameHint; name.value = existing?.name ?? ""; name.readOnly = Boolean(existing); nameLabel.append(name);
   const keyLabel = document.createElement("label"); keyLabel.textContent = text.key; key.name = "api-key"; key.placeholder = "sk-…"; keyLabel.append(key);
+  const budgetLabel = document.createElement("label"); budgetLabel.textContent = currentLang() === "ko" ? "월 예산 (USD)" : "Monthly budget (USD)";
+  const budget = document.createElement("input"); budget.type = "number"; budget.name = "budget-usd"; budget.min = "0.01"; budget.max = "1000000000"; budget.step = "0.01"; budget.value = "195"; budget.required = !existing; budgetLabel.hidden = Boolean(existing); budgetLabel.append(budget);
   const errorLine = paragraph("", "api-error"); errorLine.setAttribute("role", "alert");
   const save = document.createElement("button"); save.type = "submit"; save.className = "primary api-save"; save.append(icon("shield"), text.save);
-  form.append(providers, consoleLink, nameLabel, keyLabel, paragraph(existing ? text.replacement : text.keyNote), providerNote, errorLine, save);
-  host.append(paragraph(text.billing, "api-billing"), form);
+  form.append(providers, consoleLink, nameLabel, keyLabel, budgetLabel, paragraph(existing ? text.replacement : text.keyNote), providerNote, errorLine, save);
+  const billing = paragraph(text.billing, "api-billing");
+  let loginButton: HTMLButtonElement | undefined;
+  if (login) {
+    const methods = document.createElement("div"); methods.className = "api-providers connection-methods";
+    const subscription = document.createElement("div"); subscription.className = "connection-subscription";
+    subscription.append(paragraph(currentLang() === "ko" ? "브라우저에서 로그인해 구독 계정을 추가합니다." : "Sign in through your browser to add a subscription account."));
+    loginButton = document.createElement("button"); loginButton.className = "primary connection-login"; loginButton.textContent = currentLang() === "ko" ? "로그인 시작" : "Sign in";
+    loginButton.onclick = () => { if (saving) return; host.dispatchEvent(new Event("api-dismiss")); login(); };
+    subscription.append(loginButton);
+    for (const [method, label] of [["subscription", currentLang() === "ko" ? "구독 로그인" : "Subscription"], ["api", "API 키"]]) {
+      const button = document.createElement("button"); button.type = "button"; button.dataset.method = method; button.textContent = label; button.setAttribute("aria-pressed", String(method === "subscription"));
+      button.onclick = () => {
+        if (saving) return;
+        key.value = ""; form.hidden = billing.hidden = method !== "api"; subscription.hidden = method === "api";
+        methods.querySelectorAll("button").forEach(choice => choice.setAttribute("aria-pressed", String(choice === button)));
+        hooks.fit(); if (method === "api") name.focus(); else loginButton!.focus();
+      };
+      methods.append(button);
+    }
+    form.hidden = billing.hidden = true;
+    host.append(methods, subscription);
+  }
+  host.append(billing, form);
   // A save is a short local mutation. Network checks may continue after the dialog closes.
   form.onsubmit = async event => {
     event.preventDefault(); if (saving) return;
     saving = true; apiPending++; save.disabled = true; name.readOnly = true; key.readOnly = true; choices.forEach(b => { b.disabled = true; });
     const close = host.querySelector<HTMLButtonElement>(".api-close")!; close.disabled = true;
     const connection: Connection = { provider, name: name.value.trim().toLowerCase() };
+    const apply = async () => {
+      if (!existing) await invoke("api_usage_save", { ...connection, settings: { budget_usd: Number(budget.value), source: "manual", spent_usd: null, api_key_id: null, admin_key: null } });
+      await invoke("api_activate", connection);
+    };
     let stored = false;
     let activationError: string | null = null;
     try {
       await invoke("api_save", { ...connection, key: key.value.trim(), replace: Boolean(existing) }); stored = true;
       key.value = "";
-      try { await invoke("api_activate", connection); }
+      try { await apply(); }
       catch (error) { activationError = String(error); }
     } catch (error) { errorLine.textContent = String(error); }
     finally {
@@ -126,7 +159,7 @@ export function openApiRegistration(hooks: Hooks, initialProvider = "claude", ex
       name.readOnly = Boolean(existing); key.readOnly = false; choices.forEach(b => { b.disabled = Boolean(existing); });
     }
     if (!stored) { key.focus(); return; }
-    form.remove(); host.querySelector("h2")!.textContent = activationError ? text.savedOnly : text.complete;
+    form.remove(); host.querySelector(".connection-methods")?.remove(); host.querySelector(".connection-subscription")?.remove(); host.querySelector("h2")!.textContent = activationError ? text.savedOnly : text.complete;
     const result = paragraph(activationError ? `${text.applyFailed}: ${activationError}` : text.applied, activationError ? "api-error" : "api-applied");
     host.append(result);
     if (activationError) {
@@ -134,7 +167,7 @@ export function openApiRegistration(hooks: Hooks, initialProvider = "claude", ex
       retry.onclick = async () => {
         if (saving) return;
         saving = true; apiPending++; retry.disabled = true; close.disabled = true;
-        try { await invoke("api_activate", connection); result.className = "api-applied"; result.textContent = text.applied; host.querySelector("h2")!.textContent = text.complete; retry.remove(); }
+        try { await apply(); result.className = "api-applied"; result.textContent = text.applied; host.querySelector("h2")!.textContent = text.complete; retry.remove(); }
         catch (error) { result.textContent = String(error); retry.disabled = false; }
         finally { saving = false; apiPending--; close.disabled = false; hooks.fit(); }
       };
@@ -146,7 +179,7 @@ export function openApiRegistration(hooks: Hooks, initialProvider = "claude", ex
     catch (error) { if (host.isConnected) { status.textContent = String(error); status.dataset.state = "error"; } }
     finally { if (!host.isConnected) void hooks.changed(); hooks.fit(); }
   };
-  host.showModal(); hooks.fit(); (existing ? key : name).focus();
+  host.showModal(); hooks.fit(); (loginButton ?? (existing ? key : name)).focus();
 }
 
 export async function apiConnections(provider: string, hooks: Hooks): Promise<HTMLElement> {
@@ -204,7 +237,121 @@ export async function apiConnections(provider: string, hooks: Hooks): Promise<HT
       finally { apiPending--; remove.disabled = false; hooks.fit(); }
       if (changed) await hooks.changed();
     };
-    actions.append(use, check, replace, remove); card.append(head, actions); panel.append(card);
+    actions.append(use, check, replace, remove); card.append(head, actions, await apiUsageRow(provider, connection.name, hooks)); panel.append(card);
   }
   return panel;
+}
+
+
+type ApiUsage = {
+  month: string; budget_usd: number; spent_usd: number | null; remaining_usd: number | null; percent: number | null;
+  source: "manual" | "automatic"; api_key_id: string; admin_key_stored: boolean;
+  checked_at: number | null; provider_updated_at: string | null; error: string | null;
+};
+const money = (amount: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(amount);
+const defaultUsage = (): ApiUsage => ({ month: new Date().toISOString().slice(0, 7), budget_usd: 195, spent_usd: null, remaining_usd: null, percent: null, source: "manual", api_key_id: "", admin_key_stored: false, checked_at: null, provider_updated_at: null, error: null });
+
+function usageMeter(usage: ApiUsage, compact = false): HTMLElement {
+  const ko = currentLang() === "ko";
+  const box = document.createElement("div"); box.className = `api-cost-meter${compact ? " compact-cost-meter" : ""}`;
+  const top = document.createElement("div"); top.className = "api-cost-heading";
+  if (!compact) { const month = document.createElement("span"); month.textContent = `${usage.month} · UTC`; top.append(month); }
+  const amount = document.createElement("strong"); amount.className = "api-cost-amount";
+  amount.textContent = `${usage.spent_usd === null ? "—" : money(usage.spent_usd)} / ${compact ? new Intl.NumberFormat("en-US").format(usage.budget_usd) : money(usage.budget_usd)}`;
+  top.append(amount);
+  const track = document.createElement("div"); track.className = "api-cost-track";
+  const fill = document.createElement("span"); fill.style.width = `${Math.min(100, Math.max(0, usage.percent ?? 0))}%`; track.append(fill);
+  if (usage.percent !== null) { track.setAttribute("role", "progressbar"); track.setAttribute("aria-valuenow", String(Math.min(100, Math.max(0, usage.percent)))); track.setAttribute("aria-valuemin", "0"); track.setAttribute("aria-valuemax", "100"); track.setAttribute("aria-label", ko ? "API 월 예산 사용률" : "API monthly budget usage"); }
+  box.classList.toggle("cost-warning", (usage.percent ?? 0) >= 80); box.classList.toggle("cost-exceeded", (usage.percent ?? 0) >= 100);
+  box.append(top, track);
+  const detail = usage.spent_usd === null ? (ko ? "사용 금액 미입력 · 조회 전" : "Amount not entered or fetched") : usage.remaining_usd! < 0 ? (ko ? `${money(-usage.remaining_usd!)} 초과` : `${money(-usage.remaining_usd!)} over budget`) : (ko ? `${money(usage.remaining_usd!)} 남음` : `${money(usage.remaining_usd!)} remaining`);
+  box.title = `${detail} · ${usage.source === "manual" ? (ko ? "직접 입력" : "Manual") : (ko ? "API 집계 · 반영 지연 가능" : "API report · may be delayed")}${usage.checked_at ? " · " + new Date(usage.checked_at * 1000).toLocaleString() : ""}${usage.provider_updated_at ? " · " + usage.provider_updated_at : ""}${usage.error ? " · " + usage.error : ""}`;
+  if (!compact) {
+    box.append(paragraph(`${detail} · ${usage.source === "manual" ? (ko ? "직접 입력" : "Manual") : (ko ? "자동 조회" : "Automatic")}`, "api-cost-detail"));
+    if (usage.error) box.append(paragraph(usage.error, "api-cost-error"));
+  }
+  return box;
+}
+
+async function apiUsageRow(provider: string, name: string, hooks: Hooks): Promise<HTMLElement> {
+  let usage: ApiUsage;
+  try { usage = await invoke<ApiUsage>("api_usage_read", { provider, name }); }
+  catch (error) { usage = { ...defaultUsage(), error: String(error) }; }
+  const row = document.createElement("div"); row.className = "api-cost";
+  const meter = document.createElement("div"); meter.className = "api-cost-content"; meter.append(usageMeter(usage));
+  const actions = document.createElement("div"); actions.className = "api-cost-actions";
+  const edit = iconButton("edit", currentLang() === "ko" ? "사용량·예산 설정" : "Usage and budget settings", "api-usage-settings");
+  edit.dataset.apiFocus = `${provider}/${name}/usage`;
+  edit.onclick = () => openUsageSettings(provider, name, usage, hooks);
+  const refresh = iconButton("reconnect", currentLang() === "ko" ? "비용 새로고침" : "Refresh costs", "api-usage-refresh");
+  const repaint = () => { meter.replaceChildren(usageMeter(usage)); refresh.hidden = usage.source !== "automatic"; hooks.fit(); };
+  const update = async (force: boolean) => {
+    refresh.disabled = true;
+    try { usage = await invoke<ApiUsage>("api_usage_refresh", { provider, name, force }); }
+    catch (error) { usage = { ...usage, error: String(error) }; }
+    finally { refresh.disabled = false; repaint(); }
+  };
+  refresh.hidden = usage.source !== "automatic"; refresh.onclick = () => void update(true);
+  actions.append(edit, refresh); row.append(meter, actions);
+  if (usage.source === "automatic") void update(false);
+  return row;
+}
+
+export function compactApiUsage(provider: string, name: string): HTMLElement {
+  const row = document.createElement("div"); row.className = "compact-api-active";
+  const label = document.createElement("div"); label.className = "compact-api-label";
+  const badge = document.createElement("strong"); badge.textContent = "API";
+  const title = document.createElement("span"); title.textContent = name; label.append(badge, title);
+  row.title = `API · ${name}`; const meter = document.createElement("div"); meter.className = "compact-api-cost";
+  meter.append(usageMeter(defaultUsage(), true)); row.append(label, meter);
+  void invoke<ApiUsage>("api_usage_read", { provider, name }).then(async usage => {
+    meter.replaceChildren(usageMeter(usage, true));
+    if (usage.source === "automatic") { const updated = await invoke<ApiUsage>("api_usage_refresh", { provider, name, force: false }); meter.replaceChildren(usageMeter(updated, true)); }
+  }).catch(error => { meter.title = String(error); meter.classList.add("cost-warning"); });
+  return row;
+}
+
+function openUsageSettings(provider: string, name: string, current: ApiUsage, hooks: Hooks) {
+  if (apiIsBusy()) return;
+  const ko = currentLang() === "ko"; let saving = false;
+  const host = dialog(hooks, ko ? `${name} · 사용량` : `${name} · Usage`, () => !saving);
+  const form = document.createElement("form"); form.className = "api-form api-usage-form";
+  const input = (label: string, field: string, type: string, value: string) => {
+    const wrapper = document.createElement("label"); wrapper.textContent = label;
+    const control = document.createElement("input"); control.name = field; control.type = type; control.value = value; wrapper.append(control); return { wrapper, control };
+  };
+  const budget = input(ko ? "월 예산 (USD)" : "Monthly budget (USD)", "budget", "number", String(current.budget_usd));
+  budget.control.required = true; budget.control.min = "0.01"; budget.control.max = "1000000000"; budget.control.step = "0.01";
+  const methodLabel = document.createElement("label"); methodLabel.textContent = ko ? "사용 금액 입력 방법" : "Cost source";
+  const method = document.createElement("select"); method.name = "source";
+  for (const [value, label] of [["manual", ko ? "직접 입력" : "Manual"], ["automatic", ko ? "API에서 자동 조회" : "Automatic API reporting"]]) { const option = document.createElement("option"); option.value = value; option.textContent = label; method.append(option); }
+  method.value = current.source; methodLabel.append(method);
+  const manual = input(ko ? `${current.month} 사용 금액 (USD)` : `${current.month} spent (USD)`, "spent", "number", current.source === "manual" && current.spent_usd !== null ? String(current.spent_usd) : "");
+  manual.control.min = "0"; manual.control.max = "1000000000"; manual.control.step = "0.01"; manual.control.placeholder = ko ? "미입력 상태 유지 가능" : "Leave blank if unknown";
+  const automatic = document.createElement("div"); automatic.className = "api-usage-auto";
+  const keyId = input("API key ID", "key-id", "text", current.api_key_id); keyId.control.placeholder = provider === "claude" ? "apikey_…" : "key_…"; keyId.control.maxLength = 200;
+  const admin = input(ko ? "비용 조회용 관리자 API 키" : "Admin API key for cost reports", "admin-key", "password", ""); admin.control.autocomplete = "new-password"; admin.control.maxLength = 4096; admin.control.minLength = 16; admin.control.placeholder = current.admin_key_stored ? (ko ? "저장됨 · 비워 두면 기존 키 유지" : "Saved · leave blank to keep") : "sk-…";
+  automatic.append(keyId.wrapper, admin.wrapper, paragraph(ko ? "관리자 권한이 있는 조회용 키가 필요합니다. API key ID는 조회할 실행 키의 식별자이며 비밀 키와 다릅니다." : "Requires an administrative reporting key. API key ID identifies the inference key to report, not its secret."));
+  const console = document.createElement("button"); console.type = "button"; console.className = "api-console"; console.textContent = ko ? "공급자 비용 페이지 ↗" : "Provider cost dashboard ↗";
+  const error = paragraph("", "api-error"); error.setAttribute("role", "alert");
+  console.onclick = () => { void invoke("api_open_usage_console", { provider }).catch(reason => { error.textContent = String(reason); }); };
+  const save = document.createElement("button"); save.type = "submit"; save.className = "primary api-save";
+  const change = () => {
+    const auto = method.value === "automatic"; manual.wrapper.hidden = auto; automatic.hidden = !auto; keyId.control.required = auto; admin.control.required = auto && !current.admin_key_stored; admin.control.value = "";
+    save.textContent = auto ? (ko ? "저장하고 조회" : "Save and fetch") : (ko ? "저장" : "Save"); hooks.fit();
+  };
+  method.onchange = change;
+  form.append(budget.wrapper, methodLabel, manual.wrapper, automatic, console, paragraph(ko ? "API별 월 예산이며 UTC 기준으로 월이 바뀝니다. 공급자의 결제 한도나 실행 중인 CLI를 차단하지 않습니다." : "A monthly budget for this API, using UTC months. This does not set a provider billing limit or stop a running CLI."), error, save);
+  host.append(form); change();
+  form.onsubmit = async event => {
+    event.preventDefault(); if (saving) return;
+    saving = true; apiPending++; save.disabled = true; host.querySelector<HTMLButtonElement>(".api-close")!.disabled = true;
+    let saved = false;
+    try {
+      await invoke("api_usage_save", { provider, name, settings: { budget_usd: Number(budget.control.value), source: method.value, spent_usd: method.value === "manual" && manual.control.value !== "" ? Number(manual.control.value) : null, api_key_id: keyId.control.value.trim(), admin_key: admin.control.value.trim() || null } }); saved = true;
+    } catch (reason) { error.textContent = String(reason); }
+    finally { admin.control.value = ""; saving = false; apiPending--; save.disabled = false; host.querySelector<HTMLButtonElement>(".api-close")!.disabled = false; }
+    if (saved) host.dispatchEvent(new Event("api-dismiss"));
+  };
+  host.showModal(); hooks.fit(); budget.control.focus();
 }

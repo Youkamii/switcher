@@ -6,6 +6,7 @@ use std::{fs, path::PathBuf, sync::Mutex};
 
 static LOCK: Mutex<()> = Mutex::new(());
 mod activation;
+pub mod costs;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -270,7 +271,8 @@ pub fn delete(env: &Env, provider: &str, name: &str) -> Result<(), String> {
         activation::deactivate_locked(env, provider)?;
     }
     OsSecrets(env).remove(&service(provider, name))?;
-    for file in ["connection.json", "run.sh", "run.ps1", "key.sh", "key.ps1"] {
+    costs::remove_locked(env, provider, name)?;
+    for file in ["connection.json", "run.sh", "run.ps1", "key.sh", "key.ps1", "usage.json"] {
         match fs::remove_file(dir.join(file)) {
             Ok(()) => (),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),

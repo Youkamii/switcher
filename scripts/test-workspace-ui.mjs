@@ -14,6 +14,11 @@ function fixture(mode = "normal", preview = false) {
   let visibility = { claude:preview!=='no-ai', codex:preview!=='no-ai', github:true, display:true, black:true, tfsd:false };
   const activeApi = new Map(preview===true ? [['claude','project']] : []); let activationFailure = false;
   let codexBlocked = false; let checkFailure = false; let releaseCheck = null; let holdCheck = false;
+  let costFailure = false;
+  const costs = new Map();
+  const usageFor = (provider, name) => costs.get(provider+'/'+name) ?? {month:'2026-11',budget_usd:195,spent_usd:null,remaining_usd:null,percent:null,source:'manual',api_key_id:'',admin_key_stored:false,checked_at:null,provider_updated_at:null,error:null};
+  const updateCost = (provider,name,value) => { const data={...usageFor(provider,name),...value}; data.remaining_usd=data.spent_usd===null?null:data.budget_usd-data.spent_usd;data.percent=data.spent_usd===null?null:data.spent_usd/data.budget_usd*100;costs.set(provider+'/'+name,data);return data; };
+  if(preview) updateCost('claude','project',{spent_usd:78.45,checked_at:1794300000});
   const connections = new Map(preview ? [['claude/project',{provider:'claude',name:'project',check_state:'ready',checked_at:1794300000}]] : []);
   // A native host drives test interactions even when WebKit throttles page timers.
   let tickId=0; const ticks=new Map();
@@ -32,7 +37,7 @@ function fixture(mode = "normal", preview = false) {
     transformCallback(fn) { callbacks.set(seq,fn); return seq++; },
     unregisterCallback(id) { callbacks.delete(id); },
     async invoke(cmd, args={}) {
-      calls.push({cmd, args: cmd === 'api_save' ? {provider:args.provider,name: args.name, key: '[REDACTED]',replace:args.replace} : args});
+      calls.push({cmd, args: cmd === 'api_save' ? {provider:args.provider,name: args.name, key: '[REDACTED]',replace:args.replace} : cmd==='api_usage_save' ? {...args,settings:{...args.settings,admin_key:args.settings.admin_key?'[REDACTED]':null}} : args});
       if(cmd === 'plugin:event|listen') { const ids = events.get(args.event) ?? []; ids.push(args.handler); events.set(args.event,ids); return seq++; }
       if(cmd === 'get_language') return 'ko';
       if(cmd === 'get_accent_theme') return 'deep-green';
@@ -52,6 +57,13 @@ function fixture(mode = "normal", preview = false) {
         ...(args.provider==='claude' ? [{name:'work',id:'claude-2',email:'work@example.test',plan:'Pro',active:false,saved_at:1,plan_tier:null}] : [])] };
       if(cmd === 'fetch_usage') return { windows:[{key:'five_hour',label:'5 Hours',percent:32,resets_at:null},{key:'weekly',label:'Weekly',percent:54,resets_at:null}],stale:args.profile==='work',stale_age_secs:600,issue:args.profile==='work'?'토큰 갱신 권한이 거부됐습니다 — 계정·조직의 접근 정책을 확인하세요':null };
       if(cmd === 'api_list') return [...connections.values()].filter(c=>c.provider===args.provider).map(c=>({...c,active:activeApi.get(c.provider)===c.name}));
+      if(cmd === 'start_login') throw 'fixture login stopped';
+      if(cmd === 'api_usage_read') return usageFor(args.provider,args.name);
+      if(cmd === 'api_usage_save') {
+        const old=usageFor(args.provider,args.name), settings=args.settings;
+        return updateCost(args.provider,args.name,{...settings,api_key_id:settings.source==='automatic'?settings.api_key_id:'',spent_usd:settings.source==='automatic'?null:settings.spent_usd??(old.source==='manual'?old.spent_usd:null),admin_key:undefined,admin_key_stored:settings.source==='automatic',error:null,checked_at:1794300000});
+      }
+      if(cmd === 'api_usage_refresh') return updateCost(args.provider,args.name,costFailure?{error:'비용 조회 권한이 없습니다'}:{spent_usd:42.5,error:null,checked_at:1794300000});
       if(cmd === 'api_save') {
         if(args.key !== 'sk-dummy-test-key-123456') throw 'test input mismatch';
         const id=args.provider+'/'+args.name;
@@ -88,6 +100,12 @@ function fixture(mode = "normal", preview = false) {
   };
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener(){} };
   const ready = async(selector) => { for(let i=0;i<100;i++) {const el=document.querySelector(selector);if(el)return el;await delay();} throw new Error('Missing '+selector); };
+  const openApi = async(provider='claude') => {
+    document.querySelector('.add-account[data-provider="'+provider+'"]').click();
+    await ready('.connection-methods');
+    document.querySelector('[data-method="api"]').click();
+    return ready('.api-form');
+  };
   window.addEventListener('load', async () => {
     try {
       await ready(preview==='no-ai' ? '.mon-section' : mode === 'normal' ? '.workspace-heading' : mode === 'edge' ? '.edge-account' : '.compact-card');
@@ -121,7 +139,7 @@ function fixture(mode = "normal", preview = false) {
           record('selected-api-inside-window-'+mode, selected && box(selected).left>=0 && box(selected).right<=innerWidth);
         }
         if(preview==='registration' || preview==='result') {
-          document.querySelector('.api-register').click();
+          await openApi();
           const form=await ready('.api-form');
           if(preview==='result') {
             form.elements.namedItem('connection-name').value='demo'; form.elements.namedItem('api-key').value='sk-dummy-test-key-123456';
@@ -133,6 +151,10 @@ function fixture(mode = "normal", preview = false) {
         record('no-browser-errors-'+mode,errors.length===0);
         return;
       }
+      document.querySelector('.add-account[data-provider="claude"]').click();await ready('.connection-methods');
+      record('account-add-offers-both-authentication-methods',document.querySelectorAll('.connection-methods button').length===2&&!document.querySelector('.connection-subscription').hidden);
+      document.querySelector('.connection-login').click();await delay();await delay();await delay();
+      record('subscription-choice-uses-existing-login-flow',calls.some(c=>c.cmd==='start_login'&&c.args.provider==='claude')&&!document.querySelector('.api-dialog'));
       await ready('.api-panel');
       document.querySelector('.shell').style.width='420px';
       await delay();
@@ -152,9 +174,9 @@ function fixture(mode = "normal", preview = false) {
       const stale=cards[1].querySelector('.stale-overlay');
       record('auth-error-visible-with-stale-usage', stale?.textContent.includes('권한'));
       record('auth-error-does-not-overlap-bars', stale.getBoundingClientRect().top >= [...cards[1].querySelectorAll('.usage-row')].at(-1).getBoundingClientRect().bottom);
-      record('registration-visible-without-expanding-panels',box(document.querySelector('.api-register')).width>0);
+      record('one-add-entry-for-subscription-and-api',!document.querySelector('.api-register') && [...document.querySelectorAll('.add-account[data-provider]')].length===2);
       record('no-empty-api-space',[...document.querySelectorAll('.api-panel')].every(el=>box(el).height===0));
-      document.querySelector('.api-register').click();
+      await openApi();
       let form=await ready('.api-form');
       let inputs=form.querySelectorAll('input'); inputs[0].value='project';inputs[1].value='sk-dummy-test-key-123456';
       record('secret-input-masked',inputs[1].type==='password');
@@ -172,9 +194,10 @@ function fixture(mode = "normal", preview = false) {
       record('window-move-preserves-registration-inputs',form.isConnected&&inputs[0].value==='project'&&inputs[1].value==='sk-dummy-test-key-123456');
       const dialogBox=box(document.querySelector('.api-dialog'));
       record('api-dialog-stays-inside-window',dialogBox.left>=0 && dialogBox.right<=innerWidth && dialogBox.top>=0 && dialogBox.bottom<=innerHeight);
-      form.querySelector('[data-provider="codex"]').click();
-      record('changing-provider-clears-secret',inputs[1].value==='');
-      form.querySelector('[data-provider="claude"]').click(); inputs[1].value='sk-dummy-test-key-123456';
+      document.querySelector('[data-method="subscription"]').click();
+      record('changing-login-method-clears-secret',inputs[1].value==='' && form.hidden && !document.querySelector('.connection-subscription').hidden);
+      document.querySelector('[data-method="api"]').click(); inputs[1].value='sk-dummy-test-key-123456';
+      record('provider-is-inherited-from-account-add',form.querySelector('.api-providers').hidden);
       form.querySelector('.api-console').click(); await delay();
       record('key-issuance-page-uses-selected-provider',calls.some(c=>c.cmd==='api_open_console' && c.args.provider==='claude'));
       document.getElementById('refresh').click(); await delay();
@@ -194,6 +217,20 @@ function fixture(mode = "normal", preview = false) {
       let api=await ready('.api-card');
       record('registered-api-immediately-visible',box(api).height>0 && !api.closest('.api-panel').hidden);
       record('verification-persists-after-render',api.querySelector('.api-status').dataset.state==='ready');
+      record('new-api-default-monthly-budget-is-195',api.querySelector('.api-cost-amount').textContent.includes('$195.00') && api.querySelector('.api-cost-amount').textContent.includes('—'));
+      api.querySelector('.api-usage-settings').click();let usageForm=await ready('.api-usage-form');
+      record('usage-settings-start-with-195',usageForm.elements.namedItem('budget').value==='195');
+      usageForm.elements.namedItem('spent').value='78.45';usageForm.requestSubmit();await delay();await delay();api=document.querySelector('.api-card');
+      record('manual-api-cost-and-remaining-budget-visible',api.textContent.includes('$78.45')&&api.textContent.includes('$116.55')&&api.querySelector('[role="progressbar"]'));
+      api.querySelector('.api-usage-settings').click();usageForm=await ready('.api-usage-form');usageForm.elements.namedItem('spent').value='210';usageForm.requestSubmit();await delay();await delay();api=document.querySelector('.api-card');
+      record('over-budget-amount-is-visible-and-bar-is-capped',api.textContent.includes('$15.00 초과')&&api.querySelector('.cost-exceeded')&&api.querySelector('[role="progressbar"]').getAttribute('aria-valuenow')==='100');
+      api.querySelector('.api-usage-settings').click();usageForm=await ready('.api-usage-form');usageForm.elements.namedItem('source').value='automatic';usageForm.elements.namedItem('source').dispatchEvent(new Event('change'));usageForm.elements.namedItem('key-id').value='apikey_fixture';const adminField=usageForm.elements.namedItem('admin-key');adminField.value='sk-dummy-admin-123456';usageForm.requestSubmit();await delay();await delay();api=document.querySelector('.api-card');
+      record('automatic-api-costs-use-separate-secret-and-key-id',adminField.value===''&&api.textContent.includes('$42.50')&&api.textContent.includes('자동 조회')&&calls.some(c=>c.cmd==='api_usage_save'&&c.args.settings.api_key_id==='apikey_fixture'&&c.args.settings.admin_key==='[REDACTED]'));
+      costFailure=true;api.querySelector('.api-usage-refresh').click();await delay();
+      record('cost-query-error-keeps-last-known-amount',api.textContent.includes('$42.50')&&api.textContent.includes('조회 권한'));
+      costFailure=false;api.querySelector('.api-usage-settings').click();usageForm=await ready('.api-usage-form');usageForm.elements.namedItem('source').value='manual';usageForm.elements.namedItem('source').dispatchEvent(new Event('change'));usageForm.elements.namedItem('spent').value='78.45';usageForm.requestSubmit();await delay();await delay();api=document.querySelector('.api-card');
+      record('manual-mode-removes-reporting-credential',!usageFor('claude','project').admin_key_stored);
+
       api.querySelector('.api-check').click();await delay();
       record('explicit-api-check',api.textContent.includes('연결 확인됨'));
       record('selected-api-shows-active-state',api.classList.contains('api-active')&&api.querySelector('.api-use').textContent==='해제');
@@ -209,20 +246,20 @@ function fixture(mode = "normal", preview = false) {
       form.requestSubmit(); await ready('.api-applied'); await delay();
       record('replacement-is-explicit',calls.filter(c=>c.cmd==='api_save').at(-1).args.replace===true);
       document.querySelector('.api-close').click(); await delay();
-      document.querySelector('.api-register').click();form=await ready('.api-form');inputs=form.querySelectorAll('input');inputs[0].value='project';inputs[1].value='sk-dummy-test-key-123456';
+      await openApi();form=await ready('.api-form');inputs=form.querySelectorAll('input');inputs[0].value='project';inputs[1].value='sk-dummy-test-key-123456';
       form.requestSubmit(); await delay();
       record('duplicate-does-not-silently-replace-key',form.isConnected && form.querySelector('.api-error').textContent.includes('같은 이름'));
       record('secret-cleared-on-save-error',inputs[1].value==='');
       document.querySelector('.api-close').click(); await delay();
       activationFailure=true;
-      document.querySelector('.api-register').click();form=await ready('.api-form');inputs=form.querySelectorAll('input');inputs[0].value='apply-retry';inputs[1].value='sk-dummy-test-key-123456';form.requestSubmit();await ready('.api-apply');
+      await openApi();form=await ready('.api-form');inputs=form.querySelectorAll('input');inputs[0].value='apply-retry';inputs[1].value='sk-dummy-test-key-123456';form.requestSubmit();await ready('.api-apply');
       record('activation-failure-keeps-saved-key-and-offers-retry',connections.has('claude/apply-retry')&&inputs[1].value===''&&!document.querySelector('.api-applied'));
       activationFailure=false;document.querySelector('.api-apply').click();await ready('.api-applied');
       record('activation-retry-uses-saved-key',activeApi.get('claude')==='apply-retry'&&!document.querySelector('.api-apply'));
       document.querySelector('.api-close').click();await delay();
       // A network check may finish after the user closes registration, without freezing the app.
       checkFailure=true;holdCheck=true;
-      document.querySelector('.api-register').click();form=await ready('.api-form');form.querySelector('[data-provider="codex"]').click();inputs=form.querySelectorAll('input');inputs[0].value='secondary';inputs[1].value='sk-dummy-test-key-123456';form.requestSubmit();
+      await openApi('codex');form=await ready('.api-form');inputs=form.querySelectorAll('input');inputs[0].value='secondary';inputs[1].value='sk-dummy-test-key-123456';form.requestSubmit();
       await ready('.api-applied');await delay();document.querySelector('.api-close').click();await delay();
       record('slow-network-check-does-not-trap-dialog',!document.querySelector('.api-dialog'));
       releaseCheck();holdCheck=false;await delay();await delay();
