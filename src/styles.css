@@ -2413,10 +2413,16 @@ button:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus
 .api-status[data-state="ready"], .api-check-result[data-state="ready"] { color: var(--accent); }
 .api-status[data-state="error"], .api-check-result[data-state="error"] { color: var(--warn); }
 .api-actions { display: flex; gap: 1px; }
+.api-use { min-width: 42px; height: 28px; padding: 3px 7px; margin-right: 3px; color: var(--accent); }
+.api-active { border-color: rgba(var(--accent-rgb), .55); }
+.api-applied { color: var(--accent); font-size: 12px; line-height: 1.7; margin-bottom: 14px; }
+.compact-api-active { display: flex; align-items: center; gap: 5px; padding: 6px; margin-bottom: 5px; color: var(--accent); border: 1px solid rgba(var(--accent-rgb), .5); border-radius: 6px; font-size: 10px; overflow: hidden; }
+.compact-api-active span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+body.edge .compact-api-active { flex-direction: column; gap: 2px; padding: 4px 2px; font-size: 8px; }
 .api-run { color: var(--accent); }
 .api-dialog { position: fixed; inset: 0; margin: auto; width: min(380px, calc(100% - 24px)); max-height: calc(100% - 28px); overflow-y: auto; background: rgb(var(--bg-rgb)); color: rgb(var(--text-rgb)); border: 1px solid rgb(var(--border-rgb)); border-radius: 14px; padding: 20px; box-shadow: 0 24px 80px #0009; }
 .api-dialog::backdrop { background: #090c10a8; backdrop-filter: blur(3px); }
-.api-dialog-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.api-dialog-head { position: sticky; top: -20px; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: -20px -20px 12px; padding: 16px 20px 12px; min-height: 52px; background: rgb(var(--bg-rgb)); cursor: move; }
 .api-dialog h2 { font-size: 18px; font-weight: 600; letter-spacing: -.4px; }
 .api-dialog h3 { font-size: 14px; font-weight: 550; }
 .api-dialog .help { border: 0; background: none; padding: 0; }

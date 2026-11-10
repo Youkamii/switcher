@@ -317,6 +317,7 @@ pub struct Snapshot {
     pub live: Option<LiveIdentity>,
     /// 현재 로그인 계정이 어느 프로필에도 저장되어 있지 않으면 false
     pub live_saved: bool,
+    pub api_active: Option<String>,
 }
 
 #[derive(Serialize, Debug)]
@@ -1311,31 +1312,9 @@ pub fn rename(env: &Env, provider: Provider, from: &str, to: &str) -> Result<(),
 }
 
 /// 계정 전환. 순서 불변: 1) 현재 활성 파일 백업 → 2) 대상 프로필 복사
-pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult, String> {
-    validate_name(name)?;
-    // 기존 재발급을 기다리는 동시에 새 재발급의 시작도 막는다. 반드시
-    // MUTATION_LOCK 밖에서 먼저 얻어야 재발급 파일 반영과 교착하지 않는다.
-    let _profile_guard = profile_exclusive_begin(
-        refresh_key(env, provider, name),
-        std::time::Duration::from_secs(20),
-    )?;
-    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
-    let profile_dir = env.profiles_dir(provider).join(name);
-    let target_cred = profile_dir.join(provider.credential_file_name());
-    // 직전 갱신의 본 파일 쓰기/활성 복구가 실패해 pending이 남았으면, 구토큰을
-    // 활성 위치로 복사하기 전에 반드시 복구한다.
-    crate::usage::rescue_pending_profile_locked(env, provider, name)?;
-    if !target_cred.exists() {
-        return Err(format!("프로필 '{name}'에 저장된 토큰이 없습니다"));
-    }
-    // 계정 정보 없이 토큰만 있는 프로필(구조용 백업)로 전환하면 이후 신원 판정이
-    // 어긋나 다음 전환의 백업이 엉뚱한 프로필을 덮어쓸 수 있다 — 전환 대상에서 제외
-    if provider == Provider::Claude && !profile_dir.join("oauth_account.json").exists() {
-        return Err(format!(
-            "프로필 '{name}'에는 계정 정보가 없어 전환할 수 없습니다 (구조용 백업) — 해당 계정으로 CLI 로그인 후 다시 저장하세요"
-        ));
-    }
-
+/// Back up the active credential before API or OAuth replaces its configuration.
+/// Caller holds MUTATION_LOCK. Preserve the same ordering for every switch path.
+pub(crate) fn backup_live_locked(env: &Env, provider: Provider) -> Result<(Option<String>, Option<Vec<u8>>), String> {
     // 1) 백업 — 현재 활성 계정을 자기 프로필(없으면 자동 생성)에 저장
     // 존재 확인이 실패하면(맥: security 실행 실패·키체인 조회 오류) "로그인 없음"으로 보지
     // 않고 중단한다 — 없다고 보면 백업을 건너뛴 채 활성 항목을 덮어써, 떠나는 계정의
@@ -1368,6 +1347,37 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
             }
         }
     }
+
+    Ok((backed_up_to, previous_live))
+}
+
+pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult, String> {
+    validate_name(name)?;
+    // 기존 재발급을 기다리는 동시에 새 재발급의 시작도 막는다. 반드시
+    // MUTATION_LOCK 밖에서 먼저 얻어야 재발급 파일 반영과 교착하지 않는다.
+    let _profile_guard = profile_exclusive_begin(
+        refresh_key(env, provider, name),
+        std::time::Duration::from_secs(20),
+    )?;
+    let _guard = MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
+    let profile_dir = env.profiles_dir(provider).join(name);
+    let target_cred = profile_dir.join(provider.credential_file_name());
+    // 직전 갱신의 본 파일 쓰기/활성 복구가 실패해 pending이 남았으면, 구토큰을
+    // 활성 위치로 복사하기 전에 반드시 복구한다.
+    crate::usage::rescue_pending_profile_locked(env, provider, name)?;
+    if !target_cred.exists() {
+        return Err(format!("프로필 '{name}'에 저장된 토큰이 없습니다"));
+    }
+    // 계정 정보 없이 토큰만 있는 프로필(구조용 백업)로 전환하면 이후 신원 판정이
+    // 어긋나 다음 전환의 백업이 엉뚱한 프로필을 덮어쓸 수 있다 — 전환 대상에서 제외
+    if provider == Provider::Claude && !profile_dir.join("oauth_account.json").exists() {
+        return Err(format!(
+            "프로필 '{name}'에는 계정 정보가 없어 전환할 수 없습니다 (구조용 백업) — 해당 계정으로 CLI 로그인 후 다시 저장하세요"
+        ));
+    }
+
+    crate::api_connections::deactivate_for_oauth_locked(env, provider)?;
+    let (backed_up_to, previous_live) = backup_live_locked(env, provider)?;
 
     // 2) 대상 프로필을 활성 위치로 복사
     let data = fs::read(&target_cred)
@@ -1428,7 +1438,8 @@ pub fn list(env: &Env, provider: Provider) -> Result<Snapshot, String> {
     env.check_codex_store(provider)?;
     // 표시용 목록은 신원 읽기가 일시적으로 실패해도 화면 전체를 깨뜨리지 않는다
     // (전환·저장 경로는 여전히 엄격하게 실패한다)
-    let live = live_identity(env, provider).unwrap_or(None);
+    let api_active = crate::api_connections::active_name(env, provider);
+    let live = if api_active.is_some() { None } else { live_identity(env, provider).unwrap_or(None) };
     let live_id = live.as_ref().map(|l| l.id.clone());
     let mut profiles = Vec::new();
     for (name, dir) in profile_dirs(env, provider)? {
@@ -1462,6 +1473,7 @@ pub fn list(env: &Env, provider: Provider) -> Result<Snapshot, String> {
         profiles,
         live,
         live_saved,
+        api_active,
     })
 }
 

@@ -1,10 +1,11 @@
-//! Explicit API connections. Never participate in OAuth switching or TFSD.
+//! Explicit API connections selected by the user. No automatic paid fallback.
 //! Metadata and launchers contain no key; macOS Keychain / Windows user DPAPI own secrets.
 use crate::accounts::{atomic_write, validate_name, Env, Provider};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf, sync::Mutex};
 
 static LOCK: Mutex<()> = Mutex::new(());
+mod activation;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -26,6 +27,8 @@ pub struct Connection {
     pub checked_at: Option<u64>,
     #[serde(default)]
     pub check_state: CheckState,
+    #[serde(default)]
+    pub active: bool,
     // A rotated key must not inherit an in-flight check of the previous key.
     #[serde(default)]
     revision: String,
@@ -187,7 +190,9 @@ pub fn list(env: &Env, provider: &str) -> Result<Vec<Connection>, String> {
         let entry = entry.map_err(|_| "API 연결 읽기 실패")?;
         let name = entry.file_name().to_string_lossy().into_owned();
         if validate_name(&name).is_ok() && entry.path().join("connection.json").is_file() {
-            result.push(read_connection(&entry.path(), provider, &name)?);
+            let mut connection = read_connection(&entry.path(), provider, &name)?;
+            connection.active = activation::is_active(env, provider, &connection).unwrap_or(false);
+            result.push(connection);
         }
     }
     result.sort_by(|a, b| a.name.cmp(&b.name));
@@ -225,6 +230,7 @@ fn save_with(
         name: name.to_ascii_lowercase(),
         checked_at: None,
         check_state: CheckState::Unchecked,
+        active: false,
         revision: format!(
             "{}",
             std::time::SystemTime::now()
@@ -257,10 +263,14 @@ pub fn save(env: &Env, provider: &str, name: &str, key: &str, replace: bool) -> 
     save_with(env, &OsSecrets(env), provider, name, key)
 }
 pub fn delete(env: &Env, provider: &str, name: &str) -> Result<(), String> {
+    let _mutation = crate::accounts::MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     let _guard = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
     let (provider, dir) = checked(env, provider, name)?;
+    if activation::selected_name(env, provider)?.as_deref() == Some(&name.to_ascii_lowercase()) {
+        activation::deactivate_locked(env, provider)?;
+    }
     OsSecrets(env).remove(&service(provider, name))?;
-    for file in ["connection.json", "run.sh", "run.ps1"] {
+    for file in ["connection.json", "run.sh", "run.ps1", "key.sh", "key.ps1"] {
         match fs::remove_file(dir.join(file)) {
             Ok(()) => (),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
@@ -270,6 +280,35 @@ pub fn delete(env: &Env, provider: &str, name: &str) -> Result<(), String> {
     // CLI history/config lives outside this folder; deleting a connection keeps that history.
     let _ = fs::remove_dir(dir);
     Ok(())
+}
+
+pub fn activate(env: &Env, provider: &str, name: &str) -> Result<Connection, String> {
+    let _mutation = crate::accounts::MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
+    let _guard = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
+    let (provider, _) = checked(env, provider, name)?;
+    activation::activate_locked(env, &OsSecrets(env), provider, name)
+}
+
+pub fn deactivate(env: &Env, provider: &str) -> Result<(), String> {
+    let _mutation = crate::accounts::MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
+    deactivate_for_oauth_locked(env, Provider::parse(provider)?)
+}
+
+/// Called while MUTATION_LOCK is held; never acquire it under the API lock.
+pub(crate) fn deactivate_for_oauth_locked(env: &Env, provider: Provider) -> Result<(), String> {
+    let _guard = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
+    activation::deactivate_locked(env, provider)
+}
+
+pub(crate) fn active_name(env: &Env, provider: Provider) -> Option<String> {
+    let name = activation::selected_name(env, provider).ok()??;
+    let (_, dir) = checked(env, provider.dir_name(), &name).ok()?;
+    let connection = read_connection(&dir, provider, &name).ok()?;
+    activation::is_active(env, provider, &connection).ok()?.then_some(name)
+}
+
+pub(crate) fn protected_oauth_id(env: &Env, provider: Provider) -> Option<String> {
+    activation::protected_oauth_id(env, provider)
 }
 fn sh_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
@@ -423,6 +462,7 @@ fn land_check(
     current.check_state = state;
     let bytes = serde_json::to_vec(&current).map_err(|_| "API 확인 상태 저장 실패")?;
     atomic_write(&dir.join("connection.json"), &bytes)?;
+    current.active = activation::is_active(env, provider, &current).unwrap_or(false);
     Ok(current)
 }
 pub async fn check(env: &Env, provider: &str, name: &str) -> Result<Connection, String> {

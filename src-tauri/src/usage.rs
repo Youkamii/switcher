@@ -478,6 +478,11 @@ async fn ensure_fresh_profile_at(
     let Some(meta) = read_meta(&env.profiles_dir(provider).join(name)) else {
         return Ok(());
     };
+    // The OAuth snapshot saved before an API selection remains available for
+    // restoration; do not rotate that exact snapshot behind a running old session.
+    if crate::api_connections::protected_oauth_id(env, provider).as_deref() == Some(meta.id.as_str()) {
+        return Ok(());
+    }
     match live_identity(env, provider) {
         Ok(Some(live)) if live.id == meta.id => return Ok(()), // 활성 계정 — CLI 소관
         Ok(Some(_)) => {}

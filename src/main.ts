@@ -45,6 +45,7 @@ type Snapshot = {
   profiles: ProfileInfo[];
   live: { id: string; email: string | null } | null;
   live_saved: boolean;
+  api_active?: string | null;
 };
 
 type UsageWindow = {
@@ -1316,7 +1317,7 @@ async function renderProvider(
   try {
     const snap = await invoke<Snapshot>("list_profiles", { provider });
 
-    if (!snap.live && snap.profiles.length === 0) {
+    if (!snap.live && !snap.api_active && snap.profiles.length === 0) {
       const hint = document.createElement("p");
       hint.className = "hint";
       hint.textContent = t("noAccounts");
@@ -2212,7 +2213,7 @@ async function renderProviderEdge(
 ) {
   try {
     const snap = await invoke<Snapshot>("list_profiles", { provider });
-    if (snap.profiles.length === 0) {
+    if (snap.profiles.length === 0 && !snap.api_active) {
       edgeGaugeByProvider.delete(provider);
       applyEdgeGauge();
       return;
@@ -2223,6 +2224,11 @@ async function renderProviderEdge(
     head.className = "edge-title";
     head.textContent = title;
     section.appendChild(head);
+    if (snap.api_active) {
+      section.appendChild(apiActiveIndicator(snap.api_active));
+      edgeGaugeByProvider.delete(provider);
+      applyEdgeGauge();
+    }
     if (visibility.tfsd && snap.profiles.some((p) => p.active)) {
       section.classList.add("tfsd");
       section.appendChild(tfsdWatermark());
@@ -2372,7 +2378,7 @@ async function renderProviderCompact(
 ) {
   try {
     const snap = await invoke<Snapshot>("list_profiles", { provider });
-    if (snap.profiles.length === 0) return; // 저장된 계정이 없으면 섹션 생략
+    if (snap.profiles.length === 0 && !snap.api_active) return;
 
     const section = document.createElement("section");
     // 미니멀은 섹션 제목(CLAUDE/CODEX)도 없다 — 카드만 쌓인다 (#41 후속)
@@ -2387,6 +2393,7 @@ async function renderProviderCompact(
 
     // 카드 골격은 즉시 붙이고 사용량만 뒤에서 병렬로 채운다. 모드 전환이 네트워크
     // 조회를 기다리며 멎지 않게 하면서, 일반 새로고침은 pending을 기다려 한 번에 바뀐다.
+    if (snap.api_active) section.appendChild(apiActiveIndicator(snap.api_active));
     const cards = snap.profiles.map((profile) =>
       compactCard(provider, profile, minimal, pending, forceRetry),
     );
@@ -2395,6 +2402,15 @@ async function renderProviderCompact(
   } catch {
     // 목록 실패도 조용히 — 컴팩트는 표시 전용
   }
+}
+
+function apiActiveIndicator(name: string): HTMLElement {
+  const row = document.createElement("div"); row.className = "compact-api-active";
+  row.title = `API · ${name} · ${currentLang() === "ko" ? "사용 중" : "active"}`;
+  const badge = document.createElement("strong"); badge.textContent = "API";
+  const label = document.createElement("span"); label.textContent = name;
+  row.append(badge, label);
+  return row;
 }
 
 let renderQueued = false;

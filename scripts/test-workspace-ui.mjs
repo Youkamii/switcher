@@ -12,6 +12,7 @@ function fixture(mode = "normal", preview = false) {
   const callbacks = new Map(); const events = new Map(); let seq = 1;
   const calls = []; const errors = []; const checks = [];
   let visibility = { claude:preview!=='no-ai', codex:preview!=='no-ai', github:true, display:true, black:true, tfsd:false };
+  const activeApi = new Map(preview===true ? [['claude','project']] : []); let activationFailure = false;
   let codexBlocked = false; let checkFailure = false; let releaseCheck = null; let holdCheck = false;
   const connections = new Map(preview ? [['claude/project',{provider:'claude',name:'project',check_state:'ready',checked_at:1794300000}]] : []);
   // A native host drives test interactions even when WebKit throttles page timers.
@@ -46,24 +47,29 @@ function fixture(mode = "normal", preview = false) {
       if(cmd === 'display_list') return [{id:0,name:'Built-in display',brightness:65}];
       if(cmd === 'stats_read') return {cpu:18,mem_used:6*1024**3,mem_total:16*1024**3,disk_read:2*1024**2,disk_write:1024**2,net_rx:600*1024,net_tx:200*1024};
       if(cmd === 'list_profiles' && args.provider==='codex' && codexBlocked) throw 'Codex가 파일 외 인증 저장소를 사용합니다';
-      if(cmd === 'list_profiles') return { live:{id:args.provider+'-1',email:'personal@example.test'},live_saved:true,profiles:[
-        {name:'personal', id:args.provider+'-1',email:'personal@example.test',plan:args.provider==='claude'?'Max':'Plus',active:true,saved_at:1,plan_tier:null},
+      if(cmd === 'list_profiles') return { api_active:activeApi.get(args.provider)??null, live:activeApi.has(args.provider)?null:{id:args.provider+'-1',email:'personal@example.test'},live_saved:!activeApi.has(args.provider),profiles:[
+        {name:'personal', id:args.provider+'-1',email:'personal@example.test',plan:args.provider==='claude'?'Max':'Plus',active:!activeApi.has(args.provider),saved_at:1,plan_tier:null},
         ...(args.provider==='claude' ? [{name:'work',id:'claude-2',email:'work@example.test',plan:'Pro',active:false,saved_at:1,plan_tier:null}] : [])] };
       if(cmd === 'fetch_usage') return { windows:[{key:'five_hour',label:'5 Hours',percent:32,resets_at:null},{key:'weekly',label:'Weekly',percent:54,resets_at:null}],stale:args.profile==='work',stale_age_secs:600,issue:args.profile==='work'?'토큰 갱신 권한이 거부됐습니다 — 계정·조직의 접근 정책을 확인하세요':null };
-      if(cmd === 'api_list') return [...connections.values()].filter(c=>c.provider===args.provider);
+      if(cmd === 'api_list') return [...connections.values()].filter(c=>c.provider===args.provider).map(c=>({...c,active:activeApi.get(c.provider)===c.name}));
       if(cmd === 'api_save') {
         if(args.key !== 'sk-dummy-test-key-123456') throw 'test input mismatch';
         const id=args.provider+'/'+args.name;
         if(connections.has(id) && !args.replace) throw '같은 이름의 API 연결이 있습니다';
         connections.set(id,{provider:args.provider,name:args.name,check_state:'unchecked'}); return;
       }
+      if(cmd === 'api_activate') {
+        if(activationFailure) throw 'API 설정 적용 실패';
+        activeApi.set(args.provider,args.name); return {...connections.get(args.provider+'/'+args.name),active:true};
+      }
+      if(cmd === 'api_deactivate') {activeApi.delete(args.provider);return;}
       if(cmd === 'api_check') {
         if(holdCheck) await new Promise(resolve=>{releaseCheck=resolve;});
         const id=args.provider+'/'+args.name;
         const entry={provider:args.provider,name:args.name,check_state:checkFailure?'invalid_key':'ready',checked_at:1794300000};
         connections.set(id,entry); if(checkFailure) throw 'API 키가 거부됐습니다 — 키를 교체하세요'; return entry;
       }
-      if(cmd === 'api_delete') {connections.delete(args.provider+'/'+args.name);return;}
+      if(cmd === 'api_delete') {connections.delete(args.provider+'/'+args.name);if(activeApi.get(args.provider)===args.name)activeApi.delete(args.provider);return;}
       if(cmd === 'api_launch_command') return "/bin/bash '/tmp/fake-api/run.sh'";
       if(cmd === 'plugin:window|current_monitor') return {name:'fixture',position:{x:0,y:0},size:{width:1400,height:1100},workArea:{position:{x:0,y:0},size:{width:1400,height:1100}},scaleFactor:1};
       if(cmd.endsWith('|outer_position') || cmd.endsWith('|inner_position')) return {x:20,y:20};
@@ -109,12 +115,17 @@ function fixture(mode = "normal", preview = false) {
       record('privacy-button-works-'+mode,document.body.classList.contains('privacy')!==privacyBefore);
       document.getElementById('privacybtn').click();
       if(preview) {
+        if(preview===true) {
+          const selected=document.querySelector(mode==='normal'?'.api-active .api-badge':'.compact-api-active');
+          record('selected-api-visible-'+mode, selected && box(selected).width>0 && selected.textContent.includes('API'));
+          record('selected-api-inside-window-'+mode, selected && box(selected).left>=0 && box(selected).right<=innerWidth);
+        }
         if(preview==='registration' || preview==='result') {
           document.querySelector('.api-register').click();
           const form=await ready('.api-form');
           if(preview==='result') {
             form.elements.namedItem('connection-name').value='demo'; form.elements.namedItem('api-key').value='sk-dummy-test-key-123456';
-            form.requestSubmit(); await ready('.api-launch textarea'); await delay();
+            form.requestSubmit(); await ready('.api-applied'); await delay();
           }
         }
         if(preview==='registration' || preview==='result') { const r=box(document.querySelector('.api-dialog')); record('api-'+preview+'-inside-window',r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight); }
@@ -147,6 +158,18 @@ function fixture(mode = "normal", preview = false) {
       let form=await ready('.api-form');
       let inputs=form.querySelectorAll('input'); inputs[0].value='project';inputs[1].value='sk-dummy-test-key-123456';
       record('secret-input-masked',inputs[1].type==='password');
+      const dragCount=()=>calls.filter(c=>c.cmd==='plugin:window|start_dragging').length;
+      const dragBefore=dragCount();
+      const mouseDown=(element,button=0,position={})=>element.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,button,...position}));
+      mouseDown(document.querySelector('.api-dialog-head h2')); await delay();
+      record('registration-title-starts-native-window-drag',dragCount()===dragBefore+1);
+      const bar=box(document.querySelector('.titlebar'));
+      mouseDown(document.querySelector('.api-dialog'),0,{clientX:bar.left+3,clientY:bar.top+3}); await delay();
+      record('original-titlebar-drags-through-modal-backdrop',dragCount()===dragBefore+2);
+      mouseDown(document.querySelector('.api-close'));mouseDown(inputs[0]);mouseDown(inputs[1]);mouseDown(document.querySelector('.api-dialog-head'),2);await delay();
+      record('form-controls-and-right-click-do-not-drag',dragCount()===dragBefore+2);
+      emit('tauri://move',{x:50,y:70});await delay();
+      record('window-move-preserves-registration-inputs',form.isConnected&&inputs[0].value==='project'&&inputs[1].value==='sk-dummy-test-key-123456');
       const dialogBox=box(document.querySelector('.api-dialog'));
       record('api-dialog-stays-inside-window',dialogBox.left>=0 && dialogBox.right<=innerWidth && dialogBox.top>=0 && dialogBox.bottom<=innerHeight);
       form.querySelector('[data-provider="codex"]').click();
@@ -159,25 +182,31 @@ function fixture(mode = "normal", preview = false) {
       document.getElementById('pin').click(); await delay();
       record('view-change-protects-api-input', !document.body.classList.contains('locked') && form.isConnected);
       form.requestSubmit(); form.requestSubmit();
-      await ready('.api-launch textarea'); await delay();
+      await ready('.api-applied'); await delay();
       record('register-sent-once',calls.filter(c=>c.cmd==='api_save').length===1);
       record('secret-cleared-after-save',inputs[1].value==='');
       record('registration-automatically-checks-connection',document.querySelector('.api-check-result').dataset.state==='ready');
-      record('command-visible-without-clipboard-permission',document.querySelector('.api-launch textarea').value.includes('run.sh'));
-      document.querySelector('.api-copy').click(); await delay();
-      record('launch-command-requested-without-key',calls.some(c=>c.cmd==='api_launch_command' && !('key' in c.args)));
+      record('registration-applies-api-without-command-copy',activeApi.get('claude')==='project'&&calls.filter(c=>c.cmd==='api_activate').length===1&&!document.querySelector('.api-launch'));
+      record('api-activation-never-sends-key-back-through-ui',calls.filter(c=>c.cmd==='api_activate').every(c=>!('key' in c.args))&&!calls.some(c=>c.cmd==='api_launch_command'));
+      const afterSaveDrag=dragCount();mouseDown(document.querySelector('.api-dialog-head h2'));await delay();
+      record('saved-result-remains-draggable',dragCount()===afterSaveDrag+1);
       document.querySelector('.api-close').click();
       let api=await ready('.api-card');
       record('registered-api-immediately-visible',box(api).height>0 && !api.closest('.api-panel').hidden);
       record('verification-persists-after-render',api.querySelector('.api-status').dataset.state==='ready');
       api.querySelector('.api-check').click();await delay();
       record('explicit-api-check',api.textContent.includes('연결 확인됨'));
-      api.querySelector('.api-run').click(); await ready('.api-launch textarea');
-      record('saved-connection-shows-reusable-launch-command',document.querySelector('.api-launch textarea').readOnly);
-      document.querySelector('.api-close').click(); await delay();
+      record('selected-api-shows-active-state',api.classList.contains('api-active')&&api.querySelector('.api-use').textContent==='해제');
+      api.querySelector('.api-use').click();await delay();await delay();api=document.querySelector('.api-card');
+      record('api-can-restore-previous-cli-settings',!activeApi.has('claude')&&!api.classList.contains('api-active'));
+      api.querySelector('.api-use').click();await delay();await delay();api=document.querySelector('.api-card');
+      record('saved-api-uses-one-click-without-terminal-command',activeApi.get('claude')==='project'&&api.classList.contains('api-active'));
       api=document.querySelector('.api-card'); api.querySelector('.api-replace').click(); form=await ready('.api-form');inputs=form.querySelectorAll('input');
       record('replacement-never-reveals-stored-key',inputs[0].readOnly && inputs[0].value==='project' && inputs[1].value==='');
-      inputs[1].value='sk-dummy-test-key-123456'; form.requestSubmit(); await ready('.api-launch textarea'); await delay();
+      inputs[1].value='sk-dummy-test-key-123456';
+      const replaceDrag=dragCount();mouseDown(document.querySelector('.api-dialog-head'));await delay();
+      record('key-replacement-can-drag-with-input-preserved',dragCount()===replaceDrag+1&&inputs[1].value==='sk-dummy-test-key-123456');
+      form.requestSubmit(); await ready('.api-applied'); await delay();
       record('replacement-is-explicit',calls.filter(c=>c.cmd==='api_save').at(-1).args.replace===true);
       document.querySelector('.api-close').click(); await delay();
       document.querySelector('.api-register').click();form=await ready('.api-form');inputs=form.querySelectorAll('input');inputs[0].value='project';inputs[1].value='sk-dummy-test-key-123456';
@@ -185,10 +214,16 @@ function fixture(mode = "normal", preview = false) {
       record('duplicate-does-not-silently-replace-key',form.isConnected && form.querySelector('.api-error').textContent.includes('같은 이름'));
       record('secret-cleared-on-save-error',inputs[1].value==='');
       document.querySelector('.api-close').click(); await delay();
+      activationFailure=true;
+      document.querySelector('.api-register').click();form=await ready('.api-form');inputs=form.querySelectorAll('input');inputs[0].value='apply-retry';inputs[1].value='sk-dummy-test-key-123456';form.requestSubmit();await ready('.api-apply');
+      record('activation-failure-keeps-saved-key-and-offers-retry',connections.has('claude/apply-retry')&&inputs[1].value===''&&!document.querySelector('.api-applied'));
+      activationFailure=false;document.querySelector('.api-apply').click();await ready('.api-applied');
+      record('activation-retry-uses-saved-key',activeApi.get('claude')==='apply-retry'&&!document.querySelector('.api-apply'));
+      document.querySelector('.api-close').click();await delay();
       // A network check may finish after the user closes registration, without freezing the app.
       checkFailure=true;holdCheck=true;
       document.querySelector('.api-register').click();form=await ready('.api-form');form.querySelector('[data-provider="codex"]').click();inputs=form.querySelectorAll('input');inputs[0].value='secondary';inputs[1].value='sk-dummy-test-key-123456';form.requestSubmit();
-      await ready('.api-launch textarea');await delay();document.querySelector('.api-close').click();await delay();
+      await ready('.api-applied');await delay();document.querySelector('.api-close').click();await delay();
       record('slow-network-check-does-not-trap-dialog',!document.querySelector('.api-dialog'));
       releaseCheck();holdCheck=false;await delay();await delay();
       record('failed-check-persists-after-dialog-close',document.querySelector('.api-status[data-state="invalid_key"]')?.textContent.includes('키 교체'));
@@ -297,7 +332,7 @@ try {
     const screen=spawnSync(chrome,['--headless=new','--disable-gpu','--no-first-run',`--user-data-dir=${temp}/board`,`--window-size=1100,${height}`,'--hide-scrollbars','--virtual-time-budget=1000',`--screenshot=${path.join(allDir,'four-modes.png')}`,pathToFileURL(boardPath).href],{encoding:'utf8',timeout:30000});
     if(screen.status!==0) throw new Error('Preview board failed');
     const apiFigure=(label,file,rect)=>`<section class="api-step"><h3>${label}</h3><div class="crop" style="width:${rect.width}px;height:${rect.height}px"><img src="${file}" style="width:420px;transform:translate(${-rect.x}px,${-rect.y}px)"></div></section>`;
-    const complete=`<!doctype html><html lang="ko"><meta charset="utf-8"><title>switcher · 전체 개선 화면</title><style>*{box-sizing:border-box}body{margin:0;background:#e8ecec;color:#182024;font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:32px 38px}header{margin-bottom:30px}h1{font-size:27px;letter-spacing:-1px;margin:0 0 7px}header p{font-size:12px;color:#566568;margin:0}.layout{display:flex;align-items:flex-start;gap:36px}.views{display:flex;align-items:flex-start;gap:24px}figure{margin:0;flex:none}figcaption{height:56px}figcaption b{font-size:15px;display:block}figcaption span{font-size:10px;color:#566568;display:block;margin-top:6px;white-space:nowrap}figure>div,.crop{overflow:hidden;border-radius:12px;box-shadow:0 12px 32px #17212221}img{display:block}.api-column{width:380px;flex:none;border-left:1px solid #cad4d4;padding-left:0}.api-step h3{font-size:13px;margin:0 0 12px}.api-step+.api-step{margin-top:24px}.note{font-size:11px;line-height:1.7;color:#566568;margin-top:20px}.extra{position:absolute;top:770px;left:482px;width:280px;display:flex;align-items:flex-start;gap:16px}.extra img{border-radius:10px;box-shadow:0 8px 24px #17212221}.extra p{font-size:11px;line-height:1.8;color:#566568;margin:6px 0}.extra strong{display:block;color:#182024;font-size:12px;margin-bottom:5px}</style><header><h1>switcher · 전체 개선 화면</h1><p>예시 계정으로 검증한 실제 프론트 · 네 가지 모드 유지 · API 키 등록부터 CLI 사용까지</p></header><div class="layout"><div class="views">${figures}</div><aside class="api-column">${apiFigure('API 01 · 키 등록', 'api-registration.png',registration.dialog)}${apiFigure('API 02 · 확인 후 실행 명령', 'api-result.png',result.dialog)}<p class="note">연결 확인·사용량은 검증용 예시 데이터입니다.<br>실제 키를 등록하면 해당 연결의 결과를 표시합니다.</p></aside></div><div class="extra"><img src="mode-no-ai.png" width="120"><p><strong>AI를 모두 숨겼을 때</strong>SYSTEM과 도구만 남습니다.<br>숨긴 계정의 빈 영역도 사라집니다.<br><br>계정 조작은 같은 위치에:<br>다시 연결 · 이름 변경 · 삭제</p></div></html>`;
+    const complete=`<!doctype html><html lang="ko"><meta charset="utf-8"><title>switcher · 전체 개선 화면</title><style>*{box-sizing:border-box}body{margin:0;background:#e8ecec;color:#182024;font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:32px 38px}header{margin-bottom:30px}h1{font-size:27px;letter-spacing:-1px;margin:0 0 7px}header p{font-size:12px;color:#566568;margin:0}.layout{display:flex;align-items:flex-start;gap:36px}.views{display:flex;align-items:flex-start;gap:24px}figure{margin:0;flex:none}figcaption{height:56px}figcaption b{font-size:15px;display:block}figcaption span{font-size:10px;color:#566568;display:block;margin-top:6px;white-space:nowrap}figure>div,.crop{overflow:hidden;border-radius:12px;box-shadow:0 12px 32px #17212221}img{display:block}.api-column{width:380px;flex:none;border-left:1px solid #cad4d4;padding-left:0}.api-step h3{font-size:13px;margin:0 0 12px}.api-step+.api-step{margin-top:24px}.note{font-size:11px;line-height:1.7;color:#566568;margin-top:20px}.extra{position:absolute;top:770px;left:482px;width:280px;display:flex;align-items:flex-start;gap:16px}.extra img{border-radius:10px;box-shadow:0 8px 24px #17212221}.extra p{font-size:11px;line-height:1.8;color:#566568;margin:6px 0}.extra strong{display:block;color:#182024;font-size:12px;margin-bottom:5px}</style><header><h1>switcher · 전체 개선 화면</h1><p>예시 계정으로 검증한 실제 프론트 · 네 가지 모드 유지 · API 키 등록부터 버튼 전환까지</p></header><div class="layout"><div class="views">${figures}</div><aside class="api-column">${apiFigure('API 01 · 키 등록', 'api-registration.png',registration.dialog)}${apiFigure('API 02 · 저장 후 바로 사용', 'api-result.png',result.dialog)}<p class="note">연결 확인·사용량은 검증용 예시 데이터입니다.<br>실제 키를 등록하면 해당 연결의 결과를 표시합니다.</p></aside></div><div class="extra"><img src="mode-no-ai.png" width="120"><p><strong>AI를 모두 숨겼을 때</strong>SYSTEM과 도구만 남습니다.<br>숨긴 계정의 빈 영역도 사라집니다.<br><br>계정 조작은 같은 위치에:<br>다시 연결 · 이름 변경 · 삭제</p></div></html>`;
     const completePath=path.join(allDir,'complete-preview.html');fs.writeFileSync(completePath,complete);
     const completeShot=spawnSync(chrome,['--headless=new','--disable-gpu','--no-first-run',`--user-data-dir=${temp}/complete-board`,'--window-size=1490,1200','--hide-scrollbars','--virtual-time-budget=1000',`--screenshot=${path.join(allDir,'complete-preview.png')}`,pathToFileURL(completePath).href],{encoding:'utf8',timeout:30000});
     if(completeShot.status!==0) throw new Error('Complete preview failed');

@@ -27,6 +27,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Parse Codex storage configuration before touching auth.json.
 toml = "0.9"
+toml_edit = "0.25"
+sha2 = "0.10"
 base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # sync: 토큰 재발급 직렬화(REFRESH_LOCK), time: TFSD 감시 루프의 주기 슬립,
@@ -67,8 +69,6 @@ windows-sys = { version = "0.61.2", features = [
 libc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-# 격리 로그인이 만드는 키체인 항목 이름(설정 폴더 경로의 sha256 앞 8자) 계산
-sha2 = "0.10"
 # 위젯 창을 비활성 NSPanel로 바꿔 모든 Space·전체화면 위에 띄운다 (lib.rs 참고)
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSEvent", "NSWindow", "NSResponder", "NSPanel"] }

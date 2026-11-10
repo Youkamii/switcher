@@ -581,6 +581,21 @@ async fn api_launch_command(provider: String, name: String) -> Result<String, St
     .map_err(|_| "API 실행 명령 생성 실패")?
 }
 #[tauri::command]
+async fn api_activate(app: tauri::AppHandle, provider: String, name: String) -> Result<api_connections::Connection, String> {
+    let _busy = begin_account_switch()?;
+    let connection = tauri::async_runtime::spawn_blocking(move || api_connections::activate(&Env::real()?, &provider, &name))
+        .await.map_err(|_| "API 전환 작업 실패")??;
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || disengage_tfsd(&handle));
+    Ok(connection)
+}
+#[tauri::command]
+async fn api_deactivate(provider: String) -> Result<(), String> {
+    let _busy = begin_account_switch()?;
+    tauri::async_runtime::spawn_blocking(move || api_connections::deactivate(&Env::real()?, &provider))
+        .await.map_err(|_| "API 사용 해제 실패")?
+}
+#[tauri::command]
 async fn api_check(provider: String, name: String) -> Result<api_connections::Connection, String> {
     tauri::async_runtime::spawn_blocking(move || {
         tauri::async_runtime::block_on(api_connections::check(&Env::real()?, &provider, &name))
@@ -3862,6 +3877,8 @@ pub fn run() {
             api_save,
             api_delete,
             api_launch_command,
+            api_activate,
+            api_deactivate,
             api_check,
             api_open_console,
             list_profiles,
