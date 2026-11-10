@@ -38,7 +38,7 @@
 - 클로드 토큰 (윈도우): `~/.claude/.credentials.json` (키: `claudeAiOauth`)
 - 클로드 토큰 (맥): **키체인** 항목 `Claude Code-credentials` (계정=사용자명, JSON 내용은 윈도우와 동일). `~/.claude/.credentials.json`은 구버전 잔재 — 위젯은 키체인을 정본으로 쓰고, 파일이 남아 있으면 함께 갱신한다.
 - 클로드 계정 표시 정보: `~/.claude.json`의 `oauthAccount` 블록 (accountUuid·emailAddress·organizationUuid) — 맥에서도 동일
-- 코덱스 토큰: `~/.codex/auth.json` (키: `auth_mode`, `OPENAI_API_KEY`, `tokens`, `last_refresh`) — 맥에서도 파일 그대로
+- 코덱스 토큰: `${CODEX_HOME:-~/.codex}/auth.json` (키: `auth_mode`, `OPENAI_API_KEY`, `tokens`, `last_refresh`) — 맥에서도 파일 그대로
 - 프로필 보관소: `~/.switcher/profiles/<name>/`
 
 ## macOS 전용 (실측 확인됨, 2026-07-29 / claude 2.1.220 / macOS 26.5)
@@ -65,3 +65,11 @@
 
 - 코드 서명·공증은 하지 않는다 — 유료 계정(코드 서명 인증서, Apple Developer Program)을 쓰지 않기로 결정. 다시 제안하지 말 것. 첫 실행 경고는 README 설치 절의 NOTE(Windows "추가 정보 → 실행", macOS "그래도 열기" 또는 `xattr -dr com.apple.quarantine`)로 안내한다.
 - 실측(2026-10-02): Node(fetch + fs.writeFileSync)로 받은 zip과 자체 압축 해제한 exe에는 Zone.Identifier(Mark of the Web)가 없다 → npm 설치 경로는 SmartScreen이 걸리지 않는다. 경고는 브라우저로 받은 파일에만 뜬다. macOS quarantine도 같은 원리이지만 실기기로는 미확인.
+
+## API 연결 (구독 프로필과 별도)
+
+- `api_connections.rs`: macOS Keychain / Windows 사용자 DPAPI에 키 저장. 메타데이터·런처·로그에 키 원문 금지.
+- API 실행 명령은 별도 `~/.switcher/api-workspaces/`에서 CLI를 실행한다. 구독 전환·TFSD에 API를 섞지 않는다.
+- Codex 구독 어댑터는 파일 저장소만 지원한다. `keyring`/`auto`/`ephemeral` 설정이면 전환·쓰기 차단.
+- 화면 회귀 검사: `npm run build && node scripts/test-workspace-ui.mjs`, 배치 검사: `node scripts/review-layout.mjs`. 가짜 데이터만 사용한다.
+- API 사용법·검증 한계: `docs/API_CONNECTIONS.md`, `docs/IMPLEMENTATION_STATUS.md`.

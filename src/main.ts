@@ -27,6 +27,7 @@ import {
   type GithubStarPromptChoice,
 } from "./firstRunStar";
 import { applyAccentTheme, themeCssColor } from "./theme";
+import { apiConnections, apiIsBusy } from "./apiConnections";
 import { edgeGaugeLayout } from "./edgeGaugeLayout";
 
 type ProfileInfo = {
@@ -556,6 +557,27 @@ function profileCard(
 
   const actions = document.createElement("div");
   actions.className = "card-actions";
+  const menu = document.createElement("details");
+  menu.className = "account-menu";
+  const summary = document.createElement("summary");
+  summary.textContent = "···";
+  summary.title = `${t("rename")} / ${t("del")}`;
+  summary.setAttribute("aria-label", summary.title);
+  const menuItems = document.createElement("div");
+  menuItems.className = "account-menu-items";
+  menu.append(summary, menuItems);
+  menu.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") { menu.open = false; summary.focus(); }
+  });
+  menu.addEventListener("focusout", (event) => {
+    if (!menu.contains(event.relatedTarget as Node | null)) menu.open = false;
+  });
+  if (profile.active) {
+    const active = document.createElement("span");
+    active.className = "connection-active";
+    active.textContent = t("activeDot");
+    actions.append(active);
+  }
   if (!profile.active) {
     // 고정(위젯) 모드의 더블클릭 전환은 Rust가 시스템 차원에서 감지한다 —
     // 카드에 어느 계정인지만 새겨 둔다 (reportHitRegions가 좌표와 함께 보고)
@@ -575,15 +597,17 @@ function profileCard(
   // 이름 바꾸기 (#168) — 카드 아래 한 줄 입력칸. Enter로 적용, Esc로 접기.
   // 입력 중에는 userIsBusy가 주기 새로고침을 미룬다.
   const renameBtn = document.createElement("button");
-  renameBtn.textContent = "✎";
+  renameBtn.textContent = t("rename");
   renameBtn.title = t("rename");
   renameBtn.setAttribute("aria-label", t("rename"));
   renameBtn.addEventListener("click", () => {
     const open = card.querySelector<HTMLElement>(".rename-row");
     if (open) {
       open.remove();
+      fitHeight();
       return;
     }
+    menu.open = false;
     const row = document.createElement("div");
     row.className = "save-row rename-row";
     const input = document.createElement("input");
@@ -638,10 +662,11 @@ function profileCard(
     });
     row.append(input, okBtn);
     card.insertBefore(row, actions);
+    fitHeight();
     input.focus();
     input.select();
   });
-  actions.appendChild(renameBtn);
+  menuItems.appendChild(renameBtn);
 
   const deleteBtn = document.createElement("button");
   deleteBtn.textContent = t("del");
@@ -684,7 +709,13 @@ function profileCard(
       deleteBtn.disabled = false;
     }
   });
-  actions.appendChild(deleteBtn);
+  menuItems.appendChild(deleteBtn);
+  const reconnect = document.createElement("button");
+  reconnect.textContent = currentLang() === "ko" ? "다시 연결" : "Reconnect";
+  reconnect.title = currentLang() === "ko" ? "같은 계정으로 로그인하면 기존 프로필의 인증을 갱신합니다" : "Sign in with the same account to renew this profile";
+  reconnect.addEventListener("click", () => void startAccountLogin(provider));
+  actions.appendChild(reconnect);
+  actions.appendChild(menu);
   card.appendChild(actions);
 
   return card;
@@ -1191,14 +1222,18 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
   row.hidden = loginOpen;
   section.appendChild(row);
 
-  addBtn.addEventListener("click", async () => {
+  addBtn.addEventListener("click", () => void startAccountLogin(provider));
+}
+
+async function startAccountLogin(provider: ProviderId) {
+    if (apiIsBusy()) {
+      toast(currentLang() === "ko" ? "API 키 입력을 먼저 저장하거나 취소하세요" : "Save or cancel the API form first");
+      return;
+    }
     if (loginOpen) {
       toast(t("loginBusy"), true);
       return;
     }
-    addBtn.disabled = true;
-    addBtn.textContent = t("gettingLoginUrl");
-    row.hidden = true;
     const attempt = beginLogin(provider);
     const requestId = activeAccountRequestId!;
     let reserved = false;
@@ -1248,7 +1283,6 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
         if (isCurrentLogin(attempt)) toast(String(error), true);
       }
     }
-  });
 }
 
 function saveForm(provider: ProviderId, section: HTMLElement) {
@@ -1303,6 +1337,7 @@ async function renderProvider(
       hint.textContent = t("noAccounts");
       section.appendChild(hint);
       addAccountButton(provider, section);
+    section.appendChild(await apiConnections(provider, { changed: () => render({ immediate: true }), fit: fitHeight, toast }));
       target.appendChild(section);
       return;
     }
@@ -1319,6 +1354,7 @@ async function renderProvider(
     }
 
     addAccountButton(provider, section);
+    section.appendChild(await apiConnections(provider, { changed: () => render({ immediate: true }), fit: fitHeight, toast }));
     if (snap.live && !snap.live_saved) {
       // 지금 로그인된 계정이 아직 프로필로 없을 때만 수동 저장 입력칸을 보여준다
       saveForm(provider, section);
@@ -1328,6 +1364,11 @@ async function renderProvider(
     err.className = "usage-error";
     err.textContent = String(error);
     section.appendChild(err);
+    // A subscription storage mismatch must not hide the independent API connection manager.
+    if (!section.querySelector(".api-panel")) {
+      try { section.appendChild(await apiConnections(provider, { changed: () => render({ immediate: true }), fit: fitHeight, toast })); }
+      catch (apiError) { err.textContent += ` · ${String(apiError)}`; }
+    }
   }
 
   target.appendChild(section);
@@ -2424,6 +2465,16 @@ async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
       // 화면을 지우고 처음부터 다시 그리면 새로고침마다 카드가 전부 사라졌다
       // 주루룩 돌아온다 — 보이지 않는 버퍼에 완성해 두고 한 번에 교체한다
       const buffer = document.createDocumentFragment();
+      if (mode === "normal") {
+        const intro = document.createElement("div");
+        intro.className = "workspace-heading";
+        const title = document.createElement("h1");
+        title.textContent = currentLang() === "ko" ? "연결 관리" : "Connections";
+        const hint = document.createElement("p");
+        hint.textContent = currentLang() === "ko" ? "구독 계정과 API 연결을 한곳에서" : "Subscription accounts and API connections";
+        intro.append(title, hint);
+        buffer.appendChild(intro);
+      }
       const pending: Promise<unknown>[] = [];
       // Type4(벽 붙임)는 타이틀바·독을 감추고 손잡이·모드 버튼을 본문 맨 위에 둔다
       if (mode === "edge") buffer.appendChild(edgeBar());
@@ -2567,7 +2618,7 @@ function userIsBusy(): boolean {
   // 섹션 드래그 중에도 스왑을 미룬다 — 잡고 있는 드래그가 소리 없이 죽지 않게.
   // dragend 유실로 고착된 래치는 pointermove 복구가 푼다 (리뷰 #53:
   // dragend 유실 시 렌더가 영구 차단되던 문제)
-  return typing || dragKey !== null;
+  return apiIsBusy() || typing || dragKey !== null;
 }
 
 const appWindow = getCurrentWindow();
@@ -2605,7 +2656,8 @@ function applyViewMode() {
   document.body.classList.toggle("minimal", displayMode === "minimal");
   applyEdgeMode(displayMode === "edge");
   lockBtn.classList.toggle("pinned", locked);
-  lockBtn.textContent = `Type${VIEW_CYCLE.indexOf(displayMode) + 1}`;
+  const modeNames = currentLang() === "ko" ? ["관리", "위젯", "미니", "엣지"] : ["Manage", "Widget", "Mini", "Edge"];
+  lockBtn.textContent = modeNames[VIEW_CYCLE.indexOf(displayMode)];
   // 위젯 모드에서는 ☰ 핸들을 잡아야만 창이 움직인다 — 타이틀바 전체 드래그를 끈다
   if (locked || starPromptOpen) {
     titlebarEl.removeAttribute("data-tauri-drag-region");
@@ -3000,6 +3052,10 @@ void listen<{ ok: boolean; provider?: string; name?: string; error?: string }>(
 );
 
 lockBtn.addEventListener("click", () => {
+  if (apiIsBusy()) {
+    toast(currentLang() === "ko" ? "API 키 입력을 저장하거나 취소한 뒤 보기를 바꾸세요" : "Save or cancel the API form before changing views");
+    return;
+  }
   viewMode = VIEW_CYCLE[(VIEW_CYCLE.indexOf(viewMode) + 1) % VIEW_CYCLE.length];
   localStorage.setItem("switcher.viewmode", viewMode);
   applyViewMode();
@@ -3162,14 +3218,14 @@ async function fitWindowToContent() {
       // 컴팩트 모드는 창 자체도 좁게, 미니멀은 더 좁게 (150→120, 사용자 지시 —
       // 타이틀바 버튼은 한 줄을 포기하고 다음 줄로 흐른다)
       const width = loginOpen || starPromptOpen
-        ? 360
+        ? 420
         : viewMode === "edge"
           ? 80
           : viewMode === "minimal"
             ? 120
             : viewMode === "compact"
-              ? 240
-              : 360;
+              ? 280
+              : 420;
       // 크기 조절 기준은 "오른쪽 상단" — 목표 폭이 실제로 바뀌는 전환에서만
       // 우측 가장자리를 고정한다. (바깥 크기에는 그림자가 포함되므로 실측 폭과
       // 목표 폭을 비교하면 매번 어긋나 창이 조금씩 밀리는 버그가 있었다)

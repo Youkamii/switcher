@@ -1,4 +1,5 @@
 mod accounts;
+mod api_connections;
 #[cfg(not(windows))]
 mod clamshell;
 #[cfg(windows)]
@@ -536,6 +537,29 @@ async fn clamshell_cycle(app: tauri::AppHandle) -> Result<i8, String> {
     })
     .await
     .map_err(|e| format!("클램셸 전환 실패: {e}"))?
+}
+
+#[tauri::command]
+async fn api_list(provider: String) -> Result<Vec<api_connections::Connection>, String> {
+    tauri::async_runtime::spawn_blocking(move || api_connections::list(&Env::real()?, &provider)).await.map_err(|_| "API 작업 실패")?
+}
+#[tauri::command]
+async fn api_save(provider: String, name: String, key: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || api_connections::save(&Env::real()?, &provider, &name, &key)).await.map_err(|_| "API 저장 작업 실패")?
+}
+#[tauri::command]
+async fn api_delete(provider: String, name: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || api_connections::delete(&Env::real()?, &provider, &name)).await.map_err(|_| "API 삭제 작업 실패")?
+}
+#[tauri::command]
+async fn api_launch_command(provider: String, name: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || api_connections::launch_command(&Env::real()?, &provider, &name)).await.map_err(|_| "API 실행 명령 생성 실패")?
+}
+#[tauri::command]
+async fn api_check(provider: String, name: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(api_connections::check(&Env::real()?, &provider, &name))
+    }).await.map_err(|_| "API 연결 확인 작업 실패")?
 }
 
 /// force_retry는 사용자가 새로고침 버튼을 직접 눌렀을 때만 true — 자동 조회 백오프를
@@ -3794,6 +3818,11 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            api_list,
+            api_save,
+            api_delete,
+            api_launch_command,
+            api_check,
             list_profiles,
             save_profile,
             switch_profile,

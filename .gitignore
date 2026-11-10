@@ -26,6 +26,9 @@ oauth_account.json
 meta.json
 profiles/
 *.token
+*.dpapi
+api-connections/
+api-workspaces/
 *.switcher-tmp*
 *.json.bak
 

@@ -58,11 +58,11 @@ function colorDistance(
   return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 }
 
-test("normalizes unknown accent themes to the current purple default", () => {
+test("normalizes unknown accent themes to the current mint/green default", () => {
   assert.deepEqual(THEME_IDS, ["purple", "pink", "yellow", "deep-green", "sky", "white"]);
   for (const theme of THEME_IDS) assert.equal(normalizeAccentTheme(theme), theme);
   for (const value of [undefined, null, "", "green", 1]) {
-    assert.equal(normalizeAccentTheme(value), "purple");
+    assert.equal(normalizeAccentTheme(value), "deep-green");
   }
 });
 
@@ -71,8 +71,8 @@ test("applies a normalized theme through data-accent-theme", () => {
 
   assert.equal(applyAccentTheme("sky", root), "sky");
   assert.equal(root.dataset.accentTheme, "sky");
-  assert.equal(applyAccentTheme("not-a-theme", root), "purple");
-  assert.equal(root.dataset.accentTheme, "purple");
+  assert.equal(applyAccentTheme("not-a-theme", root), "deep-green");
+  assert.equal(root.dataset.accentTheme, "deep-green");
 });
 
 test("defines all six complete dark palettes and the shared derived colors", () => {

@@ -15,7 +15,7 @@ type ThemeRoot = {
   };
 };
 
-const DEFAULT_THEME: AccentTheme = "purple";
+const DEFAULT_THEME: AccentTheme = "deep-green";
 const themeIds = new Set<string>(THEME_IDS);
 
 export function normalizeAccentTheme(value: unknown): AccentTheme {

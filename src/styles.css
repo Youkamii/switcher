@@ -899,22 +899,18 @@ body.minimal #privacybtn {
   position: relative;
 }
 
-.usage-box.stale {
-  /* 대기 라벨이 첫 사용량 줄과 겹치지 않게 자리를 내준다 */
-  padding-top: 12px;
-}
+.usage-box.stale { padding-top: 0; }
 
 .usage-box.stale .usage-row {
   opacity: 0.55;
 }
 
 .stale-overlay {
-  position: absolute;
-  top: -1px;
-  right: 0;
-  font-size: 9px;
+  position: static;
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.5;
   color: var(--muted);
-  pointer-events: none;
 }
 
 .usage-reset {
@@ -2360,3 +2356,55 @@ body.mac .edge-mon .edge-num {
 .usage-issue { display: block; color: var(--warn); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
 .edge-account .usage-issue { width: 12px; text-align: center; }
 .stale-overlay { overflow-wrap: anywhere; }
+
+/* Connection workspace: quiet surfaces, stable controls, explicit API billing. */
+:root[data-accent-theme], :root {
+  --bg-rgb: 19, 22, 25;
+  --panel-rgb: 26, 30, 34;
+  --panel-2-rgb: 34, 39, 44;
+  --border-rgb: 56, 64, 70;
+  --track-rgb: 43, 50, 56;
+  --muted-rgb: 163, 174, 182;
+  --text-rgb: 235, 240, 243;
+}
+:root[data-accent-theme="deep-green"] { --accent-rgb: 112, 219, 185; --active-text-rgb: 228, 245, 239; }
+button { font-family: inherit; font-weight: 500; transition: background-color 120ms, border-color 120ms; }
+button:disabled { cursor: default; opacity: 0.6; }
+button:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+[hidden] { display: none !important; }
+.workspace-heading { padding: 10px 2px 16px; }
+.workspace-heading h1 { font-size: 21px; letter-spacing: -0.5px; font-weight: 650; }
+.workspace-heading p { margin-top: 5px; color: var(--muted); font-size: 12px; }
+#app:not(.locked) .section-title { font-size: 11px; letter-spacing: 1px; padding-top: 8px; margin-bottom: 12px; }
+#app:not(.locked) .card { padding: 14px; border-radius: 12px; margin-bottom: 10px; }
+#app:not(.locked) .card:not(.active) { filter: none; }
+#app:not(.locked) .card-name { color: var(--text); font-weight: 600; }
+#app:not(.locked) .card.active { border-color: rgba(var(--accent-rgb), calc(0.5 * var(--fg-alpha))); }
+#app:not(.locked) .status-dot { box-shadow: none; }
+#app:not(.locked) .card-actions { min-height: 32px; padding-top: 10px; margin-top: 10px; border-top: 1px solid rgba(var(--border-rgb), var(--fg-alpha)); align-items: center; }
+#app:not(.locked) .card-actions > button { min-height: 32px; padding: 6px 14px; margin-right: auto; }
+.connection-active { color: var(--accent); font-size: 11px; flex: 1; }
+.account-menu { position: relative; margin-left: auto; }
+.account-menu summary { display: grid; place-items: center; list-style: none; width: 32px; height: 32px; border-radius: 8px; border: 1px solid rgb(var(--border-rgb)); cursor: pointer; font-size: 18px; }
+.account-menu summary::-webkit-details-marker { display: none; }
+.account-menu[open] summary { background: var(--panel-2); border-color: var(--accent); }
+.account-menu-items { position: absolute; z-index: 30; right: 0; bottom: calc(100% + 6px); min-width: 144px; padding: 6px; border: 1px solid rgb(var(--border-rgb)); border-radius: 10px; background: rgb(var(--panel-rgb)); box-shadow: 0 6px 24px #0005; display: grid; gap: 4px; }
+.account-menu-items button { width: 100%; min-height: 32px; text-align: left; }
+#app:not(.locked) .add-row > .primary { background: transparent; color: var(--text); border: 1px dashed rgb(var(--border-rgb)); width: 100%; min-height: 34px; font-weight: 500; }
+.api-panel { margin: 10px 0 16px; border-top: 1px solid rgba(var(--border-rgb), var(--fg-alpha)); padding-top: 10px; }
+.api-panel > summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 4px 0; }
+.api-panel .help { font-size: 11px; color: var(--muted); line-height: 1.6; margin: 8px 0; overflow-wrap: anywhere; }
+.api-card { padding: 12px; margin: 8px 0; background: var(--panel); border: 1px solid rgb(var(--border-rgb)); border-radius: 10px; }
+.api-badge { font-size: 10px; color: var(--accent); padding: 2px 6px; border-radius: 4px; background: var(--accent-soft); }
+.api-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.api-actions button, .api-add, .api-form button { min-height: 32px; padding: 5px 10px; }
+.api-add { width: 100%; margin-top: 8px; }
+.api-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px 0; }
+.api-form label, .api-form .help { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+.api-form input, .api-card textarea { display: block; width: 100%; min-width: 0; margin-top: 5px; padding: 9px; border: 1px solid rgb(var(--border-rgb)); border-radius: 7px; background: var(--panel); color: var(--text); font-family: inherit; user-select: text; }
+.api-card textarea { min-height: 72px; overflow-wrap: anywhere; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+#app:not(.locked) .bar::after { background: none; }
+#app:not(.locked) .bar, #app:not(.locked) .bar-fill { border-radius: 4px; }
+#app:not(.locked) .bar-fill { box-shadow: none; }

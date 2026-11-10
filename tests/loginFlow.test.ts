@@ -98,7 +98,7 @@ test("keeps the active login panel when the account view type changes", () => {
   );
   assert.match(
     mainSource,
-    /const width = loginOpen \|\| starPromptOpen\s*\? 360\s*:/,
+    /const width = loginOpen \|\| starPromptOpen\s*\? 420\s*:/,
     "the login panel must retain the usable full width in Type 2 and Type 3",
   );
 });

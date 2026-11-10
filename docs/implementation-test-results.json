@@ -1,0 +1,331 @@
+{
+  "ui": {
+    "checks": [
+      {
+        "id": "production-account-cards",
+        "passed": true
+      },
+      {
+        "id": "menu-does-not-shift-next-card",
+        "passed": true
+      },
+      {
+        "id": "auth-error-visible-with-stale-usage",
+        "passed": true
+      },
+      {
+        "id": "auth-error-does-not-overlap-bars",
+        "passed": true
+      },
+      {
+        "id": "secret-input-masked",
+        "passed": true
+      },
+      {
+        "id": "refresh-preserves-api-form",
+        "passed": true
+      },
+      {
+        "id": "view-change-protects-api-input",
+        "passed": true
+      },
+      {
+        "id": "register-sent-once",
+        "passed": true
+      },
+      {
+        "id": "secret-cleared-after-save",
+        "passed": true
+      },
+      {
+        "id": "explicit-api-check",
+        "passed": true
+      },
+      {
+        "id": "launch-command-requested-without-key",
+        "passed": true
+      },
+      {
+        "id": "delete-needs-second-click",
+        "passed": true
+      },
+      {
+        "id": "delete-disarms-on-leave",
+        "passed": true
+      },
+      {
+        "id": "delete-removes-api-row",
+        "passed": true
+      },
+      {
+        "id": "api-never-switches-oauth",
+        "passed": true
+      },
+      {
+        "id": "hidden-ai-leaves-no-provider-panels",
+        "passed": true
+      },
+      {
+        "id": "no-horizontal-overflow",
+        "passed": true
+      },
+      {
+        "id": "api-available-with-blocked-subscription-store",
+        "passed": true
+      },
+      {
+        "id": "no-browser-errors",
+        "passed": true
+      }
+    ],
+    "errors": []
+  },
+  "layout": {
+    "checks": [
+      {
+        "id": "hidden-ai-00",
+        "passed": true,
+        "measured": [
+          {
+            "provider": "claude",
+            "hidden": true,
+            "display": "none",
+            "height": 0
+          },
+          {
+            "provider": "codex",
+            "hidden": true,
+            "display": "none",
+            "height": 0
+          },
+          {
+            "provider": "system",
+            "hidden": false,
+            "display": "flex",
+            "height": 19
+          }
+        ],
+        "expected": "Every hidden AI row has zero layout height."
+      },
+      {
+        "id": "hidden-ai-10",
+        "passed": true,
+        "measured": [
+          {
+            "provider": "claude",
+            "hidden": false,
+            "display": "flex",
+            "height": 19
+          },
+          {
+            "provider": "codex",
+            "hidden": true,
+            "display": "none",
+            "height": 0
+          },
+          {
+            "provider": "system",
+            "hidden": false,
+            "display": "flex",
+            "height": 25
+          }
+        ],
+        "expected": "Every hidden AI row has zero layout height."
+      },
+      {
+        "id": "hidden-ai-01",
+        "passed": true,
+        "measured": [
+          {
+            "provider": "claude",
+            "hidden": true,
+            "display": "none",
+            "height": 0
+          },
+          {
+            "provider": "codex",
+            "hidden": false,
+            "display": "flex",
+            "height": 19
+          },
+          {
+            "provider": "system",
+            "hidden": false,
+            "display": "flex",
+            "height": 25
+          }
+        ],
+        "expected": "Every hidden AI row has zero layout height."
+      },
+      {
+        "id": "hidden-ai-11",
+        "passed": true,
+        "measured": [
+          {
+            "provider": "claude",
+            "hidden": false,
+            "display": "flex",
+            "height": 19
+          },
+          {
+            "provider": "codex",
+            "hidden": false,
+            "display": "flex",
+            "height": 19
+          },
+          {
+            "provider": "system",
+            "hidden": false,
+            "display": "flex",
+            "height": 25
+          }
+        ],
+        "expected": "Every hidden AI row has zero layout height."
+      },
+      {
+        "id": "hover-does-not-move-next-card",
+        "passed": true,
+        "measured": {
+          "before": 248,
+          "after": 248,
+          "displacement": 0
+        },
+        "expected": "Next card moves at most 1 CSS px."
+      },
+      {
+        "id": "buttons-fit-normal",
+        "passed": true,
+        "measured": [
+          {
+            "id": "refresh",
+            "x": 234.9375,
+            "right": 291,
+            "y": 11
+          },
+          {
+            "id": "pin",
+            "x": 295,
+            "right": 347,
+            "y": 11.5
+          },
+          {
+            "id": "memobtn",
+            "x": 8,
+            "right": 72,
+            "y": 759
+          },
+          {
+            "id": "tfsdbtn",
+            "x": 78,
+            "right": 142,
+            "y": 759
+          },
+          {
+            "id": "privacybtn",
+            "x": 148,
+            "right": 212,
+            "y": 759
+          },
+          {
+            "id": "clambtn",
+            "x": 218,
+            "right": 282,
+            "y": 759
+          },
+          {
+            "id": "blackbtn",
+            "x": 288,
+            "right": 352,
+            "y": 759
+          }
+        ],
+        "expected": "Visible buttons stay within the shell horizontally."
+      },
+      {
+        "id": "buttons-fit-compact",
+        "passed": true,
+        "measured": [
+          {
+            "id": "pin",
+            "x": 183,
+            "right": 235,
+            "y": 6.5
+          },
+          {
+            "id": "memobtn",
+            "x": 8,
+            "right": 48,
+            "y": 761
+          },
+          {
+            "id": "tfsdbtn",
+            "x": 54,
+            "right": 94,
+            "y": 761
+          },
+          {
+            "id": "privacybtn",
+            "x": 100,
+            "right": 140,
+            "y": 761
+          },
+          {
+            "id": "clambtn",
+            "x": 146,
+            "right": 186,
+            "y": 761
+          },
+          {
+            "id": "blackbtn",
+            "x": 192,
+            "right": 232,
+            "y": 761
+          }
+        ],
+        "expected": "Visible buttons stay within the shell horizontally."
+      },
+      {
+        "id": "buttons-fit-minimal",
+        "passed": true,
+        "measured": [
+          {
+            "id": "pin",
+            "x": 63,
+            "right": 115,
+            "y": 6.5
+          },
+          {
+            "id": "memobtn",
+            "x": 5,
+            "right": 32.5,
+            "y": 761
+          },
+          {
+            "id": "tfsdbtn",
+            "x": 32.5,
+            "right": 60,
+            "y": 761
+          },
+          {
+            "id": "clambtn",
+            "x": 60,
+            "right": 87.5,
+            "y": 761
+          },
+          {
+            "id": "blackbtn",
+            "x": 87.5,
+            "right": 115,
+            "y": 761
+          }
+        ],
+        "expected": "Visible buttons stay within the shell horizontally."
+      }
+    ],
+    "passed": 8,
+    "failed": 0,
+    "browser": "Google Chrome 156.0.8078.76",
+    "platform": "darwin-arm64",
+    "scope": "Actual repository HTML/CSS; synthetic DOM states; Chromium only; no Tauri IPC or native window checks."
+  }
+}

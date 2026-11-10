@@ -27,7 +27,7 @@ pub const ACCENT_THEMES: [(&str, &str); 6] = [
     ("sky", "Sky blue"),
     ("white", "White"),
 ];
-pub const DEFAULT_ACCENT_THEME: &str = "purple";
+pub const DEFAULT_ACCENT_THEME: &str = "deep-green";
 
 pub fn is_supported(lang: &str) -> bool {
     LANGS.iter().any(|(code, _)| *code == lang)
@@ -540,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn accent_theme_defaults_to_purple() {
+    fn accent_theme_defaults_to_deep_green() {
         let store = test_store("accent-default");
         assert_eq!(load_accent_theme(&store), DEFAULT_ACCENT_THEME);
     }

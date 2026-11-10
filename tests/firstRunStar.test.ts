@@ -173,6 +173,6 @@ test("renders the default interface before the overlay and blocks background inp
   );
   assert.match(
     mainSource,
-    /const width = loginOpen \|\| starPromptOpen\s*\? 360/,
+    /const width = loginOpen \|\| starPromptOpen\s*\? 420/,
   );
 });

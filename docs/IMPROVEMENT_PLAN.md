@@ -188,3 +188,7 @@ API 카드에는 ‘API · 별도 과금’, 연결 검증 시각, 선택 상태
 - [Claude Code 인증](https://code.claude.com/docs/en/authentication): API 키 인증 및 계정별 설정 디렉토리.
 - [Claude Code apiKeyHelper](https://code.claude.com/docs/en/settings-reference#apikeyhelper): CLI에 API 자격증명을 전달하는 helper.
 - [재현 스크립트](../scripts/review-layout.mjs), [원시 측정값](review-layout-baseline.json), [테스트 결과 및 후속 검증표](REVIEW_TEST_RESULTS.md).
+
+## 실제 적용과 설계 조정 (2026-11-10)
+
+이 문서는 목표와 후속 계획을 포함한다. 구현 완료 범위는 [적용 현황](IMPLEMENTATION_STATUS.md)이 정본이다. 1차 구현은 기존 OAuth 저장소를 바꾸지 않고 별도 API 연결 목록을 도입했다. API는 전역 계정 전환 대신 명시적 실행 명령으로 사용하며, 별도 CLI 설정·기록을 쓴다. 키 이름 변경·공통 스키마 마이그레이션·비용 표시·업데이트 서명은 이번 구현에 포함하지 않는다. 관리 화면은 별도 창 대신 기존 일반 모드를 재구성했다.
