@@ -6,10 +6,29 @@ use std::{fs, path::PathBuf, sync::Mutex};
 
 static LOCK: Mutex<()> = Mutex::new(());
 
+#[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckState {
+    #[default]
+    Unchecked,
+    Ready,
+    InvalidKey,
+    Forbidden,
+    RateLimited,
+    Unavailable,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Connection {
     pub provider: String,
     pub name: String,
+    #[serde(default)]
+    pub checked_at: Option<u64>,
+    #[serde(default)]
+    pub check_state: CheckState,
+    // A rotated key must not inherit an in-flight check of the previous key.
+    #[serde(default)]
+    revision: String,
 }
 
 fn root(env: &Env) -> PathBuf {
@@ -142,6 +161,20 @@ impl Secrets for OsSecrets<'_> {
     }
 }
 
+fn read_connection(
+    dir: &std::path::Path,
+    provider: Provider,
+    name: &str,
+) -> Result<Connection, String> {
+    let bytes =
+        fs::read(dir.join("connection.json")).map_err(|_| "API 연결 정보를 읽지 못했습니다")?;
+    let mut connection: Connection =
+        serde_json::from_slice(&bytes).map_err(|_| "API 연결 정보 형식이 올바르지 않습니다")?;
+    connection.provider = provider.dir_name().into();
+    connection.name = name.to_ascii_lowercase();
+    Ok(connection)
+}
+
 pub fn list(env: &Env, provider: &str) -> Result<Vec<Connection>, String> {
     let _guard = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
     let provider = Provider::parse(provider)?;
@@ -154,10 +187,7 @@ pub fn list(env: &Env, provider: &str) -> Result<Vec<Connection>, String> {
         let entry = entry.map_err(|_| "API 연결 읽기 실패")?;
         let name = entry.file_name().to_string_lossy().into_owned();
         if validate_name(&name).is_ok() && entry.path().join("connection.json").is_file() {
-            result.push(Connection {
-                provider: provider.dir_name().into(),
-                name,
-            });
+            result.push(read_connection(&entry.path(), provider, &name)?);
         }
     }
     result.sort_by(|a, b| a.name.cmp(&b.name));
@@ -182,24 +212,48 @@ fn save_with(
             .map_err(|_| "API 폴더 권한 설정 실패")?;
     }
     let id = service(provider, name);
-    // Metadata is non-secret. On first registration roll back the secret if metadata fails.
-    let existed = dir.join("connection.json").exists();
-    secrets.put(&id, key.as_bytes())?;
+    // Write unchecked metadata first under LOCK. If secret storage fails, restore it.
+    // A crash can leave a connection unchecked, but cannot label a new key as verified.
+    let metadata_path = dir.join("connection.json");
+    let previous = match fs::read(&metadata_path) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return Err("API 연결 정보를 읽지 못했습니다".into()),
+    };
     let data = serde_json::to_vec(&Connection {
         provider: provider.dir_name().into(),
-        name: name.into(),
+        name: name.to_ascii_lowercase(),
+        checked_at: None,
+        check_state: CheckState::Unchecked,
+        revision: format!(
+            "{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| "시간 확인 실패")?
+                .as_nanos()
+        ),
     })
     .map_err(|_| "API 메타데이터 생성 실패")?;
-    if let Err(error) = atomic_write(&dir.join("connection.json"), &data) {
-        if !existed {
-            let _ = secrets.remove(&id);
+    atomic_write(&metadata_path, &data)?;
+    if let Err(error) = secrets.put(&id, key.as_bytes()) {
+        let rollback = if let Some(previous) = previous {
+            atomic_write(&metadata_path, &previous)
+        } else {
+            fs::remove_file(&metadata_path).map_err(|_| "API 연결 정리 실패".to_string())
+        };
+        if rollback.is_err() {
+            return Err("API 키 저장 상태 복구 실패 — 키를 다시 등록하세요".into());
         }
         return Err(error);
     }
     Ok(())
 }
-pub fn save(env: &Env, provider: &str, name: &str, key: &str) -> Result<(), String> {
+pub fn save(env: &Env, provider: &str, name: &str, key: &str, replace: bool) -> Result<(), String> {
     let _guard = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
+    let (_, dir) = checked(env, provider, name)?;
+    if dir.join("connection.json").exists() && !replace {
+        return Err("같은 이름의 API 연결이 있습니다 — 기존 연결의 키 교체를 사용하세요".into());
+    }
     save_with(env, &OsSecrets(env), provider, name, key)
 }
 pub fn delete(env: &Env, provider: &str, name: &str) -> Result<(), String> {
@@ -304,40 +358,93 @@ pub fn launch_command(env: &Env, provider: &str, name: &str) -> Result<String, S
     })
 }
 
-pub async fn check(env: &Env, provider: &str, name: &str) -> Result<(), String> {
-    let (provider, dir) = checked(env, provider, name)?;
-    // The blocking secret operation is called by the command on a blocking worker.
-    if !dir.join("connection.json").is_file() {
-        return Err("API 연결이 없습니다".into());
+fn check_message(state: CheckState) -> &'static str {
+    match state {
+        CheckState::InvalidKey => "API 키가 거부됐습니다 — 키를 교체하세요",
+        CheckState::Forbidden => "모델 조회 권한이 없습니다 — 프로젝트 권한을 확인하세요",
+        CheckState::RateLimited => "요청 제한 중입니다 — 잠시 후 다시 확인하세요",
+        _ => "연결을 확인하지 못했습니다 — 네트워크와 서비스 상태를 확인하세요",
     }
-    let key = OsSecrets(env).get(&service(provider, name))?;
-    let key = String::from_utf8(key).map_err(|_| "API 키 저장 형식 오류")?;
-    let client = reqwest::Client::builder()
+}
+fn check_state(status: u16) -> CheckState {
+    match status {
+        200..=299 => CheckState::Ready,
+        401 => CheckState::InvalidKey,
+        403 => CheckState::Forbidden,
+        429 => CheckState::RateLimited,
+        _ => CheckState::Unavailable,
+    }
+}
+async fn check_at(provider: Provider, key: &str, url: &str) -> CheckState {
+    let client = match reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(15))
         .build()
-        .map_err(|_| "연결 확인 준비 실패")?;
+    {
+        Ok(client) => client,
+        Err(_) => return CheckState::Unavailable,
+    };
     let request = match provider {
         Provider::Claude => client
-            .get("https://api.anthropic.com/v1/models?limit=1")
-            .header("x-api-key", &key)
+            .get(url)
+            .header("x-api-key", key)
             .header("anthropic-version", "2023-06-01"),
-        Provider::Codex => client
-            .get("https://api.openai.com/v1/models")
-            .bearer_auth(&key),
+        Provider::Codex => client.get(url).bearer_auth(key),
     };
-    let status = request
-        .send()
-        .await
-        .map_err(|_| "네트워크 연결을 확인하세요")?
-        .status()
-        .as_u16();
-    match status {
-        200..=299 => Ok(()),
-        401 => Err("API 키가 거부됐습니다 — 키를 교체하세요".into()),
-        403 => Err("API 키의 모델 조회 권한이 없습니다 — 프로젝트 권한을 확인하세요".into()),
-        429 => Err("요청 제한 중입니다 — 잠시 후 다시 확인하세요".into()),
-        _ => Err(format!("연결 확인 실패 (HTTP {status})")),
+    match request.send().await {
+        Ok(response) => {
+            let state = check_state(response.status().as_u16());
+            if state != CheckState::Ready {
+                return state;
+            }
+            match response.json::<serde_json::Value>().await {
+                Ok(body) if body.get("data").is_some_and(|data| data.is_array()) => {
+                    CheckState::Ready
+                }
+                _ => CheckState::Unavailable,
+            }
+        }
+        Err(_) => CheckState::Unavailable,
+    }
+}
+fn land_check(
+    env: &Env,
+    provider: Provider,
+    snapshot: &Connection,
+    state: CheckState,
+) -> Result<Connection, String> {
+    let _guard = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
+    let (_, dir) = checked(env, provider.dir_name(), &snapshot.name)?;
+    let mut current = read_connection(&dir, provider, &snapshot.name)?;
+    if current.revision != snapshot.revision {
+        return Err("확인 중 API 키가 교체됐습니다 — 다시 확인하세요".into());
+    }
+    current.checked_at = Some(crate::accounts::now());
+    current.check_state = state;
+    let bytes = serde_json::to_vec(&current).map_err(|_| "API 확인 상태 저장 실패")?;
+    atomic_write(&dir.join("connection.json"), &bytes)?;
+    Ok(current)
+}
+pub async fn check(env: &Env, provider: &str, name: &str) -> Result<Connection, String> {
+    let (provider, dir) = checked(env, provider, name)?;
+    let (snapshot, key) = {
+        let _guard = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
+        (
+            read_connection(&dir, provider, name)?,
+            OsSecrets(env).get(&service(provider, name))?,
+        )
+    };
+    let key = String::from_utf8(key).map_err(|_| "API 키 저장 형식 오류")?;
+    let url = match provider {
+        Provider::Claude => "https://api.anthropic.com/v1/models?limit=1",
+        Provider::Codex => "https://api.openai.com/v1/models",
+    };
+    let state = check_at(provider, &key, url).await;
+    let connection = land_check(env, provider, &snapshot, state)?;
+    if state == CheckState::Ready {
+        Ok(connection)
+    } else {
+        Err(check_message(state).into())
     }
 }
 
@@ -459,6 +566,227 @@ printf 'fixture-ok'
         assert!(output.status.success());
         assert_eq!(output.stdout, b"fixture-ok");
         assert!(!env.home.join("SHOULD_NOT_EXIST").exists());
+    }
+
+    #[test]
+    fn verification_survives_reload_but_not_key_rotation_or_deletion() {
+        let env = crate::accounts::test_support::test_env("api-check-state");
+        let memory = Memory::default();
+        save_with(&env, &memory, "claude", "work", "sk-dummy-check-first").unwrap();
+        let initial = list(&env, "claude").unwrap().remove(0);
+        assert_eq!(initial.check_state, CheckState::Unchecked);
+        let verified = land_check(&env, Provider::Claude, &initial, CheckState::Ready).unwrap();
+        assert!(verified.checked_at.is_some());
+        assert_eq!(
+            list(&env, "claude").unwrap()[0].check_state,
+            CheckState::Ready
+        );
+        save_with(&env, &memory, "claude", "work", "sk-dummy-check-second").unwrap();
+        assert!(land_check(&env, Provider::Claude, &initial, CheckState::Ready).is_err());
+        let rotated = list(&env, "claude").unwrap().remove(0);
+        assert_eq!(rotated.check_state, CheckState::Unchecked);
+        assert!(rotated.checked_at.is_none());
+        land_check(&env, Provider::Claude, &rotated, CheckState::Forbidden).unwrap();
+        assert_eq!(
+            list(&env, "claude").unwrap()[0].check_state,
+            CheckState::Forbidden
+        );
+        fs::remove_file(root(&env).join("claude/work/connection.json")).unwrap();
+        assert!(land_check(&env, Provider::Claude, &rotated, CheckState::Ready).is_err());
+        assert!(list(&env, "claude").unwrap().is_empty());
+    }
+    #[test]
+    fn failed_secret_save_rolls_back_metadata_and_missing_secret_can_be_replaced() {
+        struct Denied;
+        impl Secrets for Denied {
+            fn put(&self, _: &str, _: &[u8]) -> Result<(), String> {
+                Err("fixture denied".into())
+            }
+            fn get(&self, _: &str) -> Result<Vec<u8>, String> {
+                panic!("saving must not require reading the previous secret")
+            }
+            fn remove(&self, _: &str) -> Result<(), String> {
+                panic!("failed writes must not delete a previous secret")
+            }
+        }
+        let env = crate::accounts::test_support::test_env("api-save-rollback");
+        assert!(save_with(&env, &Denied, "claude", "work", "sk-dummy-first-save").is_err());
+        assert!(list(&env, "claude").unwrap().is_empty());
+        let memory = Memory::default();
+        save_with(&env, &memory, "claude", "work", "sk-dummy-first-save").unwrap();
+        let metadata_path = root(&env).join("claude/work/connection.json");
+        let before = fs::read(&metadata_path).unwrap();
+        assert!(save_with(&env, &Denied, "claude", "work", "sk-dummy-failed-save").is_err());
+        assert_eq!(fs::read(&metadata_path).unwrap(), before);
+        memory.0.borrow_mut().clear();
+        save_with(&env, &memory, "claude", "work", "sk-dummy-recover-key").unwrap();
+        assert_eq!(
+            memory.get("Switcher-API-claude-work").unwrap(),
+            b"sk-dummy-recover-key"
+        );
+    }
+
+    #[test]
+    fn existing_connection_requires_explicit_replacement_before_os_secret_access() {
+        let env = crate::accounts::test_support::test_env("api-explicit-replace");
+        let memory = Memory::default();
+        save_with(&env, &memory, "codex", "work", "sk-dummy-existing-key").unwrap();
+        let before = fs::read(root(&env).join("codex/work/connection.json")).unwrap();
+        assert!(save(&env, "codex", "WORK", "sk-dummy-replacement", false)
+            .unwrap_err()
+            .contains("같은 이름"));
+        assert_eq!(
+            before,
+            fs::read(root(&env).join("codex/work/connection.json")).unwrap()
+        );
+    }
+    #[test]
+    fn legacy_metadata_loads_without_a_claim_of_verification() {
+        let env = crate::accounts::test_support::test_env("api-legacy");
+        let dir = root(&env).join("claude/work");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("connection.json"),
+            br#"{"provider":"claude","name":"work"}"#,
+        )
+        .unwrap();
+        let entry = list(&env, "claude").unwrap().remove(0);
+        assert_eq!(entry.check_state, CheckState::Unchecked);
+        assert!(entry.checked_at.is_none());
+    }
+    #[tokio::test]
+    async fn checks_use_provider_headers_and_classify_errors_without_echoing_response() {
+        use std::io::{Read, Write};
+        for (provider, status, body, expected) in [
+            (Provider::Claude, 200, r#"{"data":[]}"#, CheckState::Ready),
+            (Provider::Codex, 200, r#"{"data":[]}"#, CheckState::Ready),
+            (
+                Provider::Codex,
+                200,
+                "not model JSON",
+                CheckState::Unavailable,
+            ),
+            (
+                Provider::Claude,
+                401,
+                "sk-sensitive-echo-fixture",
+                CheckState::InvalidKey,
+            ),
+            (
+                Provider::Claude,
+                403,
+                "sk-sensitive-echo-fixture",
+                CheckState::Forbidden,
+            ),
+            (
+                Provider::Codex,
+                429,
+                "sk-sensitive-echo-fixture",
+                CheckState::RateLimited,
+            ),
+            (
+                Provider::Codex,
+                503,
+                "sk-sensitive-echo-fixture",
+                CheckState::Unavailable,
+            ),
+            (Provider::Claude, 302, "", CheckState::Unavailable),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/v1/models", listener.local_addr().unwrap());
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                    .unwrap();
+                let mut received = Vec::new();
+                let mut buffer = [0; 2048];
+                loop {
+                    let count = stream.read(&mut buffer).unwrap();
+                    if count == 0 {
+                        break;
+                    }
+                    received.extend_from_slice(&buffer[..count]);
+                    if received.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                write!(stream, "HTTP/1.1 {status} Test\r\nContent-Type: application/json\r\nContent-Length: {}\r\nLocation: http://127.0.0.1:1/never-follow\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                String::from_utf8(received).unwrap().to_lowercase()
+            });
+            let outcome = check_at(provider, "sk-dummy-header-fixture", &url).await;
+            assert_eq!(outcome, expected);
+            assert!(!check_message(outcome).contains("sensitive-echo"));
+            let request = server.join().unwrap();
+            assert!(request.starts_with("get /v1/models "));
+            match provider {
+                Provider::Claude => {
+                    assert!(request.contains("x-api-key: sk-dummy-header-fixture"));
+                    assert!(request.contains("anthropic-version: 2023-06-01"));
+                }
+                Provider::Codex => {
+                    assert!(request.contains("authorization: bearer sk-dummy-header-fixture"))
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "local installed CLI smoke test; version only, synthetic key and isolated config"]
+    fn installed_clis_accept_generated_launchers_without_generation() {
+        use std::os::unix::fs::PermissionsExt;
+        let env = crate::accounts::test_support::test_env("api-installed-cli");
+        let bin = env.home.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        for provider in [Provider::Claude, Provider::Codex] {
+            let program = crate::login::resolve_program(provider.dir_name());
+            assert!(
+                std::path::Path::new(&program).is_file(),
+                "installed CLI required"
+            );
+            let wrapper = bin.join(provider.dir_name());
+            fs::write(
+                &wrapper,
+                format!("#!/bin/bash\nexec {} \"$@\"\n", sh_quote(&program)),
+            )
+            .unwrap();
+            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+            let script = launcher(&env, provider, "smoke", false).replace(
+                &format!(
+                    "/usr/bin/security find-generic-password -s {} -w",
+                    sh_quote(&service(provider, "smoke"))
+                ),
+                "printf %s sk-dummy-version-fixture",
+            );
+            let run = env.home.join(format!("{}.sh", provider.dir_name()));
+            fs::write(&run, script).unwrap();
+            let output = std::process::Command::new("/bin/bash")
+                .arg(run)
+                .arg("--version")
+                .env(
+                    "PATH",
+                    format!(
+                        "{}:{}",
+                        bin.display(),
+                        std::env::var("PATH").unwrap_or_default()
+                    ),
+                )
+                .current_dir(&env.home)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "installed CLI must accept generated launch arguments"
+            );
+            assert!(!output.stdout.is_empty());
+            assert!(!env
+                .store
+                .join("api-workspaces")
+                .join(format!("{}-smoke", provider.dir_name()))
+                .join("auth.json")
+                .exists());
+        }
     }
 
     #[cfg(target_os = "macos")]

@@ -541,25 +541,65 @@ async fn clamshell_cycle(app: tauri::AppHandle) -> Result<i8, String> {
 
 #[tauri::command]
 async fn api_list(provider: String) -> Result<Vec<api_connections::Connection>, String> {
-    tauri::async_runtime::spawn_blocking(move || api_connections::list(&Env::real()?, &provider)).await.map_err(|_| "API 작업 실패")?
+    tauri::async_runtime::spawn_blocking(move || api_connections::list(&Env::real()?, &provider))
+        .await
+        .map_err(|_| "API 작업 실패")?
 }
 #[tauri::command]
-async fn api_save(provider: String, name: String, key: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || api_connections::save(&Env::real()?, &provider, &name, &key)).await.map_err(|_| "API 저장 작업 실패")?
+async fn api_save(
+    provider: String,
+    name: String,
+    key: String,
+    replace: Option<bool>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        api_connections::save(
+            &Env::real()?,
+            &provider,
+            &name,
+            &key,
+            replace.unwrap_or(false),
+        )
+    })
+    .await
+    .map_err(|_| "API 저장 작업 실패")?
 }
 #[tauri::command]
 async fn api_delete(provider: String, name: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || api_connections::delete(&Env::real()?, &provider, &name)).await.map_err(|_| "API 삭제 작업 실패")?
+    tauri::async_runtime::spawn_blocking(move || {
+        api_connections::delete(&Env::real()?, &provider, &name)
+    })
+    .await
+    .map_err(|_| "API 삭제 작업 실패")?
 }
 #[tauri::command]
 async fn api_launch_command(provider: String, name: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || api_connections::launch_command(&Env::real()?, &provider, &name)).await.map_err(|_| "API 실행 명령 생성 실패")?
+    tauri::async_runtime::spawn_blocking(move || {
+        api_connections::launch_command(&Env::real()?, &provider, &name)
+    })
+    .await
+    .map_err(|_| "API 실행 명령 생성 실패")?
 }
 #[tauri::command]
-async fn api_check(provider: String, name: String) -> Result<(), String> {
+async fn api_check(provider: String, name: String) -> Result<api_connections::Connection, String> {
     tauri::async_runtime::spawn_blocking(move || {
         tauri::async_runtime::block_on(api_connections::check(&Env::real()?, &provider, &name))
-    }).await.map_err(|_| "API 연결 확인 작업 실패")?
+    })
+    .await
+    .map_err(|_| "API 연결 확인 작업 실패")?
+}
+
+/// Only official key consoles can be opened, and only on an explicit UI click.
+#[tauri::command]
+fn api_open_console(app: tauri::AppHandle, provider: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let url = match Provider::parse(&provider)? {
+        Provider::Claude => "https://platform.claude.com/settings/keys",
+        Provider::Codex => "https://platform.openai.com/api-keys",
+    };
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|_| "키 발급 페이지를 열지 못했습니다".into())
 }
 
 /// force_retry는 사용자가 새로고침 버튼을 직접 눌렀을 때만 true — 자동 조회 백오프를
@@ -3823,6 +3863,7 @@ pub fn run() {
             api_delete,
             api_launch_command,
             api_check,
+            api_open_console,
             list_profiles,
             save_profile,
             switch_profile,
