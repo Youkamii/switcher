@@ -68,8 +68,6 @@ pub struct Env {
     pub store: PathBuf,
     pub codex_home: PathBuf,
     pub claude_live: ClaudeLiveStore,
-    /// Production observes external CLI owners; fixtures inject their own process state.
-    pub(crate) external_cli_guard: bool,
 }
 
 impl Env {
@@ -94,7 +92,6 @@ impl Env {
         #[cfg(not(target_os = "macos"))]
         let claude_live = ClaudeLiveStore::File(claude_file);
         Ok(Env {
-            external_cli_guard: true,
             codex_home,
             home,
             store,
@@ -1504,7 +1501,6 @@ pub(crate) mod test_support {
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(base.join(".claude")).unwrap();
         Env {
-            external_cli_guard: false,
             codex_home: base.join(".codex"),
             home: base.clone(),
             store: base.join(".switcher"),

@@ -1,6 +1,5 @@
 mod accounts;
 mod api_connections;
-mod cli_activity;
 #[cfg(not(windows))]
 mod clamshell;
 #[cfg(windows)]
@@ -3561,22 +3560,6 @@ pub fn run() {
             tauri::async_runtime::spawn(async {
                 if let Ok(env) = Env::real() {
                     usage::refresh_all_profiles(&env).await;
-                }
-            });
-
-            // Resume deferred rotations from a native clock after CLI owners exit.
-            let refresh_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                    if !cli_activity::take_ready() {
-                        continue;
-                    }
-                    if let Ok(env) = Env::real() {
-                        usage::refresh_all_profiles(&env).await;
-                    }
-                    use tauri::Emitter;
-                    let _ = refresh_handle.emit("credentials-refreshed", ());
                 }
             });
 
