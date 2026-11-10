@@ -23,6 +23,14 @@
           "passed": true
         },
         {
+          "id": "account-add-offers-both-authentication-methods",
+          "passed": true
+        },
+        {
+          "id": "subscription-choice-uses-existing-login-flow",
+          "passed": true
+        },
+        {
           "id": "production-account-cards",
           "passed": true
         },
@@ -55,7 +63,7 @@
           "passed": true
         },
         {
-          "id": "registration-visible-without-expanding-panels",
+          "id": "one-add-entry-for-subscription-and-api",
           "passed": true
         },
         {
@@ -67,11 +75,31 @@
           "passed": true
         },
         {
+          "id": "registration-title-starts-native-window-drag",
+          "passed": true
+        },
+        {
+          "id": "original-titlebar-drags-through-modal-backdrop",
+          "passed": true
+        },
+        {
+          "id": "form-controls-and-right-click-do-not-drag",
+          "passed": true
+        },
+        {
+          "id": "window-move-preserves-registration-inputs",
+          "passed": true
+        },
+        {
           "id": "api-dialog-stays-inside-window",
           "passed": true
         },
         {
-          "id": "changing-provider-clears-secret",
+          "id": "changing-login-method-clears-secret",
+          "passed": true
+        },
+        {
+          "id": "provider-is-inherited-from-account-add",
           "passed": true
         },
         {
@@ -99,11 +127,15 @@
           "passed": true
         },
         {
-          "id": "command-visible-without-clipboard-permission",
+          "id": "registration-applies-api-without-command-copy",
           "passed": true
         },
         {
-          "id": "launch-command-requested-without-key",
+          "id": "api-activation-never-sends-key-back-through-ui",
+          "passed": true
+        },
+        {
+          "id": "saved-result-remains-draggable",
           "passed": true
         },
         {
@@ -115,15 +147,55 @@
           "passed": true
         },
         {
+          "id": "new-api-default-monthly-budget-is-195",
+          "passed": true
+        },
+        {
+          "id": "usage-settings-start-with-195",
+          "passed": true
+        },
+        {
+          "id": "manual-api-cost-and-remaining-budget-visible",
+          "passed": true
+        },
+        {
+          "id": "over-budget-amount-is-visible-and-bar-is-capped",
+          "passed": true
+        },
+        {
+          "id": "automatic-api-costs-use-separate-secret-and-key-id",
+          "passed": true
+        },
+        {
+          "id": "cost-query-error-keeps-last-known-amount",
+          "passed": true
+        },
+        {
+          "id": "manual-mode-removes-reporting-credential",
+          "passed": true
+        },
+        {
           "id": "explicit-api-check",
           "passed": true
         },
         {
-          "id": "saved-connection-shows-reusable-launch-command",
+          "id": "selected-api-shows-active-state",
+          "passed": true
+        },
+        {
+          "id": "api-can-restore-previous-cli-settings",
+          "passed": true
+        },
+        {
+          "id": "saved-api-uses-one-click-without-terminal-command",
           "passed": true
         },
         {
           "id": "replacement-never-reveals-stored-key",
+          "passed": true
+        },
+        {
+          "id": "key-replacement-can-drag-with-input-preserved",
           "passed": true
         },
         {
@@ -136,6 +208,14 @@
         },
         {
           "id": "secret-cleared-on-save-error",
+          "passed": true
+        },
+        {
+          "id": "activation-failure-keeps-saved-key-and-offers-retry",
+          "passed": true
+        },
+        {
+          "id": "activation-retry-uses-saved-key",
           "passed": true
         },
         {
@@ -190,7 +270,7 @@
       "errors": [],
       "mode": "normal",
       "width": 420,
-      "height": 880
+      "height": 990
     },
     {
       "checks": [
@@ -219,6 +299,14 @@
           "passed": true
         },
         {
+          "id": "selected-api-visible-compact",
+          "passed": true
+        },
+        {
+          "id": "selected-api-inside-window-compact",
+          "passed": true
+        },
+        {
           "id": "no-browser-errors-compact",
           "passed": true
         }
@@ -226,7 +314,7 @@
       "errors": [],
       "mode": "compact",
       "width": 280,
-      "height": 528
+      "height": 588
     },
     {
       "checks": [
@@ -255,6 +343,14 @@
           "passed": true
         },
         {
+          "id": "selected-api-visible-minimal",
+          "passed": true
+        },
+        {
+          "id": "selected-api-inside-window-minimal",
+          "passed": true
+        },
+        {
           "id": "no-browser-errors-minimal",
           "passed": true
         }
@@ -262,7 +358,7 @@
       "errors": [],
       "mode": "minimal",
       "width": 120,
-      "height": 289
+      "height": 349
     },
     {
       "checks": [
@@ -291,6 +387,14 @@
           "passed": true
         },
         {
+          "id": "selected-api-visible-edge",
+          "passed": true
+        },
+        {
+          "id": "selected-api-inside-window-edge",
+          "passed": true
+        },
+        {
           "id": "no-browser-errors-edge",
           "passed": true
         }
@@ -298,9 +402,9 @@
       "errors": [],
       "mode": "edge",
       "width": 80,
-      "height": 580
+      "height": 636
     }
   ],
-  "passed": 67,
+  "passed": 93,
   "failed": 0
 }
