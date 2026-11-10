@@ -55,7 +55,27 @@
           "passed": true
         },
         {
+          "id": "registration-visible-without-expanding-panels",
+          "passed": true
+        },
+        {
+          "id": "no-empty-api-space",
+          "passed": true
+        },
+        {
           "id": "secret-input-masked",
+          "passed": true
+        },
+        {
+          "id": "api-dialog-stays-inside-window",
+          "passed": true
+        },
+        {
+          "id": "changing-provider-clears-secret",
+          "passed": true
+        },
+        {
+          "id": "key-issuance-page-uses-selected-provider",
           "passed": true
         },
         {
@@ -75,7 +95,11 @@
           "passed": true
         },
         {
-          "id": "explicit-api-check",
+          "id": "registration-automatically-checks-connection",
+          "passed": true
+        },
+        {
+          "id": "command-visible-without-clipboard-permission",
           "passed": true
         },
         {
@@ -83,11 +107,59 @@
           "passed": true
         },
         {
+          "id": "registered-api-immediately-visible",
+          "passed": true
+        },
+        {
+          "id": "verification-persists-after-render",
+          "passed": true
+        },
+        {
+          "id": "explicit-api-check",
+          "passed": true
+        },
+        {
+          "id": "saved-connection-shows-reusable-launch-command",
+          "passed": true
+        },
+        {
+          "id": "replacement-never-reveals-stored-key",
+          "passed": true
+        },
+        {
+          "id": "replacement-is-explicit",
+          "passed": true
+        },
+        {
+          "id": "duplicate-does-not-silently-replace-key",
+          "passed": true
+        },
+        {
+          "id": "secret-cleared-on-save-error",
+          "passed": true
+        },
+        {
+          "id": "slow-network-check-does-not-trap-dialog",
+          "passed": true
+        },
+        {
+          "id": "failed-check-persists-after-dialog-close",
+          "passed": true
+        },
+        {
           "id": "delete-needs-second-click",
           "passed": true
         },
         {
+          "id": "delete-disarms-on-window-blur",
+          "passed": true
+        },
+        {
           "id": "delete-disarms-on-leave",
+          "passed": true
+        },
+        {
+          "id": "delete-expiry-works-without-timer",
           "passed": true
         },
         {
@@ -118,7 +190,7 @@
       "errors": [],
       "mode": "normal",
       "width": 420,
-      "height": 990
+      "height": 884
     },
     {
       "checks": [
@@ -150,7 +222,8 @@
       "errors": [],
       "mode": "normal",
       "width": 420,
-      "height": 990
+      "height": 884,
+      "dialog": null
     },
     {
       "checks": [
@@ -186,7 +259,8 @@
       "errors": [],
       "mode": "compact",
       "width": 280,
-      "height": 527
+      "height": 528,
+      "dialog": null
     },
     {
       "checks": [
@@ -222,7 +296,8 @@
       "errors": [],
       "mode": "minimal",
       "width": 120,
-      "height": 292
+      "height": 289,
+      "dialog": null
     },
     {
       "checks": [
@@ -258,9 +333,135 @@
       "errors": [],
       "mode": "edge",
       "width": 80,
-      "height": 580
+      "height": 580,
+      "dialog": null
+    },
+    {
+      "checks": [
+        {
+          "id": "all-five-tools-visible-normal",
+          "passed": true
+        },
+        {
+          "id": "tools-do-not-overlap-normal",
+          "passed": true
+        },
+        {
+          "id": "tools-inside-window-normal",
+          "passed": true
+        },
+        {
+          "id": "tool-buttons-call-backend-normal",
+          "passed": true
+        },
+        {
+          "id": "privacy-button-works-normal",
+          "passed": true
+        },
+        {
+          "id": "api-registration-inside-window",
+          "passed": true
+        },
+        {
+          "id": "no-browser-errors-normal",
+          "passed": true
+        }
+      ],
+      "errors": [],
+      "mode": "normal",
+      "width": 420,
+      "height": 884,
+      "dialog": {
+        "x": 20,
+        "y": 195.71875,
+        "width": 380,
+        "height": 492.5625
+      }
+    },
+    {
+      "checks": [
+        {
+          "id": "all-five-tools-visible-normal",
+          "passed": true
+        },
+        {
+          "id": "tools-do-not-overlap-normal",
+          "passed": true
+        },
+        {
+          "id": "tools-inside-window-normal",
+          "passed": true
+        },
+        {
+          "id": "tool-buttons-call-backend-normal",
+          "passed": true
+        },
+        {
+          "id": "privacy-button-works-normal",
+          "passed": true
+        },
+        {
+          "id": "api-result-inside-window",
+          "passed": true
+        },
+        {
+          "id": "no-browser-errors-normal",
+          "passed": true
+        }
+      ],
+      "errors": [],
+      "mode": "normal",
+      "width": 420,
+      "height": 884,
+      "dialog": {
+        "x": 20,
+        "y": 228.515625,
+        "width": 380,
+        "height": 426.953125
+      }
+    },
+    {
+      "checks": [
+        {
+          "id": "all-five-tools-visible-minimal",
+          "passed": true
+        },
+        {
+          "id": "tools-do-not-overlap-minimal",
+          "passed": true
+        },
+        {
+          "id": "tools-inside-window-minimal",
+          "passed": true
+        },
+        {
+          "id": "tools-have-native-click-regions-minimal",
+          "passed": true
+        },
+        {
+          "id": "tool-buttons-call-backend-minimal",
+          "passed": true
+        },
+        {
+          "id": "privacy-button-works-minimal",
+          "passed": true
+        },
+        {
+          "id": "unused-ai-leaves-no-account-space",
+          "passed": true
+        },
+        {
+          "id": "no-browser-errors-minimal",
+          "passed": true
+        }
+      ],
+      "errors": [],
+      "mode": "minimal",
+      "width": 120,
+      "height": 157,
+      "dialog": null
     }
   ],
-  "passed": 55,
+  "passed": 95,
   "failed": 0
 }

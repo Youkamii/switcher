@@ -77,6 +77,18 @@ Codex는 ChatGPT에서 장치 코드 인증이 켜져 있어야 합니다. 개�
 [GitHub CLI](https://cli.github.com)가 설치되어 있으면 GITHUB 섹션이 나타납니다. **+ 계정 추가**를 누르고 브라우저에서 장치 코드를 승인하면 됩니다.
 </details>
 
+<details>
+<summary><strong>API 키로 사용하기</strong> — Claude · OpenAI</summary>
+
+일반 모드 상단 **API 키 등록 → 공급자 선택 → 저장하고 확인 → 실행 명령 복사** 순서로 진행합니다. 키가 없으면 등록 화면의 **키 발급 페이지**를 여세요. 복사한 명령은 작업할 프로젝트의 기존 터미널에 붙여넣습니다.
+
+API 사용은 구독과 별도 과금됩니다. 키는 macOS 키체인·Windows DPAPI에 보관하며 기존 구독 로그인과 분리합니다. 연결 목록에서 터미널(실행 명령), 순환 화살표(확인), 열쇠(키 교체), 휴지통(삭제)을 사용할 수 있습니다.
+
+[사용법·오류 해결](docs/API_CONNECTIONS.md) · [네 모드와 API 화면](docs/design/complete-preview.png) · [검증 범위](docs/IMPLEMENTATION_STATUS.md)
+
+</details>
+
+
 <br />
 
 ## 왜 switcher인가

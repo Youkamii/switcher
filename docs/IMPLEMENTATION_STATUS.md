@@ -1,53 +1,77 @@
 # 개선 적용 현황
 
-작업 브랜치: `feat/connection-workspace`. 코드에 적용하고 로컬 커밋으로 보관한다. 배포·푸시는 하지 않았다.
+작업 브랜치: `feat/connection-workspace` · 2026-11-10. UI·API 기능을 코드에 적용하고 macOS 앱으로 빌드했다. 로컬 커밋이며 푸시·배포는 하지 않았다.
 
-| 작업 | 이슈 | 이번 적용 | 남은 범위 |
-| --- | --- | --- | --- |
-| UI 재설계·레이아웃 | [#179](https://github.com/Youkamii/switcher/issues/179) | 관리 420px / 위젯 280px, 중립 배경·민트 기본색, 고정 열의 액션 버튼, 재연결 버튼, 숨긴 AI 행과 구분선 제거, 손잡이 높이 동기화, 오류 표시 | 네이티브 macOS 상호작용 및 Windows 화면 검증. 별도 관리 창을 만들지 않고 기존 4개 보기를 유지 |
-| 인증·재연결 | [#180](https://github.com/Youkamii/switcher/issues/180) | invalid_grant와 권한/요청 오류 구분, stale 수치에도 실패 이유, 작은 위젯 오류 표식, Codex 사용자 경로 및 저장소 검사, 카드 재연결 | 외부 CLI와의 토큰 갱신 경합, 네이티브 키링 어댑터, 진단 내보내기. 실제 만료 자체가 사라졌다고 주장하지 않음 |
-| API 연결 | [#181](https://github.com/Youkamii/switcher/issues/181) | 등록·교체·삭제·모델 목록 확인·실행 명령 복사, macOS 키체인/Windows DPAPI, 별도 CLI 설정·기록, 자동 과금 전환 없음 | 실 CLI/API 계정 검증, Windows 런처 실행 검증, 새 UI 문구의 한·영 외 번역. API 비용/쿼터는 표시하지 않음 |
-| 배포 서명 | [#182](https://github.com/Youkamii/switcher/issues/182) | 위험·완료 기준 이슈화 | 미적용. 배포 신뢰키·릴리스 서명 절차와 설치본 전환 정책을 함께 준비해야 함 |
+[전체 화면 한 장](design/complete-preview.png) · [원본 크기 보기](design/complete-preview.html) · [API 등록·사용법](API_CONNECTIONS.md)
 
-[개선 계획](IMPROVEMENT_PLAN.md) · [기준선](REVIEW_TEST_RESULTS.md) · [API 사용법](API_CONNECTIONS.md) · [시안 HTML](design/index.html) · [네 모드 구현 화면](design/four-modes.png)
+## 적용한 동작
 
-화면 이미지는 실제 프로덕션 프론트 코드에 가짜 계정을 주입한 결과다. 실계정 화면이 아니며, 네이티브 WKWebView 검증을 대신하지 않는다. 시안 HTML에는 예시 데이터만 있고 실제 키 입력은 비활성화돼 있다.
+| 요청 | 적용 내용 |
+| --- | --- |
+| 버튼 모양·나열 | 계정 카드 우측에 전환/사용 중 슬롯과 SVG 아이콘 3개(다시 연결·이름·삭제)를 배치. 활성·비활성 계정의 위치가 같다. 호버·삭제 확인 때 다음 카드가 움직이지 않는다. |
+| 다른 도구가 안 보임 | 메모·자동 전환·가리기·잠자기 방지·화면 끄기를 기본 펼침으로 표시. 같은 선 두께의 아이콘을 사용하며 일반 모드에는 이름도 표시. |
+| 네 모드 유지 | 일반 420px·컴팩트 280px·미니멀 120px·엣지 80px 유지. 일반 화면에서 네 모드를 직접 선택할 수 있다. |
+| AI 미사용 빈자리 | 숨긴 제공자 행·구분선의 공간 제거. 엣지 손잡이 높이도 실제 표시 행에 맞춰 계산. AI를 모두 숨기면 SYSTEM과 도구만 남는다. |
+| 잦은 인증 오류 | 액세스 토큰 갱신 필요, 갱신 토큰 거부, 권한 오류, 요청 제한을 구분. 마지막 사용량을 보여줄 때도 실패 이유를 남긴다. 카드의 다시 연결에서 기존 계정을 재인증할 수 있다. |
+| API 등록과 사용 | 상단 등록 → 발급 페이지 → 키 저장·자동 연결 확인 → 실행 명령 복사. 기존 연결은 펼칠 필요 없이 바로 표시하며 확인·교체·삭제를 제공한다. |
+| API 키 보호 | macOS Keychain/Windows DPAPI. 별도 CLI 설정·기록을 사용하고 기존 OAuth는 보존. 키 입력은 성공·실패·취소 때 지우며 목록·스크립트·로그에 키를 넣지 않는다. |
+| 상태·오류 복구 | 확인 상태와 시각을 저장. 키 교체 시 초기화, 확인 중 교체·삭제 시 낡은 결과 폐기. 동일 이름의 암묵적 교체 차단. 보안 저장 실패 시 메타데이터 복구. |
+| 비활성 macOS 창 | API 창 닫기와 키 입력 정리를 DOM close 이벤트·타이머에만 맡기지 않고 즉시 처리. 삭제 확인은 실제 경과 시간과 사용자 동작으로 해제. |
 
-## 검증 결과 (2026-11-10)
+구독 토큰 수명이나 외부 CLI의 갱신 동작을 바꾼 것은 아니다. **토큰 만료 자체가 없어졌다고 보장하지 않는다.** 기존의 활성 계정 먼저 백업 → 대상 프로필 복사 순서, 활성 계정 직접 갱신 보호는 유지했다. API 세션은 독립된 실행 명령으로 시작하며 자동 과금 대체는 없다.
+
+## 검증 결과
 
 | 검사 | 결과 |
 | --- | --- |
-| `npm test` | 93 통과 |
-| `npm run build` | TypeScript/Vite 성공 |
-| `cargo test --lib` | 221 통과 / 16 ignored (실계정 e2e 포함, 미실행) |
-| `cargo test api_connections -- --include-ignored` | 5 통과. 가짜 키로 실제 macOS 키체인 왕복·삭제 포함 |
-| `node scripts/review-layout.mjs` | 8/8 통과. 수정 전 4/8 실패 → 0 실패 |
-| `node scripts/test-workspace-ui.mjs --all-modes docs/design` | 55/55 통과. 실제 번들 + 가짜 Tauri 경계, 클립보드 대기에도 렌더 진행·등록·갱신 중 입력 유지·입력 삭제·확인·삭제 확인·숨김·오류·배치 검증 |
-| macOS 앱 번들 | 빌드 성공. ad-hoc 서명, notarization 없음 |
-| Windows 전체 `cargo check` | macOS 환경에 Windows SDK 헤더(`assert.h`)가 없어 ring 컴파일 단계 중단. 제품 오류로 판정하지 않음 |
-| DPAPI 함수 Windows 타깃 타입 검사 | 성공. 별도 최소 크레이트로 검사. Windows 실제 암복호화·PowerShell 실행은 미검증 |
+| 프론트 단위 검사 `npm test` | 93 통과 |
+| Rust `cargo test --lib` | 226 통과 / 17 ignored |
+| API 집중 검사 `cargo test api_connections::tests -- --include-ignored` | 11 통과. 실제 macOS 키체인 가짜 키 왕복·삭제, 설치된 Claude/Codex `--version` 실행 포함 |
+| Chromium 실제 번들 검사 | 95 통과. 네 모드·AI 숨김·API 등록/중복/교체/오류/삭제/복사·창 경계·입력 보존·타이머 지연 검사 |
+| macOS WebKit 실제 번들 검사 | 67 통과. 비활성 NSPanel에 WKWebView를 붙여 같은 기능·배치 검사 수행 |
+| 기존 숨김·배치 회귀 검사 | 8 통과. 최초 기준선의 4건 실패 해소 |
+| TypeScript/Vite | 빌드 성공 |
+| macOS Tauri 앱 | 빌드 성공. ad-hoc 서명 검증 성공, notarization 없음 |
 
-기존 Rust 경고 4개는 남아 있다. 실제 사용자 프로필·OAuth 토큰·API 키를 읽거나 변경하는 실계정 e2e와 유료 생성 요청은 실행하지 않았다. 키체인 테스트가 만든 고유한 가짜 항목은 삭제까지 확인했다. 실행 중인 설치본은 교체하지 않았다.
+[Chromium 검사 원문](four-mode-test-results.json) · [WebKit 검사 원문](webkit-test-results.json) · [최초 리뷰·기준선](REVIEW_TEST_RESULTS.md)
+
+UI 검사는 **실제 배포 프론트 + 가짜 Tauri 응답**을 사용한다. WebKit은 임시·비영속 데이터 저장소와 화면 밖 NSPanel에서 실행하며, 비활성 페이지의 타이머 지연 때문에 테스트 동작 간 진행은 네이티브 테스트 호스트가 구동한다. 실제 사용자 프로필·키·기존 브라우저 세션을 사용하지 않는다. 이미지의 계정·사용량·연결 확인 결과도 검증용 예시다. 운영 앱의 네이티브 마우스 입력·실계정 전환까지 검증한 것은 아니다.
+
+API HTTP 검사는 로컬 서버에서 200(정상/잘못된 본문)·401·403·429·503·리다이렉트, 인증 헤더, 안전한 오류 표시를 확인했다. 실제 키로 생성 요청이나 유료 호출은 하지 않았다. 키체인에 만든 가짜 테스트 항목은 삭제했다. 설치된 앱을 덮어쓰거나 실행 중인 사용자 세션을 종료하지 않았다.
+
+재현 명령:
+
+```sh
+npm test
+npm run build
+cargo test --manifest-path src-tauri/Cargo.toml --lib
+cargo test --manifest-path src-tauri/Cargo.toml api_connections::tests -- --include-ignored
+node scripts/review-layout.mjs
+node scripts/test-workspace-ui.mjs --all-modes docs/design --output docs/four-mode-test-results.json
+node scripts/test-workspace-ui.mjs --webkit --output docs/webkit-test-results.json
+npm run tauri build -- --bundles app
+```
+
+`--include-ignored`는 이 API 모듈에만 한정한다. 그 안의 두 검사는 macOS 키체인에 고유한 가짜 항목을 만들었다 지우고, 설치된 CLI를 `--version`으로 실행한다. 전체 ignored 실계정 검사를 실행하는 명령이 아니다. WebKit 검사는 macOS와 Xcode Command Line Tools가 필요하다.
+
+## 이슈와 남은 범위
+
+| 이슈 | 상태·남은 범위 |
+| --- | --- |
+| [#179 UI](https://github.com/Youkamii/switcher/issues/179) | 요청한 배치·아이콘·4개 모드·숨김 수정 적용. Windows 실화면과 운영 앱의 실제 포인터 상호작용 검증은 남음. |
+| [#180 인증](https://github.com/Youkamii/switcher/issues/180) | 오류 구분·재연결·Codex 경로/저장소 보호 적용. 외부 CLI의 동시 토큰 갱신 경합, Codex 네이티브 키링 어댑터는 후속 범위. |
+| [#181 API](https://github.com/Youkamii/switcher/issues/181) | 공식 키 등록부터 독립 CLI 실행 명령까지 적용. 실제 키의 생성·과금 검증과 Windows DPAPI/PowerShell 실행은 미검증. 새 UI 문구는 한국어·영어 제공. |
+| [#182 업데이트 서명](https://github.com/Youkamii/switcher/issues/182) | 리뷰에서 확인한 별도 후속 작업. 릴리스 신뢰키·서명 배포 체계는 이번 UI/API 변경에 포함하지 않음. |
+
+Windows 전체 크로스 컴파일은 이 Mac에 Windows SDK 헤더가 없어 `ring` 단계에서 중단됐다. DPAPI 함수의 Windows 타깃 타입 검사는 별도 최소 크레이트에서 통과했지만 Windows 실행 검증을 대신하지 않는다. 기존 Rust 경고 4개는 남아 있다.
 
 ## 커밋
 
-- `9963d46` 개선 계획·시안·수정 전 레이아웃 검사
-- `b18c7c0` 숨긴 AI 공간·호버 카드 이동 수정
+- `9963d46` 전체 리뷰·개선 계획·초기 재현 검사
+- `b18c7c0` 숨긴 AI 공간·호버 이동 수정
 - `b0c0b51` 인증 오류 분류·실패 이유 보존
 - `9f21ce4` Codex 경로·인증 저장소 보호
-- `672474e` API 연결·관리 화면·회귀 검증
-
-## 버튼·4개 모드 재검증 (2026-11-10 후속)
-
-앞선 화면에서는 활성·비활성 계정의 자동 여백 때문에 버튼 열이 어긋났고, 접힌 도구 독으로 기능을 찾기 어려웠다. 네 모드를 함께 검증하지 않은 상태에서 화면을 제시한 점을 수정했다.
-
-- 전환/사용 중 · 다시 연결 · 이름 · 삭제를 고정 열로 배치. 이름·삭제를 더보기 메뉴에서 꺼냈다.
-- 일반 화면에 4개 모드 직접 선택 버튼 추가. 기존 일반·컴팩트·미니멀·엣지 동작을 모두 유지.
-- 메모·자동 전환·가리기·잠자기 방지·화면 끄기 도구를 기본 펼침으로 변경. 작은 모드의 낮은 버튼 불투명도와 미니멀의 가리기 숨김 규칙 제거. 사용자가 직접 접는 선택은 저장.
-- 도구 아이콘을 SVG로 통일. 일반 모드에는 이름도 표시하며, 긴 화면에는 스크롤 표시를 추가.
-- 실제 프론트 + 가짜 Tauri 경계 **55/55 통과**: 네 모드의 버튼 노출·겹침·경계·클릭 영역·명령 호출, 활성/비활성 카드 버튼 열, 삭제 확인 시 위치 유지 포함. 프론트 단위 검사 93개와 기존 배치 검사 8개도 통과.
-- Rust 로직은 이번 후속에서 변경하지 않았다. 네이티브 WKWebView·Windows 실행 검증의 기존 한계는 그대로다.
-
-[네 모드 비교 이미지](design/four-modes.png) · [원본 크기 비교 HTML](design/four-modes.html) · [55개 검사 결과](four-mode-test-results.json)
-
-재현: `npm run build && node scripts/test-workspace-ui.mjs --all-modes docs/design`
+- `672474e` API 보안 저장소·실행 명령 기반
+- `1c6c5db` 네 모드 도구 접근성 복원
+- `b2ef2c1` API 확인 상태 영속화·명시적 교체·오류 복구·CLI 통합 검사
+- `75161f2` 계정 아이콘 배치·API 등록부터 실행까지 연결·Chromium/WebKit 검사

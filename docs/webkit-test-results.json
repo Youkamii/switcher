@@ -1,0 +1,306 @@
+{
+  "reports": [
+    {
+      "checks": [
+        {
+          "id": "all-five-tools-visible-normal",
+          "passed": true
+        },
+        {
+          "id": "tools-do-not-overlap-normal",
+          "passed": true
+        },
+        {
+          "id": "tools-inside-window-normal",
+          "passed": true
+        },
+        {
+          "id": "tool-buttons-call-backend-normal",
+          "passed": true
+        },
+        {
+          "id": "privacy-button-works-normal",
+          "passed": true
+        },
+        {
+          "id": "production-account-cards",
+          "passed": true
+        },
+        {
+          "id": "hover-does-not-shift-next-card",
+          "passed": true
+        },
+        {
+          "id": "same-column-.action-reconnect",
+          "passed": true
+        },
+        {
+          "id": "same-column-.action-rename",
+          "passed": true
+        },
+        {
+          "id": "same-column-.action-delete",
+          "passed": true
+        },
+        {
+          "id": "delete-confirm-keeps-column",
+          "passed": true
+        },
+        {
+          "id": "auth-error-visible-with-stale-usage",
+          "passed": true
+        },
+        {
+          "id": "auth-error-does-not-overlap-bars",
+          "passed": true
+        },
+        {
+          "id": "registration-visible-without-expanding-panels",
+          "passed": true
+        },
+        {
+          "id": "no-empty-api-space",
+          "passed": true
+        },
+        {
+          "id": "secret-input-masked",
+          "passed": true
+        },
+        {
+          "id": "api-dialog-stays-inside-window",
+          "passed": true
+        },
+        {
+          "id": "changing-provider-clears-secret",
+          "passed": true
+        },
+        {
+          "id": "key-issuance-page-uses-selected-provider",
+          "passed": true
+        },
+        {
+          "id": "refresh-preserves-api-form",
+          "passed": true
+        },
+        {
+          "id": "view-change-protects-api-input",
+          "passed": true
+        },
+        {
+          "id": "register-sent-once",
+          "passed": true
+        },
+        {
+          "id": "secret-cleared-after-save",
+          "passed": true
+        },
+        {
+          "id": "registration-automatically-checks-connection",
+          "passed": true
+        },
+        {
+          "id": "command-visible-without-clipboard-permission",
+          "passed": true
+        },
+        {
+          "id": "launch-command-requested-without-key",
+          "passed": true
+        },
+        {
+          "id": "registered-api-immediately-visible",
+          "passed": true
+        },
+        {
+          "id": "verification-persists-after-render",
+          "passed": true
+        },
+        {
+          "id": "explicit-api-check",
+          "passed": true
+        },
+        {
+          "id": "saved-connection-shows-reusable-launch-command",
+          "passed": true
+        },
+        {
+          "id": "replacement-never-reveals-stored-key",
+          "passed": true
+        },
+        {
+          "id": "replacement-is-explicit",
+          "passed": true
+        },
+        {
+          "id": "duplicate-does-not-silently-replace-key",
+          "passed": true
+        },
+        {
+          "id": "secret-cleared-on-save-error",
+          "passed": true
+        },
+        {
+          "id": "slow-network-check-does-not-trap-dialog",
+          "passed": true
+        },
+        {
+          "id": "failed-check-persists-after-dialog-close",
+          "passed": true
+        },
+        {
+          "id": "delete-needs-second-click",
+          "passed": true
+        },
+        {
+          "id": "delete-disarms-on-window-blur",
+          "passed": true
+        },
+        {
+          "id": "delete-disarms-on-leave",
+          "passed": true
+        },
+        {
+          "id": "delete-expiry-works-without-timer",
+          "passed": true
+        },
+        {
+          "id": "delete-removes-api-row",
+          "passed": true
+        },
+        {
+          "id": "api-never-switches-oauth",
+          "passed": true
+        },
+        {
+          "id": "hidden-ai-leaves-no-provider-panels",
+          "passed": true
+        },
+        {
+          "id": "no-horizontal-overflow",
+          "passed": true
+        },
+        {
+          "id": "api-available-with-blocked-subscription-store",
+          "passed": true
+        },
+        {
+          "id": "no-browser-errors",
+          "passed": true
+        }
+      ],
+      "errors": [],
+      "mode": "normal",
+      "width": 420,
+      "height": 880
+    },
+    {
+      "checks": [
+        {
+          "id": "all-five-tools-visible-compact",
+          "passed": true
+        },
+        {
+          "id": "tools-do-not-overlap-compact",
+          "passed": true
+        },
+        {
+          "id": "tools-inside-window-compact",
+          "passed": true
+        },
+        {
+          "id": "tools-have-native-click-regions-compact",
+          "passed": true
+        },
+        {
+          "id": "tool-buttons-call-backend-compact",
+          "passed": true
+        },
+        {
+          "id": "privacy-button-works-compact",
+          "passed": true
+        },
+        {
+          "id": "no-browser-errors-compact",
+          "passed": true
+        }
+      ],
+      "errors": [],
+      "mode": "compact",
+      "width": 280,
+      "height": 528
+    },
+    {
+      "checks": [
+        {
+          "id": "all-five-tools-visible-minimal",
+          "passed": true
+        },
+        {
+          "id": "tools-do-not-overlap-minimal",
+          "passed": true
+        },
+        {
+          "id": "tools-inside-window-minimal",
+          "passed": true
+        },
+        {
+          "id": "tools-have-native-click-regions-minimal",
+          "passed": true
+        },
+        {
+          "id": "tool-buttons-call-backend-minimal",
+          "passed": true
+        },
+        {
+          "id": "privacy-button-works-minimal",
+          "passed": true
+        },
+        {
+          "id": "no-browser-errors-minimal",
+          "passed": true
+        }
+      ],
+      "errors": [],
+      "mode": "minimal",
+      "width": 120,
+      "height": 289
+    },
+    {
+      "checks": [
+        {
+          "id": "all-five-tools-visible-edge",
+          "passed": true
+        },
+        {
+          "id": "tools-do-not-overlap-edge",
+          "passed": true
+        },
+        {
+          "id": "tools-inside-window-edge",
+          "passed": true
+        },
+        {
+          "id": "tools-have-native-click-regions-edge",
+          "passed": true
+        },
+        {
+          "id": "tool-buttons-call-backend-edge",
+          "passed": true
+        },
+        {
+          "id": "privacy-button-works-edge",
+          "passed": true
+        },
+        {
+          "id": "no-browser-errors-edge",
+          "passed": true
+        }
+      ],
+      "errors": [],
+      "mode": "edge",
+      "width": 80,
+      "height": 580
+    }
+  ],
+  "passed": 67,
+  "failed": 0
+}
