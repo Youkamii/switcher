@@ -3896,6 +3896,9 @@ void listen<string>("shutdown-blocked", (event) => {
   showShutdownStatus("blocked", event.payload);
 });
 
+// 외부 CLI가 종료되어 네이티브 갱신이 재개되면 사용량도 다시 읽는다.
+void listen("credentials-refreshed", () => { void render({ forceRetry: true }); });
+
 // 트레이(설정 → 표시 기능)에서 체크가 바뀌면 다시 그린다
 void listen("visibility-changed", () => {
   const before = { ...visibility };

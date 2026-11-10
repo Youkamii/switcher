@@ -369,7 +369,13 @@ async fn ensure_fresh_profile(env: &Env, provider: Provider, name: &str) -> Resu
         Provider::Claude => CLAUDE_TOKEN_URL,
         Provider::Codex => CODEX_TOKEN_URL,
     };
-    ensure_fresh_profile_at(env, provider, name, token_url).await
+    ensure_fresh_profile_guarded(env, provider, name, token_url, || {
+        if env.external_cli_guard {
+            crate::cli_activity::detect(provider)
+        } else {
+            crate::cli_activity::Activity::Idle
+        }
+    }).await
 }
 
 /// 재발급 한 건이 쥐는 잠금 둘 — 전체 직렬화(REFRESH_LOCK)와 프로필 수명 잠금(inflight:
@@ -429,12 +435,17 @@ async fn post_refresh_and_land(
     Ok((body, pending_error, guards))
 }
 
-/// token_url은 테스트가 로컬 서버를 주입하기 위한 것 — 실코드는 ensure_fresh_profile을 쓴다
-async fn ensure_fresh_profile_at(
+/// Local-server tests inject both the endpoint and the external CLI state.
+#[cfg(test)]
+async fn ensure_fresh_profile_at(env: &Env, provider: Provider, name: &str, token_url: &str) -> Result<(), FetchErr> {
+    ensure_fresh_profile_guarded(env, provider, name, token_url, || crate::cli_activity::Activity::Idle).await
+}
+async fn ensure_fresh_profile_guarded(
     env: &Env,
     provider: Provider,
     name: &str,
     token_url: &str,
+    cli_activity: impl Fn() -> crate::cli_activity::Activity,
 ) -> Result<(), FetchErr> {
     env.check_codex_store(provider)?;
     let path = credential_path(env, provider, Some(name))?;
@@ -484,6 +495,15 @@ async fn ensure_fresh_profile_at(
         Ok(None) if live_cred_probably_exists(env, provider) => return Ok(()),
         Ok(None) => {}
         Err(_) => return Ok(()), // 신원 불명 — 보류 (fail-closed)
+    }
+    // Inactive does not mean unused: a CLI can still own this token in memory
+    // after an account switch. Never rotate behind a running/unknown CLI owner.
+    // Pending responses above are recovered first; no new POST is needed for rescue.
+    if let Some(message) = crate::cli_activity::reason(cli_activity()) {
+        if env.external_cli_guard {
+            crate::cli_activity::defer(provider);
+        }
+        return Err(FetchErr::Msg(message.into()));
     }
     let refresh_token = extract_refresh_token(provider, &root)
         .ok_or_else(|| FetchErr::Msg("토큰 파일에 리프레시 토큰이 없습니다".into()))?;
@@ -2552,6 +2572,163 @@ mod tests {
         assert_eq!(parse_retry_after("12"), Some(12));
         assert_eq!(parse_retry_after(" 7 "), Some(7));
         assert_eq!(parse_retry_after("Wed, 21 Oct 2026 07:28:00 GMT"), None);
+    }
+
+    #[test]
+    fn running_cli_defers_rotation_without_a_post_and_idle_owner_resumes_once() {
+        use crate::cli_activity::Activity;
+        use std::io::{Read, Write};
+        for provider in [Provider::Claude, Provider::Codex] {
+            let env = test_env(&format!("external-cli-owner-{}", provider.dir_name()));
+            let dir = env.profiles_dir(provider).join("p");
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(
+                dir.join("meta.json"),
+                r#"{"id":"inactive-fixture","email":null,"saved_at":1}"#,
+            )
+            .unwrap();
+            let path = credential_path(&env, provider, Some("p")).unwrap();
+            let expired = fake_jwt(r#"{"exp":1000}"#);
+            let original = match provider {
+                Provider::Claude => {
+                    serde_json::json!({"claudeAiOauth":{"accessToken":"old","refreshToken":"fixture-old","expiresAt":1000}})
+                }
+                Provider::Codex => {
+                    serde_json::json!({"tokens":{"access_token":expired,"refresh_token":"fixture-old","account_id":"inactive-fixture"}})
+                }
+            };
+            fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+            let before = fs::read(&path).unwrap();
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let url = format!("http://{}/oauth/token", listener.local_addr().unwrap());
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            for activity in [Activity::Running, Activity::Unknown] {
+                let result = rt.block_on(ensure_fresh_profile_guarded(
+                    &env,
+                    provider,
+                    "p",
+                    &url,
+                    || activity,
+                ));
+                assert!(
+                    matches!(result, Err(FetchErr::Msg(ref message)) if message.contains("자동 재시도"))
+                );
+                assert_eq!(
+                    listener.accept().unwrap_err().kind(),
+                    std::io::ErrorKind::WouldBlock,
+                    "a live CLI owner must prevent the refresh POST"
+                );
+                assert_eq!(fs::read(&path).unwrap(), before);
+                assert!(!pending_path(&path).exists());
+            }
+            let access = fake_jwt(&format!(r#"{{"exp":{}}}"#, now() + 7200));
+            let response = serde_json::json!({"access_token":access,"refresh_token":"fixture-new","expires_in":7200}).to_string();
+            let server = std::thread::spawn(move || {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(e)
+                            if e.kind() == std::io::ErrorKind::WouldBlock
+                                && std::time::Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(10))
+                        }
+                        Err(_) => return false,
+                    }
+                };
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 2048];
+                loop {
+                    let count = stream.read(&mut buffer).unwrap();
+                    if count == 0 {
+                        return false;
+                    }
+                    request.extend_from_slice(&buffer[..count]);
+                    if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]).to_lowercase();
+                        let length: usize = headers
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .unwrap()
+                            .trim()
+                            .parse()
+                            .unwrap();
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",response.len()).unwrap();
+                true
+            });
+            let resumed = rt.block_on(ensure_fresh_profile_guarded(
+                &env,
+                provider,
+                "p",
+                &url,
+                || Activity::Idle,
+            ));
+            assert!(server.join().unwrap());
+            assert!(resumed.is_ok());
+            assert_eq!(
+                extract_refresh_token(provider, &read_json(&path).unwrap()).as_deref(),
+                Some("fixture-new")
+            );
+            // A second read consumes the fresh token and does not consult the process probe or network.
+            rt.block_on(ensure_fresh_profile_guarded(
+                &env,
+                provider,
+                "p",
+                &url,
+                || panic!("fresh credentials need no rotation"),
+            ))
+            .unwrap();
+            assert!(!pending_path(&path).exists());
+        }
+    }
+
+    #[test]
+    fn pending_response_is_rescued_even_while_external_cli_is_running() {
+        let env = test_env("pending-before-cli-guard");
+        let dir = env.profiles_dir(Provider::Claude).join("p");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("meta.json"),
+            r#"{"id":"inactive-rescue","email":null,"saved_at":1}"#,
+        )
+        .unwrap();
+        let path = dir.join("credentials.json");
+        fs::write(
+            &path,
+            r#"{"claudeAiOauth":{"accessToken":"old","refreshToken":"fixture-old","expiresAt":1000}}"#,
+        )
+        .unwrap();
+        write_pending(&path,"fixture-old",&serde_json::json!({"access_token":"rescued","refresh_token":"fixture-new","expires_in":7200})).unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(ensure_fresh_profile_guarded(
+            &env,
+            Provider::Claude,
+            "p",
+            "http://127.0.0.1:1/never",
+            || crate::cli_activity::Activity::Running,
+        ))
+        .unwrap();
+        assert_eq!(
+            extract_refresh_token(Provider::Claude, &read_json(&path).unwrap()).as_deref(),
+            Some("fixture-new")
+        );
+        assert!(!pending_path(&path).exists());
     }
 
     /// TFSD의 90초 timeout처럼 호출자가 기다리기를 포기해도(퓨처 드롭) 회전된 토큰 응답은
