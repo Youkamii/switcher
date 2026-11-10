@@ -1136,52 +1136,13 @@ body.minimal .dock-tray button {
   margin: 3px 0;
 }
 
-/* 조작 버튼 줄은 기본 접힘 — Type1은 호버·포커스에 펼쳐진다(아래). Type2/3/4에는
-   이 요소가 렌더되지 않는다 (#103).
-   display:none이 아니라 높이 0 + overflow hidden인 이유 — Tab으로 카드에서 버튼으로
-   옮겨가는 순간 카드의 포커스가 먼저 빠지므로(blur → 버튼 focus) 그 틈에 버튼이
-   display:none이면 "포커스 불가"로 판정돼 포커스가 body로 떨어진다 (CDP 실측:
-   blur(card, related=전환 버튼) 뒤 focus 없음). 높이 0으로 접어 두면 버튼이 포커스
-   가능한 채 보이지만 않고, 포커스가 들어오면 :has(:focus-visible)로 펼쳐진다.
-   클릭·호버 히트는 overflow hidden이 같이 자른다 */
+/* Stable action row: pointer and keyboard focus never change card geometry. */
 .card-actions {
   display: flex;
   gap: 6px;
   justify-content: flex-end;
-  height: 0;
-  margin-top: 0;
-  overflow: hidden;
-}
-
-/* Type1 조작 버튼은 카드에 마우스를 올렸을 때만 (#103) — 계정마다 상시
-   노출하면 계정 수만큼 세로가 늘어난다. 나타나며 카드 높이가 바뀌므로 창
-   높이도 따라 맞춘다 (hoverActions → fitHeight). */
-#app:not(.locked) .card:hover .card-actions {
-  height: auto;
+  min-height: 24px;
   margin-top: 8px;
-  overflow: visible;
-}
-
-/* 키보드 경로 — 카드가 tabindex를 갖고 있어(profileCard·githubCard) 탭으로
-   카드에 닿으면 버튼이 나타나고, 다음 탭이 버튼에 들어간다. 이게 없으면 숨은
-   버튼은 포커스 트리 밖이라 키보드로 영영 도달하지 못한다.
-   :focus-within이 아니라 :has(:focus-visible)인 이유 — 마우스로 누른 버튼도
-   포커스를 쥐므로 :focus-within이면 삭제 버튼을 한 번 누른 뒤 커서를 빼도 버튼
-   줄이 안 접힌다 (CDP 실측: 떠난 뒤 display flex·창 866px 유지). :focus-visible은
-   키보드 포커스(와 입력칸)에만 켜진다. 호버 규칙과 분리해 둔 것은 :has를 모르는
-   엔진에서 셀렉터 목록 전체가 버려져 호버까지 죽는 일을 막기 위해서다 */
-#app:not(.locked) .card:has(:focus-visible) .card-actions {
-  height: auto;
-  margin-top: 8px;
-  overflow: visible;
-}
-
-/* Tab이 카드 자체에 멈춘 순간 — :has는 자손만 보므로 카드 본체의 키보드 포커스는
-   따로. 다음 Tab이 어디로 갈지 미리 보이게 한다 */
-#app:not(.locked) .card:focus-visible .card-actions {
-  height: auto;
-  margin-top: 8px;
-  overflow: visible;
 }
 
 /* 버튼이 숨어 있어도 "여기 뭔가 있다"가 보이게 — 전환 후보 카드는 호버에
@@ -1201,11 +1162,7 @@ body.minimal .dock-tray button {
 /* 맥 Type1 — 비활성 패널은 WKWebView :hover를 받지 못한다 (WebKit WebViewImpl.mm
    trackingAreaOptions: NSTrackingActiveInKeyWindow). 러스트 커서 폴링이 붙이는
    .hit-hover가 위 :hover 규칙과 같은 효과를 낸다 (main.ts applyPolledHover) */
-#app:not(.locked) .card.hit-hover .card-actions {
-  height: auto;
-  margin-top: 8px;
-  overflow: visible;
-}
+
 
 #app:not(.locked) .card.switchable.hit-hover {
   border-color: rgba(var(--accent-rgb), calc(0.75 * var(--fg-alpha)));
@@ -1522,8 +1479,8 @@ body.edge.edge-out #edge-film {
   top: 50%;
   right: -8px;
   width: 36px;
-  height: 116px;
-  margin-top: -58px;
+  height: var(--edge-tab-height, 40px);
+  margin-top: calc(var(--edge-tab-height, 40px) / -2);
   /* 직선 구간 116−15×2 = 86 = 게이지 높이 → 막대 모서리가 호에 안 걸린다.
      96px에서는 세 영역이 붙어 보여 세로를 늘리고 간격을 벌렸다 (사용자 지시) */
   border-radius: 15px 0 0 15px;
@@ -1542,8 +1499,8 @@ body.edge.edge-out #edge-film {
   top: 50%;
   right: 3px;
   width: 22px;
-  height: 86px;
-  margin-top: -43px;
+  height: var(--edge-gauge-height, 0px);
+  margin-top: calc(var(--edge-gauge-height, 0px) / -2);
   flex-direction: column;
   justify-content: center;
   /* 영역 사이 숨: 클로드↔코덱스 6px, SYSTEM 앞은 구분선 포함 16px (아래 규칙) */
@@ -1613,6 +1570,10 @@ body.edge.edge-out #edge-gauge {
   );
 }
 
+.edge-gauge-row[hidden] {
+  display: none;
+}
+
 .edge-gauge-row {
   display: flex;
   justify-content: center;
@@ -1624,7 +1585,7 @@ body.edge.edge-out #edge-gauge {
    3px 간격으로 이어지면 셋이 한 덩어리로 읽힌다 (사용자 지적). 구분선 위 4px(gap 6과
    합쳐 10)·아래 5px. 19+6+19+10+25 = 79 ≤ 86(손잡이 직선 구간)이라 막대가 호에 안
    걸린다 */
-.edge-gauge-row[data-provider="system"] {
+#edge-gauge[data-separated-system="true"] .edge-gauge-row[data-provider="system"] {
   height: 25px;
   margin-top: 4px;
   padding-top: 5px;

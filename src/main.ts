@@ -27,6 +27,7 @@ import {
   type GithubStarPromptChoice,
 } from "./firstRunStar";
 import { applyAccentTheme, themeCssColor } from "./theme";
+import { edgeGaugeLayout } from "./edgeGaugeLayout";
 
 type ProfileInfo = {
   name: string;
@@ -459,56 +460,15 @@ function statusDot(active: boolean): HTMLElement {
   return dot;
 }
 
-const ACTION_GRACE_MS = 250;
-
-/// 호버로 조작 버튼이 드나드는 카드의 공통 처리 (#103):
-/// 1) 버튼이 나고 들며 카드 높이가 바뀌므로 창을 다시 맞춘다 (fitHeight)
-/// 2) 방금 나타난 버튼의 클릭인지 판정할 수 있게 시각을 남긴다 — 커서를 카드
-///    하단으로 밀어 넣으면 삭제 버튼이 정확히 커서 밑에 생성되는데, 그 상태의
-///    더블클릭은 확인 대기와 확정이 한 번에 일어나 계정이 지워졌다 (8월 실측)
-/// 3) 카드를 벗어나면 확인 대기(armed)를 거둔다 — 버튼이 숨은 채 남은 armed는
-///    다시 들어와 누르는 한 번에 삭제가 된다. 바깥 클릭·blur 해제(#178)와 겹치지
-///    않는 경로(클릭 없이 커서만 빠져나감)를 메운다.
-/// 키보드 경로(:has(:focus-visible))도 같은 높이 변화를 만든다. 이쪽은 커서
-/// 아래 생성이 없으므로 shownAt을 건드리지 않는다 — 유예도 걸리지 않는다.
-function hoverActions(card: HTMLElement, disarm?: () => void): () => boolean {
-  let shownAt = 0;
-  const refit = () => {
-    if (!app.classList.contains("locked")) fitHeight();
-  };
-  card.addEventListener("pointerenter", (event) => {
-    // 유예는 "버튼이 커서 밑에 생성된" 진입에만 — 위·옆에서 들어와 버튼까지 내려가
-    // 누르는 보통의 빠른 조작(테두리 통과→클릭 250ms 안)까지 삼키면 첫 클릭이
-    // 무음으로 사라진다 (review). 진입 시점엔 :hover가 이미 적용돼 버튼 줄의
-    // 위치를 잴 수 있다 — 커서가 그 줄 높이 안에 있을 때만 유예를 건다.
-    // 터치·펜은 탭마다 enter→click이 수 ms라 유예를 걸면 전환·삭제가 영영 안 된다.
-    // 폴링 호버(맥, .hit-hover)가 이미 판정한 카드에 오는 진짜 pointerenter는 유예를
-    // 건드리지 않는다 — 마우스 추적이 없는 비활성 패널은 클릭 직전에야 경계 이벤트를
-    // 합성하므로, 여기서 유예를 다시 걸면 버튼 줄 높이의 첫 클릭이 매번 삼켜진다
-    // (윈도우 CDP 실측: 폴링 진입 뒤 즉시 클릭이 무시됨). 창 높이만 다시 맞춘다
-    if (event.isTrusted && card.classList.contains("hit-hover")) {
-      refit();
-      return;
-    }
-    shownAt = 0;
-    if (event.pointerType !== "mouse") return;
-    const actions = card.querySelector<HTMLElement>(".card-actions");
-    const rect = actions?.getBoundingClientRect();
-    if (rect && rect.height > 0 && event.clientY >= rect.top) shownAt = Date.now();
-    refit();
-  });
+// Actions stay visible, so hover never resizes the window or delays a click.
+// Leaving a card still cancels its two-step delete confirmation.
+function bindActionDisarm(card: HTMLElement, disarm: () => void) {
   card.addEventListener("pointerleave", (event) => {
-    // 터치는 탭마다 leave가 click보다 먼저 와 확인 대기를 매번 되돌린다 — 그 경로의
-    // 해제는 #178의 바깥 클릭·3초·blur가 맡는다
-    if (event.pointerType === "mouse") disarm?.();
-    refit();
+    if (event.pointerType === "mouse") disarm();
   });
-  card.addEventListener("focusin", refit);
-  card.addEventListener("focusout", () => {
-    disarm?.();
-    refit();
+  card.addEventListener("focusout", (event) => {
+    if (!(event.relatedTarget instanceof Node) || !card.contains(event.relatedTarget)) disarm();
   });
-  return () => Date.now() - shownAt < ACTION_GRACE_MS;
 }
 
 function profileCard(
@@ -519,10 +479,10 @@ function profileCard(
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = "card" + (profile.active ? " active" : "");
-  // 조작 버튼이 호버·포커스에만 나타나므로 카드가 키보드 도달점이 된다 (#103)
+  // 카드와 항상 보이는 조작 버튼 모두 키보드로 접근할 수 있다.
   card.tabIndex = 0;
   // disarm은 삭제 버튼 쪽에서 선언된다 — 이벤트 시점에만 부르므로 지연 참조
-  const justShown = hoverActions(card, () => disarm());
+  bindActionDisarm(card, () => disarm());
 
   const head = document.createElement("div");
   head.className = "card-head";
@@ -595,7 +555,6 @@ function profileCard(
     switchBtn.className = "primary";
     switchBtn.textContent = t("switchBtn");
     switchBtn.addEventListener("click", () => {
-      if (justShown()) return;
       void doSwitch(switchBtn);
     });
     actions.appendChild(switchBtn);
@@ -693,8 +652,6 @@ function profileCard(
     if (event.target !== deleteBtn) disarm();
   };
   deleteBtn.addEventListener("click", async () => {
-    // 방금 커서 밑에 생성된 버튼의 클릭은 무시 — 더블클릭 한 번에 삭제 방지 (#103)
-    if (justShown()) return;
     if (!armed) {
       armed = true;
       deleteBtn.textContent = t("delConfirm");
@@ -1511,17 +1468,15 @@ function githubCard(acc: GithubAccount, compact = false): HTMLElement {
     card.dataset.provider = "github";
     card.dataset.name = acc.login;
     if (!compact) {
-      // Type1 카드와 같은 호버 노출·높이 보정·키보드 경로 (#103)
+      // 일반 모드의 전환 버튼은 고정된 자리에 표시한다.
       card.tabIndex = 0;
-      const justShown = hoverActions(card);
       const actions = document.createElement("div");
       actions.className = "card-actions";
       const switchBtn = document.createElement("button");
       switchBtn.className = "primary";
       switchBtn.textContent = t("switchBtn");
       switchBtn.addEventListener("click", async () => {
-        if (justShown()) return;
-        if (loginOpen) {
+          if (loginOpen) {
           toast(t("loginBusy"), true);
           return;
         }
@@ -2136,6 +2091,21 @@ function applyEdgeGauge() {
         row.appendChild(bar);
       });
     });
+  const geometry = edgeGaugeLayout(
+    (edgeGaugeByProvider.get("claude")?.length ?? 0) > 0,
+    (edgeGaugeByProvider.get("codex")?.length ?? 0) > 0,
+    (edgeGaugeSystem?.length ?? 0) > 0,
+  );
+  const gauge = document.getElementById("edge-gauge")!;
+  gauge.dataset.separatedSystem = String(geometry.separatedSystem);
+  const style = document.documentElement.style;
+  const height = `${geometry.height}px`;
+  if (style.getPropertyValue("--edge-gauge-height") !== height) {
+    style.setProperty("--edge-gauge-height", height);
+    style.setProperty("--edge-tab-height", `${geometry.tabHeight}px`);
+    // The native hover/click zone follows the rendered handle, including hidden WebViews.
+    queueMicrotask(refreshHitRegionsAfterLayout);
+  }
 }
 
 /// Type4의 SYSTEM 섹션 — 판의 다른 줄과 같은 세로 막대 넷(C·M·D·N). id·클래스는

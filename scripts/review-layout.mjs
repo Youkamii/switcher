@@ -1,11 +1,13 @@
 // Read-only layout audit using the repository's actual HTML/CSS and synthetic data.
 // No Tauri startup, account files, network login, or extra npm dependencies.
+// TypeScript is the existing project compiler; it compiles the production geometry helper.
 // Exit 1 means a desired layout invariant is currently violated; exit 2 is a harness error.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import ts from "typescript";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const candidates = [
@@ -44,6 +46,10 @@ function audit() {
   document.body.className = "edge";
   for (const [claude, codex] of [[false, false], [true, false], [false, true], [true, true]]) {
     const enabled = { claude, codex, system: true };
+    const geometry = edgeGaugeLayout(claude, codex, true);
+    document.documentElement.style.setProperty("--edge-gauge-height", `${geometry.height}px`);
+    document.documentElement.style.setProperty("--edge-tab-height", `${geometry.tabHeight}px`);
+    document.getElementById("edge-gauge").dataset.separatedSystem = String(geometry.separatedSystem);
     const measured = [...document.querySelectorAll(".edge-gauge-row")].map((row) => {
       row.hidden = !enabled[row.dataset.provider];
       row.replaceChildren();
@@ -60,7 +66,7 @@ function audit() {
       };
     });
     record(`hidden-ai-${Number(claude)}${Number(codex)}`,
-      measured.every((row) => !row.hidden || row.height === 0), measured,
+      measured.every((row) => row.hidden ? row.height === 0 : row.height > 0), measured,
       "Every hidden AI row has zero layout height.");
   }
 
@@ -107,11 +113,15 @@ function audit() {
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "switcher-layout-audit-"));
 try {
   const css = ["src/theme.css", "src/styles.css"].map((file) => fs.readFileSync(path.join(root, file), "utf8")).join("\n");
+  const helper = ts.transpileModule(
+    fs.readFileSync(path.join(root, "src/edgeGaugeLayout.ts"), "utf8").replace("export function", "function"),
+    { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
   const html = fs.readFileSync(path.join(root, "index.html"), "utf8")
     .replace(/<link\b[^>]*>/g, "")
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/g, "")
     .replace("</head>", `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"><style>${css}</style></head>`)
-    .replace("</body>", `<script>(${audit.toString()})()</script></body>`);
+    .replace("</body>", `<script>${helper}\n(${audit.toString()})()</script></body>`);
   const fixture = path.join(tmp, "fixture.html");
   fs.writeFileSync(fixture, html);
   const run = spawnSync(chrome, ["--headless", "--disable-gpu", "--no-first-run",

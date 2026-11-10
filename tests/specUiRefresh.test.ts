@@ -81,73 +81,22 @@ test("provider icon is one path per icon, coloured by theme variables, sized to 
   assert.match(compactIcon, /height: 8px;/);
 });
 
-/// #103 — Type1 조작 버튼은 호버·포커스에만. 창 높이 보정, 커서 밑 생성 직후 클릭
-/// 유예, 카드 이탈 시 삭제 확인 해제, 키보드 도달 경로가 한 벌로 있어야 한다.
-test("card actions are hidden by default and shown on hover or keyboard focus in Type1", () => {
+// #179 supersedes the hover-only interaction. Geometry is exercised in review-layout.mjs.
+test("card actions stay reachable without hover and do not need a click grace", () => {
   const base = cssSource.match(/\.card-actions \{[^}]*\}/)?.[0];
-  assert.ok(base, ".card-actions rule must exist");
-  // display:none이면 Tab으로 카드→버튼 이동 순간 버튼이 포커스 불가가 돼 body로 떨어진다 (CDP 실측)
-  // — 높이 0 + overflow hidden으로 접어 버튼은 포커스 가능한 채 보이지만 않게 한다
+  assert.ok(base);
   assert.match(base, /display: flex;/);
-  assert.match(base, /height: 0;/);
-  assert.match(base, /overflow: hidden;/);
-  assert.doesNotMatch(base, /display: none/);
-  const expanded = /\{[^}]*height: auto;[^}]*overflow: visible;/;
-  assert.match(cssSource, new RegExp("#app:not\\(\\.locked\\) \\.card:hover \\.card-actions " + expanded.source));
-  // 키보드 경로는 :focus-within이 아니라 :has(:focus-visible) — 마우스로 누른 버튼의 포커스로
-  // 버튼 줄이 눌러붙지 않게. 호버 규칙과 다른 규칙이어야 :has 미지원 엔진에서 호버가 산다
-  assert.match(cssSource, new RegExp("#app:not\\(\\.locked\\) \\.card:has\\(:focus-visible\\) \\.card-actions " + expanded.source));
-  // :has는 자손만 — Tab이 카드 자체에 멈춘 순간도 버튼 줄이 보인다
-  assert.match(cssSource, new RegExp("#app:not\\(\\.locked\\) \\.card:focus-visible \\.card-actions " + expanded.source));
-  assert.doesNotMatch(cssSource, /\.card:focus-within/);
-  // 전환 후보 카드의 호버 신호는 테마 accent를 따른다 (색감 6종 이후 고정색 금지)
-  const hover = cssSource.match(/#app:not\(\.locked\) \.card\.switchable:hover \{[\s\S]*?\}/)?.[0];
-  assert.ok(hover, "switchable hover rule must exist");
-  assert.match(hover, /rgba\(var\(--accent-rgb\), calc\(0\.75 \* var\(--fg-alpha\)\)\)/);
-  assert.doesNotMatch(hover, /167, 139, 250/);
-  // 고정 모드(Type2/3)에는 .card-actions가 렌더되지 않고 기본값도 none — 따로 숨김 규칙이 없어야 한다
-  assert.doesNotMatch(cssSource, /#app\.locked \.card-actions/);
+  assert.doesNotMatch(base, /height: 0;|display: none;/);
+  assert.doesNotMatch(mainSource, /ACTION_GRACE_MS|justShown|function hoverActions/);
 });
 
-test("hoverActions refits the window, grants a click grace after appearing, and disarms on leave", () => {
-  const fn = mainSource.match(/function hoverActions\([\s\S]*?\n}\n/)?.[0];
-  assert.ok(fn, "hoverActions must exist");
-  assert.match(mainSource, /const ACTION_GRACE_MS = 250;/);
-  // 유예는 마우스가 버튼 줄 높이로 들어온 진입에만, 터치·펜은 제외 (review)
-  const enter = fn.match(/card\.addEventListener\("pointerenter", \(event\) => \{[\s\S]*?\n  \}\);/)?.[0];
-  assert.ok(enter, "pointerenter handler must exist");
-  // 폴링 호버가 판정한 카드의 진짜 pointerenter(맥은 클릭 직전에 합성)는 유예를 다시 걸지 않는다
-  assert.match(enter, /if \(event\.isTrusted && card\.classList\.contains\("hit-hover"\)\) \{\s*refit\(\);\s*return;\s*\}\s*shownAt = 0;/);
-  assert.match(enter, /if \(event\.pointerType !== "mouse"\) return;/);
-  assert.match(enter, /rect\.height > 0 && event\.clientY >= rect\.top\) shownAt = Date\.now\(\);/);
-  assert.match(enter, /refit\(\);/);
-  const leave = fn.match(/card\.addEventListener\("pointerleave", \(event\) => \{[\s\S]*?\n  \}\);/)?.[0];
-  assert.ok(leave, "pointerleave handler must exist");
-  assert.match(leave, /if \(event\.pointerType === "mouse"\) disarm\?\.\(\);/);
-  assert.match(leave, /refit\(\);/);
-  assert.match(fn, /card\.addEventListener\("focusin", refit\);/);
-  assert.match(fn, /card\.addEventListener\("focusout", \(\) => \{[^}]*disarm\?\.\(\);/);
-  assert.match(fn, /return \(\) => Date\.now\(\) - shownAt < ACTION_GRACE_MS;/);
-  assert.match(fn, /if \(!app\.classList\.contains\("locked"\)\) fitHeight\(\);/, "no refit in widget modes");
-});
-
-test("profile and GitHub cards are keyboard-reachable and guard switch/delete clicks right after appearing", () => {
-  const profile = mainSource.match(/function profileCard\([\s\S]*?\n}\n/)?.[0];
-  assert.ok(profile, "profileCard must exist");
-  assert.match(profile, /card\.tabIndex = 0;/);
-  assert.match(profile, /const justShown = hoverActions\(card, \(\) => disarm\(\)\);/);
-  assert.match(profile, /switchBtn\.addEventListener\("click", \(\) => \{\s*if \(justShown\(\)\) return;\s*void doSwitch\(switchBtn\);/);
-  assert.match(profile, /deleteBtn\.addEventListener\("click", async \(\) => \{[\s\S]*?if \(justShown\(\)\) return;\s*if \(!armed\) \{/);
-  // #178의 해제 경로(바깥 클릭·blur·3초)는 tests/hiddenWebviewTimers.test.ts가 지킨다
-  const github = mainSource.match(/function githubCard\([\s\S]*?\n}\n/)?.[0];
-  assert.ok(github, "githubCard must exist");
-  assert.match(github, /if \(!compact\) \{(?:(?!\n    \}\n)[\s\S])*?card\.tabIndex = 0;\s*const justShown = hoverActions\(card\);/);
-  assert.match(github, /switchBtn\.addEventListener\("click", async \(\) => \{\s*if \(justShown\(\)\) return;/);
-  // 컴팩트 카드·Type4 묶음에는 호버 버튼이 없으므로 hoverActions도 없다
-  const compact = mainSource.match(/function compactCard\([\s\S]*?\n}\n/)?.[0] ?? "";
-  assert.doesNotMatch(compact, /hoverActions\(/);
-  const edge = mainSource.match(/function edgeAccount\([\s\S]*?\n}\n/)?.[0] ?? "";
-  assert.doesNotMatch(edge, /hoverActions\(/);
+test("delete confirmation disarms on leaving the card, without resizing on hover", () => {
+  const fn = mainSource.match(/function bindActionDisarm\([\s\S]*?\n}\n/)?.[0];
+  assert.ok(fn);
+  assert.match(fn, /pointerleave/);
+  assert.match(fn, /focusout/);
+  assert.match(fn, /card\.contains\(event\.relatedTarget\)/);
+  assert.doesNotMatch(fn, /fitHeight|setTimeout/);
 });
 
 /// #103 리뷰 반영 — 호버 버튼이 생기며 드러난 주변 결함
@@ -202,7 +151,7 @@ test("Type1 hover on macOS is driven by Rust cursor polling (hover-poll), mirror
   assert.match(fn, /el\.classList\.add\("hit-hover"\);\s*el\.dispatchEvent\(new PointerEvent\("pointerenter", \{ pointerType: "mouse", clientX: x, clientY: y \}\)\);/);
   assert.match(fn, /prev\.classList\.remove\("hit-hover"\);[\s\S]*?new PointerEvent\("pointerleave", \{ pointerType: "mouse"/);
   assert.match(mainSource, /listen<\{ idx: number; x\?: number; y\?: number \}>\("hover-poll"/);
-  // CSS: .hit-hover가 :hover와 같은 펼침·테두리
-  assert.match(cssSource, /#app:not\(\.locked\) \.card\.hit-hover \.card-actions \{[^}]*height: auto;[^}]*overflow: visible;/);
+  // Hover remains a colour cue only; it no longer reveals an action row.
+  assert.doesNotMatch(cssSource, /\.card\.hit-hover \.card-actions/);
   assert.match(cssSource, /#app:not\(\.locked\) \.card\.switchable\.hit-hover \{[^}]*rgba\(var\(--accent-rgb\)/);
 });
