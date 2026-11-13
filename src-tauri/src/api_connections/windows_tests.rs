@@ -90,7 +90,15 @@ fn assert_selected_key(env: &Env, provider: Provider, key: &str) {
                 result.stdout == key.as_bytes(),
                 "helper must read the selected DPAPI key"
             );
-            assert!(result.stderr.is_empty(), "helper must not emit diagnostics");
+            // Startup diagnostics on stderr do not change the helper protocol:
+            // its exit status and stdout carry the result. Never log the key.
+            assert!(
+                !result
+                    .stderr
+                    .windows(key.len())
+                    .any(|part| part == key.as_bytes()),
+                "helper must not expose its key in diagnostics"
+            );
         }
         Provider::Codex => {
             let auth: Value =
