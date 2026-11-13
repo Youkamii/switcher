@@ -29,6 +29,7 @@ profiles/
 *.dpapi
 api-connections/
 api-workspaces/
+api-active/
 *.switcher-tmp*
 *.json.bak
 
