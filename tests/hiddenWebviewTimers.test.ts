@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 /// 맥 비활성 웹뷰는 타이머·rAF가 멈출 수 있다 (CLAUDE.md macOS 절) — 필수 동작은
 /// 사용자 동작이나 러스트 신호로도 끝나야 한다 (#178)

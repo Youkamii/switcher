@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const mainSource = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const cssSource = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const i18nSource = readFileSync(new URL("../src/i18n.ts", import.meta.url), "utf8");
 
