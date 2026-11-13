@@ -24,7 +24,7 @@
 
 ## 검증 결과
 
-2026-11-13 푸시 전 재검증: Rust 239, API 집중 24, 프론트 단위 93, Chromium 123, WebKit 93, 배치 8 통과. TypeScript/Vite와 macOS 앱 빌드도 성공했다. Chromium 첫 실행은 디버깅 포트 생성 대기 시간 초과로 중단됐고, 단독 재시도에서 전체 검사가 통과했다. 새 인증 복원 보관소 `api-active/`를 Git 제외 규칙에 추가하고 실제 제외 여부를 확인했다. 푸시 대상 기존 16개 커밋의 138개 새 blob에서 인증 파일명과 알려진 토큰 패턴을 검사했으며 발견 사항은 없었다. 아래 실환경 검증 한계는 그대로 유지한다.
+2026-11-13 푸시 전 재검증: Rust 239, API 집중 24, 프론트 단위 93, Chromium 123, WebKit 93, 배치 8 통과. TypeScript/Vite와 macOS 앱 빌드도 성공했다. Chromium 첫 실행은 디버깅 포트 생성 대기 시간 초과로 중단됐고, 단독 재시도에서 전체 검사가 통과했다. 새 인증 복원 보관소 `api-active/`를 Git 제외 규칙에 추가하고 실제 제외 여부를 확인했다. 푸시 대상 기존 16개 커밋의 138개 새 blob에서 인증 파일명과 알려진 토큰 패턴을 검사했으며 발견 사항은 없었다. 추가 Windows 실행 검증은 아래 표에 반영했다.
 
 | 검사 | 결과 |
 | --- | --- |
@@ -39,6 +39,12 @@
 | 기존 숨김·배치 회귀 검사 | 8 통과. 최초 기준선의 4건 실패 해소 |
 | TypeScript/Vite | 빌드 성공 |
 | macOS Tauri 앱 | 빌드 성공. ad-hoc 서명 검증 성공, notarization 없음 |
+| Windows 프론트 | 단위 검사 93개와 TypeScript/Vite 빌드 통과. CRLF 소스에서도 검사 가능하도록 두 검사 파일 수정 |
+| Windows Rust·API 통합 | 전체 Rust 검사 통과. 실제 DPAPI 키 저장·복호화·교체·손상 거부·삭제, PowerShell 키 반환, API 해제·구독 전환·활성 연결 삭제 시 OAuth 복원 확인 |
+| Windows 설치된 CLI | Claude Code 2.1.300 / Codex 0.167.0의 인증 상태 명령으로 API 인식 확인. 가짜 키·격리 홈 사용 |
+| Windows 포터블 앱 | `npm run tauri build -- --no-bundle` 성공 |
+
+[Windows CI 실행 기록](https://github.com/Youkamii/switcher/actions/runs/43406000742) — 실행 코드 `1c6dea1`. 최초 프론트 검사 9건은 CRLF 소스에서 함수 구간을 찾지 못해 실패했고 줄바꿈 정규화로 수정했다. 다음 실행에서는 PowerShell helper가 올바른 키를 반환하고도 stderr가 비어 있어야 한다는 새 테스트 조건 때문에 1건 실패했다. 종료 코드·정확한 stdout·stderr의 키 노출 여부로 계약을 바로잡은 뒤 전체 검사와 빌드가 통과했다. 이 과정에서 앱의 API 구현 코드는 변경하지 않았다.
 
 [Chromium 검사 원문](four-mode-test-results.json) · [WebKit 검사 원문](webkit-test-results.json) · [최초 리뷰·기준선](REVIEW_TEST_RESULTS.md)
 
@@ -63,16 +69,18 @@ npm run tauri build -- --bundles app
 
 `--include-ignored`는 위 API 모듈에만 한정한다. 해당 로컬 검사는 macOS 키체인에 고유한 가짜 항목을 만들었다 지우고, 설치된 CLI의 버전 또는 인증 상태 명령을 실행한다. 전체 ignored 실계정 검사를 실행하는 명령이 아니다. WebKit 검사는 macOS와 Xcode Command Line Tools가 필요하다.
 
+Windows 자동 검사는 [windows-check](../.github/workflows/windows-check.yml)에서 별도로 실행한다. 코드 푸시 시 Windows 러너에서 프론트 단위 검사·빌드, Rust 전체 검사, 실제 DPAPI 저장·복호화·키 교체·삭제, PowerShell helper 실행, API 해제·구독 전환·활성 연결 삭제 시 OAuth 복원, 설치된 Claude/Codex의 API 인증 인식, 포터블 실행 파일 빌드를 확인한다. CLI 검사는 Claude Code 2.1.300 / Codex 0.167.0과 가짜 키·격리 홈을 사용하며 모델 생성 요청은 하지 않는다. 이 워크플로에는 릴리스·npm 게시 단계가 없다. 문서만 바뀐 푸시는 다시 빌드하지 않는다.
+
 ## 이슈와 남은 범위
 
 | 이슈 | 상태·남은 범위 |
 | --- | --- |
 | [#179 UI](https://github.com/Youkamii/switcher/issues/179) | 요청한 배치·아이콘·4개 모드·숨김 수정 적용. Windows 실화면과 운영 앱의 실제 포인터 상호작용 검증은 남음. |
 | [#180 인증](https://github.com/Youkamii/switcher/issues/180) | 오류 구분·재연결·Codex 경로/저장소 보호 적용. CLI 실행 여부로 전체 갱신을 막던 제한 제거. 외부 CLI와 모든 토큰 회전을 원자적으로 조정하는 기능, Codex 네이티브 키링 어댑터는 지원 범위 밖. |
-| [#181 API](https://github.com/Youkamii/switcher/issues/181) | 통합 계정 추가, 일반 CLI API 적용·구독 복원, API별 $195 예산·비용 표시 적용. 실제 관리자 비용 조회·모델 생성과 Windows 실행은 미검증. 새 UI 문구는 한국어·영어 제공. |
+| [#181 API](https://github.com/Youkamii/switcher/issues/181) | 통합 계정 추가, 일반 CLI API 적용·구독 복원, API별 $195 예산·비용 표시 적용. Windows 실제 DPAPI·PowerShell·설치된 CLI 인증 인식과 구독 복원 검증 완료. 실제 관리자 비용 조회·모델 생성은 미검증. 새 UI 문구는 한국어·영어 제공. |
 | [#182 업데이트 서명](https://github.com/Youkamii/switcher/issues/182) | 리뷰에서 확인한 별도 후속 작업. 릴리스 신뢰키·서명 배포 체계는 이번 UI/API 변경에 포함하지 않음. |
 
-Windows 전체 크로스 컴파일은 이 Mac에 Windows SDK 헤더가 없어 `ring` 단계에서 중단됐다. DPAPI 함수의 Windows 타깃 타입 검사는 별도 최소 크레이트에서 통과했지만 Windows 실행 검증을 대신하지 않는다. 기존 Rust 경고 4개는 남아 있다. 실제 유료 모델 생성은 수행하지 않았다.
+이 Mac의 Windows 크로스 컴파일은 SDK 헤더 부재로 중단됐지만, 이후 GitHub Actions의 실제 Windows 러너에서 Rust 전체 검사·DPAPI·PowerShell·CLI 인증 인식을 확인했다. Windows GUI의 실제 포인터 조작 검증은 남아 있다. 기존 macOS Rust 경고 4개는 남아 있으며, 실제 유료 모델 생성은 수행하지 않았다.
 
 ## 커밋
 
