@@ -7,6 +7,8 @@ use std::{fs, path::PathBuf, sync::Mutex};
 static LOCK: Mutex<()> = Mutex::new(());
 mod activation;
 pub mod costs;
+#[cfg(all(test, windows))]
+mod windows_tests;
 
 #[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Debug)]
 #[serde(rename_all = "snake_case")]
