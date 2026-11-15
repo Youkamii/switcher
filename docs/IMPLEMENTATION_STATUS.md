@@ -1,8 +1,15 @@
 # 개선 적용 현황
 
-작업 브랜치: `feat/connection-workspace` · 구현 2026-11-10, 재검증 2026-11-13. UI·API 기능과 인증 오류 처리를 개선했다. CLI 실행 여부만으로 갱신을 막던 제한은 제거했다. macOS 앱 빌드·서명 검증을 마치고, 실행 중이던 앱을 새 빌드 경로의 실행 파일로 교체했다. 작업 브랜치의 변경이며 앱 릴리스 배포는 별도다.
+작업 브랜치: `feat/connection-workspace` · 구현 2026-11-10, 재검증 2026-11-13·15. UI·API 기능과 인증 오류 처리를 개선했다. CLI 실행 여부만으로 갱신을 막던 제한은 제거했다. macOS 동작 검증과 Windows 자동 검증을 마쳤으며, 2026-11-15에 `v2.1.0` 앱 파일과 npm 패키지를 게시했다.
 
 [전체 화면 한 장](design/complete-preview.png) · [원본 크기 보기](design/complete-preview.html) · [API 등록·사용법](API_CONNECTIONS.md)
+
+## v2.1.0 배포
+
+- 태그 `v2.1.0` / 코드 `5ee97fc`로 [Windows·macOS 릴리스 빌드](https://github.com/Youkamii/switcher/actions/runs/43658372184) 성공. Windows Rust 286개, macOS Rust 239개, 로컬 프론트 93개 검사 통과.
+- [npm 게시](https://github.com/Youkamii/switcher/actions/runs/43659035174) 성공. 공개 레지스트리의 `switcher-widget@2.1.0`, `latest=2.1.0`, `gitHead=5ee97fc` 일치와 provenance 존재를 확인했다. npm 서버의 게시 처리 대기 후 실제 조회·설치까지 확인했다.
+- 새 임시 폴더에서 npm 패키지를 설치하고 실제 배포용 `ensureDist()`로 macOS 앱을 다운로드했다. 번들 버전 `2.1.0`, arm64 실행 파일, ad-hoc 코드 서명 무결성을 확인했다. 이 설치 검사는 앱을 실행하거나 사용자 계정을 변경하지 않았다.
+- 게시된 Windows ZIP의 버전 표식 `2.1.0`, x64 실행 파일, 파일 크기와 GitHub SHA-256 일치를 확인했다. 앱 업데이트 manifest도 두 운영체제의 `v2.1.0` 파일을 가리킨다. 기존 `v1.8.5` 다운로드 보관함과 구버전 자산은 유지했다.
 
 ## 적용한 동작
 
@@ -37,6 +44,7 @@
 | Chromium 실제 번들 검사 | 123 통과. 통합 계정 추가·네 모드·AI 숨김·API 전환/복원·사용량 입력/자동조회/초과/오류·드래그 호출·입력 보존 검사 |
 | macOS WebKit 실제 번들 검사 | 93 통과. 비활성 NSPanel에 WKWebView를 붙여 같은 기능·배치 검사 수행 |
 | 기존 숨김·배치 회귀 검사 | 8 통과. 최초 기준선의 4건 실패 해소 |
+| 등록 계정 0개 화면 (2026-11-15) | Chromium 45, WebKit 45 통과. 컴팩트·미니멀·엣지에서 AI 섹션 제거, AI 숨김 상태와 동일한 본문 위치·창 높이, 엣지 AI 막대·구분선 제거 확인. 일반 관리 화면은 계정 추가 안내 유지 |
 | TypeScript/Vite | 빌드 성공 |
 | macOS Tauri 앱 | 빌드 성공. ad-hoc 서명 검증 성공, notarization 없음 |
 | Windows 프론트 | 단위 검사 93개와 TypeScript/Vite 빌드 통과. CRLF 소스에서도 검사 가능하도록 두 검사 파일 수정 |
