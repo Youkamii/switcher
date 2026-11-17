@@ -6,25 +6,25 @@
 
 위젯은 현재 인증을 먼저 백업하고 선택한 계정의 `auth.json`을 적용한다. **파일 교체만으로 실행 중 인증이 바뀌지는 않으므로 공유 서버 갱신을 이어서 수행한다.** Codex CLI 0.167.0은 인증을 메모리에 유지하며 외부 파일 변경을 자동으로 읽지 않는다. 401 복구 시에도 다른 계정으로의 재읽기를 허용하지 않는다. [해당 버전 AuthManager 구현](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/login/src/auth/manager.rs).
 
-구독 계정 전환 뒤에는 관리되는 Codex 공유 서버를 자동 갱신한다. 실행 중인 작업·승인 대기를 기다리고 저장 가능한 대화가 모두 idle일 때 정상 종료를 요청한다. 서버 종료를 확인한 뒤 공식 daemon 명령으로 다시 시작하고, 새 인증이 읽혔는지 확인한다. 기존 Codex TUI의 재연결 기능으로 대화를 이어가는 방식이며 터미널 입력을 주입하지 않는다. Codex 자체 OAuth 갱신을 유지하므로 별도의 외부 토큰 공급자에 의존하지 않는다.
+구독 계정 전환 뒤에는 **Codex 0.167.0 이상 정식 버전의 관리되는 공유 서버**를 자동 갱신한다. 실행 중인 작업·승인 대기를 기다리고 저장 가능한 대화가 모두 idle일 때 정상 종료를 요청한다. 서버 종료를 확인한 뒤 공식 daemon 명령으로 다시 시작하고, 새 인증이 읽혔는지 확인한다. 기존 Codex TUI의 재연결 기능으로 대화를 이어가는 방식이며 터미널 입력을 주입하지 않는다. Codex 자체 OAuth 갱신을 유지하므로 별도의 외부 토큰 공급자에 의존하지 않는다.
 
-화면의 **선택됨**과 공유 서버 갱신 상태는 별개다. `--no-daemon`, 구형 CLI, Windows 관리자 실행, 독립 stdio 서버는 자동 갱신 대상이 아니다. 이 경우 기존 Codex를 종료한 뒤 같은 터미널에서 `codex resume`으로 이어간다. API 선택은 기존 안내대로 다음 CLI 실행에서 적용한다. 자동 유료 전환은 하지 않는다.
+화면의 **선택됨**과 공유 서버 갱신 상태는 별개다. `--no-daemon`, `--profile`, 일반 설정을 덮어쓰는 `-c` 옵션이나 이를 넣는 래퍼, 구형 CLI, Windows 관리자 실행, 독립 stdio 서버처럼 공유 서버를 사용하지 않는 실행은 자동 갱신 대상이 아니다. 이 경우 기존 Codex를 종료한 뒤 같은 터미널에서 `codex resume`으로 이어간다. API 선택은 기존 안내대로 다음 CLI 실행에서 적용한다. 자동 유료 전환은 하지 않는다.
 
 갱신 작업은 별도 headless helper가 수행하므로 위젯을 닫아도 이어진다. Windows에서는 설치 EXE를 잠그지 않는 검증된 복사본을 사용한다. 이미 진행 중인 작업을 강제 종료하지 않으며, 30분간 idle이 되지 않으면 실패 상태로 끝나고 새로고침으로 재시도할 수 있다. 정상 종료 요청 직후 새 작업이 시작된 경합에서는 Codex의 drain이 끝날 때까지 helper가 기다린다. 저장되지 않는 ephemeral 대화는 재시작하지 않는다.
 
 `node scripts/check-codex-session-auth.mjs`는 격리된 홈·가짜 OAuth 계정 두 개로 설치된 Codex를 실행한다. 기존 프로세스는 A, 파일 교체 후 새 프로세스는 B를 읽는지 검사한다. 생성 요청이나 실계정 토큰을 사용하지 않는다. 이 검사는 로그인 인식 범위이며 실제 모델 호출 성공을 뜻하지 않는다.
 
-`cargo test --manifest-path src-tauri/Cargo.toml installed_codex_daemon_reloads_selected_account_without_external_auth -- --ignored --test-threads=1`은 설치된 packaged Codex와 격리 홈·가짜 인증·로컬 HTTP 모델 응답을 쓴다. 작업 중 갱신 대기, 완료 후 B 인증 반영, 같은 thread ID와 대화 내용 복원, managed OAuth 유지까지 확인한다. 실제 OpenAI 모델 호출이나 유료 요청은 하지 않는다. 자동 재연결의 근거는 Codex TUI 구현이며, 이 검사는 앱 서버 수준에서 재연결·resume을 수행한다.
+`cargo test --manifest-path src-tauri/Cargo.toml installed_codex_daemon_reloads_selected_account_without_external_auth -- --ignored --test-threads=1`은 설치된 packaged Codex와 격리 홈·가짜 인증·로컬 HTTP 모델 응답을 쓴다. 작업 중 갱신 대기, 완료 후 B 인증 반영, 같은 thread ID와 대화 내용 복원, managed OAuth 유지까지 확인한다. 실제 OpenAI 모델 호출이나 유료 요청은 하지 않는다. 이 반복 검사는 앱 서버 수준에서 재연결·resume을 수행한다. macOS Codex 0.169.0에서는 별도로 격리 PTY의 실제 TUI와 로컬 HTTPS 응답을 사용해 자동 재연결 후 같은 대화에서 후속 입력이 처리되고 이전 답변이 문맥에 유지되는 것까지 확인했다.
 
 ## API 등록
 
-일반 모드에서 해당 제공자의 **계정 추가 → API 키 → 저장하고 사용**으로 설정한다. 같은 추가 창의 **구독 로그인**에서 구독 계정을 추가한다. 별도 실행 명령을 복사할 필요가 없다. 다음에 평소처럼 `claude` 또는 `codex`를 실행하면 선택한 API를 사용한다.
+일반 모드에서 해당 제공자의 **계정·API 추가 → API 키 등록 → 저장하고 사용**으로 설정한다. 같은 추가 창의 **구독 로그인**에서 구독 계정을 추가한다. 별도 실행 명령을 복사할 필요가 없다. 다음에 평소처럼 `claude` 또는 `codex`를 실행하면 선택한 API를 사용한다.
 
 [전체 개선 이미지](design/complete-preview.png) · [검사 결과](IMPLEMENTATION_STATUS.md)
 
 ## 등록·전환
 
-1. **Claude** 또는 **Codex** 옆 **계정 추가**를 누르고 **API 키**를 선택한다. 별도 API 등록 버튼은 없다.
+1. **Claude** 또는 **Codex** 옆 **계정·API 추가**를 누르고 **API 키 등록**을 선택한다. 별도 API 등록 버튼은 없다.
 2. 키가 없으면 **키 발급 페이지 열기 ↗**를 누른다. Claude 키는 사용할 워크스페이스를 지정해 발급한다. [Claude 공식 안내](https://platform.claude.com/docs/en/get-api-key), [OpenAI 키 관리](https://platform.openai.com/api-keys).
 3. 연결 이름·키·월 예산을 입력하고 **저장하고 사용**을 누른다. 기본 월 예산은 API별 **$195**다. 이름은 영문·숫자·`-`·`_`를 사용하며 대소문자를 구분하지 않는다.
 4. **API 사용 중**이 표시되면 설정 적용이 끝난 것이다. 모델 목록 조회 결과는 별도로 표시한다. 조회 성공은 생성 권한·잔액까지 보장하지 않는다.
