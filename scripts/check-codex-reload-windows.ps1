@@ -97,10 +97,14 @@ echo %errorlevel% > "$taskRoot\exit-code.txt"
       -User $credential.UserName -Password $credential.GetNetworkCredential().Password -RunLevel Limited | Out-Null
     $taskRegistered = $true
     Start-ScheduledTask -TaskName $taskUser
+    $startedAt = [DateTime]::UtcNow
     $deadline = [DateTime]::UtcNow.AddMinutes(3)
     $resultText = ''
     while ($resultText -notmatch '^-?\d+\s*$') {
         if ([DateTime]::UtcNow -ge $deadline) { throw 'The isolated Codex integration test timed out' }
+        if ([DateTime]::UtcNow -ge $startedAt.AddSeconds(10) -and -not (Test-Path "$taskRoot/started.txt")) {
+            throw 'The scheduled fixture did not start'
+        }
         if (Test-Path "$taskRoot/exit-code.txt") { $resultText = Get-Content "$taskRoot/exit-code.txt" -Raw }
         Start-Sleep -Milliseconds 500
     }
@@ -112,8 +116,9 @@ echo %errorlevel% > "$taskRoot\exit-code.txt"
     $env:TMP = $taskOldTmp
     $env:SWITCHER_SESSION_TEST_BINARY = $taskOldBinary
     if ($taskRegistered) {
-        Get-ScheduledTask -TaskName $taskUser | Select-Object State
-        Get-ScheduledTaskInfo -TaskName $taskUser | Select-Object LastRunTime,LastTaskResult
+        $scheduled = Get-ScheduledTask -TaskName $taskUser
+        $info = Get-ScheduledTaskInfo -TaskName $taskUser
+        Write-Host "Fixture task state=$($scheduled.State), result=$($info.LastTaskResult), lastRun=$($info.LastRunTime)"
         Stop-ScheduledTask -TaskName $taskUser -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $taskUser -Confirm:$false -ErrorAction SilentlyContinue
     }
