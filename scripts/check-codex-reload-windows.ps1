@@ -44,6 +44,13 @@ try {
     Add-LocalGroupMember -Group $usersGroup -Member $account
     & icacls.exe $taskRoot /grant "${taskUser}:(OI)(CI)F" /T /Q | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Cannot grant access to the synthetic test workspace' }
+    # Codex validates this pre-created state directory before starting. Its
+    # contract is an exact protected, inheritable, user-only DACL and owner;
+    # merely granting our standard user access to an admin-created tree fails.
+    $stateAcl = [System.Security.AccessControl.DirectorySecurity]::new()
+    $taskSid = $account.SID.Value
+    $stateAcl.SetSecurityDescriptorSddlForm("O:${taskSid}D:P(A;OICI;FA;;;${taskSid})")
+    Set-Acl -LiteralPath "$taskRoot/probe/app-server-daemon" -AclObject $stateAcl
     $credential = [System.Management.Automation.PSCredential]::new("$env:COMPUTERNAME\$taskUser", $taskPassword)
     $env:PATH = "$taskRoot/codex/bin;$taskOldPath"
     $env:TEMP = "$taskRoot/tmp"

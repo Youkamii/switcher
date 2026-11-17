@@ -800,6 +800,24 @@ mod tests {
     #[ignore = "Installed Codex 0.167+, isolated home and synthetic credentials only"]
     fn installed_codex_daemon_reloads_selected_account_without_external_auth() {
         let mut f = Fixture::new();
+        #[cfg(windows)]
+        {
+            // We pre-created this synthetic state directory to disable updates.
+            // Codex rejects inherited/shared ACLs instead of repairing them.
+            // Match its protected user-only directory contract before startup.
+            let secured = Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", r#"
+                    $ErrorActionPreference = 'Stop'
+                    $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+                    $acl = [System.Security.AccessControl.DirectorySecurity]::new()
+                    $acl.SetSecurityDescriptorSddlForm("O:${sid}D:P(A;OICI;FA;;;${sid})")
+                    Set-Acl -LiteralPath $env:SWITCHER_TEST_STATE_DIR -AclObject $acl
+                "#])
+                .env("SWITCHER_TEST_STATE_DIR", f.env.codex_home.join("app-server-daemon"))
+                .status()
+                .unwrap();
+            assert!(secured.success(), "isolated daemon directory must be private");
+        }
         // One local, synthetic model response makes the conversation durable and
         // holds the turn open long enough to verify that refresh waits for it.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
