@@ -1,8 +1,12 @@
-# Fast, manual diagnostics of the hosted Windows runtime; never a release gate.
+# Fast diagnostics of the hosted Windows runtime; never a release gate.
 # The full windows-check still builds and exercises the actual Switcher helper.
 name: windows-codex-probe
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - scripts/check-codex-reload-windows.ps1
+      - .github/workflows/windows-codex-probe.yml
 permissions:
   contents: read
 jobs:
