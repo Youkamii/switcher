@@ -275,6 +275,15 @@ fn codex(home: &Path, action: &str) -> Result<Value, &'static str> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    #[cfg(test)]
+    for key in [
+        "OPENAI_API_KEY",
+        "CODEX_API_KEY",
+        "OPENAI_BASE_URL",
+        "CODEX_API_BASE_URL",
+    ] {
+        command.env_remove(key);
+    }
     hide_window(&mut command);
     let mut child = command.spawn().map_err(|_| "cli_unavailable")?;
     let stdout = child.stdout.take().ok_or("cli_unavailable")?;
@@ -504,6 +513,25 @@ fn graceful_stop(path: &Path, pid: u32) -> Result<(), &'static str> {
     Ok(())
 }
 
+fn supports_graceful_reload(version: &str) -> bool {
+    let parts: Vec<_> = version.split('.').collect();
+    if parts.len() != 3
+        || parts
+            .iter()
+            .any(|p| p.is_empty() || !p.bytes().all(|c| c.is_ascii_digit()))
+    {
+        return false;
+    }
+    match (
+        parts[0].parse::<u64>(),
+        parts[1].parse::<u64>(),
+        parts[2].parse::<u64>(),
+    ) {
+        (Ok(major), Ok(minor), Ok(_)) => major > 0 || minor >= 167,
+        _ => false,
+    }
+}
+
 fn worker(store: &Path, home: &Path) -> Result<(), &'static str> {
     let lock = OpenOptions::new()
         .create(true)
@@ -530,6 +558,12 @@ fn worker(store: &Path, home: &Path) -> Result<(), &'static str> {
         let info = codex(home, "version")?;
         if info["backend"] != "pid" {
             return Err("unmanaged_server");
+        }
+        if !info["appServerVersion"]
+            .as_str()
+            .is_some_and(supports_graceful_reload)
+        {
+            return Err("unsupported_cli");
         }
         let socket = home.join(SOCKET_DIR).join(SOCKET);
         let reported_socket = info["socketPath"].as_str().ok_or("unmanaged_server")?;
@@ -565,6 +599,11 @@ fn worker(store: &Path, home: &Path) -> Result<(), &'static str> {
         }
         if process_start(pid) != Some(identity) || daemon_pid(home, &info)? != pid {
             return Err("daemon_changed");
+        }
+        if request(store).is_none_or(|current| current.generation != req.generation)
+            || active_account(home).as_deref() != Some(&req.account_id)
+        {
+            return Err("selection_changed");
         }
         write_status(store, &req, "reloading", None);
         graceful_stop(&socket, pid)?;
@@ -631,6 +670,23 @@ mod tests {
             json!({"status":{"type":"idle"}}),
         ] {
             assert!(!safe_to_reload(&value));
+        }
+    }
+
+    #[test]
+    fn never_signal_servers_without_the_supported_graceful_reload_contract() {
+        for version in [
+            "0.166.9",
+            "0.144.1",
+            "0.167.0-alpha.1",
+            "",
+            "unknown",
+            "0.167",
+        ] {
+            assert!(!supports_graceful_reload(version));
+        }
+        for version in ["0.167.0", "0.169.0", "1.0.0"] {
+            assert!(supports_graceful_reload(version));
         }
     }
 
@@ -815,6 +871,14 @@ mod tests {
             // without initializing a Tauri window or sharing the test's lifetime.
             if let Some(binary) = std::env::var_os("SWITCHER_SESSION_TEST_BINARY") {
                 let mut command = Command::new(binary);
+                for key in [
+                    "OPENAI_API_KEY",
+                    "CODEX_API_KEY",
+                    "OPENAI_BASE_URL",
+                    "CODEX_API_BASE_URL",
+                ] {
+                    command.env_remove(key);
+                }
                 command
                     .arg("--codex-session-reload")
                     .arg(&env.store)
