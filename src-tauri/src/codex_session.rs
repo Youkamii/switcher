@@ -533,16 +533,26 @@ fn supports_graceful_reload(version: &str) -> bool {
 }
 
 fn worker(store: &Path, home: &Path) -> Result<(), &'static str> {
+    let Some(initial_request) = request(store) else {
+        return Ok(());
+    };
+    if initial_request.codex_home != home {
+        return Ok(());
+    }
+    let lock_error = |_| {
+        write_status(store, &initial_request, "failed", Some("lock_failed"));
+        "lock_failed"
+    };
     let lock = OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
         .open(store.join(LOCK))
-        .map_err(|_| "lock_failed")?;
+        .map_err(lock_error)?;
     // A second switch hands off to this helper; waiting helpers re-read the latest
     // request after acquiring the OS lock. No stale-PID lock files to repair.
-    lock.lock_exclusive().map_err(|_| "lock_failed")?;
+    lock.lock_exclusive().map_err(lock_error)?;
     let Some(mut req) = request(store) else {
         return Ok(());
     };
@@ -771,6 +781,19 @@ mod tests {
         .unwrap();
         assert!(status(&f.env).is_none());
         assert!(active_account(&f.env.codex_home).is_none());
+    }
+
+    #[test]
+    fn helper_startup_failure_does_not_leave_checking_forever() {
+        let f = Fixture::new();
+        accounts::atomic_write(&f.env.codex_home.join("auth.json"), &fixture_auth("alpha"))
+            .unwrap();
+        schedule(&f.env);
+        let req = request(&f.env.store).unwrap();
+        write_status(&f.env.store, &req, "checking", None);
+        fs::create_dir(f.env.store.join(LOCK)).unwrap();
+        assert_eq!(worker(&f.env.store, &f.env.codex_home), Err("lock_failed"));
+        assert_eq!(status(&f.env).unwrap().phase, "failed");
     }
 
     #[test]

@@ -33,6 +33,9 @@ try {
     if (-not $test) { throw 'Rust integration test executable not found' }
     Copy-Item -LiteralPath $test -Destination "$taskRoot/check.exe"
     Copy-Item src-tauri/target/release/switcher.exe "$taskRoot/switcher.exe"
+    New-Item -ItemType Directory -Path "$taskRoot/probe/app-server-daemon" -Force | Out-Null
+    '{"updater":{"autoUpdateEnabled":false}}' | Set-Content "$taskRoot/probe/app-server-daemon/settings.json" -Encoding utf8NoBOM
+    "cli_auth_credentials_store = `"file`"`nchatgpt_base_url = `"http://127.0.0.1:9`"`n" | Set-Content "$taskRoot/probe/config.toml" -Encoding utf8NoBOM
 
     $taskPassword = ConvertTo-SecureString ('Sw!' + [Guid]::NewGuid().ToString('N') + '7z') -AsPlainText -Force
     $account = New-LocalUser -Name $taskUser -Password $taskPassword -PasswordNeverExpires
@@ -53,6 +56,17 @@ set "PATH=$taskRoot\codex\bin;%PATH%"
 set "TEMP=$taskRoot\tmp"
 set "TMP=$taskRoot\tmp"
 set "SWITCHER_SESSION_TEST_BINARY=$taskRoot\switcher.exe"
+set "OPENAI_API_KEY="
+set "CODEX_API_KEY="
+set "OPENAI_BASE_URL="
+set "CODEX_HOME=$taskRoot\probe"
+where codex
+codex --version
+codex app-server daemon start
+if errorlevel 1 exit /b 1
+codex app-server daemon stop
+if errorlevel 1 exit /b 1
+set "CODEX_HOME="
 "$taskRoot\check.exe" installed_codex_daemon_reloads_selected_account_without_external_auth --ignored --test-threads=1
 "@ | Set-Content "$taskRoot/run.cmd" -Encoding ascii
     $taskProcess = Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/s', '/c', "$taskRoot/run.cmd") `
