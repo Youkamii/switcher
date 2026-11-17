@@ -2380,6 +2380,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus
 .add-account { display: inline-flex; align-items: center; gap: 3px; padding: 4px 0 4px 6px; border: 0; background: transparent; color: var(--muted); font-size: 10px; }
 .add-account:hover { color: var(--accent); }
 .add-account .ui-icon { width: 13px; height: 13px; }
+.codex-session-note { margin: 7px 0 9px; font-size: 10px; line-height: 1.6; color: var(--muted); }
 #app:not(.locked) .card { border-radius: 10px; margin-bottom: 7px; }
 #app:not(.locked) .card:not(.active) { filter: none; }
 #app:not(.locked) .card-name { color: var(--text); font-weight: 550; }

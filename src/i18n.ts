@@ -25,6 +25,9 @@ const ko = {
   delConfirm: "정말 삭제할까요?",
   delDone: "'{name}' 프로필을 삭제했습니다 (로그인 자체는 유지됩니다)",
   addAccount: "＋ 계정 추가",
+  addConnection: "＋ 계정·API 추가",
+  selectedAccount: "선택됨",
+  codexSessionNote: "선택한 계정은 다음 Codex 실행에 적용됩니다. 기존 대화는 종료 후 codex resume으로 이어가세요.",
   gettingLoginUrl: "로그인 주소 받는 중…",
   loginBusy: "이미 로그인이 진행 중입니다 — 진행 중인 패널을 먼저 끝내세요",
   stepsClaude:
@@ -108,6 +111,9 @@ const en: Messages = {
   delConfirm: "Really delete?",
   delDone: "Deleted profile '{name}' (the login itself is kept)",
   addAccount: "＋ Add account",
+  addConnection: "＋ Add account / API",
+  selectedAccount: "Selected",
+  codexSessionNote: "The selected account applies to the next Codex launch. Exit, then use codex resume to continue an existing conversation.",
   gettingLoginUrl: "Getting login URL…",
   loginBusy: "A login is already in progress — finish the open panel first",
   stepsClaude:
@@ -188,6 +194,9 @@ const ja: Messages = {
   delConfirm: "本当に削除しますか？",
   delDone: "プロファイル「{name}」を削除しました（ログイン自体は維持されます）",
   addAccount: "＋ アカウント追加",
+  addConnection: "＋ アカウント・API追加",
+  selectedAccount: "選択済み",
+  codexSessionNote: "選択したアカウントは次回のCodex起動から適用されます。既存の会話は終了後に codex resume で再開してください。",
   gettingLoginUrl: "ログインURLを取得中…",
   loginBusy: "すでにログインが進行中です — 先に進行中のパネルを終えてください",
   stepsClaude:
@@ -268,6 +277,9 @@ const zhCN: Messages = {
   delConfirm: "确定要删除吗？",
   delDone: "已删除配置 '{name}'（登录本身仍保留）",
   addAccount: "＋ 添加账号",
+  addConnection: "＋ 添加账号 / API",
+  selectedAccount: "已选择",
+  codexSessionNote: "所选账号将在下次启动 Codex 时生效。退出后可用 codex resume 继续已有对话。",
   gettingLoginUrl: "正在获取登录地址…",
   loginBusy: "登录正在进行中 — 请先完成当前面板",
   stepsClaude:
@@ -346,6 +358,9 @@ const zhTW: Messages = {
   delConfirm: "確定要刪除嗎？",
   delDone: "已刪除設定檔 '{name}'（登入本身仍保留）",
   addAccount: "＋ 新增帳號",
+  addConnection: "＋ 新增帳號 / API",
+  selectedAccount: "已選擇",
+  codexSessionNote: "所選帳號將在下次啟動 Codex 時生效。結束後可用 codex resume 繼續現有對話。",
   gettingLoginUrl: "正在取得登入網址…",
   loginBusy: "登入正在進行中 — 請先完成目前的面板",
   stepsClaude:
@@ -424,6 +439,9 @@ const hi: Messages = {
   delConfirm: "वाक़ई हटाएँ?",
   delDone: "प्रोफ़ाइल '{name}' हटा दी गई (लॉगिन बना रहेगा)",
   addAccount: "＋ अकाउंट जोड़ें",
+  addConnection: "＋ अकाउंट / API जोड़ें",
+  selectedAccount: "चुना गया",
+  codexSessionNote: "चुना गया अकाउंट अगली बार Codex शुरू करने पर लागू होगा। मौजूदा बातचीत जारी रखने के लिए बाहर निकलें, फिर codex resume चलाएँ।",
   gettingLoginUrl: "लॉगिन URL प्राप्त हो रहा है…",
   loginBusy: "लॉगिन पहले से चल रहा है — पहले चल रहे पैनल को पूरा करें",
   stepsClaude:

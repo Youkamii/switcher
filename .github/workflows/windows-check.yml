@@ -36,11 +36,25 @@ jobs:
           npm test
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run build
+      - name: Production registration UI in Chromium on Windows
+        shell: pwsh
+        run: |
+          $browsers = @(
+            "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+            "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
+          )
+          $env:CHROME_BIN = $browsers | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $env:CHROME_BIN) { throw 'Chromium browser not found' }
+          node scripts/test-workspace-ui.mjs
       - name: Rust tests including native Windows credential flow
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml -- --test-threads=1
       - name: Install CLIs for isolated authentication checks
         run: npm install --global @anthropic-ai/claude-code@2.1.300 @openai/codex@0.167.0
       - name: Installed CLI authentication with synthetic credentials
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml windows_installed_clis_recognize_api_selection -- --ignored --test-threads=1
+      - name: Running Codex session keeps its selected authentication
+        run: node scripts/check-codex-session-auth.mjs
       - name: Windows portable application build
         run: npm run tauri build -- --no-bundle
+      - name: npm launcher recognizes the built Windows executable
+        run: node scripts/check-packaged-dist.mjs

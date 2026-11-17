@@ -133,6 +133,10 @@ function fixture(mode = "normal", preview = false) {
       record('privacy-button-works-'+mode,document.body.classList.contains('privacy')!==privacyBefore);
       document.getElementById('privacybtn').click();
       if(preview) {
+        if(preview!=='no-ai') {
+          const codexHint=mode==='normal'?document.querySelector('.codex-session-note')?.textContent:document.querySelector(mode==='edge'?'.edge-account.active[data-provider="codex"]':'.compact-card.active.prov-codex')?.title;
+          record('codex-next-launch-scope-'+mode,codexHint?.includes('다음 Codex 실행'));
+        }
         if(preview===true) {
           const selected=document.querySelector(mode==='normal'?'.api-active .api-badge':'.compact-api-active');
           record('selected-api-visible-'+mode, selected && box(selected).width>0 && selected.textContent.includes('API'));
@@ -151,8 +155,12 @@ function fixture(mode = "normal", preview = false) {
         record('no-browser-errors-'+mode,errors.length===0);
         return;
       }
+      record('codex-selection-is-not-labelled-as-live-session',document.querySelector('.codex-session-note')?.textContent.includes('다음 Codex 실행')&&[...document.querySelectorAll('.connection-active')].some(el=>el.textContent==='선택됨'));
       document.querySelector('.add-account[data-provider="claude"]').click();await ready('.connection-methods');
       record('account-add-offers-both-authentication-methods',document.querySelectorAll('.connection-methods button').length===2&&!document.querySelector('.connection-subscription').hidden);
+      record('account-add-does-not-start-login-before-choice',!calls.some(c=>c.cmd==='start_login'));
+      record('account-add-label-exposes-api',[...document.querySelectorAll('.add-account')].every(button=>button.textContent.includes('API')));
+      record('api-registration-choice-visible',document.querySelector('[data-method="api"]').textContent==='API 키 등록'&&box(document.querySelector('[data-method="api"]')).width>0);
       document.querySelector('.connection-login').click();await delay();await delay();await delay();
       record('subscription-choice-uses-existing-login-flow',calls.some(c=>c.cmd==='start_login'&&c.args.provider==='claude')&&!document.querySelector('.api-dialog'));
       await ready('.api-panel');
@@ -285,6 +293,7 @@ function fixture(mode = "normal", preview = false) {
       codexBlocked=true; emit('visibility-changed'); await delay(); await delay();
       record('api-available-with-blocked-subscription-store',document.querySelectorAll('.api-panel').length===2 && document.querySelector('#app').textContent.includes('파일 외'));
       codexBlocked=false; emit('visibility-changed'); await delay(); await delay();
+      record('api-selection-removes-subscription-session-note',!document.querySelector('.codex-session-note'));
       record('no-browser-errors',errors.length===0);
     } catch(e) { errors.push(String(e)); record('completed',false); } finally {
     const output=document.createElement('pre');output.id='ui-test-result';output.hidden=true;
@@ -329,7 +338,13 @@ async function chromium(entry, width, screenshot, profile) {
       const shot=await send('Page.captureScreenshot',{format:'png'});fs.writeFileSync(screenshot,Buffer.from(shot.data,'base64'));
     }
     return report;
-  } finally {socket?.close();child.kill();await new Promise(resolve=>{if(child.exitCode!==null)resolve();else child.once('exit',resolve);});}
+  } finally {
+    socket?.close();
+    const exited=new Promise(resolve=>{if(child.exitCode!==null||child.signalCode!==null)resolve();else child.once('exit',resolve);});
+    if(process.platform==='win32' && child.pid) spawnSync('taskkill',['/PID',String(child.pid),'/T','/F'],{stdio:'ignore',windowsHide:true});
+    else child.kill();
+    await exited;
+  }
 }
 async function run(mode, preview, screenshot) {
   const width={normal:420,compact:280,minimal:120,edge:80}[mode];
@@ -379,4 +394,4 @@ try {
   const result={reports,passed:reports.reduce((n,r)=>n+r.checks.filter(c=>c.passed).length,0),failed:reports.reduce((n,r)=>n+r.checks.filter(c=>!c.passed).length,0)};
   if(outputAt>=0) fs.writeFileSync(process.argv[outputAt+1],JSON.stringify(result,null,2)+'\n');
   console.log(JSON.stringify(result,null,2));process.exitCode=result.failed?1:0;
-} finally { fs.rmSync(temp,{recursive:true,force:true}); }
+} finally { fs.rmSync(temp,{recursive:true,force:true,maxRetries:5,retryDelay:200}); }

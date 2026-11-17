@@ -469,10 +469,10 @@ function showUsageIssue(card: HTMLElement, message: string, compact = false) {
 /// 머리에만 붙는다 — Type3는 머리가 없고 왼쪽 스트라이프가 같은 역할, Type4는
 /// 이름 앞 표식(.edge-name::before)이 이미 있다. 비활성 점은 툴팁이 없다 —
 /// 회색 점마다 "대기 중"이 뜨면 잡음이다 (8월 적대 리뷰).
-function statusDot(active: boolean): HTMLElement {
+function statusDot(active: boolean, provider?: ProviderId): HTMLElement {
   const dot = document.createElement("span");
   dot.className = "status-dot";
-  if (active) dot.title = t("activeDot");
+  if (active) dot.title = provider === "codex" ? t("selectedAccount") : t("activeDot");
   return dot;
 }
 
@@ -507,7 +507,7 @@ function profileCard(
   email.className = "card-name";
   email.textContent = profile.email ?? profile.name;
   email.title = t("profileNameTooltip", { name: profile.name });
-  head.append(statusDot(profile.active), email);
+  head.append(statusDot(profile.active, provider), email);
   if (profile.plan) {
     const plan = document.createElement("span");
     plan.className = "badge plan";
@@ -529,6 +529,8 @@ function profileCard(
   }
   card.appendChild(head);
 
+  if (provider === "codex" && profile.active) card.title = [card.title, t("codexSessionNote")].filter(Boolean).join(" · ");
+
   // 활성 프로필은 활성 파일(항상 최신 토큰), 비활성은 보관함 토큰으로 조회.
   // 프라미스는 렌더러가 모은다 — 새로고침 때 다 받아진 뒤 한 번에 교체하기 위해
   pending.push(
@@ -546,7 +548,7 @@ function profileCard(
     if (disable) disable.disabled = true;
     try {
       await invoke("switch_profile", { provider, name: profile.name });
-      // 성공 안내는 따로 없다 — 활성 표시가 옮겨가는 것으로 충분하다.
+      // Codex keeps auth in memory; its card/section describe the next-launch scope.
       // 즉시 렌더가 아니라 스무스 렌더: 화면을 비우지 않고 새 사용량까지 받아진 뒤
       // 한 번에 바꾼다. 그동안 활성 표시만 먼저 옮긴다.
       markActiveOptimistic(card);
@@ -563,7 +565,7 @@ function profileCard(
   if (profile.active) {
     const active = document.createElement("span");
     active.className = "connection-active";
-    active.textContent = currentLang() === "ko" ? "사용 중" : "Active";
+    active.textContent = provider === "codex" ? t("selectedAccount") : currentLang() === "ko" ? "사용 중" : "Active";
     active.prepend(icon("check"));
     actions.append(active);
   }
@@ -1205,7 +1207,7 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
   addBtn.className = "add-account";
   addBtn.dataset.provider = provider;
   addBtn.dataset.apiFocus = `${provider}/add`;
-  addBtn.append(icon("plus"), t("addAccount").replace(/^[+＋]\s*/, ""));
+  addBtn.append(icon("plus"), t("addConnection").replace(/^[+＋]\s*/, ""));
   row.appendChild(addBtn);
   row.hidden = loginOpen;
   (section.querySelector(".section-title") ?? section).appendChild(row);
@@ -1341,6 +1343,12 @@ async function renderProvider(
 
     for (const profile of snap.profiles) {
       section.appendChild(profileCard(provider, profile, pending, forceRetry));
+    }
+    if (provider === "codex" && snap.profiles.length > 0 && !snap.api_active) {
+      const note = document.createElement("p");
+      note.className = "section-note codex-session-note";
+      note.textContent = t("codexSessionNote");
+      section.appendChild(note);
     }
 
     section.appendChild(await apiConnections(provider, { changed: () => render({ immediate: true }), fit: fitHeight, toast }));
@@ -1957,7 +1965,7 @@ function compactCard(
     email.className = "card-name";
     email.textContent = profile.email ?? profile.name;
     email.title = t("profileNameTooltip", { name: profile.name });
-    head.append(statusDot(profile.active), email);
+    head.append(statusDot(profile.active, provider), email);
     if (profile.plan) {
       const plan = document.createElement("span");
       plan.className = "badge plan";
@@ -1976,6 +1984,7 @@ function compactCard(
     card.appendChild(tfsdWatermark());
     card.title = t("tfsdTooltip");
   }
+  if (provider === "codex" && profile.active) card.title = [card.title, t("codexSessionNote")].filter(Boolean).join(" · ");
 
   const load = (async () => {
     try {
@@ -2266,6 +2275,7 @@ function edgeAccount(
   card.dataset.provider = provider;
   card.dataset.name = profile.name;
   if (!profile.active) card.title = t("profileNameTooltip", { name: profile.name });
+  else if (provider === "codex") card.title = t("codexSessionNote");
   const name = document.createElement("span");
   name.className = "edge-name";
   name.textContent = profile.name;

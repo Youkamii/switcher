@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { currentLang } from "./i18n";
+import { currentLang, t } from "./i18n";
 import { icon, iconButton, setButtonIcon } from "./uiIcons";
 
 const messages = {
@@ -88,7 +88,7 @@ export function openApiRegistration(hooks: Hooks, initialProvider = "claude", ex
   const text = apiText();
   let saving = false;
   const providerTitle = initialProvider === "claude" ? "Claude" : "Codex";
-  const host = dialog(hooks, existing ? text.replace : login ? `${providerTitle} · ${currentLang() === "ko" ? "계정 추가" : "Add account"}` : text.add, () => !saving);
+  const host = dialog(hooks, existing ? text.replace : login ? `${providerTitle} · ${t("addConnection").replace(/^[+＋]\s*/, "")}` : text.add, () => !saving);
   let provider = existing?.provider ?? initialProvider;
   const form = document.createElement("form"); form.className = "api-form";
   const providers = document.createElement("div"); providers.className = "api-providers"; providers.hidden = Boolean(login); providers.setAttribute("aria-label", "API provider");
@@ -122,7 +122,7 @@ export function openApiRegistration(hooks: Hooks, initialProvider = "claude", ex
     loginButton = document.createElement("button"); loginButton.className = "primary connection-login"; loginButton.textContent = currentLang() === "ko" ? "로그인 시작" : "Sign in";
     loginButton.onclick = () => { if (saving) return; host.dispatchEvent(new Event("api-dismiss")); login(); };
     subscription.append(loginButton);
-    for (const [method, label] of [["subscription", currentLang() === "ko" ? "구독 로그인" : "Subscription"], ["api", "API 키"]]) {
+    for (const [method, label] of [["subscription", currentLang() === "ko" ? "구독 로그인" : "Subscription"], ["api", text.add]]) {
       const button = document.createElement("button"); button.type = "button"; button.dataset.method = method; button.textContent = label; button.setAttribute("aria-pressed", String(method === "subscription"));
       button.onclick = () => {
         if (saving) return;
