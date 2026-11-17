@@ -514,6 +514,23 @@ fn process_start(pid: u32) -> Option<u64> {
         .map(|p| p.start_time())
 }
 
+fn socket_identity(path: &Path) -> Result<PathBuf, &'static str> {
+    #[cfg(windows)]
+    {
+        // AF_UNIX sockets are reparse points, not ordinary files. Opening the
+        // socket with GetFinalPathNameByHandle (std canonicalize) can fail even
+        // when connect succeeds. Resolve its directory, then compare the name.
+        let parent = path.parent().ok_or("unmanaged_server")?;
+        let name = path.file_name().ok_or("unmanaged_server")?;
+        parent
+            .canonicalize()
+            .map(|p| p.join(name))
+            .map_err(|_| "unmanaged_server")
+    }
+    #[cfg(not(windows))]
+    path.canonicalize().map_err(|_| "unmanaged_server")
+}
+
 fn graceful_stop(path: &Path, pid: u32) -> Result<(), &'static str> {
     #[cfg(unix)]
     {
@@ -602,9 +619,7 @@ fn worker(store: &Path, home: &Path) -> Result<(), &'static str> {
         }
         let socket = home.join(SOCKET_DIR).join(SOCKET);
         let reported_socket = info["socketPath"].as_str().ok_or("unmanaged_server")?;
-        if std::fs::canonicalize(reported_socket).map_err(|_| "unmanaged_server")?
-            != std::fs::canonicalize(&socket).map_err(|_| "unmanaged_server")?
-        {
+        if socket_identity(Path::new(reported_socket))? != socket_identity(&socket)? {
             return Err("unmanaged_server");
         }
         let pid = daemon_pid(home, &info)?;
@@ -824,6 +839,18 @@ mod tests {
         assert_eq!(status(&f.env).unwrap().phase, "failed");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn socket_identity_resolves_the_directory_of_a_real_windows_unix_socket() {
+        let f = Fixture::new();
+        let path = f.env.home.join("control.sock");
+        let _listener = uds_windows::UnixListener::bind(&path).unwrap();
+        assert_eq!(
+            socket_identity(&path).unwrap(),
+            f.env.home.canonicalize().unwrap().join("control.sock")
+        );
+    }
+
     #[test]
     #[ignore = "Installed Codex 0.167+, isolated home and synthetic credentials only"]
     fn installed_codex_daemon_reloads_selected_account_without_external_auth() {
@@ -975,6 +1002,12 @@ mod tests {
                 hide_window(&mut command);
                 let result = command.status().map_err(|_| "test_helper_failed")?;
                 if !result.success() || status(&env).is_none_or(|s| s.phase != "reloaded") {
+                    if let Some(state) = status(&env) {
+                        eprintln!(
+                            "fixture helper phase={}, reason={:?}",
+                            state.phase, state.reason
+                        );
+                    }
                     return Err("test_helper_failed");
                 }
                 Ok(())
@@ -987,10 +1020,11 @@ mod tests {
         {
             std::thread::sleep(Duration::from_millis(100));
         }
+        let waiting_status = status(&f.env).unwrap();
         assert_eq!(
-            status(&f.env).unwrap().phase,
-            "waiting",
-            "an active turn must never be interrupted"
+            waiting_status.phase, "waiting",
+            "an active turn must never be interrupted ({:?})",
+            waiting_status.reason
         );
         assert!(!running
             .selected_auth(&f.env.codex_home, "fixture-beta")
