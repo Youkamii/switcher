@@ -1,6 +1,6 @@
 # 개선 적용 현황
 
-작업 브랜치: `feat/connection-workspace` · 구현 2026-11-10, 재검증 2026-11-13·15. UI·API 기능과 인증 오류 처리를 개선했다. CLI 실행 여부만으로 갱신을 막던 제한은 제거했다. macOS 동작 검증과 Windows 자동 검증을 마쳤으며, 2026-11-15에 `v2.1.0` 앱 파일과 npm 패키지를 게시했다.
+작업 브랜치: `feat/connection-workspace` · 구현 2026-11-10, 재검증 2026-11-13·15·17. UI·API 기능과 인증 오류 처리를 개선했다. CLI 실행 여부만으로 갱신을 막던 제한은 제거했다. macOS 동작 검증과 Windows 자동 검증을 마쳤으며, 2026-11-15에 `v2.1.0`, 2026-11-17에 후속 패치 `v2.1.1` 앱 파일과 npm 패키지를 게시했다.
 
 [전체 화면 한 장](design/complete-preview.png) · [원본 크기 보기](design/complete-preview.html) · [API 등록·사용법](API_CONNECTIONS.md)
 
@@ -11,7 +11,14 @@
 - 단일 추가 버튼을 **계정·API 추가**, 선택 항목을 **API 키 등록**으로 명확히 표시했다. 추가 버튼 클릭만으로 구독 로그인을 시작하지 않는 것을 배포 프론트로 검사한다.
 - Codex CLI 0.167.0의 실행 중 인증 캐시를 실제 설치 CLI와 가짜 OAuth 두 계정으로 재현했다. 파일을 B로 교체해도 기존 프로세스는 A, 새 프로세스는 B를 읽는다. **실행 중인 세션의 즉시 전환은 구현되지 않았다.** 일반 화면은 **선택됨**과 다음 실행 안내, 작은 모드는 계정 툴팁으로 범위를 표시한다. 기존 세션을 종료하거나 입력을 주입하지 않는다.
 - 로컬 검증: 단위 검사 104 통과, Rust 239 통과·18 ignored, Chromium 화면 134 통과, WebKit 화면 101 통과, 배치 8 통과, TypeScript/Vite 및 macOS 앱 빌드 성공. `v2.1.1` 앱의 실제 번들 버전과 npm 실행기의 인식, ad-hoc 서명 무결성도 확인했다.
-- Windows CI에 배포 프론트의 구독/API 선택 화면, Codex 기존/신규 프로세스 인증 구분, 빌드 EXE의 npm 실행기 버전 검사를 추가했다. 로컬 Chromium/WebKit 검사는 Windows WebView2 실제 포인터 조작을 대신하지 않는다.
+- [Windows CI](https://github.com/Youkamii/switcher/actions/runs/44005695608)는 수정 코드 `eb2552d`에서 성공했다. 단위 104개, Windows Chromium의 배포 프론트 71개, Rust 286개(16 ignored), 설치 CLI 인증 검사, Codex 기존/신규 프로세스 인증 구분, 포터블 EXE 빌드와 npm 실행기의 네이티브 버전 인식을 모두 통과했다. Windows Chromium 검사는 Windows WebView2 실제 포인터 조작을 대신하지 않는다.
+
+## v2.1.1 배포 (2026-11-17)
+
+- 태그 `v2.1.1` / 코드 `eab88df`로 [Windows·macOS 릴리스 빌드](https://github.com/Youkamii/switcher/actions/runs/44006616119)와 [npm 게시](https://github.com/Youkamii/switcher/actions/runs/44007715659)가 성공했다.
+- npm 공개 처리 대기 후 `switcher-widget@2.1.1`, `latest=2.1.1`, `gitHead=eab88df` 일치와 provenance 존재를 확인했다. 새 임시 폴더에 실제 공개 패키지를 설치하고 배포용 `ensureDist()`로 macOS 앱을 받았다. 두 번째 호출은 네트워크 없이 현재 버전 캐시를 인식했다. 앱을 실행하거나 사용자 인증을 바꾸지 않았다.
+- 다운로드된 macOS 번들 버전 `2.1.1`과 ad-hoc 서명 무결성을 확인했다. Windows ZIP은 GitHub SHA-256·파일 크기 일치, x64 PE, ZIP 버전 표식과 EXE 버전 리소스 `2.1.1.0`을 확인했다. 업데이트 manifest의 두 운영체제 주소도 모두 `v2.1.1`을 가리킨다.
+- 실행 중인 구버전 앱은 **위젯 우클릭 → 업데이트 확인**으로 갱신한다. Codex 실행 중 세션의 즉시 전환은 이 패치에 포함되지 않으며, 위의 다음 실행 적용 범위를 따른다.
 
 ## v2.1.0 배포
 
