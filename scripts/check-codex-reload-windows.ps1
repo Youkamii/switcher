@@ -1,6 +1,7 @@
 # Hosted-runner-only integration test. Codex deliberately refuses managed daemons
 # under an elevated token, so exercise the real Windows route as a temporary local
 # standard user. All credentials, conversations and model responses are synthetic.
+param([switch]$ProbeOnly)
 $ErrorActionPreference = 'Stop'
 if ($env:GITHUB_ACTIONS -ne 'true') { throw 'This fixture is only for an ephemeral GitHub Actions runner' }
 $taskRoot = Join-Path $env:SystemDrive ('sr' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
@@ -22,6 +23,7 @@ try {
     $package = $candidates | Where-Object { Test-Path "$_/codex-package.json" } | Select-Object -First 1
     if (-not $package) { throw 'A complete pinned Codex package is required' }
     Copy-Item -Path $package -Destination "$taskRoot/codex" -Recurse
+    if (-not $ProbeOnly) {
     # Cargo's artifact layout differs across toolchains. Ask it for the executable
     # instead of assuming target/debug/deps, which is absent on some runners.
     $artifacts = & cargo test --locked --manifest-path src-tauri/Cargo.toml --no-run --lib --message-format=json
@@ -33,6 +35,7 @@ try {
     if (-not $test) { throw 'Rust integration test executable not found' }
     Copy-Item -LiteralPath $test -Destination "$taskRoot/check.exe"
     Copy-Item src-tauri/target/release/switcher.exe "$taskRoot/switcher.exe"
+    }
     New-Item -ItemType Directory -Path "$taskRoot/probe/app-server-daemon" -Force | Out-Null
     '{"updater":{"autoUpdateEnabled":false}}' | Set-Content "$taskRoot/probe/app-server-daemon/settings.json" -Encoding utf8NoBOM
     "cli_auth_credentials_store = `"file`"`nchatgpt_base_url = `"http://127.0.0.1:9`"`n" | Set-Content "$taskRoot/probe/config.toml" -Encoding utf8NoBOM
@@ -56,6 +59,9 @@ try {
     $env:TEMP = "$taskRoot/tmp"
     $env:TMP = "$taskRoot/tmp"
     $env:SWITCHER_SESSION_TEST_BINARY = "$taskRoot/switcher.exe"
+    $testInvocation = if ($ProbeOnly) { 'exit /b 0' } else {
+        '"' + $taskRoot + '\check.exe" installed_codex_daemon_reloads_selected_account_without_external_auth --ignored --test-threads=1'
+    }
     # Supply the fixture paths explicitly even if logon builds a new environment.
     @"
 @echo off
@@ -74,13 +80,14 @@ if errorlevel 1 exit /b 1
 codex app-server daemon stop
 if errorlevel 1 exit /b 1
 set "CODEX_HOME="
-"$taskRoot\check.exe" installed_codex_daemon_reloads_selected_account_without_external_auth --ignored --test-threads=1
+$testInvocation
 "@ | Set-Content "$taskRoot/run.cmd" -Encoding ascii
     # Hosted Actions processes inherit a non-breakaway job object. Even a direct
     # exe under Start-Process -Credential stays in it, so Codex correctly refuses
     # to detach. Task Scheduler launches the standard user outside that runner job.
     @"
 @echo off
+echo started > "$taskRoot\started.txt"
 call "$taskRoot\run.cmd" > "$taskRoot\output.log" 2> "$taskRoot\error.log"
 echo %errorlevel% > "$taskRoot\exit-code.txt"
 "@ | Set-Content "$taskRoot/task.cmd" -Encoding ascii
@@ -91,13 +98,13 @@ echo %errorlevel% > "$taskRoot\exit-code.txt"
     $taskRegistered = $true
     Start-ScheduledTask -TaskName $taskUser
     $deadline = [DateTime]::UtcNow.AddMinutes(3)
-    while (-not (Test-Path "$taskRoot/exit-code.txt")) {
+    $resultText = ''
+    while ($resultText -notmatch '^-?\d+\s*$') {
         if ([DateTime]::UtcNow -ge $deadline) { throw 'The isolated Codex integration test timed out' }
+        if (Test-Path "$taskRoot/exit-code.txt") { $resultText = Get-Content "$taskRoot/exit-code.txt" -Raw }
         Start-Sleep -Milliseconds 500
     }
-    Get-Content "$taskRoot/output.log"
-    Get-Content "$taskRoot/error.log"
-    $testExitCode = [int](Get-Content "$taskRoot/exit-code.txt" -Raw).Trim()
+    $testExitCode = [int]$resultText.Trim()
     if ($testExitCode -ne 0) { throw "Codex integration test failed ($testExitCode)" }
 } finally {
     $env:PATH = $taskOldPath
@@ -105,8 +112,13 @@ echo %errorlevel% > "$taskRoot\exit-code.txt"
     $env:TMP = $taskOldTmp
     $env:SWITCHER_SESSION_TEST_BINARY = $taskOldBinary
     if ($taskRegistered) {
+        Get-ScheduledTask -TaskName $taskUser | Select-Object State
+        Get-ScheduledTaskInfo -TaskName $taskUser | Select-Object LastRunTime,LastTaskResult
         Stop-ScheduledTask -TaskName $taskUser -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $taskUser -Confirm:$false -ErrorAction SilentlyContinue
+    }
+    foreach ($log in @('started.txt', 'output.log', 'error.log')) {
+        if (Test-Path "$taskRoot/$log") { Get-Content "$taskRoot/$log" }
     }
     if ($taskUserCreated) { Remove-LocalUser -Name $taskUser -ErrorAction SilentlyContinue }
     Remove-Item $taskRoot -Recurse -Force -ErrorAction SilentlyContinue

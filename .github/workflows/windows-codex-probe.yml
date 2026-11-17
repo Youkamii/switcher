@@ -1,0 +1,19 @@
+# Fast, manual diagnostics of the hosted Windows runtime; never a release gate.
+# The full windows-check still builds and exercises the actual Switcher helper.
+name: windows-codex-probe
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  runtime:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - run: npm install --global @openai/codex@0.167.0
+      - shell: pwsh
+        run: ./scripts/check-codex-reload-windows.ps1 -ProbeOnly
