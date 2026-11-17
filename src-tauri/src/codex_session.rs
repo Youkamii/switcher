@@ -241,6 +241,9 @@ fn codex(home: &Path, action: &str) -> Result<Value, &'static str> {
         }
     }
     let binary = managed_binary(home);
+    #[cfg(test)]
+    let binary =
+        binary.or_else(|| std::env::var_os("SWITCHER_SESSION_TEST_CODEX").map(PathBuf::from));
     #[cfg(windows)]
     let mut command = {
         if let Some(binary) = binary {
@@ -767,7 +770,10 @@ mod tests {
                 br#"{"updater":{"autoUpdateEnabled":false},"featureOverrides":{"shell_snapshot":false}}"#,
             )
             .unwrap();
-            accounts::atomic_write(&env.codex_home.join("config.toml"), b"cli_auth_credentials_store = \"file\"\ncheck_for_update_on_startup = false\nchatgpt_base_url = \"http://127.0.0.1:9\"\n[model_providers.fixture]\nname = \"fixture\"\nbase_url = \"http://127.0.0.1:9/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n").unwrap();
+            // 0.167 checks that a thread's provider still matches the configured
+            // selection at turn/start. Keep it selected and retain managed OAuth;
+            // all model requests are intercepted by the loopback fixture below.
+            accounts::atomic_write(&env.codex_home.join("config.toml"), b"cli_auth_credentials_store = \"file\"\ncheck_for_update_on_startup = false\nchatgpt_base_url = \"http://127.0.0.1:9\"\nmodel_provider = \"fixture\"\n[model_providers.fixture]\nname = \"fixture\"\nbase_url = \"http://127.0.0.1:9/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n").unwrap();
             Self {
                 env,
                 daemon_started: false,
@@ -926,20 +932,18 @@ mod tests {
         let started = codex(&f.env.codex_home, "start").expect("isolated daemon must start");
         f.daemon_started = true;
         assert_eq!(started["backend"], "pid");
+        // Some CLI versions normalize away feature overrides at initial start.
+        // Preserve what the installed daemon actually retained, rather than
+        // mistaking its initial normalization for a Switcher reload regression.
+        let initial_features = read_json(&f.env.codex_home.join("app-server-daemon/settings.json"))
+            .unwrap()["featureOverrides"]
+            .clone();
         let socket = f.env.codex_home.join(SOCKET_DIR).join(SOCKET);
         let mut running = Rpc::open(&socket).unwrap();
         assert!(running
             .selected_auth(&f.env.codex_home, "fixture-alpha")
             .unwrap());
-        // Windows read-only execution requires sandbox provisioning, which is
-        // unrelated to this auth/transport fixture. This disposable user's model
-        // only receives our local literal reply and never requests tool execution.
-        let sandbox = if cfg!(windows) {
-            "danger-full-access"
-        } else {
-            "read-only"
-        };
-        let thread = running.call("thread/start", json!({"model":"fixture-model","modelProvider":"fixture","cwd":f.env.home,"sandbox":sandbox,"approvalPolicy":"never","experimentalRawEvents":false,"persistExtendedHistory":true})).expect("fixture thread must start");
+        let thread = running.call("thread/start", json!({"model":"fixture-model","modelProvider":"fixture","cwd":f.env.home,"sandbox":"read-only","approvalPolicy":"never","experimentalRawEvents":false,"persistExtendedHistory":true})).expect("fixture thread must start");
         let thread_id = thread["thread"]["id"].as_str().unwrap().to_owned();
         running.call("turn/start", json!({"threadId":thread_id,"input":[{"type":"text","text":"Synthetic continuity check"}]})).expect("fixture turn must start");
         accounts::atomic_write(&f.env.codex_home.join("auth.json"), &fixture_auth("beta")).unwrap();
@@ -1034,7 +1038,7 @@ mod tests {
         let settings =
             read_json(&f.env.codex_home.join("app-server-daemon/settings.json")).unwrap();
         assert_eq!(
-            settings["featureOverrides"]["shell_snapshot"], false,
+            settings["featureOverrides"], initial_features,
             "server feature choices must survive reload"
         );
     }
