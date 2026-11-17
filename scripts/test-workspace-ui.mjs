@@ -320,7 +320,13 @@ async function chromium(entry, width, screenshot, profile) {
   const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
   try {
     const portFile=path.join(profile,'DevToolsActivePort');
-    for(let i=0;i<100 && !fs.existsSync(portFile);i++) await sleep(50);
+    // Fresh hosted Windows runners can take longer than five seconds to launch
+    // Chromium. Wait for its actual readiness signal before opening the port file.
+    for(let i=0;i<400 && !fs.existsSync(portFile);i++) {
+      if(child.exitCode !== null) throw new Error('Chromium exited before readiness: '+child.exitCode);
+      await sleep(50);
+    }
+    if(!fs.existsSync(portFile)) throw new Error('Chromium did not become ready within 20 seconds');
     const port=Number(fs.readFileSync(portFile,'utf8').split('\n')[0]);
     const pages=await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
     socket=new WebSocket(pages.find(page=>page.type==='page').webSocketDebuggerUrl);

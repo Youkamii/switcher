@@ -22,7 +22,7 @@ const STATUS: &str = "codex-session-status.json";
 const LOCK: &str = "codex-session.lock";
 const SOCKET_DIR: &str = "app-server-control";
 const SOCKET: &str = "app-server-control.sock";
-const IO_TIMEOUT: Duration = Duration::from_secs(3);
+const IO_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Request {
@@ -370,13 +370,23 @@ impl Rpc {
         self.send(json!({"id":id,"method":method,"params":params}))?;
         let until = Instant::now() + Duration::from_secs(10);
         while Instant::now() < until {
-            let message = self.socket.read().map_err(|_| "rpc_failed")?;
+            let message = self.socket.read().map_err(|error| match error {
+                tungstenite::Error::Io(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    "rpc_timeout"
+                }
+                _ => "rpc_failed",
+            })?;
             if let Message::Text(text) = message {
                 let value: Value = serde_json::from_str(&text).map_err(|_| "rpc_failed")?;
                 // Ignore notifications and requests belonging to other clients. Never answer
                 // approval/tool requests or print raw RPC errors, which can contain secrets.
                 if value.get("method").is_none() && value["id"] == id {
-                    return value.get("result").cloned().ok_or("rpc_failed");
+                    return value.get("result").cloned().ok_or("rpc_rejected");
                 }
             }
         }
