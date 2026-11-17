@@ -1,10 +1,10 @@
 # 개선 적용 현황
 
-작업 브랜치: `feat/connection-workspace` · 구현 2026-11-10, 재검증 2026-11-13·15·17. UI·API 기능과 인증 오류 처리를 개선했다. CLI 실행 여부만으로 갱신을 막던 제한은 제거했다. macOS 동작 검증과 Windows 자동 검증을 마쳤으며, 2026-11-15에 `v2.1.0`, 2026-11-17에 후속 패치 `v2.1.1` 앱 파일과 npm 패키지를 게시했다.
+작업 브랜치: `feat/connection-workspace` · 구현 2026-11-10, 재검증 2026-11-13·15·17. UI·API 기능과 인증 오류 처리를 개선했다. CLI 실행 여부만으로 갱신을 막던 제한은 제거했다. macOS 동작 검증과 Windows 자동 검증을 마쳤으며, 2026-11-15에 `v2.1.0`, 2026-11-17에 후속 패치 `v2.1.1`과 Codex 공유 서버 자동 갱신을 포함한 `v2.1.2` 앱 파일·npm 패키지를 게시했다.
 
 [전체 화면 한 장](design/complete-preview.png) · [원본 크기 보기](design/complete-preview.html) · [API 등록·사용법](API_CONNECTIONS.md)
 
-## Codex 공유 서버 자동 갱신 — v2.1.2 배포 준비
+## Codex 공유 서버 자동 갱신 — v2.1.2
 
 - 구독 전환의 기존 백업 → 파일 교체 순서를 유지하고, 그 뒤 Codex 0.167.0 이상 정식 버전의 관리되는 공유 서버 갱신을 예약한다. 일반 버튼·고정 모드·TFSD가 같은 코어를 사용한다. 공유 서버가 없으면 새 서버를 임의로 시작하지 않는다.
 - 진행 중인 작업·승인 대기·저장되지 않는 대화는 재시작하지 않는다. idle 확인 뒤 정상 종료만 요청하고, 이전 프로세스가 종료된 뒤 공식 daemon 명령으로 대체 서버를 시작한다. 강제 종료와 외부 토큰 공급 방식은 사용하지 않는다. 별도 helper가 위젯 종료 뒤에도 마무리한다.
@@ -12,7 +12,14 @@
 - 로컬 Codex 0.167.0·0.169.0, 가짜 OAuth 두 계정과 로컬 HTTP 응답으로 **진행 중 작업을 기다림 → B 인증 반영 → 기존 thread ID와 대화 내용 복원 → managed OAuth 유지**를 검사했다. 추가로 격리 PTY의 실제 Codex 0.169.0 TUI와 로컬 HTTPS 서버를 사용해 **터미널 프로세스 재실행 없이 자동 재연결 → 같은 대화에서 후속 입력 → 이전 답변이 후속 요청의 문맥에 포함**되는 것까지 통과했다. 실제 계정·모델 API는 사용하지 않았다. 일반 `-c` 옵션을 주입하는 로컬 래퍼는 단독 실행으로 전환되므로 이 자동 갱신 범위에서 제외됨도 확인했다.
 - 로컬 검증: Rust 전체 243 통과·19 ignored, 빌드된 macOS 앱의 headless helper를 사용한 설치 Codex 통합 검사 통과, TypeScript/Vite 및 프론트 단위 104 통과, Chromium 네 모드 139·WebKit 106·배치 8 통과.
 - [Windows CI](https://github.com/Youkamii/switcher/actions/runs/44033190107)는 `8bfbce0`에서 성공했다. 프론트 단위 104, Chromium UI 76, Rust 291(17 ignored), 설치 CLI 인증·기존 세션 캐시 검사, 포터블 EXE 빌드·npm 버전 인식이 통과했다. 별도 일반 사용자로 **빌드된 EXE의 headless helper + Codex 0.167.0**을 실행해 작업 중 대기, 새 계정 반영, 같은 thread ID·대화 복원, managed OAuth 유지도 통과했다. Windows 소켓의 전체 경로를 일반 파일처럼 여는 확인을 상위 폴더 기준 확인으로 수정하고 실제 AF_UNIX 소켓 회귀 검사를 추가했다. Windows TUI 화면의 실제 조작은 이 검사 범위에 포함되지 않는다.
-- 버전 파일을 `2.1.2`로 맞췄다. 릴리스·npm 게시 결과는 완료 후 아래에 기록한다.
+
+## v2.1.2 배포 (2026-11-17)
+
+- 태그 `v2.1.2` / 코드 `4c815b3`로 [Windows·macOS 릴리스](https://github.com/Youkamii/switcher/actions/runs/44034219218)와 [npm 게시](https://github.com/Youkamii/switcher/actions/runs/44035204221)가 성공했다. 같은 배포 커밋의 [Windows 전체 검사](https://github.com/Youkamii/switcher/actions/runs/44034208729)도 성공했다.
+- 공개 레지스트리에서 `switcher-widget@2.1.2`, `latest=2.1.2`, 태그와 같은 `gitHead` 및 provenance 존재를 확인했다. 새 임시 폴더에 공개 npm 패키지를 설치하고 실제 `ensureDist()`로 앱을 받았으며, 두 번째 호출은 네트워크 없이 캐시를 인식했다.
+- macOS 다운로드 앱의 버전 `2.1.2`, arm64 형식, ad-hoc 서명 무결성을 확인했다. **공개된 macOS 앱의 headless helper**로 가짜 계정·로컬 모델 통합 검사도 다시 통과했다. 사용자 계정이나 실행 중인 실제 Codex 세션은 변경하지 않았다.
+- Windows ZIP의 GitHub SHA-256·크기·x64 PE·버전 표식과 EXE 리소스 버전 `2.1.2.0`을 확인했다. 업데이트 manifest는 두 운영체제 모두 `v2.1.2` 자산을 가리킨다. 구버전에서 넘어올 때 필요한 고정 이름 자산은 ID·크기·SHA-256이 배포 전과 같음을 확인했다.
+- 기존 앱은 **위젯 우클릭 → 업데이트 확인**으로 갱신한다. Codex 0.167.0 이상 정식 버전의 관리되는 공유 서버를 사용하는 구독 세션이 자동 갱신 대상이다. 단독 실행·설정 주입 래퍼·Windows 관리자 실행은 위의 전환 범위를 따른다.
 
 ## Windows API 진입·Codex 세션 후속 수정 (2026-11-17)
 
