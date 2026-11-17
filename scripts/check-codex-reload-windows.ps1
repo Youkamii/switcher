@@ -9,7 +9,7 @@ $taskOldPath = $env:PATH
 $taskOldTemp = $env:TEMP
 $taskOldTmp = $env:TMP
 $taskOldBinary = $env:SWITCHER_SESSION_TEST_BINARY
-$taskProcess = $null
+$taskRegistered = $false
 $taskUserCreated = $false
 try {
     New-Item -ItemType Directory -Path "$taskRoot/tmp" -Force | Out-Null
@@ -76,21 +76,38 @@ if errorlevel 1 exit /b 1
 set "CODEX_HOME="
 "$taskRoot\check.exe" installed_codex_daemon_reloads_selected_account_without_external_auth --ignored --test-threads=1
 "@ | Set-Content "$taskRoot/run.cmd" -Encoding ascii
-    $taskProcess = Start-Process -FilePath $env:ComSpec -ArgumentList @('/d', '/s', '/c', "$taskRoot/run.cmd") `
-      -WorkingDirectory $taskRoot -Credential $credential -LoadUserProfile -PassThru `
-      -RedirectStandardOutput "$taskRoot/output.log" -RedirectStandardError "$taskRoot/error.log"
-    if (-not $taskProcess.WaitForExit(180000)) {
-        $taskProcess.Kill($true)
-        throw 'The isolated Codex integration test timed out'
+    # Hosted Actions processes inherit a non-breakaway job object. Even a direct
+    # exe under Start-Process -Credential stays in it, so Codex correctly refuses
+    # to detach. Task Scheduler launches the standard user outside that runner job.
+    @"
+@echo off
+call "$taskRoot\run.cmd" > "$taskRoot\output.log" 2> "$taskRoot\error.log"
+echo %errorlevel% > "$taskRoot\exit-code.txt"
+"@ | Set-Content "$taskRoot/task.cmd" -Encoding ascii
+    $action = New-ScheduledTaskAction -Execute $env:ComSpec -Argument "/d /s /c $taskRoot\task.cmd" -WorkingDirectory $taskRoot
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 3) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    Register-ScheduledTask -TaskName $taskUser -Action $action -Settings $settings `
+      -User $credential.UserName -Password $credential.GetNetworkCredential().Password -RunLevel Limited | Out-Null
+    $taskRegistered = $true
+    Start-ScheduledTask -TaskName $taskUser
+    $deadline = [DateTime]::UtcNow.AddMinutes(3)
+    while (-not (Test-Path "$taskRoot/exit-code.txt")) {
+        if ([DateTime]::UtcNow -ge $deadline) { throw 'The isolated Codex integration test timed out' }
+        Start-Sleep -Milliseconds 500
     }
     Get-Content "$taskRoot/output.log"
     Get-Content "$taskRoot/error.log"
-    if ($taskProcess.ExitCode -ne 0) { throw "Codex integration test failed ($($taskProcess.ExitCode))" }
+    $testExitCode = [int](Get-Content "$taskRoot/exit-code.txt" -Raw).Trim()
+    if ($testExitCode -ne 0) { throw "Codex integration test failed ($testExitCode)" }
 } finally {
     $env:PATH = $taskOldPath
     $env:TEMP = $taskOldTemp
     $env:TMP = $taskOldTmp
     $env:SWITCHER_SESSION_TEST_BINARY = $taskOldBinary
+    if ($taskRegistered) {
+        Stop-ScheduledTask -TaskName $taskUser -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -TaskName $taskUser -Confirm:$false -ErrorAction SilentlyContinue
+    }
     if ($taskUserCreated) { Remove-LocalUser -Name $taskUser -ErrorAction SilentlyContinue }
     Remove-Item $taskRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

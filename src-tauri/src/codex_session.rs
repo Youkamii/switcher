@@ -806,17 +806,28 @@ mod tests {
             // Codex rejects inherited/shared ACLs instead of repairing them.
             // Match its protected user-only directory contract before startup.
             let secured = Command::new("powershell.exe")
-                .args(["-NoProfile", "-NonInteractive", "-Command", r#"
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    r#"
                     $ErrorActionPreference = 'Stop'
                     $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
                     $acl = [System.Security.AccessControl.DirectorySecurity]::new()
                     $acl.SetSecurityDescriptorSddlForm("O:${sid}D:P(A;OICI;FA;;;${sid})")
                     Set-Acl -LiteralPath $env:SWITCHER_TEST_STATE_DIR -AclObject $acl
-                "#])
-                .env("SWITCHER_TEST_STATE_DIR", f.env.codex_home.join("app-server-daemon"))
+                "#,
+                ])
+                .env(
+                    "SWITCHER_TEST_STATE_DIR",
+                    f.env.codex_home.join("app-server-daemon"),
+                )
                 .status()
                 .unwrap();
-            assert!(secured.success(), "isolated daemon directory must be private");
+            assert!(
+                secured.success(),
+                "isolated daemon directory must be private"
+            );
         }
         // One local, synthetic model response makes the conversation durable and
         // holds the turn open long enough to verify that refresh waits for it.
