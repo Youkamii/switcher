@@ -53,7 +53,7 @@ async function start() {
   });
   const stop = async () => {
     if (child.exitCode !== null || child.signalCode !== null || !child.pid) { lines.close(); return; }
-    const exited = new Promise(resolve => child.once("exit", resolve));
+    const exited = new Promise(resolve => child.once("close", resolve));
     if (process.platform === "win32") spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
     else child.kill("SIGTERM");
     const timeout = setTimeout(() => child.kill("SIGKILL"), 3000);
@@ -85,5 +85,13 @@ try {
     console.log("PASS: a newly started Codex process reads account B");
   } finally { await fresh.stop(); }
 } finally {
-  fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  // Windows can retain a descendant's cwd handle after taskkill reports success.
+  // Yield between attempts; synchronous rm retries did not cover this on Node 22.
+  for (let attempt = 0; ; attempt++) {
+    try { await fs.promises.rm(dir, { recursive: true, force: true }); break; }
+    catch (error) {
+      if (attempt >= 24 || !["EBUSY", "EPERM", "ENOTEMPTY"].includes(error.code)) throw error;
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+  }
 }

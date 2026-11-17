@@ -54,9 +54,10 @@ jobs:
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml windows_installed_clis_recognize_api_selection -- --ignored --test-threads=1
       - name: Running Codex session keeps its selected authentication
         run: node scripts/check-codex-session-auth.mjs
-      - name: Managed Codex reload preserves the selected account and conversation
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml installed_codex_daemon_reloads_selected_account_without_external_auth -- --ignored --test-threads=1
       - name: Windows portable application build
         run: npm run tauri build -- --no-bundle
+      - name: Managed Codex reload preserves the selected account and conversation
+        shell: pwsh
+        run: ./scripts/check-codex-reload-windows.ps1
       - name: npm launcher recognizes the built Windows executable
         run: node scripts/check-packaged-dist.mjs

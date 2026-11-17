@@ -163,7 +163,13 @@ pub(crate) fn schedule(env: &Env) {
             }
             cmd.spawn().ok()
         });
-        if spawned.is_none() {
+        if let Some(mut child) = spawned {
+            // Reap helpers while the widget remains open; dropping Child alone
+            // leaves zombies on Unix. The helper still survives widget exit.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        } else {
             write_status(&env.store, &req, "failed", Some("helper_start"));
         }
     }
@@ -203,21 +209,48 @@ fn hide_window(command: &mut Command) {
 
 fn codex(home: &Path, action: &str) -> Result<Value, &'static str> {
     // action is a private constant, never a profile name or user-supplied shell text.
+    let mut args = vec![
+        "app-server".to_owned(),
+        "daemon".to_owned(),
+        action.to_owned(),
+    ];
+    if action == "start" {
+        // daemon start otherwise clears persisted feature overrides. Reuse them
+        // exactly; changing another client's server features is outside this action.
+        let settings = home.join("app-server-daemon/settings.json");
+        if settings.exists() {
+            let value = read_json(&settings)?;
+            if let Some(features) = value.get("featureOverrides") {
+                for (name, value) in features.as_object().ok_or("unsupported_config")? {
+                    if name.is_empty()
+                        || !name.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_')
+                    {
+                        return Err("unsupported_config");
+                    }
+                    args.push(
+                        if value.as_bool().ok_or("unsupported_config")? {
+                            "--enable"
+                        } else {
+                            "--disable"
+                        }
+                        .into(),
+                    );
+                    args.push(name.clone());
+                }
+            }
+        }
+    }
     let binary = managed_binary(home);
     #[cfg(windows)]
     let mut command = {
         if let Some(binary) = binary {
             let mut cmd = Command::new(binary);
-            cmd.args(["app-server", "daemon", action]);
+            cmd.args(&args);
             cmd
         } else {
             let mut cmd = Command::new("cmd.exe");
-            cmd.args([
-                "/d",
-                "/s",
-                "/c",
-                &format!("codex app-server daemon {action}"),
-            ]);
+            // All words are fixed commands or validated ASCII feature identifiers.
+            cmd.args(["/d", "/s", "/c", &format!("codex {}", args.join(" "))]);
             cmd
         }
     };
@@ -234,7 +267,7 @@ fn codex(home: &Path, action: &str) -> Result<Value, &'static str> {
             })
             .unwrap_or_else(|| PathBuf::from("codex"));
         let mut cmd = Command::new(binary);
-        cmd.args(["app-server", "daemon", action]);
+        cmd.args(&args);
         cmd
     };
     command
@@ -367,8 +400,10 @@ impl Rpc {
             .ok_or("auth_unavailable")?;
         // Compare the credential itself: a selected workspace can differ from the
         // default workspace claim in the JWT. Never export either token to the UI.
-        if value["authMethod"] != "chatgpt" {
-            return Err("unsupported_auth");
+        match value["authMethod"].as_str() {
+            Some("chatgpt") => {}
+            Some("apikey") => return Ok(false), // Explicit API -> subscription switch.
+            _ => return Err("unsupported_auth"),
         }
         Ok(value["authToken"].as_str() == Some(stored))
     }
@@ -528,9 +563,10 @@ fn worker(store: &Path, home: &Path) -> Result<(), &'static str> {
         while process_start(pid) == Some(identity) {
             std::thread::sleep(Duration::from_millis(200));
         }
-        // Now the old process is gone: the official restart command only launches
-        // its replacement, preserving the daemon's loaded-thread recovery snapshot.
-        codex(home, "restart")?;
+        // start is idempotent: another client may already have started a replacement.
+        // A restart command here could race and stop that new daemon's work.
+        // Persisted conversations are rejoined by the TUI's normal resume path.
+        codex(home, "start")?;
         req = request(store).ok_or("selection_changed")?;
         let mut rpc = Rpc::open(&socket)?;
         if req.codex_home != home
@@ -607,12 +643,12 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             let root = std::env::temp_dir().join(format!(
-                "switcher-codex-reload-{}-{}",
+                "sr-{:x}-{:08x}",
                 std::process::id(),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
-                    .as_nanos()
+                    .as_nanos() as u32
             ));
             fs::create_dir_all(&root).unwrap();
             #[cfg(unix)]
@@ -623,14 +659,14 @@ mod tests {
             let env = Env {
                 home: root.clone(),
                 store: root.join("store"),
-                codex_home: root.join("codex"),
+                codex_home: root.join("c"),
                 claude_live: accounts::ClaudeLiveStore::File(root.join("unused")),
             };
             fs::create_dir_all(&env.store).unwrap();
             fs::create_dir_all(env.codex_home.join("app-server-daemon")).unwrap();
             accounts::atomic_write(
                 &env.codex_home.join("app-server-daemon/settings.json"),
-                br#"{"updater":{"autoUpdateEnabled":false}}"#,
+                br#"{"updater":{"autoUpdateEnabled":false},"featureOverrides":{"shell_snapshot":false}}"#,
             )
             .unwrap();
             accounts::atomic_write(&env.codex_home.join("config.toml"), b"cli_auth_credentials_store = \"file\"\ncheck_for_update_on_startup = false\nchatgpt_base_url = \"http://127.0.0.1:9\"\n[model_providers.fixture]\nname = \"fixture\"\nbase_url = \"http://127.0.0.1:9/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = false\n").unwrap();
@@ -764,7 +800,28 @@ mod tests {
             .unwrap());
         schedule(&f.env);
         let env = f.env.clone();
-        let refreshing = std::thread::spawn(move || worker(&env.store, &env.codex_home));
+        let refreshing = std::thread::spawn(move || {
+            // Optional built-artifact check runs the real early main() helper path,
+            // without initializing a Tauri window or sharing the test's lifetime.
+            if let Some(binary) = std::env::var_os("SWITCHER_SESSION_TEST_BINARY") {
+                let mut command = Command::new(binary);
+                command
+                    .arg("--codex-session-reload")
+                    .arg(&env.store)
+                    .arg(&env.codex_home)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null());
+                hide_window(&mut command);
+                let result = command.status().map_err(|_| "test_helper_failed")?;
+                if !result.success() || status(&env).is_none_or(|s| s.phase != "reloaded") {
+                    return Err("test_helper_failed");
+                }
+                Ok(())
+            } else {
+                worker(&env.store, &env.codex_home)
+            }
+        });
         let waiting_until = Instant::now() + Duration::from_secs(10);
         while status(&f.env).is_none_or(|s| s.phase != "waiting") && Instant::now() < waiting_until
         {
@@ -818,5 +875,11 @@ mod tests {
         let auth = read_json(&f.env.codex_home.join("auth.json")).unwrap();
         assert_eq!(auth["tokens"]["refresh_token"], "synthetic-beta");
         assert_eq!(auth["auth_mode"], "chatgpt");
+        let settings =
+            read_json(&f.env.codex_home.join("app-server-daemon/settings.json")).unwrap();
+        assert_eq!(
+            settings["featureOverrides"]["shell_snapshot"], false,
+            "server feature choices must survive reload"
+        );
     }
 }
