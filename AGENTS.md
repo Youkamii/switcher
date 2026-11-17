@@ -41,7 +41,7 @@
 - 클로드 토큰 (맥): **키체인** 항목 `Claude Code-credentials` (계정=사용자명, JSON 내용은 윈도우와 동일). `~/.claude/.credentials.json`은 구버전 잔재 — 위젯은 키체인을 정본으로 쓰고, 파일이 남아 있으면 함께 갱신한다.
 - 클로드 계정 표시 정보: `~/.claude.json`의 `oauthAccount` 블록 (accountUuid·emailAddress·organizationUuid) — 맥에서도 동일
 - 코덱스 토큰: `${CODEX_HOME:-~/.codex}/auth.json` (키: `auth_mode`, `OPENAI_API_KEY`, `tokens`, `last_refresh`) — 맥에서도 파일 그대로
-- Codex 0.167.0은 실행 중 인증을 메모리에 보관한다. 외부 `auth.json` 교체는 기존 프로세스의 다른 계정 전환으로 이어지지 않는다 (2026-11-17 격리 실측). 다음 실행·`codex resume`에서 반영되며, 위젯의 파일 선택과 실행 중 세션 인증을 구분한다. 재현: `node scripts/check-codex-session-auth.mjs`.
+- Codex는 실행 중 인증을 메모리에 보관한다. 파일 교체만으로는 바뀌지 않으므로 `codex_session.rs`가 구독 전환 후 관리되는 공유 서버를 갱신한다. 작업·승인 대기·ephemeral 대화는 건드리지 않고, idle이면 정상 종료 → 종료 확인 → 공식 daemon 재시작 → 인증 확인 순서로 진행한다. 외부 토큰 모드나 강제 종료 금지. helper는 위젯 종료 후에도 마무리한다. 단독 실행·구형 CLI·Windows 관리자 실행은 다음 실행/`codex resume` 대상이다. 기본 재현: `node scripts/check-codex-session-auth.mjs`; 공유 서버 회귀: `cargo test installed_codex_daemon_reloads_selected_account_without_external_auth -- --ignored --test-threads=1`.
 - 프로필 보관소: `~/.switcher/profiles/<name>/`
 
 ## macOS 전용 (실측 확인됨, 2026-07-29 / claude 2.1.220 / macOS 26.5)

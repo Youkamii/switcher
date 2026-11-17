@@ -15,6 +15,7 @@ function fixture(mode = "normal", preview = false) {
   const activeApi = new Map(preview===true ? [['claude','project']] : []); let activationFailure = false;
   let codexBlocked = false; let checkFailure = false; let releaseCheck = null; let holdCheck = false;
   let costFailure = false;
+  let sessionPhase = null;
   const costs = new Map();
   const usageFor = (provider, name) => costs.get(provider+'/'+name) ?? {month:'2026-11',budget_usd:195,spent_usd:null,remaining_usd:null,percent:null,source:'manual',api_key_id:'',admin_key_stored:false,checked_at:null,provider_updated_at:null,error:null};
   const updateCost = (provider,name,value) => { const data={...usageFor(provider,name),...value}; data.remaining_usd=data.spent_usd===null?null:data.budget_usd-data.spent_usd;data.percent=data.spent_usd===null?null:data.spent_usd/data.budget_usd*100;costs.set(provider+'/'+name,data);return data; };
@@ -55,6 +56,7 @@ function fixture(mode = "normal", preview = false) {
       if(cmd === 'list_profiles') return { api_active:activeApi.get(args.provider)??null, live:activeApi.has(args.provider)?null:{id:args.provider+'-1',email:'personal@example.test'},live_saved:!activeApi.has(args.provider),profiles:[
         {name:'personal', id:args.provider+'-1',email:'personal@example.test',plan:args.provider==='claude'?'Max':'Plus',active:!activeApi.has(args.provider),saved_at:1,plan_tier:null},
         ...(args.provider==='claude' ? [{name:'work',id:'claude-2',email:'work@example.test',plan:'Pro',active:false,saved_at:1,plan_tier:null}] : [])] };
+      if(cmd === 'codex_session_status') return sessionPhase ? {phase:sessionPhase,reason:null} : null;
       if(cmd === 'fetch_usage') return { windows:[{key:'five_hour',label:'5 Hours',percent:32,resets_at:null},{key:'weekly',label:'Weekly',percent:54,resets_at:null}],stale:args.profile==='work',stale_age_secs:600,issue:args.profile==='work'?'토큰 갱신 권한이 거부됐습니다 — 계정·조직의 접근 정책을 확인하세요':null };
       if(cmd === 'api_list') return [...connections.values()].filter(c=>c.provider===args.provider).map(c=>({...c,active:activeApi.get(c.provider)===c.name}));
       if(cmd === 'start_login') throw 'fixture login stopped';
@@ -156,6 +158,13 @@ function fixture(mode = "normal", preview = false) {
         return;
       }
       record('codex-selection-is-not-labelled-as-live-session',document.querySelector('.codex-session-note')?.textContent.includes('다음 Codex 실행')&&[...document.querySelectorAll('.connection-active')].some(el=>el.textContent==='선택됨'));
+      for (const [phase, text] of [['waiting','현재 작업이 끝나면'],['reloading','갱신하고 있습니다'],['reloaded','공유 서버에 새 계정을 반영'],['failed','갱신하지 못했습니다']]) {
+        sessionPhase=phase;document.getElementById('refresh').click();
+        await ready('.codex-session-note[data-phase="'+phase+'"]');
+        record('codex-session-status-'+phase,document.querySelector('.codex-session-note')?.textContent.includes(text));
+      }
+      record('codex-refresh-button-retries-session-reload',calls.some(c=>c.cmd==='retry_codex_session_refresh'));
+      sessionPhase=null;document.getElementById('refresh').click();await delay();await delay();
       document.querySelector('.add-account[data-provider="claude"]').click();await ready('.connection-methods');
       record('account-add-offers-both-authentication-methods',document.querySelectorAll('.connection-methods button').length===2&&!document.querySelector('.connection-subscription').hidden);
       record('account-add-does-not-start-login-before-choice',!calls.some(c=>c.cmd==='start_login'));

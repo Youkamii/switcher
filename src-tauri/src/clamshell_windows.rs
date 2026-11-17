@@ -1369,7 +1369,7 @@ fn helper_command_line(exe: &Path, state_path: &Path, helper: &str) -> Vec<u16> 
     output
 }
 
-fn create_helper_copy(source: &Path, destination: &Path) -> Result<(), String> {
+pub(crate) fn create_helper_copy(source: &Path, destination: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::FromRawHandle;
 
@@ -1409,7 +1409,7 @@ fn create_helper_copy(source: &Path, destination: &Path) -> Result<(), String> {
     result
 }
 
-fn open_verified_helper_copy(source: &Path, destination: &Path) -> Result<std::fs::File, String> {
+pub(crate) fn open_verified_helper_copy(source: &Path, destination: &Path) -> Result<std::fs::File, String> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::{AsRawHandle, FromRawHandle};
 

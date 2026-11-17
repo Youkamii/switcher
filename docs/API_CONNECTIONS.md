@@ -4,11 +4,17 @@
 
 ## Codex 계정 전환 범위
 
-위젯은 현재 인증을 먼저 백업하고 선택한 계정의 `auth.json`을 적용한다. **이미 실행 중인 Codex의 인증까지 즉시 바꾸지는 않는다.** Codex CLI 0.167.0은 인증을 메모리에 유지하며 외부 파일 변경을 자동으로 읽지 않는다. 401 복구 시에도 다른 계정으로의 재읽기를 허용하지 않는다. [해당 버전 AuthManager 구현](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/login/src/auth/manager.rs).
+위젯은 현재 인증을 먼저 백업하고 선택한 계정의 `auth.json`을 적용한다. **파일 교체만으로 실행 중 인증이 바뀌지는 않으므로 공유 서버 갱신을 이어서 수행한다.** Codex CLI 0.167.0은 인증을 메모리에 유지하며 외부 파일 변경을 자동으로 읽지 않는다. 401 복구 시에도 다른 계정으로의 재읽기를 허용하지 않는다. [해당 버전 AuthManager 구현](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/login/src/auth/manager.rs).
 
-기존 Codex를 종료한 뒤 같은 터미널에서 `codex resume`으로 이어가면 선택한 인증을 새로 읽는다. 별도 터미널 창이나 로그아웃·브라우저 로그인을 요구하는 흐름이 아니다. 화면은 **선택됨**과 다음 실행 적용 안내로 이를 구분한다. 실사용 세션을 종료하거나 입력을 주입해 강제로 바꾸는 기능은 구현하지 않았다.
+구독 계정 전환 뒤에는 관리되는 Codex 공유 서버를 자동 갱신한다. 실행 중인 작업·승인 대기를 기다리고 저장 가능한 대화가 모두 idle일 때 정상 종료를 요청한다. 서버 종료를 확인한 뒤 공식 daemon 명령으로 다시 시작하고, 새 인증이 읽혔는지 확인한다. 기존 Codex TUI의 재연결 기능으로 대화를 이어가는 방식이며 터미널 입력을 주입하지 않는다. Codex 자체 OAuth 갱신을 유지하므로 별도의 외부 토큰 공급자에 의존하지 않는다.
+
+화면의 **선택됨**과 공유 서버 갱신 상태는 별개다. `--no-daemon`, 구형 CLI, Windows 관리자 실행, 독립 stdio 서버는 자동 갱신 대상이 아니다. 이 경우 기존 Codex를 종료한 뒤 같은 터미널에서 `codex resume`으로 이어간다. API 선택은 기존 안내대로 다음 CLI 실행에서 적용한다. 자동 유료 전환은 하지 않는다.
+
+갱신 작업은 별도 headless helper가 수행하므로 위젯을 닫아도 이어진다. Windows에서는 설치 EXE를 잠그지 않는 검증된 복사본을 사용한다. 이미 진행 중인 작업을 강제 종료하지 않으며, 30분간 idle이 되지 않으면 실패 상태로 끝나고 새로고침으로 재시도할 수 있다. 정상 종료 요청 직후 새 작업이 시작된 경합에서는 Codex의 drain이 끝날 때까지 helper가 기다린다. 저장되지 않는 ephemeral 대화는 재시작하지 않는다.
 
 `node scripts/check-codex-session-auth.mjs`는 격리된 홈·가짜 OAuth 계정 두 개로 설치된 Codex를 실행한다. 기존 프로세스는 A, 파일 교체 후 새 프로세스는 B를 읽는지 검사한다. 생성 요청이나 실계정 토큰을 사용하지 않는다. 이 검사는 로그인 인식 범위이며 실제 모델 호출 성공을 뜻하지 않는다.
+
+`cargo test --manifest-path src-tauri/Cargo.toml installed_codex_daemon_reloads_selected_account_without_external_auth -- --ignored --test-threads=1`은 설치된 packaged Codex와 격리 홈·가짜 인증·로컬 HTTP 모델 응답을 쓴다. 작업 중 갱신 대기, 완료 후 B 인증 반영, 같은 thread ID와 대화 내용 복원, managed OAuth 유지까지 확인한다. 실제 OpenAI 모델 호출이나 유료 요청은 하지 않는다. 자동 재연결의 근거는 Codex TUI 구현이며, 이 검사는 앱 서버 수준에서 재연결·resume을 수행한다.
 
 ## API 등록
 

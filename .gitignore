@@ -31,6 +31,10 @@ profiles/
 api-connections/
 api-workspaces/
 api-active/
+codex-session-request.json
+codex-session-status.json
+codex-session.lock
+codex-session-helper-*.exe
 *.switcher-tmp*
 *.json.bak
 

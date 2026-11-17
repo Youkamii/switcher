@@ -48,6 +48,33 @@ type Snapshot = {
   api_active?: string | null;
 };
 
+type CodexSessionStatus = { phase: string; reason: string | null } | null;
+let codexSessionStatus: CodexSessionStatus = null;
+function codexSessionText(): string {
+  switch (codexSessionStatus?.phase) {
+    case "checking": return t("codexSessionChecking");
+    case "waiting": return t("codexSessionWaiting");
+    case "reloading": return t("codexSessionReloading");
+    case "reloaded": return t("codexSessionReloaded");
+    case "next_launch": return t("codexSessionNextLaunch");
+    case "failed": return t("codexSessionFailed");
+    default: return t("codexSessionNote");
+  }
+}
+
+async function updateCodexSessionStatus() {
+  try {
+    codexSessionStatus = await invoke<CodexSessionStatus>("codex_session_status");
+    const text = codexSessionText();
+    document.querySelectorAll<HTMLElement>(".codex-session-note").forEach(el => {
+      el.textContent = text;
+      el.dataset.phase = codexSessionStatus?.phase ?? "unknown";
+    });
+    document.querySelectorAll<HTMLElement>('.card.active[data-provider="codex"], .compact-card.active.prov-codex, .edge-account.active[data-provider="codex"]')
+      .forEach(el => { el.title = visibility.tfsd ? `${t("tfsdTooltip")} · ${text}` : text; });
+  } catch { /* A status lookup must never clear the account list. */ }
+}
+
 type UsageWindow = {
   key: string;
   label: string;
@@ -495,6 +522,7 @@ function profileCard(
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = "card profile-card" + (profile.active ? " active" : "");
+  card.dataset.provider = provider;
   // 카드와 항상 보이는 조작 버튼 모두 키보드로 접근할 수 있다.
   card.tabIndex = 0;
   // disarm은 삭제 버튼 쪽에서 선언된다 — 이벤트 시점에만 부르므로 지연 참조
@@ -529,7 +557,7 @@ function profileCard(
   }
   card.appendChild(head);
 
-  if (provider === "codex" && profile.active) card.title = [card.title, t("codexSessionNote")].filter(Boolean).join(" · ");
+  if (provider === "codex" && profile.active) card.title = [card.title, codexSessionText()].filter(Boolean).join(" · ");
 
   // 활성 프로필은 활성 파일(항상 최신 토큰), 비활성은 보관함 토큰으로 조회.
   // 프라미스는 렌더러가 모은다 — 새로고침 때 다 받아진 뒤 한 번에 교체하기 위해
@@ -548,7 +576,7 @@ function profileCard(
     if (disable) disable.disabled = true;
     try {
       await invoke("switch_profile", { provider, name: profile.name });
-      // Codex keeps auth in memory; its card/section describe the next-launch scope.
+      if (provider === "codex") await updateCodexSessionStatus();
       // 즉시 렌더가 아니라 스무스 렌더: 화면을 비우지 않고 새 사용량까지 받아진 뒤
       // 한 번에 바꾼다. 그동안 활성 표시만 먼저 옮긴다.
       markActiveOptimistic(card);
@@ -1347,7 +1375,9 @@ async function renderProvider(
     if (provider === "codex" && snap.profiles.length > 0 && !snap.api_active) {
       const note = document.createElement("p");
       note.className = "section-note codex-session-note";
-      note.textContent = t("codexSessionNote");
+      note.textContent = codexSessionText();
+      note.setAttribute("role", "status");
+      note.dataset.phase = codexSessionStatus?.phase ?? "unknown";
       section.appendChild(note);
     }
 
@@ -1984,7 +2014,7 @@ function compactCard(
     card.appendChild(tfsdWatermark());
     card.title = t("tfsdTooltip");
   }
-  if (provider === "codex" && profile.active) card.title = [card.title, t("codexSessionNote")].filter(Boolean).join(" · ");
+  if (provider === "codex" && profile.active) card.title = [card.title, codexSessionText()].filter(Boolean).join(" · ");
 
   const load = (async () => {
     try {
@@ -2275,7 +2305,7 @@ function edgeAccount(
   card.dataset.provider = provider;
   card.dataset.name = profile.name;
   if (!profile.active) card.title = t("profileNameTooltip", { name: profile.name });
-  else if (provider === "codex") card.title = t("codexSessionNote");
+  else if (provider === "codex") card.title = codexSessionText();
   const name = document.createElement("span");
   name.className = "edge-name";
   name.textContent = profile.name;
@@ -3361,8 +3391,13 @@ document.getElementById("refresh")!.addEventListener("click", () => {
     return;
   }
   // 사용자가 직접 누른 새로고침만 백오프를 우회한다 — 자동 5분 주기·상태 변경 렌더는 존중 (#122)
+  void invoke("retry_codex_session_refresh").then(updateCodexSessionStatus).catch(() => {});
   void render({ forceRetry: true });
 });
+void updateCodexSessionStatus();
+window.setInterval(() => {
+  if (visibility.codex) void updateCodexSessionStatus();
+}, 2000);
 window.setInterval(() => {
   if (!userIsBusy()) void render();
 }, 5 * 60 * 1000);

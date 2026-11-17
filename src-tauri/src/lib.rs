@@ -1,4 +1,5 @@
 mod accounts;
+mod codex_session;
 mod api_connections;
 #[cfg(not(windows))]
 mod clamshell;
@@ -494,6 +495,20 @@ async fn switch_profile(
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || disengage_tfsd(&handle));
     Ok(result)
+}
+
+#[tauri::command]
+fn codex_session_status() -> Option<codex_session::Status> {
+    codex_session::status(&Env::real().ok()?)
+}
+
+#[tauri::command]
+fn retry_codex_session_refresh() {
+    if let Ok(env) = Env::real() {
+        if codex_session::status(&env).is_some_and(|s| s.phase == "failed")
+            && env.check_codex_store(Provider::Codex).is_ok()
+        { codex_session::schedule(&env); }
+    }
 }
 
 /// 수동 전환이 감지되면 TFSD를 끈다 — 무인 프로세스가 사람의 선택을 되엎지 않게.
@@ -3367,6 +3382,8 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 pub fn run() {
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
+    if codex_session::run_helper_if_requested() { return; }
+
     #[cfg(windows)]
     if clamshell::run_helper_if_requested() {
         return;
@@ -3904,6 +3921,8 @@ pub fn run() {
             api_check,
             api_open_console,
             list_profiles,
+            codex_session_status,
+            retry_codex_session_refresh,
             save_profile,
             switch_profile,
             delete_profile,

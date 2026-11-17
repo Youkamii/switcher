@@ -1427,6 +1427,8 @@ pub fn switch(env: &Env, provider: Provider, name: &str) -> Result<SwitchResult,
     // 버튼·고정 모드 더블클릭·TFSD 전환 모두에 동일하게 적용된다 (#122)
     crate::usage::clear_profile_backoff(env, provider, name);
 
+    if provider == Provider::Codex { crate::codex_session::schedule(env); }
+
     Ok(SwitchResult {
         backed_up_to,
         switched_to: name.to_string(),
