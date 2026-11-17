@@ -395,6 +395,28 @@ impl Rpc {
                 // Ignore notifications and requests belonging to other clients. Never answer
                 // approval/tool requests or print raw RPC errors, which can contain secrets.
                 if value.get("method").is_none() && value["id"] == id {
+                    #[cfg(test)]
+                    if let Some(error) = value.get("error") {
+                        // Only fixed categories and numeric codes, even in tests.
+                        let message = error["message"].as_str().unwrap_or("").to_lowercase();
+                        let categories: Vec<_> = [
+                            "sandbox",
+                            "permission",
+                            "initializ",
+                            "thread",
+                            "auth",
+                            "network",
+                            "model",
+                            "config",
+                        ]
+                        .into_iter()
+                        .filter(|key| message.contains(key))
+                        .collect();
+                        eprintln!(
+                            "fixture RPC rejected {method}: code={:?}, categories={categories:?}",
+                            error["code"].as_i64()
+                        );
+                    }
                     return value.get("result").cloned().ok_or("rpc_rejected");
                 }
             }
@@ -909,7 +931,15 @@ mod tests {
         assert!(running
             .selected_auth(&f.env.codex_home, "fixture-alpha")
             .unwrap());
-        let thread = running.call("thread/start", json!({"model":"fixture-model","modelProvider":"fixture","cwd":f.env.home,"sandbox":"read-only","approvalPolicy":"never","experimentalRawEvents":false,"persistExtendedHistory":true})).expect("fixture thread must start");
+        // Windows read-only execution requires sandbox provisioning, which is
+        // unrelated to this auth/transport fixture. This disposable user's model
+        // only receives our local literal reply and never requests tool execution.
+        let sandbox = if cfg!(windows) {
+            "danger-full-access"
+        } else {
+            "read-only"
+        };
+        let thread = running.call("thread/start", json!({"model":"fixture-model","modelProvider":"fixture","cwd":f.env.home,"sandbox":sandbox,"approvalPolicy":"never","experimentalRawEvents":false,"persistExtendedHistory":true})).expect("fixture thread must start");
         let thread_id = thread["thread"]["id"].as_str().unwrap().to_owned();
         running.call("turn/start", json!({"threadId":thread_id,"input":[{"type":"text","text":"Synthetic continuity check"}]})).expect("fixture turn must start");
         accounts::atomic_write(&f.env.codex_home.join("auth.json"), &fixture_auth("beta")).unwrap();
