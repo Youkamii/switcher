@@ -14,6 +14,7 @@ $taskRegistered = $false
 $taskUserCreated = $false
 try {
     New-Item -ItemType Directory -Path "$taskRoot/tmp" -Force | Out-Null
+    & wevtutil.exe sl Microsoft-Windows-TaskScheduler/Operational /e:true
     $npmRoot = (& npm root --global).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Cannot locate the installed Codex package' }
     $candidates = @(
@@ -54,6 +55,23 @@ try {
     $taskSid = $account.SID.Value
     $stateAcl.SetSecurityDescriptorSddlForm("O:${taskSid}D:P(A;OICI;FA;;;${taskSid})")
     Set-Acl -LiteralPath "$taskRoot/probe/app-server-daemon" -AclObject $stateAcl
+    # A newly created local user may have no batch-logon right on a hardened
+    # hosted image. Preserve existing holders and add only this disposable SID.
+    & secedit.exe /export /cfg "$taskRoot/current-rights.inf" /areas USER_RIGHTS /quiet | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect fixture batch-logon rights' }
+    $batch = Select-String -Path "$taskRoot/current-rights.inf" -Pattern '^SeBatchLogonRight\s*=' | Select-Object -First 1
+    $rights = if ($batch) { $batch.Line.Split('=', 2)[1].Trim() + ",*$taskSid" } else { "*$taskSid" }
+    $policyHeader = @'
+[Unicode]
+Unicode=yes
+[Version]
+signature="$CHICAGO$"
+Revision=1
+[Privilege Rights]
+'@
+    "$policyHeader`r`nSeBatchLogonRight = $rights" | Set-Content "$taskRoot/fixture-rights.inf" -Encoding unicode
+    & secedit.exe /configure /db "$taskRoot/fixture-rights.sdb" /cfg "$taskRoot/fixture-rights.inf" /areas USER_RIGHTS /quiet | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot allow batch logon for the disposable fixture user' }
     $credential = [System.Management.Automation.PSCredential]::new("$env:COMPUTERNAME\$taskUser", $taskPassword)
     $env:PATH = "$taskRoot/codex/bin;$taskOldPath"
     $env:TEMP = "$taskRoot/tmp"
@@ -125,6 +143,9 @@ echo %errorlevel% > "$taskRoot\exit-code.txt"
         $scheduled = Get-ScheduledTask -TaskName $taskUser
         $info = Get-ScheduledTaskInfo -TaskName $taskUser
         Write-Host "Fixture task state=$($scheduled.State), result=$($info.LastTaskResult), lastRun=$($info.LastRunTime)"
+        Get-WinEvent -LogName Microsoft-Windows-TaskScheduler/Operational -MaxEvents 40 -ErrorAction SilentlyContinue |
+          Where-Object { $_.Message -like "*$taskUser*" } |
+          ForEach-Object { Write-Host "Scheduler event $($_.Id): $($_.Message)" }
         Stop-ScheduledTask -TaskName $taskUser -ErrorAction SilentlyContinue
         Unregister-ScheduledTask -TaskName $taskUser -Confirm:$false -ErrorAction SilentlyContinue
     }
