@@ -96,7 +96,13 @@ echo %errorlevel% > "$taskRoot\exit-code.txt"
     Register-ScheduledTask -TaskName $taskUser -Action $action -Settings $settings `
       -User $credential.UserName -Password $credential.GetNetworkCredential().Password -RunLevel Limited | Out-Null
     $taskRegistered = $true
-    Start-ScheduledTask -TaskName $taskUser
+    # RunEx reports startup failures synchronously and explicitly ignores idle /
+    # battery conditions that can silently suppress Start-ScheduledTask on VMs.
+    $scheduler = New-Object -ComObject 'Schedule.Service'
+    $scheduler.Connect()
+    $registered = $scheduler.GetFolder('\').GetTask($taskUser)
+    $running = $registered.RunEx($null, 2, 0, $null)
+    Write-Host "Fixture launch instance=$($running.InstanceGuid), state=$($running.State)"
     $startedAt = [DateTime]::UtcNow
     $deadline = [DateTime]::UtcNow.AddMinutes(3)
     $resultText = ''
