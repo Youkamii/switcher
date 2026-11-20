@@ -71,7 +71,8 @@ fn oauth(env: &Env, provider: Provider, id: &str) -> Vec<u8> {
 }
 
 fn assert_selected_key(env: &Env, provider: Provider, key: &str) {
-    assert_eq!(active_name(env, provider).as_deref(), Some("work"));
+    let active = active_connection(env, provider).expect("saved key is active");
+    assert_eq!((active.name.as_str(), active.account_id.as_deref()), ("work", Some("oauth-b")));
     match provider {
         Provider::Claude => {
             let config: Value =
@@ -116,9 +117,10 @@ fn windows_dpapi_roundtrip_rotation_corruption_and_delete() {
     let env = &fixture.0;
     let secrets = OsSecrets(env);
     for provider in [Provider::Claude, Provider::Codex] {
+        tests::add_account(env, provider, "b", "oauth-b");
         let id = service(provider, "work");
         let key = "sk-dummy-windows-vault-fixture-123456";
-        save(env, provider.dir_name(), "work", key, false).unwrap();
+        save(env, provider.dir_name(), "oauth-b", "work", key, false).unwrap();
         let blob = root(env).join(format!("{id}.dpapi"));
         let ciphertext = fs::read(&blob).unwrap();
         assert!(!ciphertext
@@ -131,7 +133,7 @@ fn windows_dpapi_roundtrip_rotation_corruption_and_delete() {
         let error = secrets.get(&id).unwrap_err();
         assert!(!error.contains(key));
         let replacement = "sk-dummy-windows-replacement-fixture-123456";
-        save(env, provider.dir_name(), "work", replacement, true).unwrap();
+        save(env, provider.dir_name(), "oauth-b", "work", replacement, true).unwrap();
         assert!(secrets.get(&id).unwrap() == replacement.as_bytes());
         delete(env, provider.dir_name(), "work").unwrap();
         assert!(!blob.exists());
@@ -160,7 +162,7 @@ fn windows_api_selection_rotation_stop_subscription_and_delete_restore() {
         };
         atomic_write(&config_path, original_config.as_bytes()).unwrap();
         let key = "sk-dummy-windows-active-fixture-123456";
-        save(env, provider.dir_name(), "work", key, false).unwrap();
+        save(env, provider.dir_name(), "oauth-b", "work", key, false).unwrap();
         activate(env, provider.dir_name(), "work").unwrap();
         assert_selected_key(env, provider, key);
         if provider == Provider::Claude {
@@ -170,11 +172,11 @@ fn windows_api_selection_rotation_stop_subscription_and_delete_restore() {
             );
         }
         let replacement = "sk-dummy-windows-rotated-fixture-123456";
-        save(env, provider.dir_name(), "work", replacement, true).unwrap();
+        save(env, provider.dir_name(), "oauth-b", "work", replacement, true).unwrap();
         activate(env, provider.dir_name(), "work").unwrap();
         assert_selected_key(env, provider, replacement);
         deactivate(env, provider.dir_name()).unwrap();
-        assert!(active_name(env, provider).is_none());
+        assert!(active_connection(env, provider).is_none());
         assert_eq!(
             fs::read(env.live_credential_path(provider)).unwrap(),
             original
@@ -191,14 +193,14 @@ fn windows_api_selection_rotation_stop_subscription_and_delete_restore() {
         }
         activate(env, provider.dir_name(), "work").unwrap();
         crate::accounts::switch(env, provider, "b").unwrap();
-        assert!(active_name(env, provider).is_none());
+        assert!(active_connection(env, provider).is_none());
         assert_eq!(
             fs::read(env.live_credential_path(provider)).unwrap(),
             target
         );
         activate(env, provider.dir_name(), "work").unwrap();
         delete(env, provider.dir_name(), "work").unwrap();
-        assert!(active_name(env, provider).is_none());
+        assert!(active_connection(env, provider).is_none());
         assert_eq!(
             fs::read(env.live_credential_path(provider)).unwrap(),
             target
@@ -213,9 +215,11 @@ fn windows_installed_clis_recognize_api_selection() {
     for provider in [Provider::Claude, Provider::Codex] {
         let fixture = Fixture::new(&format!("win-cli-{}", provider.dir_name()));
         let env = &fixture.0;
+        tests::add_account(env, provider, "b", "oauth-b");
         save(
             env,
             provider.dir_name(),
+            "oauth-b",
             "work",
             "sk-dummy-windows-cli-fixture-123456",
             false,
@@ -272,6 +276,6 @@ fn windows_installed_clis_recognize_api_selection() {
             }
         }
         delete(env, provider.dir_name(), "work").unwrap();
-        assert!(active_name(env, provider).is_none());
+        assert!(active_connection(env, provider).is_none());
     }
 }

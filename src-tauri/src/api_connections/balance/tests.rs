@@ -134,6 +134,20 @@ fn serve(
 }
 
 #[tokio::test]
+async fn linked_key_does_not_borrow_another_saved_accounts_login_in_the_same_org() {
+    let (env, secrets) = fixture("balance-linked-owner", Some(ORG));
+    crate::api_connections::tests::add_account(&env, Provider::Claude, "second", OTHER);
+    crate::api_connections::attach(&env, "claude", "work", OTHER).unwrap();
+    let (url, server) = serve(vec![Reply::organization()], |_| {});
+    let balance = read_with(&env, "claude", "work", false, &secrets, &url)
+        .await
+        .unwrap();
+    assert!(matches!(balance.issue, Some(Issue::LoginRequired)));
+    assert!(balance.credit.is_none());
+    server.join().unwrap();
+}
+
+#[tokio::test]
 async fn verified_prepaid_amount_is_cached_and_force_can_return_a_real_zero() {
     let (env, secrets) = fixture("prepaid-values", Some(ORG));
     let (_, dir) = checked(&env, "claude", "work").unwrap();

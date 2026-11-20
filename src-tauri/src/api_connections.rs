@@ -22,10 +22,15 @@ pub enum CheckState {
     Unavailable,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Connection {
     pub provider: String,
+    /// Stable storage name, including for keys created before account ownership.
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
     #[serde(default)]
     pub checked_at: Option<u64>,
     #[serde(default)]
@@ -184,6 +189,14 @@ fn read_connection(
 pub fn list(env: &Env, provider: &str) -> Result<Vec<Connection>, String> {
     let _guard = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
     let provider = Provider::parse(provider)?;
+    let mut result = stored_connections(env, provider)?;
+    for connection in &mut result {
+        connection.active = activation::is_active(env, provider, connection).unwrap_or(false);
+    }
+    Ok(result)
+}
+
+fn stored_connections(env: &Env, provider: Provider) -> Result<Vec<Connection>, String> {
     let dir = root(env).join(provider.dir_name());
     if !dir.exists() {
         return Ok(Vec::new());
@@ -193,14 +206,20 @@ pub fn list(env: &Env, provider: &str) -> Result<Vec<Connection>, String> {
         let entry = entry.map_err(|_| "API 연결 읽기 실패")?;
         let name = entry.file_name().to_string_lossy().into_owned();
         if validate_name(&name).is_ok() && entry.path().join("connection.json").is_file() {
-            let mut connection = read_connection(&entry.path(), provider, &name)?;
-            connection.active = activation::is_active(env, provider, &connection).unwrap_or(false);
-            result.push(connection);
+            result.push(read_connection(&entry.path(), provider, &name)?);
         }
     }
-    result.sort_by(|a, b| a.name.cmp(&b.name));
+    result.sort_by(|a, b| a.display_name().cmp(b.display_name()).then(a.name.cmp(&b.name)));
     Ok(result)
 }
+
+impl Connection {
+    fn display_name(&self) -> &str {
+        self.label.as_deref().unwrap_or(&self.name)
+    }
+}
+
+#[cfg(test)]
 fn save_with(
     env: &Env,
     secrets: &impl Secrets,
@@ -208,7 +227,20 @@ fn save_with(
     name: &str,
     key: &str,
 ) -> Result<(), String> {
-    let (provider, dir) = checked(env, provider, name)?;
+    let (provider, _) = checked(env, provider, name)?;
+    store_key(env, secrets, provider, name, key, None, None).map(|_| ())
+}
+
+fn store_key(
+    env: &Env,
+    secrets: &impl Secrets,
+    provider: Provider,
+    name: &str,
+    key: &str,
+    account_id: Option<&str>,
+    label: Option<String>,
+) -> Result<Connection, String> {
+    let (_, dir) = checked(env, provider.dir_name(), name)?;
     if !valid_key(key) {
         return Err("API 키 형식을 확인하세요 (sk-로 시작하는 공백 없는 키)".into());
     }
@@ -228,9 +260,11 @@ fn save_with(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(_) => return Err("API 연결 정보를 읽지 못했습니다".into()),
     };
-    let data = serde_json::to_vec(&Connection {
+    let connection = Connection {
         provider: provider.dir_name().into(),
         name: name.to_ascii_lowercase(),
+        account_id: account_id.map(str::to_owned),
+        label,
         checked_at: None,
         check_state: CheckState::Unchecked,
         active: false,
@@ -241,8 +275,8 @@ fn save_with(
                 .map_err(|_| "시간 확인 실패")?
                 .as_nanos()
         ),
-    })
-    .map_err(|_| "API 메타데이터 생성 실패")?;
+    };
+    let data = serde_json::to_vec(&connection).map_err(|_| "API 메타데이터 생성 실패")?;
     atomic_write(&metadata_path, &data)?;
     if let Err(error) = secrets.put(&id, key.as_bytes()) {
         let rollback = if let Some(previous) = previous {
@@ -255,15 +289,121 @@ fn save_with(
         }
         return Err(error);
     }
-    Ok(())
+    Ok(connection)
 }
-pub fn save(env: &Env, provider: &str, name: &str, key: &str, replace: bool) -> Result<(), String> {
-    let _guard = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
-    let (_, dir) = checked(env, provider, name)?;
-    if dir.join("connection.json").exists() && !replace {
-        return Err("같은 이름의 API 연결이 있습니다 — 기존 연결의 키 교체를 사용하세요".into());
+
+fn require_account(env: &Env, provider: Provider, account_id: &str) -> Result<(), String> {
+    if !account_id.is_empty()
+        && crate::accounts::find_profile_by_id(env, provider, account_id)?.is_some()
+    {
+        Ok(())
+    } else {
+        Err("API 키를 추가할 계정을 찾을 수 없습니다".into())
     }
-    save_with(env, &OsSecrets(env), provider, name, key)
+}
+
+pub fn save(
+    env: &Env,
+    provider: &str,
+    account_id: &str,
+    name: &str,
+    key: &str,
+    replace: bool,
+) -> Result<Connection, String> {
+    save_for_account(
+        env,
+        &OsSecrets(env),
+        provider,
+        account_id,
+        name,
+        key,
+        replace,
+    )
+}
+
+fn save_for_account(
+    env: &Env,
+    secrets: &impl Secrets,
+    provider: &str,
+    account_id: &str,
+    name: &str,
+    key: &str,
+    replace: bool,
+) -> Result<Connection, String> {
+    let _mutation = crate::accounts::MUTATION_LOCK
+        .lock()
+        .map_err(|_| "내부 잠금 오류")?;
+    let _guard = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
+    let (provider, dir) = checked(env, provider, name)?;
+    require_account(env, provider, account_id)?;
+    if replace {
+        let existing = read_connection(&dir, provider, name)?;
+        if existing.account_id.as_deref() != Some(account_id) {
+            return Err("이 계정에 연결된 키만 교체할 수 있습니다".into());
+        }
+        return store_key(
+            env,
+            secrets,
+            provider,
+            &existing.name,
+            key,
+            Some(account_id),
+            existing.label,
+        );
+    }
+    let label = name.to_ascii_lowercase();
+    let connections = stored_connections(env, provider)?;
+    if connections
+        .iter()
+        .any(|c| c.account_id.as_deref() == Some(account_id) && c.display_name() == label)
+    {
+        return Err("이 계정에 같은 이름의 API 키가 있습니다".into());
+    }
+    let mut storage = label.clone();
+    // Secret IDs and existing CLI helpers use the storage name. Different
+    // accounts can use the same display name without rewriting those secrets.
+    for suffix in 2.. {
+        if !connections.iter().any(|c| c.name == storage) {
+            break;
+        }
+        storage = format!("{}-{suffix}", &label[..label.len().min(20)]);
+    }
+    let display = (storage != label).then_some(label);
+    store_key(
+        env,
+        secrets,
+        provider,
+        &storage,
+        key,
+        Some(account_id),
+        display,
+    )
+}
+
+pub fn attach(env: &Env, provider: &str, name: &str, account_id: &str) -> Result<(), String> {
+    let _mutation = crate::accounts::MUTATION_LOCK
+        .lock()
+        .map_err(|_| "내부 잠금 오류")?;
+    let _guard = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
+    let (provider, dir) = checked(env, provider, name)?;
+    require_account(env, provider, account_id)?;
+    let mut connection = read_connection(&dir, provider, name)?;
+    if let Some(previous) = &connection.account_id {
+        if previous == account_id {
+            return Ok(());
+        }
+        if crate::accounts::find_profile_by_id(env, provider, previous)?.is_some() {
+            return Err("이미 다른 계정에 연결된 API 키입니다".into());
+        }
+    }
+    if stored_connections(env, provider)?.iter().any(|c| {
+        c.account_id.as_deref() == Some(account_id) && c.display_name() == connection.display_name()
+    }) {
+        return Err("이 계정에 같은 이름의 API 키가 있습니다".into());
+    }
+    connection.account_id = Some(account_id.to_owned());
+    let data = serde_json::to_vec(&connection).map_err(|_| "API 연결 정보 저장 실패")?;
+    crate::accounts::atomic_write_existing_parent(&dir.join("connection.json"), &data)
 }
 pub fn delete(env: &Env, provider: &str, name: &str) -> Result<(), String> {
     let _mutation = crate::accounts::MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
@@ -308,11 +448,11 @@ pub(crate) fn deactivate_for_oauth_locked(env: &Env, provider: Provider) -> Resu
     activation::deactivate_locked(env, provider)
 }
 
-pub(crate) fn active_name(env: &Env, provider: Provider) -> Option<String> {
+pub(crate) fn active_connection(env: &Env, provider: Provider) -> Option<Connection> {
     let name = activation::selected_name(env, provider).ok()??;
     let (_, dir) = checked(env, provider.dir_name(), &name).ok()?;
     let connection = read_connection(&dir, provider, &name).ok()?;
-    activation::is_active(env, provider, &connection).ok()?.then_some(name)
+    activation::is_active(env, provider, &connection).ok()?.then_some(connection)
 }
 
 pub(crate) fn protected_oauth_id(env: &Env, provider: Provider) -> Option<String> {
@@ -515,6 +655,137 @@ mod tests {
             Ok(())
         }
     }
+    pub(super) fn add_account(env: &Env, provider: Provider, name: &str, id: &str) {
+        crate::accounts::write_profile_parts(
+            env,
+            provider,
+            name,
+            &crate::accounts::LiveIdentity {
+                id: id.into(),
+                email: None,
+            },
+            b"{}",
+            None,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn keys_belong_to_saved_accounts_and_names_are_scoped_to_their_owner() {
+        let env = crate::accounts::test_support::test_env("api-account-owners");
+        let vault = Memory::default();
+        add_account(&env, Provider::Claude, "one", "alpha");
+        add_account(&env, Provider::Claude, "two", "beta");
+        let create =
+            |provider, id, key| save_for_account(&env, &vault, provider, id, "work", key, false);
+        assert!(create("claude", "missing", "sk-dummy-first-fixture").is_err());
+        assert!(create("codex", "alpha", "sk-dummy-first-fixture").is_err());
+        let first = create("claude", "alpha", "sk-dummy-first-fixture").unwrap();
+        let second = create("claude", "beta", "sk-dummy-second-fixture").unwrap();
+        assert_eq!(first.display_name(), second.display_name());
+        assert_ne!(first.name, second.name);
+        assert!(create("claude", "alpha", "sk-dummy-new-fixture").is_err());
+        assert!(save_for_account(
+            &env,
+            &vault,
+            "claude",
+            "alpha",
+            &second.name,
+            "sk-dummy-new-fixture",
+            true
+        )
+        .is_err());
+        assert_eq!(
+            vault.get(&service(Provider::Claude, &second.name)).unwrap(),
+            b"sk-dummy-second-fixture"
+        );
+        crate::accounts::rename(&env, Provider::Claude, "two", "renamed").unwrap();
+        let rotated = save_for_account(
+            &env,
+            &vault,
+            "claude",
+            "beta",
+            &second.name,
+            "sk-dummy-third-fixture",
+            true,
+        )
+        .unwrap();
+        assert_eq!(rotated.display_name(), "work");
+        assert_eq!(rotated.account_id.as_deref(), Some("beta"));
+        assert!(active_connection(&env, Provider::Claude).is_none());
+        activation::activate_locked(&env, &vault, Provider::Claude, &rotated.name).unwrap();
+        let snapshot = crate::accounts::list(&env, Provider::Claude).unwrap();
+        assert_eq!(snapshot.api_active.as_deref(), Some(rotated.name.as_str()));
+        assert_eq!(snapshot.api_active_label.as_deref(), Some("work"));
+        assert_eq!(snapshot.api_active_account_id.as_deref(), Some("beta"));
+        assert!(snapshot.profiles.iter().all(|profile| !profile.active));
+    }
+
+    #[test]
+    fn attaching_legacy_key_preserves_vault_credit_revision_and_current_selection() {
+        let env = crate::accounts::test_support::test_env("api-attach-existing");
+        let vault = Memory::default();
+        add_account(&env, Provider::Claude, "one", "alpha");
+        add_account(&env, Provider::Claude, "two", "beta");
+        save_with(&env, &vault, "claude", "old", "sk-dummy-legacy-fixture").unwrap();
+        let (_, dir) = checked(&env, "claude", "old").unwrap();
+        let before = read_connection(&dir, Provider::Claude, "old").unwrap();
+        fs::write(dir.join("console-credit.json"), b"fixture-credit").unwrap();
+        activation::activate_locked(&env, &vault, Provider::Claude, "old").unwrap();
+        attach(&env, "claude", "old", "beta").unwrap();
+        attach(&env, "claude", "old", "beta").unwrap();
+        assert!(attach(&env, "claude", "old", "alpha").is_err());
+        let after = land_check(&env, Provider::Claude, &before, CheckState::Ready).unwrap();
+        assert_eq!(after.revision, before.revision);
+        assert_eq!(after.account_id.as_deref(), Some("beta"));
+        assert_eq!(
+            fs::read(dir.join("console-credit.json")).unwrap(),
+            b"fixture-credit"
+        );
+        assert_eq!(
+            vault.get(&service(Provider::Claude, "old")).unwrap(),
+            b"sk-dummy-legacy-fixture"
+        );
+        crate::accounts::delete(&env, Provider::Claude, "two").unwrap();
+        attach(&env, "claude", "old", "alpha").unwrap();
+        assert_eq!(
+            active_connection(&env, Provider::Claude)
+                .unwrap()
+                .account_id
+                .as_deref(),
+            Some("alpha")
+        );
+    }
+
+    #[test]
+    #[ignore = "local migration of an explicitly selected saved key and account"]
+    fn link_requested_local_api_account() {
+        let Ok(name) = std::env::var("SWITCHER_LINK_KEY") else {
+            return;
+        };
+        let email = std::env::var("SWITCHER_LINK_EMAIL").expect("expected account email");
+        let provider =
+            Provider::parse(&std::env::var("SWITCHER_LINK_PROVIDER").expect("expected provider"))
+                .unwrap();
+        let env = Env::real().unwrap();
+        let matching: Vec<_> = crate::accounts::profile_dirs(&env, provider)
+            .unwrap()
+            .into_iter()
+            .filter_map(|(_, dir)| crate::accounts::read_meta(&dir))
+            .filter(|m| m.email.as_deref() == Some(email.as_str()))
+            .collect();
+        assert_eq!(matching.len(), 1, "expected one exact saved identity");
+        let (_, dir) = checked(&env, provider.dir_name(), &name).unwrap();
+        let before = read_connection(&dir, provider, &name).unwrap();
+        let credit = fs::read(dir.join("console-credit.json")).ok();
+        let active = activation::selected_name(&env, provider).unwrap();
+        attach(&env, provider.dir_name(), &name, &matching[0].id).unwrap();
+        let after = read_connection(&dir, provider, &name).unwrap();
+        assert!(after.account_id.as_deref() == Some(matching[0].id.as_str()));
+        assert!(after.revision == before.revision && after.check_state == before.check_state);
+        assert!(fs::read(dir.join("console-credit.json")).ok() == credit);
+        assert!(activation::selected_name(&env, provider).unwrap() == active);
+    }
     #[test]
     fn metadata_and_commands_never_contain_key_or_modify_oauth() {
         let env = crate::accounts::test_support::test_env("api-safe-registration");
@@ -678,9 +949,10 @@ printf 'fixture-ok'
     fn existing_connection_requires_explicit_replacement_before_os_secret_access() {
         let env = crate::accounts::test_support::test_env("api-explicit-replace");
         let memory = Memory::default();
-        save_with(&env, &memory, "codex", "work", "sk-dummy-existing-key").unwrap();
+        add_account(&env, Provider::Codex, "one", "alpha");
+        save_for_account(&env, &memory, "codex", "alpha", "work", "sk-dummy-existing-key", false).unwrap();
         let before = fs::read(root(&env).join("codex/work/connection.json")).unwrap();
-        assert!(save(&env, "codex", "WORK", "sk-dummy-replacement", false)
+        assert!(save(&env, "codex", "alpha", "WORK", "sk-dummy-replacement", false)
             .unwrap_err()
             .contains("같은 이름"));
         assert_eq!(

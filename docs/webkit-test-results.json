@@ -47,23 +47,11 @@
           "passed": true
         },
         {
-          "id": "account-add-offers-both-authentication-methods",
+          "id": "provider-add-starts-account-login",
           "passed": true
         },
         {
-          "id": "account-add-does-not-start-login-before-choice",
-          "passed": true
-        },
-        {
-          "id": "account-add-label-exposes-api",
-          "passed": true
-        },
-        {
-          "id": "api-registration-choice-visible",
-          "passed": true
-        },
-        {
-          "id": "subscription-choice-uses-existing-login-flow",
+          "id": "key-registration-only-inside-accounts",
           "passed": true
         },
         {
@@ -99,7 +87,7 @@
           "passed": true
         },
         {
-          "id": "one-add-entry-for-subscription-and-api",
+          "id": "header-buttons-only-add-accounts",
           "passed": true
         },
         {
@@ -131,11 +119,7 @@
           "passed": true
         },
         {
-          "id": "changing-login-method-clears-secret",
-          "passed": true
-        },
-        {
-          "id": "provider-is-inherited-from-account-add",
+          "id": "key-registration-names-exact-owner",
           "passed": true
         },
         {
@@ -151,7 +135,7 @@
           "passed": true
         },
         {
-          "id": "register-sent-once",
+          "id": "register-sent-once-to-correct-parent",
           "passed": true
         },
         {
@@ -176,6 +160,18 @@
         },
         {
           "id": "registered-api-immediately-visible",
+          "passed": true
+        },
+        {
+          "id": "child-key-only-in-own-account",
+          "passed": true
+        },
+        {
+          "id": "parent-offers-subscription-while-child-api-is-active",
+          "passed": true
+        },
+        {
+          "id": "account-key-list-can-collapse",
           "passed": true
         },
         {
@@ -311,6 +307,26 @@
           "passed": true
         },
         {
+          "id": "save-without-use-keeps-current-selection",
+          "passed": true
+        },
+        {
+          "id": "two-accounts-can-display-the-same-key-name",
+          "passed": true
+        },
+        {
+          "id": "use-targets-stored-key-of-the-clicked-account",
+          "passed": true
+        },
+        {
+          "id": "legacy-key-awaits-user-picked-account",
+          "passed": true
+        },
+        {
+          "id": "legacy-key-links-to-chosen-account-without-switching",
+          "passed": true
+        },
+        {
           "id": "hidden-ai-leaves-no-provider-panels",
           "passed": true
         },
@@ -319,7 +335,7 @@
           "passed": true
         },
         {
-          "id": "api-available-with-blocked-subscription-store",
+          "id": "blocked-account-store-preserves-existing-key-recovery",
           "passed": true
         },
         {
@@ -371,6 +387,10 @@
           "passed": true
         },
         {
+          "id": "selected-api-belongs-to-second-claude-account-compact",
+          "passed": true
+        },
+        {
           "id": "selected-api-inside-window-compact",
           "passed": true
         },
@@ -383,6 +403,14 @@
           "passed": true
         },
         {
+          "id": "balance-link-native-hit-does-not-switch-subscription-compact",
+          "passed": true
+        },
+        {
+          "id": "balance-link-opens-own-billing-compact",
+          "passed": true
+        },
+        {
           "id": "no-browser-errors-compact",
           "passed": true
         }
@@ -390,7 +418,7 @@
       "errors": [],
       "mode": "compact",
       "width": 280,
-      "height": 599
+      "height": 589
     },
     {
       "checks": [
@@ -427,6 +455,10 @@
           "passed": true
         },
         {
+          "id": "selected-api-belongs-to-second-claude-account-minimal",
+          "passed": true
+        },
+        {
           "id": "selected-api-inside-window-minimal",
           "passed": true
         },
@@ -439,6 +471,14 @@
           "passed": true
         },
         {
+          "id": "balance-link-native-hit-does-not-switch-subscription-minimal",
+          "passed": true
+        },
+        {
+          "id": "balance-link-opens-own-billing-minimal",
+          "passed": true
+        },
+        {
           "id": "no-browser-errors-minimal",
           "passed": true
         }
@@ -446,7 +486,7 @@
       "errors": [],
       "mode": "minimal",
       "width": 120,
-      "height": 364
+      "height": 357
     },
     {
       "checks": [
@@ -483,6 +523,10 @@
           "passed": true
         },
         {
+          "id": "selected-api-belongs-to-second-claude-account-edge",
+          "passed": true
+        },
+        {
           "id": "selected-api-inside-window-edge",
           "passed": true
         },
@@ -495,6 +539,14 @@
           "passed": true
         },
         {
+          "id": "balance-link-native-hit-does-not-switch-subscription-edge",
+          "passed": true
+        },
+        {
+          "id": "balance-link-opens-own-billing-edge",
+          "passed": true
+        },
+        {
           "id": "no-browser-errors-edge",
           "passed": true
         }
@@ -502,9 +554,9 @@
       "errors": [],
       "mode": "edge",
       "width": 80,
-      "height": 662
+      "height": 658
     }
   ],
-  "passed": 118,
+  "passed": 131,
   "failed": 0
 }

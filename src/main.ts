@@ -27,7 +27,7 @@ import {
   type GithubStarPromptChoice,
 } from "./firstRunStar";
 import { applyAccentTheme, themeCssColor } from "./theme";
-import { apiConnections, apiIsBusy, openConnectionRegistration, compactApiBalance } from "./apiConnections";
+import { accountApis, apiIsBusy, compactApiBalance, existingKeys, type Connection } from "./apiConnections";
 import { icon, iconButton, setButtonIcon } from "./uiIcons";
 import { edgeGaugeLayout } from "./edgeGaugeLayout";
 
@@ -46,6 +46,8 @@ type Snapshot = {
   live: { id: string; email: string | null } | null;
   live_saved: boolean;
   api_active?: string | null;
+  api_active_account_id?: string | null;
+  api_active_label?: string | null;
 };
 
 type CodexSessionStatus = { phase: string; reason: string | null } | null;
@@ -519,10 +521,13 @@ function profileCard(
   profile: ProfileInfo,
   pending: Promise<unknown>[],
   forceRetry: boolean,
+  keys: Connection[],
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = "card profile-card" + (profile.active ? " active" : "");
+  card.classList.toggle("api-selected", keys.some(key => key.active));
   card.dataset.provider = provider;
+  card.dataset.name = profile.name;
   // 카드와 항상 보이는 조작 버튼 모두 키보드로 접근할 수 있다.
   card.tabIndex = 0;
   // disarm은 삭제 버튼 쪽에서 선언된다 — 이벤트 시점에만 부르므로 지연 참조
@@ -606,7 +611,7 @@ function profileCard(
 
     const switchBtn = document.createElement("button");
     switchBtn.className = "profile-switch";
-    switchBtn.textContent = currentLang() === "ko" ? "전환" : "Switch";
+    switchBtn.textContent = keys.length ? t("useSubscription") : currentLang() === "ko" ? "전환" : "Switch";
     switchBtn.append(icon("arrow"));
     switchBtn.title = t("switchBtn");
     switchBtn.addEventListener("click", () => {
@@ -1235,13 +1240,13 @@ function addAccountButton(provider: ProviderId, section: HTMLElement) {
   addBtn.className = "add-account";
   addBtn.dataset.provider = provider;
   addBtn.dataset.apiFocus = `${provider}/add`;
-  addBtn.append(icon("plus"), t("addConnection").replace(/^[+＋]\s*/, ""));
+  addBtn.append(icon("plus"), t("addAccount").replace(/^[+＋]\s*/, ""));
   row.appendChild(addBtn);
   row.hidden = loginOpen;
   (section.querySelector(".section-title") ?? section).appendChild(row);
   addBtn.addEventListener("click", () => {
     if (loginOpen) { toast(t("loginBusy"), true); return; }
-    openConnectionRegistration({ changed: () => render({ immediate: true }), fit: fitHeight, toast }, provider, () => void startAccountLogin(provider));
+    void startAccountLogin(provider);
   });
 }
 
@@ -1349,17 +1354,26 @@ async function renderProvider(
   section.appendChild(heading);
   addAccountButton(provider, section);
 
-  try {
-    const snap = await invoke<Snapshot>("list_profiles", { provider });
+  const hooks = { changed: () => render({ immediate: true }), fit: fitHeight, toast };
+  const [profiles, keys] = await Promise.allSettled([
+    invoke<Snapshot>("list_profiles", { provider }),
+    invoke<Connection[]>("api_list", { provider }),
+  ]);
+  const connections = keys.status === "fulfilled" ? keys.value : [];
+  for (const result of [profiles, keys]) {
+    if (result.status === "rejected") {
+      const error = document.createElement("p");
+      error.className = "usage-error"; error.textContent = String(result.reason); section.append(error);
+    }
+  }
 
+  if (profiles.status === "fulfilled") {
+    const snap = profiles.value;
     if (!snap.live && !snap.api_active && snap.profiles.length === 0) {
       const hint = document.createElement("p");
       hint.className = "hint";
       hint.textContent = t("noAccounts");
       section.appendChild(hint);
-      section.appendChild(await apiConnections(provider, { changed: () => render({ immediate: true }), fit: fitHeight, toast }, forceRetry));
-      target.appendChild(section);
-      return;
     }
 
     if (snap.live && !snap.live_saved) {
@@ -1369,9 +1383,18 @@ async function renderProvider(
       section.appendChild(hint);
     }
 
+    const savedIds = new Set<string>();
     for (const profile of snap.profiles) {
-      section.appendChild(profileCard(provider, profile, pending, forceRetry));
+      const ownedKeys = connections.filter(c => c.account_id === profile.id);
+      const card = profileCard(provider, profile, pending, forceRetry, ownedKeys);
+      if (!savedIds.has(profile.id)) {
+        savedIds.add(profile.id);
+        card.append(accountApis(provider, profile, ownedKeys, hooks, forceRetry));
+      }
+      section.append(card);
     }
+    const unlinked = connections.filter(c => !c.account_id || !savedIds.has(c.account_id));
+    if (unlinked.length) section.append(existingKeys(provider, unlinked, snap.profiles, hooks));
     if (provider === "codex" && snap.profiles.length > 0 && !snap.api_active) {
       const note = document.createElement("p");
       note.className = "section-note codex-session-note";
@@ -1381,21 +1404,12 @@ async function renderProvider(
       section.appendChild(note);
     }
 
-    section.appendChild(await apiConnections(provider, { changed: () => render({ immediate: true }), fit: fitHeight, toast }, forceRetry));
     if (snap.live && !snap.live_saved) {
       // 지금 로그인된 계정이 아직 프로필로 없을 때만 수동 저장 입력칸을 보여준다
       saveForm(provider, section);
     }
-  } catch (error) {
-    const err = document.createElement("p");
-    err.className = "usage-error";
-    err.textContent = String(error);
-    section.appendChild(err);
-    // A subscription storage mismatch must not hide the independent API connection manager.
-    if (!section.querySelector(".api-panel")) {
-      try { section.appendChild(await apiConnections(provider, { changed: () => render({ immediate: true }), fit: fitHeight, toast }, forceRetry)); }
-      catch (apiError) { err.textContent += ` · ${String(apiError)}`; }
-    }
+  } else if (connections.length) {
+    section.append(existingKeys(provider, connections, null, hooks));
   }
 
   target.appendChild(section);
@@ -2269,7 +2283,6 @@ async function renderProviderEdge(
     head.textContent = title;
     section.appendChild(head);
     if (snap.api_active) {
-      section.appendChild(compactApiBalance(provider, snap.api_active, forceRetry, { fit: fitHeight, toast }));
       edgeGaugeByProvider.delete(provider);
       applyEdgeGauge();
     }
@@ -2281,9 +2294,7 @@ async function renderProviderEdge(
     const labels = document.createElement("div");
     labels.className = "edge-labels";
     section.appendChild(labels);
-    for (const profile of snap.profiles) {
-      section.appendChild(edgeAccount(provider, profile, labels, pending, forceRetry));
-    }
+    appendWidgetAccounts(section, provider, snap, forceRetry, profile => edgeAccount(provider, profile, labels, pending, forceRetry));
     target.appendChild(section);
   } catch {
     // 목록 실패도 조용히
@@ -2413,6 +2424,33 @@ async function edgeSwitch(card: HTMLElement) {
 }
 
 /// 컴팩트(Type 2)·미니멀(Type 3) 렌더 — 모든 계정이 나오고 더블클릭 전환도 된다
+function appendWidgetAccounts(section: HTMLElement, provider: ProviderId, snap: Snapshot, force: boolean, makeCard: (profile: ProfileInfo) => HTMLElement) {
+  const name = snap.api_active;
+  const owner = name && snap.profiles.find(profile => profile.id === snap.api_active_account_id);
+  const balance = name ? compactApiBalance(provider, name, snap.api_active_label ?? name, force, { fit: fitHeight, toast }) : null;
+  for (const profile of snap.profiles) {
+    const card = makeCard(profile);
+    if (profile === owner && balance) {
+      // The balance and subscription share a frame, but only the subscription
+      // receives native double-click (or edge tap) switch events.
+      const group = document.createElement("div");
+      group.className = "account-with-api"; group.dataset.name = profile.name;
+      group.setAttribute("role", "group"); group.setAttribute("aria-label", profile.email ?? profile.name);
+      balance.title = `${profile.name} · ${balance.title}`;
+      group.append(card, balance); section.append(group);
+    } else {
+      section.append(card);
+    }
+  }
+  if (!owner && balance) {
+    const note = document.createElement("span");
+    note.className = "unlinked-key-note";
+    note.textContent = currentLang() === "ko" ? "계정 연결 필요" : "Link an account";
+    balance.prepend(note);
+    section.append(balance);
+  }
+}
+
 async function renderProviderCompact(
   provider: ProviderId,
   title: string,
@@ -2438,11 +2476,7 @@ async function renderProviderCompact(
 
     // 카드 골격은 즉시 붙이고 사용량만 뒤에서 병렬로 채운다. 모드 전환이 네트워크
     // 조회를 기다리며 멎지 않게 하면서, 일반 새로고침은 pending을 기다려 한 번에 바뀐다.
-    if (snap.api_active) section.appendChild(compactApiBalance(provider, snap.api_active, forceRetry, { fit: fitHeight, toast }));
-    const cards = snap.profiles.map((profile) =>
-      compactCard(provider, profile, minimal, pending, forceRetry),
-    );
-    for (const card of cards) section.appendChild(card);
+    appendWidgetAccounts(section, provider, snap, forceRetry, profile => compactCard(provider, profile, minimal, pending, forceRetry));
     target.appendChild(section);
   } catch {
     // 목록 실패도 조용히 — 컴팩트는 표시 전용
@@ -2662,7 +2696,8 @@ function userIsBusy(): boolean {
   // 섹션 드래그 중에도 스왑을 미룬다 — 잡고 있는 드래그가 소리 없이 죽지 않게.
   // dragend 유실로 고착된 래치는 pointermove 복구가 푼다 (리뷰 #53:
   // dragend 유실 시 렌더가 영구 차단되던 문제)
-  return apiIsBusy() || typing || dragKey !== null;
+  const choosingKeyOwner = el instanceof HTMLSelectElement && el.closest(".api-recovery") !== null;
+  return apiIsBusy() || typing || choosingKeyOwner || dragKey !== null;
 }
 
 const appWindow = getCurrentWindow();
@@ -2795,7 +2830,7 @@ function reportHitRegions() {
     // display:none이라 rect 0×0으로 걸러진다.
     document
       .querySelectorAll<HTMLElement>(
-        ".tb-actions > *, #dock-toggle, #drag-handle, .display-row, .collapsible",
+        ".tb-actions > *, #dock-toggle, #drag-handle, .display-row, .collapsible, .compact-api-active .api-billing-link",
       )
       .forEach((el) => pushVisible(el, null));
   } else if (!interactionPanelOpen) {
@@ -2938,7 +2973,7 @@ app.addEventListener("pointerdown", (event) => {
   if (!edgeActive || !edgeOut || event.button !== 0) return;
   edgeHoldFired = false;
   // ☰·모드 버튼·밝기 슬라이더 위에서는 길게 누르기가 아니다
-  if ((event.target as HTMLElement | null)?.closest(".edge-ui, input")) return;
+  if ((event.target as HTMLElement | null)?.closest(".edge-ui, input, .compact-api-active")) return;
   window.clearTimeout(edgeHoldTimer);
   edgeHoldTimer = window.setTimeout(() => {
     edgeHoldFired = true;

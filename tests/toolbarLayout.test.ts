@@ -184,12 +184,12 @@ test("keeps memo visible and clickable in every view mode once the dock is open"
     /getElementById\("memobtn"\)!\.addEventListener\("click",[\s\S]*?invoke\("memo_toggle"\)/,
     "memo must keep its native toggle action",
   );
-  assert.match(
-    mainSource,
-    // pushVisible = visibleHitRect로 창 안으로 자르고 0크기(숨김) 요소를 거른 뒤 regions.push
-    /querySelectorAll<HTMLElement>\(\s*"\.tb-actions > \*, #dock-toggle, #drag-handle, \.display-row, \.collapsible",\s*\)\s*\.forEach\(\(el\) => pushVisible\(el, null\)\)/,
-    "Type2 and Type3 dock buttons and handle must stay inside the native hit-region report",
-  );
+  const nativeControls = [...mainSource.matchAll(
+    /querySelectorAll<HTMLElement>\(\s*"([^"]+)"[,]?\s*\)\s*\.forEach\(\(el\) => pushVisible\(el, null\)\)/g,
+  )].flatMap(([, selectors]) => selectors.split(",").map(selector => selector.trim()));
+  for (const selector of [".tb-actions > *", "#dock-toggle", "#drag-handle", ".display-row", ".collapsible", ".compact-api-active .api-billing-link"]) {
+    assert.ok(nativeControls.includes(selector), `${selector} must receive native clicks in widget mode`);
+  }
 });
 
 test("keeps segmented bars visible at a fixed cell width", () => {

@@ -6,7 +6,7 @@ import { readConsoleCredit } from "./consoleCredit";
 
 const messages = {
   ko: {
-    title: "API 연결", add: "API 키 등록", name: "연결 이름", key: "API 키", save: "저장하고 사용", cancel: "닫기", replace: "키 교체",
+    title: "API 키", onlySave: "저장", linked: "이 계정에 키를 저장했습니다.", legacy: "기존 키 연결", chooseAccount: "저장된 계정을 선택해 기존 키를 연결하세요.", needsAccount: "계정을 추가한 뒤 기존 키를 연결할 수 있습니다.", name: "키 이름", key: "API 키", save: "저장하고 사용", cancel: "닫기", replace: "키 교체",
     billing: "API는 구독과 별도 과금됩니다. 사용을 선택하면 다음 CLI 실행부터 적용됩니다.",
     saved: "저장됨 · 확인 전", check: "연결 확인", checked: "연결 확인됨", checking: "연결 확인 중…",
     remove: "연결 삭제", confirm: "한 번 더 눌러 삭제", noQuota: "API · 별도 과금", console: "키 발급 페이지 열기 ↗",
@@ -15,7 +15,7 @@ const messages = {
     complete: "API 사용 중", use: "사용", stop: "해제", stopTitle: "API 사용 해제 · 이전 설정 복원", active: "API · 사용 중", applyFailed: "키는 저장됐지만 적용하지 못했습니다", savedOnly: "키 저장 완료", applied: "다음 실행부터 이 API를 사용합니다. 구독으로 돌아가려면 계정 목록에서 전환하세요.", nameHint: "예: work · 영문, 숫자, - 또는 _", replacement: "새 키로 교체하면 다음 CLI 실행부터 적용됩니다.",
   },
   en: {
-    title: "API connections", add: "Add API key", name: "Connection name", key: "API key", save: "Save and use", cancel: "Close", replace: "Replace key",
+    title: "API keys", onlySave: "Save", linked: "Key saved to the account.", legacy: "Link existing key", chooseAccount: "Choose the account for this existing key.", needsAccount: "Add an account to link your existing keys.", name: "Key name", key: "API key", save: "Save and use", cancel: "Close", replace: "Replace key",
     billing: "API usage is billed separately. Selecting Use applies this key to the next CLI session.",
     saved: "Saved · not checked", check: "Check connection", checked: "Connection checked", checking: "Checking connection…",
     remove: "Delete connection", confirm: "Click again to delete", noQuota: "API · separate billing", console: "Open API key page ↗",
@@ -28,7 +28,8 @@ export function apiText() { return currentLang() === "ko" ? messages.ko : messag
 let apiPending = 0;
 export function apiIsBusy(): boolean { return apiPending > 0 || document.querySelector(".api-dialog") !== null; }
 type CheckState = "unchecked" | "ready" | "invalid_key" | "forbidden" | "rate_limited" | "unavailable";
-type Connection = { provider: string; name: string; active?: boolean; checked_at?: number | null; check_state?: CheckState };
+export type Connection = { provider: string; name: string; label?: string | null; account_id?: string | null; active?: boolean; checked_at?: number | null; check_state?: CheckState };
+type Account = { id: string; name: string; email: string | null };
 type Hooks = { changed: () => Promise<void>; fit: () => void; toast: (message: string, error?: boolean) => void };
 function paragraph(content: string, className = "help") {
   const p = document.createElement("p"); p.className = className; p.textContent = content; return p;
@@ -80,83 +81,57 @@ function dialog(hooks: Hooks, title: string, canClose = () => true) {
   return host;
 }
 
-export function openConnectionRegistration(hooks: Hooks, provider: string, login: () => void) {
-  openApiRegistration(hooks, provider, undefined, login);
-}
-
-export function openApiRegistration(hooks: Hooks, initialProvider = "claude", existing?: Connection, login?: () => void) {
+function openApiRegistration(hooks: Hooks, provider: string, account: Account, existing?: Connection) {
   if (apiIsBusy()) return;
   const text = apiText();
   let saving = false;
-  const providerTitle = initialProvider === "claude" ? "Claude" : "Codex";
-  const host = dialog(hooks, existing ? text.replace : login ? `${providerTitle} · ${t("addConnection").replace(/^[+＋]\s*/, "")}` : text.add, () => !saving);
-  let provider = existing?.provider ?? initialProvider;
+  const providerTitle = provider === "claude" ? "Claude" : "Codex";
+  const host = dialog(hooks, existing ? text.replace : t("addApiKey"), () => !saving);
+  const owner = paragraph(`${providerTitle} · ${account.email ?? account.name}`, "api-owner");
   const form = document.createElement("form"); form.className = "api-form";
-  const providers = document.createElement("div"); providers.className = "api-providers"; providers.hidden = Boolean(login); providers.setAttribute("aria-label", "API provider");
-  const choices: HTMLButtonElement[] = [];
   const providerNote = paragraph(text.claudeNote);
   const key = document.createElement("input"); key.type = "password"; key.required = true; key.maxLength = 4096; key.minLength = 16; key.autocomplete = "new-password"; key.spellcheck = false; key.pattern = "sk-[!-~]+";
-  for (const [value, label] of [["claude", "Claude"], ["codex", "OpenAI · Codex"]]) {
-    const button = document.createElement("button"); button.type = "button"; button.textContent = label; button.dataset.provider = value;
-    button.disabled = Boolean(existing); button.setAttribute("aria-pressed", String(value === provider));
-    button.onclick = () => { provider = value; key.value = ""; choices.forEach(choice => choice.setAttribute("aria-pressed", String(choice === button))); providerNote.hidden = provider !== "claude"; hooks.fit(); };
-    choices.push(button); providers.append(button);
-  }
   providerNote.hidden = provider !== "claude";
   const consoleLink = document.createElement("button"); consoleLink.type = "button"; consoleLink.className = "api-console"; consoleLink.textContent = text.console;
   consoleLink.onclick = () => { void invoke("api_open_console", { provider }).catch(error => { errorLine.textContent = String(error); hooks.fit(); }); };
   const nameLabel = document.createElement("label"); nameLabel.textContent = text.name;
   const name = document.createElement("input"); name.name = "connection-name"; name.required = true; name.maxLength = 32; name.pattern = "[A-Za-z0-9_-]+"; name.autocomplete = "off";
-  name.placeholder = text.nameHint; name.value = existing?.name ?? ""; name.readOnly = Boolean(existing); nameLabel.append(name);
+  name.placeholder = text.nameHint; name.value = existing?.label ?? existing?.name ?? ""; name.readOnly = Boolean(existing); nameLabel.append(name);
   const keyLabel = document.createElement("label"); keyLabel.textContent = text.key; key.name = "api-key"; key.placeholder = "sk-…"; keyLabel.append(key);
   const errorLine = paragraph("", "api-error"); errorLine.setAttribute("role", "alert");
-  const save = document.createElement("button"); save.type = "submit"; save.className = "primary api-save"; save.append(icon("shield"), text.save);
-  form.append(providers, consoleLink, nameLabel, keyLabel, paragraph(existing ? text.replacement : text.keyNote), providerNote, errorLine, save);
-  const billing = paragraph(text.billing, "api-billing");
-  let loginButton: HTMLButtonElement | undefined;
-  if (login) {
-    const methods = document.createElement("div"); methods.className = "api-providers connection-methods";
-    const subscription = document.createElement("div"); subscription.className = "connection-subscription";
-    subscription.append(paragraph(currentLang() === "ko" ? "브라우저에서 로그인해 구독 계정을 추가합니다." : "Sign in through your browser to add a subscription account."));
-    loginButton = document.createElement("button"); loginButton.className = "primary connection-login"; loginButton.textContent = currentLang() === "ko" ? "로그인 시작" : "Sign in";
-    loginButton.onclick = () => { if (saving) return; host.dispatchEvent(new Event("api-dismiss")); login(); };
-    subscription.append(loginButton);
-    for (const [method, label] of [["subscription", currentLang() === "ko" ? "구독 로그인" : "Subscription"], ["api", text.add]]) {
-      const button = document.createElement("button"); button.type = "button"; button.dataset.method = method; button.textContent = label; button.setAttribute("aria-pressed", String(method === "subscription"));
-      button.onclick = () => {
-        if (saving) return;
-        key.value = ""; form.hidden = billing.hidden = method !== "api"; subscription.hidden = method === "api";
-        methods.querySelectorAll("button").forEach(choice => choice.setAttribute("aria-pressed", String(choice === button)));
-        hooks.fit(); if (method === "api") name.focus(); else loginButton!.focus();
-      };
-      methods.append(button);
-    }
-    form.hidden = billing.hidden = true;
-    host.append(methods, subscription);
-  }
-  host.append(billing, form);
+  const buttons = document.createElement("div"); buttons.className = "api-save-actions";
+  const save = document.createElement("button"); save.type = "submit"; save.className = "primary api-save"; save.textContent = text.onlySave;
+  const use = document.createElement("button"); use.type = "submit"; use.className = "api-save-use"; use.textContent = text.save;
+  if (!existing?.active) buttons.append(save);
+  else use.classList.add("primary");
+  buttons.append(use);
+  form.append(nameLabel, keyLabel, consoleLink, paragraph(existing?.active ? text.replacement : text.keyNote), providerNote, errorLine, buttons);
+  host.append(owner, paragraph(text.billing, "api-billing"), form);
   // A save is a short local mutation. Network checks may continue after the dialog closes.
   form.onsubmit = async event => {
     event.preventDefault(); if (saving) return;
-    saving = true; apiPending++; save.disabled = true; name.readOnly = true; key.readOnly = true; choices.forEach(b => { b.disabled = true; });
+    const useNow = Boolean(existing?.active) || event.submitter === use;
+    saving = true; apiPending++; save.disabled = use.disabled = true; name.readOnly = true; key.readOnly = true;
     const close = host.querySelector<HTMLButtonElement>(".api-close")!; close.disabled = true;
-    const connection: Connection = { provider, name: name.value.trim().toLowerCase() };
-    const apply = () => invoke("api_activate", connection);
+    let storedName = existing?.name ?? name.value.trim().toLowerCase();
+    const apply = () => invoke("api_activate", { provider, name: storedName });
     let stored = false;
     let activationError: string | null = null;
     try {
-      await invoke("api_save", { ...connection, key: key.value.trim(), replace: Boolean(existing) }); stored = true;
+      const saved = await invoke<Connection>("api_save", { provider, accountId: account.id, name: storedName, key: key.value.trim(), replace: Boolean(existing) });
+      storedName = saved.name; stored = true;
+      collapsedAccounts.delete(focusPrefix(provider, account));
       key.value = "";
-      try { await apply(); }
+      try { if (useNow) await apply(); }
       catch (error) { activationError = String(error); }
     } catch (error) { errorLine.textContent = String(error); }
     finally {
-      key.value = ""; saving = false; apiPending--; close.disabled = false; save.disabled = false;
-      name.readOnly = Boolean(existing); key.readOnly = false; choices.forEach(b => { b.disabled = Boolean(existing); });
+      key.value = ""; saving = false; apiPending--; close.disabled = save.disabled = use.disabled = false;
+      name.readOnly = Boolean(existing); key.readOnly = false;
     }
     if (!stored) { key.focus(); return; }
-    form.remove(); host.querySelector(".connection-methods")?.remove(); host.querySelector(".connection-subscription")?.remove(); host.querySelector("h2")!.textContent = activationError ? text.savedOnly : text.complete;
-    const result = paragraph(activationError ? `${text.applyFailed}: ${activationError}` : text.applied, activationError ? "api-error" : "api-applied");
+    form.remove(); host.querySelector("h2")!.textContent = useNow && !activationError ? text.complete : text.savedOnly;
+    const result = paragraph(activationError ? `${text.applyFailed} · ${activationError}` : useNow ? text.applied : text.linked, activationError ? "api-error" : useNow ? "api-applied" : "api-saved");
     host.append(result);
     if (activationError) {
       const retry = document.createElement("button"); retry.className = "primary api-apply"; retry.textContent = text.use;
@@ -171,22 +146,48 @@ export function openApiRegistration(hooks: Hooks, initialProvider = "claude", ex
     }
     const status = paragraph(text.checking, "api-check-result"); status.setAttribute("role", "status"); host.append(status, paragraph(text.checkNote));
     hooks.fit();
-    try { const checked = await invoke<Connection>("api_check", connection); if (host.isConnected) { status.textContent = stateLabel(checked); status.dataset.state = "ready"; } }
+    try { const checked = await invoke<Connection>("api_check", { provider, name: storedName }); if (host.isConnected) { status.textContent = stateLabel(checked); status.dataset.state = "ready"; } }
     catch (error) { if (host.isConnected) { status.textContent = String(error); status.dataset.state = "error"; } }
     finally { if (!host.isConnected) void hooks.changed(); hooks.fit(); }
   };
-  host.showModal(); hooks.fit(); (loginButton ?? (existing ? key : name)).focus();
+  host.showModal(); hooks.fit(); (existing ? key : name).focus();
 }
 
-export async function apiConnections(provider: string, hooks: Hooks, force: boolean): Promise<HTMLElement> {
+const collapsedAccounts = new Set<string>();
+const focusPrefix = (provider: string, account: Account) => `${provider}/account/${account.id}`;
+
+export function accountApis(provider: string, account: Account, connections: Connection[], hooks: Hooks, force: boolean): HTMLElement {
   const text = apiText();
+  const group = document.createElement("div"); group.className = "account-apis";
+  const bar = document.createElement("div"); bar.className = "account-api-bar";
+  const prefix = focusPrefix(provider, account);
+  const add = document.createElement("button"); add.type = "button"; add.className = "account-api-add"; add.dataset.apiFocus = prefix + "/add";
+  add.setAttribute("aria-label", `${account.email ?? account.name} · ${t("addApiKey")}`);
+  add.append(icon("plus"), t("addApiKey"));
+  add.onclick = () => openApiRegistration(hooks, provider, account);
+  group.append(bar); bar.append(add);
+  if (!connections.length) return group;
   const panel = document.createElement("div"); panel.className = "api-panel";
-  const connections = await invoke<Connection[]>("api_list", { provider });
-  panel.hidden = connections.length === 0;
+  panel.id = `api-keys-${provider}-${encodeURIComponent(account.id)}`;
+  const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "account-api-toggle";
+  toggle.setAttribute("aria-controls", panel.id);
+  const count = document.createElement("span"); count.textContent = String(connections.length);
+  toggle.append(icon("chevron"), text.title, count);
+  const setExpanded = (expanded: boolean) => {
+    panel.hidden = !expanded;
+    toggle.setAttribute("aria-expanded", String(expanded));
+  };
+  setExpanded(!collapsedAccounts.has(prefix));
+  toggle.onclick = () => {
+    if (panel.hidden) collapsedAccounts.delete(prefix); else collapsedAccounts.add(prefix);
+    setExpanded(!collapsedAccounts.has(prefix));
+    hooks.fit();
+  };
+  group.append(panel); bar.prepend(toggle);
   for (const connection of connections) {
     const card = document.createElement("div"); card.className = "api-card";
     const head = document.createElement("div"); head.className = "api-card-info";
-    const name = document.createElement("strong"); name.className = "card-name"; name.textContent = connection.name;
+    const name = document.createElement("strong"); name.className = "card-name"; name.textContent = connection.label ?? connection.name;
     card.classList.toggle("api-active", Boolean(connection.active));
     const badge = document.createElement("span"); badge.className = "api-badge"; badge.textContent = connection.active ? text.active : "API";
     const status = paragraph(stateLabel(connection), "api-status"); status.dataset.state = connection.check_state ?? "unchecked";
@@ -217,7 +218,7 @@ export async function apiConnections(provider: string, hooks: Hooks, force: bool
       catch (error) { status.textContent = String(error); status.dataset.state = "error"; }
       finally { check.disabled = false; hooks.fit(); }
     };
-    const replace = iconButton("key", text.replace, "api-replace"); replace.dataset.apiFocus = `${provider}/${connection.name}/replace`; replace.onclick = () => openApiRegistration(hooks, provider, connection);
+    const replace = iconButton("key", text.replace, "api-replace"); replace.dataset.apiFocus = `${provider}/${connection.name}/replace`; replace.onclick = () => openApiRegistration(hooks, provider, account, connection);
     const remove = iconButton("trash", text.remove, "api-delete");
     let armedAt: number | null = null;
     const disarm = () => { armedAt = null; setButtonIcon(remove, "trash", text.remove); remove.classList.remove("danger-armed"); document.removeEventListener("pointerdown", outside, true); window.removeEventListener("blur", disarm); };
@@ -238,7 +239,53 @@ export async function apiConnections(provider: string, hooks: Hooks, force: bool
     };
     actions.append(use, check, replace, remove); card.append(head, actions, balance.element); panel.append(card);
   }
-  return panel;
+  return group;
+}
+
+export function existingKeys(provider: string, connections: Connection[], accounts: Account[] | null, hooks: Hooks): HTMLElement {
+  const text = apiText();
+  const group = document.createElement("details"); group.className = "api-recovery";
+  const title = document.createElement("summary"); title.textContent = `${text.legacy} (${connections.length})`;
+  group.append(title);
+  if (accounts) group.append(paragraph(accounts.length ? text.chooseAccount : text.needsAccount));
+  group.addEventListener("toggle", hooks.fit);
+  for (const connection of connections) {
+    const row = document.createElement("div"); row.className = "api-recovery-row";
+    const label = document.createElement("strong"); label.className = "card-name"; label.textContent = connection.label ?? connection.name;
+    row.append(label); group.append(row);
+    if (accounts?.length) {
+      const select = document.createElement("select"); select.setAttribute("aria-label", text.chooseAccount);
+      select.add(new Option(currentLang() === "ko" ? "계정 선택" : "Choose account", ""));
+      for (const account of accounts) select.add(new Option(account.email ?? account.name, account.id));
+      const attach = document.createElement("button"); attach.type = "button"; attach.className = "api-attach";
+      attach.textContent = currentLang() === "ko" ? "연결" : "Link"; attach.disabled = true;
+      select.onchange = () => { attach.disabled = !select.value; };
+      attach.onclick = async () => {
+        if (!select.value || apiPending) return;
+        apiPending++; select.disabled = attach.disabled = true;
+        try {
+          await invoke("api_attach", { provider, name: connection.name, accountId: select.value });
+          collapsedAccounts.delete(`${provider}/account/${select.value}`);
+        } catch (error) { hooks.toast(String(error), true); return; }
+        finally { apiPending--; select.disabled = attach.disabled = false; }
+        await hooks.changed();
+      };
+      row.append(select, attach);
+    }
+    if (connection.active) {
+      const stop = document.createElement("button"); stop.type = "button"; stop.textContent = text.stop; stop.title = text.stopTitle;
+      stop.onclick = async () => {
+        if (apiPending) return;
+        apiPending++; stop.disabled = true;
+        try { await invoke("api_deactivate", { provider }); }
+        catch (error) { hooks.toast(String(error), true); return; }
+        finally { apiPending--; stop.disabled = false; }
+        await hooks.changed();
+      };
+      row.append(stop);
+    }
+  }
+  return group;
 }
 
 type BalanceIssue = "unsupported" | "login_required" | "login_expired" | "key_rejected" | "forbidden" | "rate_limited" | "unavailable";
@@ -375,12 +422,12 @@ function balanceDisplay(provider: string, name: string, compact: boolean, hooks:
   return { element, refresh };
 }
 
-export function compactApiBalance(provider: string, name: string, force: boolean, hooks: Pick<Hooks, "fit" | "toast">): HTMLElement {
+export function compactApiBalance(provider: string, name: string, labelText: string, force: boolean, hooks: Pick<Hooks, "fit" | "toast">): HTMLElement {
   const row = document.createElement("div"); row.className = "compact-api-active";
   const label = document.createElement("div"); label.className = "compact-api-label";
   const badge = document.createElement("strong"); badge.textContent = "API";
-  const title = document.createElement("span"); title.textContent = name; label.append(badge, title);
-  row.title = `API · ${name}`;
+  const title = document.createElement("span"); title.textContent = labelText; label.append(badge, title);
+  row.title = `API · ${labelText}`;
   const balance = balanceDisplay(provider, name, true, hooks);
   row.append(label, balance.element);
   void balance.refresh(force);

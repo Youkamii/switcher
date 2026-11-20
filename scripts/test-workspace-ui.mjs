@@ -19,7 +19,7 @@ function fixture(mode = "normal", preview = false) {
   let balanceMinor = 7845;
   let balanceCurrency = "USD";
   let sessionPhase = null;
-  const connections = new Map(preview ? [['claude/project',{provider:'claude',name:'project',check_state:'ready',checked_at:1794300000}]] : []);
+  const connections = new Map(preview ? [['claude/project',{provider:'claude',name:'project',account_id:'claude-2',check_state:'ready',checked_at:1794300000}]] : []);
   // A native host drives test interactions even when WebKit throttles page timers.
   let tickId=0; const ticks=new Map();
   window.__uiTick=id=>{ticks.get(id)?.();ticks.delete(id);};
@@ -37,7 +37,7 @@ function fixture(mode = "normal", preview = false) {
     transformCallback(fn) { callbacks.set(seq,fn); return seq++; },
     unregisterCallback(id) { callbacks.delete(id); },
     async invoke(cmd, args={}) {
-      calls.push({cmd, args: cmd === 'api_save' ? {provider:args.provider,name: args.name, key: '[REDACTED]',replace:args.replace} : args});
+      calls.push({cmd, args: cmd === 'api_save' ? {provider:args.provider,accountId:args.accountId,name:args.name,key:'[REDACTED]',replace:args.replace} : args});
       if(cmd === 'plugin:event|listen') { const ids = events.get(args.event) ?? []; ids.push(args.handler); events.set(args.event,ids); return seq++; }
       if(cmd === 'get_language') return 'ko';
       if(cmd === 'get_accent_theme') return 'deep-green';
@@ -52,7 +52,7 @@ function fixture(mode = "normal", preview = false) {
       if(cmd === 'display_list') return [{id:0,name:'Built-in display',brightness:65}];
       if(cmd === 'stats_read') return {cpu:18,mem_used:6*1024**3,mem_total:16*1024**3,disk_read:2*1024**2,disk_write:1024**2,net_rx:600*1024,net_tx:200*1024};
       if(cmd === 'list_profiles' && args.provider==='codex' && codexBlocked) throw 'Codex가 파일 외 인증 저장소를 사용합니다';
-      if(cmd === 'list_profiles') return { api_active:activeApi.get(args.provider)??null, live:activeApi.has(args.provider)?null:{id:args.provider+'-1',email:'personal@example.test'},live_saved:!activeApi.has(args.provider),profiles:[
+      if(cmd === 'list_profiles') return { api_active:activeApi.get(args.provider)??null, api_active_account_id:connections.get(args.provider+'/'+activeApi.get(args.provider))?.account_id, live:activeApi.has(args.provider)?null:{id:args.provider+'-1',email:'personal@example.test'},live_saved:!activeApi.has(args.provider),profiles:[
         {name:'personal', id:args.provider+'-1',email:'personal@example.test',plan:args.provider==='claude'?'Max':'Plus',active:!activeApi.has(args.provider),saved_at:1,plan_tier:null},
         ...(args.provider==='claude' ? [{name:'work',id:'claude-2',email:'work@example.test',plan:'Pro',active:false,saved_at:1,plan_tier:null}] : [])] };
       if(cmd === 'codex_session_status') return sessionPhase ? {phase:sessionPhase,reason:null} : null;
@@ -70,9 +70,19 @@ function fixture(mode = "normal", preview = false) {
       }
       if(cmd === 'api_save') {
         if(args.key !== 'sk-dummy-test-key-123456') throw 'test input mismatch';
-        const id=args.provider+'/'+args.name;
-        if(connections.has(id) && !args.replace) throw '같은 이름의 API 연결이 있습니다';
-        connections.set(id,{provider:args.provider,name:args.name,check_state:'unchecked'}); return;
+        if(!args.accountId) throw 'account required';
+        let name=args.name;
+        if(!args.replace && [...connections.values()].some(c=>c.provider===args.provider && c.account_id===args.accountId && (c.label??c.name)===name)) throw '같은 이름의 API 연결이 있습니다';
+        if(!args.replace && connections.has(args.provider+'/'+name)) name+='-2';
+        const id=args.provider+'/'+name, previous=connections.get(id);
+        if(args.replace && previous?.account_id!==args.accountId) throw 'wrong owner';
+        const saved={provider:args.provider,name,account_id:args.accountId,label:previous?.label??args.name,check_state:'unchecked'};
+        connections.set(id,saved); return saved;
+      }
+      if(cmd === 'api_attach') {
+        const entry=connections.get(args.provider+'/'+args.name);
+        if(!entry || entry.account_id) throw 'fixture key is already linked';
+        entry.account_id=args.accountId; return;
       }
       if(cmd === 'api_activate') {
         if(activationFailure) throw 'API 설정 적용 실패';
@@ -82,7 +92,7 @@ function fixture(mode = "normal", preview = false) {
       if(cmd === 'api_check') {
         if(holdCheck) await new Promise(resolve=>{releaseCheck=resolve;});
         const id=args.provider+'/'+args.name;
-        const entry={provider:args.provider,name:args.name,check_state:checkFailure?'invalid_key':'ready',checked_at:1794300000};
+        const entry={...connections.get(id),check_state:checkFailure?'invalid_key':'ready',checked_at:1794300000};
         connections.set(id,entry); if(checkFailure) throw 'API 키가 거부됐습니다 — 키를 교체하세요'; return entry;
       }
       if(cmd === 'api_delete') {connections.delete(args.provider+'/'+args.name);if(activeApi.get(args.provider)===args.name)activeApi.delete(args.provider);return;}
@@ -104,12 +114,11 @@ function fixture(mode = "normal", preview = false) {
   };
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener(){} };
   const ready = async(selector) => { for(let i=0;i<100;i++) {const el=document.querySelector(selector);if(el)return el;await delay();} throw new Error('Missing '+selector); };
-  const openApi = async(provider='claude') => {
-    document.querySelector('.add-account[data-provider="'+provider+'"]').click();
-    await ready('.connection-methods');
-    document.querySelector('[data-method="api"]').click();
+  const openApi = async(provider='claude', account=provider==='claude'?'work':'personal') => {
+    (await ready('.profile-card[data-provider="'+provider+'"][data-name="'+account+'"] .account-api-add')).click();
     return ready('.api-form');
   };
+  const saveAndUse = form => form.requestSubmit(form.querySelector('.api-save-use'));
   window.addEventListener('load', async () => {
     try {
       await ready(preview==='no-ai' ? '.mon-section' : mode === 'normal' ? '.workspace-heading' : mode === 'edge' ? '.edge-account' : '.compact-card');
@@ -144,17 +153,26 @@ function fixture(mode = "normal", preview = false) {
         if(preview===true) {
           const selected=document.querySelector(mode==='normal'?'.api-active .api-badge':'.compact-api-active');
           record('selected-api-visible-'+mode, selected && box(selected).width>0 && selected.textContent.includes('API'));
+          record('selected-api-belongs-to-second-claude-account-'+mode, selected?.closest('.profile-card, .account-with-api')?.dataset.name==='work');
           record('selected-api-inside-window-'+mode, selected && box(selected).left>=0 && box(selected).right<=innerWidth);
           const credit=document.querySelector(mode==='normal'?'.api-active .api-balance-value':'.compact-api-active .api-balance-value');
           record('actual-credit-in-all-modes-'+mode,credit?.textContent.includes('78.45') && box(credit).width>0 && box(credit).right<=innerWidth);
           record('copied-credit-shows-source-and-time-'+mode,credit?.parentElement.dataset.state==='console' && credit.parentElement.querySelector('.api-balance-detail').textContent.includes('Console 확인'));
+          if(mode!=='normal') {
+            const link=credit.parentElement.querySelector('.api-billing-link'), r=box(link);
+            const x=r.left+r.width/2, y=r.top+r.height/2;
+            const hits=(calls.filter(c=>c.cmd==='set_hit_regions').at(-1)?.args.regions??[]).filter(({rect})=>x>=rect[0] && y>=rect[1] && x<rect[0]+rect[2] && y<rect[1]+rect[3]);
+            record('balance-link-native-hit-does-not-switch-subscription-'+mode,hits.length && hits.every(hit=>hit.action===null));
+            link.click();await delay();
+            record('balance-link-opens-own-billing-'+mode,calls.some(c=>c.cmd==='api_open_billing'&&c.args.provider==='claude') && !calls.some(c=>c.cmd==='switch_profile'));
+          }
         }
         if(preview==='registration' || preview==='result') {
           await openApi();
           const form=await ready('.api-form');
           if(preview==='result') {
             form.elements.namedItem('connection-name').value='demo'; form.elements.namedItem('api-key').value='sk-dummy-test-key-123456';
-            form.requestSubmit(); await ready('.api-applied'); await delay();
+            saveAndUse(form); await ready('.api-applied'); await delay();
           }
         }
         if(preview==='registration' || preview==='result') { const r=box(document.querySelector('.api-dialog')); record('api-'+preview+'-inside-window',r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight); }
@@ -170,14 +188,10 @@ function fixture(mode = "normal", preview = false) {
       }
       record('codex-refresh-button-retries-session-reload',calls.some(c=>c.cmd==='retry_codex_session_refresh'));
       sessionPhase=null;document.getElementById('refresh').click();await delay();await delay();
-      document.querySelector('.add-account[data-provider="claude"]').click();await ready('.connection-methods');
-      record('account-add-offers-both-authentication-methods',document.querySelectorAll('.connection-methods button').length===2&&!document.querySelector('.connection-subscription').hidden);
-      record('account-add-does-not-start-login-before-choice',!calls.some(c=>c.cmd==='start_login'));
-      record('account-add-label-exposes-api',[...document.querySelectorAll('.add-account')].every(button=>button.textContent.includes('API')));
-      record('api-registration-choice-visible',document.querySelector('[data-method="api"]').textContent==='API 키 등록'&&box(document.querySelector('[data-method="api"]')).width>0);
-      document.querySelector('.connection-login').click();await delay();await delay();await delay();
-      record('subscription-choice-uses-existing-login-flow',calls.some(c=>c.cmd==='start_login'&&c.args.provider==='claude')&&!document.querySelector('.api-dialog'));
-      await ready('.api-panel');
+      document.querySelector('.add-account[data-provider="claude"]').click();await delay();await delay();await delay();
+      record('provider-add-starts-account-login',calls.some(c=>c.cmd==='start_login'&&c.args.provider==='claude')&&!document.querySelector('.api-dialog'));
+      record('key-registration-only-inside-accounts',[...document.querySelectorAll('.account-api-add')].length===3 && [...document.querySelectorAll('.account-api-add')].every(button=>button.closest('.profile-card')));
+      await ready('.profile-card');
       document.querySelector('.shell').style.width='420px';
       await delay();
       const cards=document.querySelectorAll('#app .card');
@@ -196,8 +210,8 @@ function fixture(mode = "normal", preview = false) {
       const stale=cards[1].querySelector('.stale-overlay');
       record('auth-error-visible-with-stale-usage', stale?.textContent.includes('권한'));
       record('auth-error-does-not-overlap-bars', stale.getBoundingClientRect().top >= [...cards[1].querySelectorAll('.usage-row')].at(-1).getBoundingClientRect().bottom);
-      record('one-add-entry-for-subscription-and-api',!document.querySelector('.api-register') && [...document.querySelectorAll('.add-account[data-provider]')].length===2);
-      record('no-empty-api-space',[...document.querySelectorAll('.api-panel')].every(el=>box(el).height===0));
+      record('header-buttons-only-add-accounts',[...document.querySelectorAll('.add-account')].every(button=>button.textContent==='계정 추가'));
+      record('no-empty-api-space',!document.querySelector('.api-panel, .api-card'));
       await openApi();
       let form=await ready('.api-form');
       let inputs=form.querySelectorAll('input'); inputs[0].value='project';inputs[1].value='sk-dummy-test-key-123456';
@@ -216,19 +230,16 @@ function fixture(mode = "normal", preview = false) {
       record('window-move-preserves-registration-inputs',form.isConnected&&inputs[0].value==='project'&&inputs[1].value==='sk-dummy-test-key-123456');
       const dialogBox=box(document.querySelector('.api-dialog'));
       record('api-dialog-stays-inside-window',dialogBox.left>=0 && dialogBox.right<=innerWidth && dialogBox.top>=0 && dialogBox.bottom<=innerHeight);
-      document.querySelector('[data-method="subscription"]').click();
-      record('changing-login-method-clears-secret',inputs[1].value==='' && form.hidden && !document.querySelector('.connection-subscription').hidden);
-      document.querySelector('[data-method="api"]').click(); inputs[1].value='sk-dummy-test-key-123456';
-      record('provider-is-inherited-from-account-add',form.querySelector('.api-providers').hidden);
+      record('key-registration-names-exact-owner',document.querySelector('.api-owner').textContent==='Claude · work@example.test' && !form.querySelector('select, .api-providers'));
       form.querySelector('.api-console').click(); await delay();
       record('key-issuance-page-uses-selected-provider',calls.some(c=>c.cmd==='api_open_console' && c.args.provider==='claude'));
       document.getElementById('refresh').click(); await delay();
       record('refresh-preserves-api-form', form.isConnected && inputs[1].value==='sk-dummy-test-key-123456');
       document.getElementById('pin').click(); await delay();
       record('view-change-protects-api-input', !document.body.classList.contains('locked') && form.isConnected);
-      form.requestSubmit(); form.requestSubmit();
+      saveAndUse(form); saveAndUse(form);
       await ready('.api-applied'); await delay();
-      record('register-sent-once',calls.filter(c=>c.cmd==='api_save').length===1);
+      record('register-sent-once-to-correct-parent',calls.filter(c=>c.cmd==='api_save').length===1 && calls.find(c=>c.cmd==='api_save').args.accountId==='claude-2');
       record('secret-cleared-after-save',inputs[1].value==='');
       record('registration-automatically-checks-connection',document.querySelector('.api-check-result').dataset.state==='ready');
       record('registration-applies-api-without-command-copy',activeApi.get('claude')==='project'&&calls.filter(c=>c.cmd==='api_activate').length===1&&!document.querySelector('.api-launch'));
@@ -238,6 +249,11 @@ function fixture(mode = "normal", preview = false) {
       document.querySelector('.api-close').click();
       let api=await ready('.api-card');
       record('registered-api-immediately-visible',box(api).height>0 && !api.closest('.api-panel').hidden);
+      record('child-key-only-in-own-account',api.closest('.profile-card')?.dataset.name==='work'&&!document.querySelector('.profile-card[data-name="personal"] .api-card'));
+      record('parent-offers-subscription-while-child-api-is-active',api.closest('.profile-card').querySelector('.profile-switch').textContent==='구독 사용');
+      const fold=api.closest('.account-apis').querySelector('.account-api-toggle');
+      fold.click();record('account-key-list-can-collapse',fold.getAttribute('aria-expanded')==='false'&&api.closest('.api-panel').hidden);
+      fold.click();
       record('verification-persists-after-render',api.querySelector('.api-status').dataset.state==='ready');
       const shown = () => api.querySelector('.api-balance-value').textContent;
       const checkBalance = async () => { api.querySelector('.api-check').click(); await delay(); await delay(); };
@@ -279,7 +295,7 @@ function fixture(mode = "normal", preview = false) {
       inputs[1].value='sk-dummy-test-key-123456';
       const replaceDrag=dragCount();mouseDown(document.querySelector('.api-dialog-head'));await delay();
       record('key-replacement-can-drag-with-input-preserved',dragCount()===replaceDrag+1&&inputs[1].value==='sk-dummy-test-key-123456');
-      form.requestSubmit(); await ready('.api-applied'); await delay();
+      saveAndUse(form); await ready('.api-applied'); await delay();
       record('replacement-is-explicit',calls.filter(c=>c.cmd==='api_save').at(-1).args.replace===true);
       document.querySelector('.api-close').click(); await delay();
       await openApi();form=await ready('.api-form');inputs=form.querySelectorAll('input');inputs[0].value='project';inputs[1].value='sk-dummy-test-key-123456';
@@ -288,14 +304,14 @@ function fixture(mode = "normal", preview = false) {
       record('secret-cleared-on-save-error',inputs[1].value==='');
       document.querySelector('.api-close').click(); await delay();
       activationFailure=true;
-      await openApi();form=await ready('.api-form');inputs=form.querySelectorAll('input');inputs[0].value='apply-retry';inputs[1].value='sk-dummy-test-key-123456';form.requestSubmit();await ready('.api-apply');
+      await openApi();form=await ready('.api-form');inputs=form.querySelectorAll('input');inputs[0].value='apply-retry';inputs[1].value='sk-dummy-test-key-123456';saveAndUse(form);await ready('.api-apply');
       record('activation-failure-keeps-saved-key-and-offers-retry',connections.has('claude/apply-retry')&&inputs[1].value===''&&!document.querySelector('.api-applied'));
       activationFailure=false;document.querySelector('.api-apply').click();await ready('.api-applied');
       record('activation-retry-uses-saved-key',activeApi.get('claude')==='apply-retry'&&!document.querySelector('.api-apply'));
       document.querySelector('.api-close').click();await delay();
       // A network check may finish after the user closes registration, without freezing the app.
       checkFailure=true;holdCheck=true;
-      await openApi('codex');form=await ready('.api-form');inputs=form.querySelectorAll('input');inputs[0].value='secondary';inputs[1].value='sk-dummy-test-key-123456';form.requestSubmit();
+      await openApi('codex');form=await ready('.api-form');inputs=form.querySelectorAll('input');inputs[0].value='secondary';inputs[1].value='sk-dummy-test-key-123456';saveAndUse(form);
       await ready('.api-applied');await delay();document.querySelector('.api-close').click();await delay();
       record('slow-network-check-does-not-trap-dialog',!document.querySelector('.api-dialog'));
       releaseCheck();holdCheck=false;await delay();await delay();
@@ -315,13 +331,29 @@ function fixture(mode = "normal", preview = false) {
       remove.click();await delay();Date.now=realNow;
       record('delete-removes-api-row',!api.isConnected);
       record('api-never-switches-oauth',!calls.some(c=>c.cmd==='switch_profile'));
+      const activatedBefore=calls.filter(c=>c.cmd==='api_activate').length;
+      form=await openApi('claude','personal');inputs=form.querySelectorAll('input');
+      inputs[0].value='apply-retry';inputs[1].value='sk-dummy-test-key-123456';form.requestSubmit();
+      await ready('.api-saved');await delay();document.querySelector('.api-close').click();await delay();
+      record('save-without-use-keeps-current-selection',calls.filter(c=>c.cmd==='api_activate').length===activatedBefore && activeApi.get('claude')==='apply-retry');
+      const duplicateLabel=await ready('.profile-card[data-name="personal"] .api-card');
+      record('two-accounts-can-display-the-same-key-name',duplicateLabel.querySelector('.card-name').textContent==='apply-retry' && !duplicateLabel.classList.contains('api-active') && document.querySelector('.profile-card[data-name="work"] .api-card.api-active .card-name')?.textContent==='apply-retry');
+      duplicateLabel.querySelector('.api-use').click();await delay();await delay();
+      record('use-targets-stored-key-of-the-clicked-account',activeApi.get('claude')==='apply-retry-2');
+      connections.set('claude/imported',{provider:'claude',name:'imported',check_state:'ready'});
+      emit('visibility-changed');const recovery=await ready('.api-recovery');
+      recovery.open=true;
+      const owner=recovery.querySelector('select'), attach=recovery.querySelector('.api-attach');
+      record('legacy-key-awaits-user-picked-account',owner.value==='' && attach.disabled && ![...document.querySelectorAll('.profile-card .api-card')].some(el=>el.textContent.includes('imported')));
+      owner.value='claude-2';owner.dispatchEvent(new Event('change'));attach.click();await delay();await delay();
+      record('legacy-key-links-to-chosen-account-without-switching',calls.some(c=>c.cmd==='api_attach' && c.args.accountId==='claude-2') && !document.querySelector('.api-recovery') && document.querySelector('.profile-card[data-name="work"] .api-panel').textContent.includes('imported') && activeApi.get('claude')==='apply-retry-2');
       // Show no AI sections when both are disabled, including their API managers.
       visibility={...visibility,claude:false,codex:false};emit('visibility-changed');await delay();await delay();
       record('hidden-ai-leaves-no-provider-panels',!document.querySelector('#app .profile-actions, #app .api-panel'));
       visibility={...visibility,claude:true,codex:true};emit('visibility-changed');await ready('.card');await delay();
       record('no-horizontal-overflow',document.querySelector('#app').scrollWidth<=420);
       codexBlocked=true; emit('visibility-changed'); await delay(); await delay();
-      record('api-available-with-blocked-subscription-store',document.querySelectorAll('.api-panel').length===2 && document.querySelector('#app').textContent.includes('파일 외'));
+      record('blocked-account-store-preserves-existing-key-recovery',document.querySelector('.api-recovery')?.textContent.includes('secondary') && document.querySelector('#app').textContent.includes('파일 외'));
       codexBlocked=false; emit('visibility-changed'); await delay(); await delay();
       record('api-selection-removes-subscription-session-note',!document.querySelector('.codex-session-note'));
       record('no-browser-errors',errors.length===0);

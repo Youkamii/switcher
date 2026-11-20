@@ -69,17 +69,23 @@ enum Login {
 
 // Local files are hints for finding the right token. Confirm the account and
 // organization with the issuer before requesting financial data.
-fn login_for(block: &Value, org: Uuid, profile: Option<String>) -> Option<Login> {
+fn login_for(
+    block: &Value,
+    org: Uuid,
+    owner: Option<&str>,
+    profile: Option<String>,
+) -> Option<Login> {
     if Uuid::try_parse(block.get("organizationUuid")?.as_str()?).ok()? != org {
         return None;
     }
-    Some(Login::Widget {
-        account: Uuid::try_parse(block.get("accountUuid")?.as_str()?).ok()?,
-        profile,
-    })
+    let account = Uuid::try_parse(block.get("accountUuid")?.as_str()?).ok()?;
+    if owner.is_some_and(|id| Uuid::try_parse(id).ok() != Some(account)) {
+        return None;
+    }
+    Some(Login::Widget { account, profile })
 }
 
-fn logins_for_org(env: &Env, org: Uuid) -> Result<Vec<Login>, Issue> {
+fn logins_for_org(env: &Env, org: Uuid, owner: Option<&str>) -> Result<Vec<Login>, Issue> {
     let _lock = MUTATION_LOCK.lock().map_err(|_| Issue::Unavailable)?;
     let mut logins: Vec<_> = console_profile::active(&env.anthropic_config_dir, org)
         .map(Login::Console)
@@ -88,7 +94,7 @@ fn logins_for_org(env: &Env, org: Uuid) -> Result<Vec<Login>, Issue> {
     if let Some(live) = claude_oauth_block(env)
         .ok()
         .flatten()
-        .and_then(|b| login_for(&b, org, None))
+        .and_then(|b| login_for(&b, org, owner, None))
     {
         logins.push(live);
     }
@@ -99,7 +105,7 @@ fn logins_for_org(env: &Env, org: Uuid) -> Result<Vec<Login>, Issue> {
         let Ok(block) = read_json(&dir.join("oauth_account.json")) else {
             continue;
         };
-        let Some(login) = login_for(&block, org, Some(name)) else {
+        let Some(login) = login_for(&block, org, owner, Some(name)) else {
             continue;
         };
         if matches!(&login, Login::Widget { account, .. } if read_meta(&dir).and_then(|meta| Uuid::try_parse(&meta.id).ok()) == Some(*account))
@@ -334,10 +340,12 @@ async fn read_with(
         .or_default()
         .clone();
     let mut cached = slot.lock().await;
-    let revision = {
+    let connection = {
         let _lock = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
-        read_connection(&dir, provider, name)?.revision
+        read_connection(&dir, provider, name)?
     };
+    let revision = connection.revision;
+    let owner = connection.account_id.as_deref();
     if provider == Provider::Codex {
         return Ok(Balance::failed(Issue::Unsupported));
     }
@@ -345,7 +353,7 @@ async fn read_with(
     let mut org = prior.and_then(|c| c.org);
     let mut logins = Vec::new();
     if let Some(id) = org {
-        logins = logins_for_org(env, id).map_err(|_| "Claude 로그인 계정을 확인하지 못했습니다")?;
+        logins = logins_for_org(env, id, owner).map_err(|_| "Claude 로그인 계정을 확인하지 못했습니다")?;
     }
     if let Some(c) = prior {
         let ttl = match c.balance.issue {
@@ -382,9 +390,9 @@ async fn read_with(
         }
         organization = Some(verified.label);
         org = Some(id);
-        logins = logins_for_org(env, id)?;
+        logins = logins_for_org(env, id, owner)?;
         let credit = lookup(env, &api, &logins, id).await?;
-        if logins_for_org(env, id)? != logins {
+        if logins_for_org(env, id, owner)? != logins {
             return Err(Issue::LoginRequired);
         }
         Ok(credit)
@@ -402,8 +410,9 @@ async fn read_with(
         import_ref,
     };
     let _lock = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
-    if read_connection(&dir, provider, name)?.revision != revision {
-        return Err("조회 중 API 키가 바뀌었습니다. 다시 조회하세요.".into());
+    let current = read_connection(&dir, provider, name)?;
+    if current.revision != revision || current.account_id != connection.account_id {
+        return Err("조회 중 API 키 또는 연결 계정이 바뀌었습니다. 다시 조회하세요.".into());
     }
     *cached = Some(Cached {
         revision,

@@ -563,14 +563,16 @@ async fn api_list(provider: String) -> Result<Vec<api_connections::Connection>, 
 #[tauri::command]
 async fn api_save(
     provider: String,
+    account_id: String,
     name: String,
     key: String,
     replace: Option<bool>,
-) -> Result<(), String> {
+) -> Result<api_connections::Connection, String> {
     tauri::async_runtime::spawn_blocking(move || {
         api_connections::save(
             &Env::real()?,
             &provider,
+            &account_id,
             &name,
             &key,
             replace.unwrap_or(false),
@@ -578,6 +580,14 @@ async fn api_save(
     })
     .await
     .map_err(|_| "API 저장 작업 실패")?
+}
+#[tauri::command]
+async fn api_attach(provider: String, name: String, account_id: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        api_connections::attach(&Env::real()?, &provider, &name, &account_id)
+    })
+    .await
+    .map_err(|_| "API 계정 연결 실패")?
 }
 #[tauri::command]
 async fn api_delete(provider: String, name: String) -> Result<(), String> {
@@ -3913,6 +3923,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             api_list,
             api_save,
+            api_attach,
             api_delete,
             api_launch_command,
             api_activate,
