@@ -73,5 +73,5 @@
 - API는 사용자가 **저장하고 사용/사용**을 누르면 일반 CLI 설정에 적용한다. Claude는 `apiKeyHelper`, Codex는 공식 공급자 설정 + 활성 `auth.json`(Unix 0600). 적용 전 OAuth·설정 백업, 구독 전환/해제/삭제 시 앱이 소유한 설정만 복원한다. API 선택은 TFSD를 해제하며 자동 유료 전환은 금지한다.
 - Codex 구독·API 어댑터는 파일 저장소만 지원한다. `keyring`/`auto`/`ephemeral` 설정이면 전환·쓰기 차단.
 - 화면 회귀 검사: `npm run build && node scripts/test-workspace-ui.mjs`, 배치 검사: `node scripts/review-layout.mjs`. 가짜 데이터만 사용한다.
-- 계정 추가 창에서 구독 로그인/API 키 선택을 통합한다. 별도 API 등록 진입 버튼을 만들지 않는다. API별 월 예산 기본값은 $195(UTC 월). `api_connections/costs.rs`는 관리자 조회 키를 별도 OS 보안 항목에 저장하고 API key ID로 비용을 필터링한다. 미조회·실패를 0으로 표시하지 않는다. 예산은 표시 기준이며 강제 과금 차단이 아니다.
+- 계정 추가 창에서 구독 로그인/API 키 선택을 통합한다. 별도 API 등록 진입 버튼을 만들지 않는다. `api_connections/balance.rs`는 Claude API 키로 확인한 조직과 로그인 프로필의 계정·조직을 대조한 뒤 선불 잔액을 읽는다. 같은 조직의 키는 잔액을 공유한다. 자동 조회가 어려운 경우 한국어·영어 Console 대시보드의 조직 크레딧을 가져와 출처와 시각을 표시한다. 대시보드 원문은 IPC·디스크로 보내지 않는다. OpenAI는 공식 결제 화면을 제공한다. 월 예산·관리자 조회 키 입력은 제거했다.
 - API 사용법·검증 한계: `docs/API_CONNECTIONS.md`, `docs/IMPLEMENTATION_STATUS.md`.

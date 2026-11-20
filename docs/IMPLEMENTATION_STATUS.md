@@ -4,6 +4,12 @@
 
 [전체 화면 한 장](design/complete-preview.png) · [원본 크기 보기](design/complete-preview.html) · [API 등록·사용법](API_CONNECTIONS.md)
 
+## API 크레딧 잔액 · 2026-11-20 로컬 빌드
+
+월 예산·사용률 막대·관리자 키 입력을 제거했다. 네 가지 위젯 모드가 Claude의 조직 선불 잔액 또는 Console 대시보드에서 가져온 조직 크레딧과 확인 시각을 표시한다. 개인 계정에도 적용된다. 실제 등록 키로 조직을 확인하고 사용자가 제공한 대시보드와 대조했다. 현재 구독 토큰의 Console 조회는 권한 거부였으며, 대시보드 확인값을 로컬에 저장한 뒤 다시 읽어 금액·통화·시각을 확인했다. OpenAI는 공식 결제 화면에서 확인한다. [사용법](API_CONNECTIONS.md) · [네 모드 예시](design/four-modes.png)
+
+이번 빌드는 macOS에서 Rust 246개와 프론트 단위 106개가 통과했다. Chromium 153개와 macOS WebKit 118개, 기존 배치 검사 8개가 통과했다. macOS 앱 번들과 ad-hoc 서명을 검증했다. 아래 Windows CI 기록은 기존 배포 버전의 검사다. [Chromium 결과](four-mode-test-results.json) · [WebKit 결과](webkit-test-results.json)
+
 ## Codex 공유 서버 자동 갱신 — v2.1.2
 
 - 구독 전환의 기존 백업 → 파일 교체 순서를 유지하고, 그 뒤 Codex 0.167.0 이상 정식 버전의 관리되는 공유 서버 갱신을 예약한다. 일반 버튼·고정 모드·TFSD가 같은 코어를 사용한다. 공유 서버가 없으면 새 서버를 임의로 시작하지 않는다.
@@ -54,7 +60,7 @@
 | AI 미사용 빈자리 | 숨긴 제공자 행·구분선의 공간 제거. 엣지 손잡이 높이도 실제 표시 행에 맞춰 계산. AI를 모두 숨기면 SYSTEM과 도구만 남는다. |
 | 잦은 인증 오류 | CLI를 실행한 상태에서도 다른 계정의 사용량·토큰 갱신이 진행된다. 활성 계정의 토큰은 CLI가 관리하고 위젯은 중복 회전하지 않는다. 액세스 토큰 갱신 필요, 갱신 토큰 거부, 권한 오류, 요청 제한을 구분. 마지막 사용량을 보여줄 때도 실패 이유를 남긴다. 카드의 다시 연결에서 기존 계정을 재인증할 수 있다. |
 | API 등록과 사용 | 제공자별 **계정 추가**에서 **구독 로그인 / API 키** 선택. API는 **저장하고 사용**으로 일반 CLI에 적용. 별도 API 등록 버튼 제거. 기존 연결은 **사용/해제**, 확인·교체·삭제. 적용 실패 시 저장한 키로 재시도하며 네 모드에 선택된 API를 표시한다. |
-| API 사용량·예산 | 각 연결 기본 월 $195, 등록/사용량 설정에서 변경. 직접 금액 입력 또는 관리자 키 + API key ID로 자동 비용 조회. 네 모드에 금액·막대, 초과 금액 표시. UTC 월 변경·권한 오류·부분 조회 실패 처리. |
+| API 크레딧 | 키 발급 조직 확인, Console 로그인 기반 선불 잔액 조회, 출처·시각이 있는 대시보드 확인값, 결제 화면 바로가기. |
 | API 키 보호 | 저장 연결은 macOS Keychain/Windows DPAPI. Claude는 보안 저장소 helper, Codex는 표준 활성 auth.json(Unix 0600)을 사용한다. OAuth·설정을 먼저 백업하고 해제·구독 전환·삭제 시 복원한다. 키 입력·목록·로그 보호 유지. |
 | 상태·오류 복구 | 확인 상태와 시각을 저장. 키 교체 시 초기화, 확인 중 교체·삭제 시 낡은 결과 폐기. 동일 이름의 암묵적 교체 차단. 보안 저장 실패 시 메타데이터 복구. |
 | 등록 중 창 이동 | 등록·교체·완료 화면의 제목과 원래 타이틀바 영역에서 네이티브 창 드래그. 입력값 유지, 입력칸·버튼·우클릭 제외. |
@@ -62,7 +68,7 @@
 
 구독 토큰 수명을 바꾸거나 만료 자체를 없앤 것은 아니다. 활성 파일 먼저 백업 → 대상 프로필 복사 순서, 활성 계정 직접 갱신 보호, 프로필별 갱신·전환 잠금과 사이드카 복구는 유지했다. **Claude/Codex를 실행 중이라는 이유로 다른 계정의 갱신을 막지 않는다.** `f28add7`에서 도입했던 제공자 전체 차단·종료 감시·“CLI 사용 중” 안내는 잘못된 제약이라 제거했다. API는 앱에서 명시적으로 선택하며 다음 일반 CLI 실행부터 적용된다. API 선택 시 TFSD를 해제하고, 구독으로 돌아가면 앱이 적용한 설정만 복원한다. 자동 과금 대체는 없다.
 
-## 검증 결과
+## v2.1.0~v2.1.2 검증 기록
 
 2026-11-13 푸시 전 재검증: Rust 239, API 집중 24, 프론트 단위 93, Chromium 123, WebKit 93, 배치 8 통과. TypeScript/Vite와 macOS 앱 빌드도 성공했다. Chromium 첫 실행은 디버깅 포트 생성 대기 시간 초과로 중단됐고, 단독 재시도에서 전체 검사가 통과했다. 새 인증 복원 보관소 `api-active/`를 Git 제외 규칙에 추가하고 실제 제외 여부를 확인했다. 푸시 대상 기존 16개 커밋의 138개 새 blob에서 인증 파일명과 알려진 토큰 패턴을 검사했으며 발견 사항은 없었다. 추가 Windows 실행 검증은 아래 표에 반영했다.
 
@@ -101,7 +107,7 @@ npm run build
 cargo test --manifest-path src-tauri/Cargo.toml --lib
 cargo test --manifest-path src-tauri/Cargo.toml api_connections::tests -- --include-ignored
 cargo test --manifest-path src-tauri/Cargo.toml api_connections::activation::tests -- --include-ignored
-cargo test --manifest-path src-tauri/Cargo.toml api_connections::costs::tests
+cargo test --manifest-path src-tauri/Cargo.toml api_connections::balance::tests
 node scripts/review-layout.mjs
 node scripts/test-workspace-ui.mjs --all-modes docs/design --output docs/four-mode-test-results.json
 node scripts/test-workspace-ui.mjs --webkit --output docs/webkit-test-results.json
@@ -118,7 +124,7 @@ Windows 자동 검사는 [windows-check](../.github/workflows/windows-check.yml)
 | --- | --- |
 | [#179 UI](https://github.com/Youkamii/switcher/issues/179) | 요청한 배치·아이콘·4개 모드·숨김 수정 적용. Windows 실화면과 운영 앱의 실제 포인터 상호작용 검증은 남음. |
 | [#180 인증](https://github.com/Youkamii/switcher/issues/180) | 오류 구분·재연결·Codex 경로/저장소 보호 적용. CLI 실행 여부로 전체 갱신을 막던 제한 제거. 외부 CLI와 모든 토큰 회전을 원자적으로 조정하는 기능, Codex 네이티브 키링 어댑터는 지원 범위 밖. |
-| [#181 API](https://github.com/Youkamii/switcher/issues/181) | 통합 계정 추가, 일반 CLI API 적용·구독 복원, API별 $195 예산·비용 표시 적용. Windows 실제 DPAPI·PowerShell·설치된 CLI 인증 인식과 구독 복원 검증 완료. 실제 관리자 비용 조회·모델 생성은 미검증. 새 UI 문구는 한국어·영어 제공. |
+| [#181 API](https://github.com/Youkamii/switcher/issues/181) | 통합 계정 추가, 일반 CLI API 적용·구독 복원. 당시 도입한 월 예산은 11월 20일 로컬 빌드에서 조직 크레딧으로 교체. Windows 실제 DPAPI·PowerShell·설치된 CLI 인증 인식과 구독 복원 검증 완료. 실제 관리자 비용 조회·모델 생성은 미검증. 새 UI 문구는 한국어·영어 제공. |
 | [#182 업데이트 서명](https://github.com/Youkamii/switcher/issues/182) | 리뷰에서 확인한 별도 후속 작업. 릴리스 신뢰키·서명 배포 체계는 이번 UI/API 변경에 포함하지 않음. |
 
 이 Mac의 Windows 크로스 컴파일은 SDK 헤더 부재로 중단됐지만, 이후 GitHub Actions의 실제 Windows 러너에서 Rust 전체 검사·DPAPI·PowerShell·CLI 인증 인식을 확인했다. Windows GUI의 실제 포인터 조작 검증은 남아 있다. 기존 macOS Rust 경고 4개는 남아 있으며, 실제 유료 모델 생성은 수행하지 않았다.

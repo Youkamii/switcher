@@ -776,6 +776,7 @@ mod tests {
                 home: root.clone(),
                 store: root.join("store"),
                 codex_home: root.join("c"),
+                anthropic_config_dir: root.join("anthropic"),
                 claude_live: accounts::ClaudeLiveStore::File(root.join("unused")),
             };
             fs::create_dir_all(&env.store).unwrap();

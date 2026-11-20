@@ -23,7 +23,43 @@
           "passed": true
         },
         {
+          "id": "codex-selection-is-not-labelled-as-live-session",
+          "passed": true
+        },
+        {
+          "id": "codex-session-status-waiting",
+          "passed": true
+        },
+        {
+          "id": "codex-session-status-reloading",
+          "passed": true
+        },
+        {
+          "id": "codex-session-status-reloaded",
+          "passed": true
+        },
+        {
+          "id": "codex-session-status-failed",
+          "passed": true
+        },
+        {
+          "id": "codex-refresh-button-retries-session-reload",
+          "passed": true
+        },
+        {
           "id": "account-add-offers-both-authentication-methods",
+          "passed": true
+        },
+        {
+          "id": "account-add-does-not-start-login-before-choice",
+          "passed": true
+        },
+        {
+          "id": "account-add-label-exposes-api",
+          "passed": true
+        },
+        {
+          "id": "api-registration-choice-visible",
           "passed": true
         },
         {
@@ -147,31 +183,51 @@
           "passed": true
         },
         {
-          "id": "new-api-default-monthly-budget-is-195",
+          "id": "api-card-shows-organization-prepaid-balance",
           "passed": true
         },
         {
-          "id": "usage-settings-start-with-195",
+          "id": "registration-and-card-no-longer-offer-budget-controls",
           "passed": true
         },
         {
-          "id": "manual-api-cost-and-remaining-budget-visible",
+          "id": "billing-org-visible-without-disclosing-it-in-a-tooltip",
           "passed": true
         },
         {
-          "id": "over-budget-amount-is-visible-and-bar-is-capped",
+          "id": "missing-billing-login-clears-old-value",
           "passed": true
         },
         {
-          "id": "automatic-api-costs-use-separate-secret-and-key-id",
+          "id": "missing-login-opens-provider-billing",
           "passed": true
         },
         {
-          "id": "cost-query-error-keeps-last-known-amount",
+          "id": "denied-balance-is-never-zero",
           "passed": true
         },
         {
-          "id": "manual-mode-removes-reporting-credential",
+          "id": "wrong-organization-dashboard-rejected",
+          "passed": true
+        },
+        {
+          "id": "dashboard-credit-import-labeled-and-dated",
+          "passed": true
+        },
+        {
+          "id": "clipboard-and-key-list-stay-out-of-native-command",
+          "passed": true
+        },
+        {
+          "id": "confirmed-zero-is-visible",
+          "passed": true
+        },
+        {
+          "id": "yen-credit-uses-zero-decimal-currency",
+          "passed": true
+        },
+        {
+          "id": "toolbar-refresh-requests-current-balance",
           "passed": true
         },
         {
@@ -227,6 +283,10 @@
           "passed": true
         },
         {
+          "id": "openai-credit-opens-billing-without-inventing-amounts",
+          "passed": true
+        },
+        {
           "id": "delete-needs-second-click",
           "passed": true
         },
@@ -260,6 +320,10 @@
         },
         {
           "id": "api-available-with-blocked-subscription-store",
+          "passed": true
+        },
+        {
+          "id": "api-selection-removes-subscription-session-note",
           "passed": true
         },
         {
@@ -299,11 +363,23 @@
           "passed": true
         },
         {
+          "id": "codex-next-launch-scope-compact",
+          "passed": true
+        },
+        {
           "id": "selected-api-visible-compact",
           "passed": true
         },
         {
           "id": "selected-api-inside-window-compact",
+          "passed": true
+        },
+        {
+          "id": "actual-credit-in-all-modes-compact",
+          "passed": true
+        },
+        {
+          "id": "copied-credit-shows-source-and-time-compact",
           "passed": true
         },
         {
@@ -314,7 +390,7 @@
       "errors": [],
       "mode": "compact",
       "width": 280,
-      "height": 588
+      "height": 599
     },
     {
       "checks": [
@@ -343,11 +419,23 @@
           "passed": true
         },
         {
+          "id": "codex-next-launch-scope-minimal",
+          "passed": true
+        },
+        {
           "id": "selected-api-visible-minimal",
           "passed": true
         },
         {
           "id": "selected-api-inside-window-minimal",
+          "passed": true
+        },
+        {
+          "id": "actual-credit-in-all-modes-minimal",
+          "passed": true
+        },
+        {
+          "id": "copied-credit-shows-source-and-time-minimal",
           "passed": true
         },
         {
@@ -358,7 +446,7 @@
       "errors": [],
       "mode": "minimal",
       "width": 120,
-      "height": 349
+      "height": 364
     },
     {
       "checks": [
@@ -387,11 +475,23 @@
           "passed": true
         },
         {
+          "id": "codex-next-launch-scope-edge",
+          "passed": true
+        },
+        {
           "id": "selected-api-visible-edge",
           "passed": true
         },
         {
           "id": "selected-api-inside-window-edge",
+          "passed": true
+        },
+        {
+          "id": "actual-credit-in-all-modes-edge",
+          "passed": true
+        },
+        {
+          "id": "copied-credit-shows-source-and-time-edge",
           "passed": true
         },
         {
@@ -402,9 +502,9 @@
       "errors": [],
       "mode": "edge",
       "width": 80,
-      "height": 636
+      "height": 662
     }
   ],
-  "passed": 93,
+  "passed": 118,
   "failed": 0
 }

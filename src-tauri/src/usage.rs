@@ -895,6 +895,16 @@ async fn request_auth(
     Ok((auth, refresh_err))
 }
 
+/// Uses the same rotation locks and active-account protections as subscription usage.
+/// A rename, deletion or switch between discovery and this snapshot invalidates the match.
+pub(crate) async fn claude_balance_token(env: &Env, profile: Option<&str>, account_id: &str) -> Option<String> {
+    let (auth, _) = request_auth(env, Provider::Claude, profile).await.ok()?;
+    if auth.key != format!("claude:{account_id}") {
+        return None;
+    }
+    claude_access_token_from_root(&auth.root).ok().filter(|token| !token.is_empty())
+}
+
 /// 프로필 응답에서 구독 이름·Max 배수를 뽑는다. organization_type "claude_max" → "Max",
 /// rate_limit_tier "default_claude_max_20x" → 20. 둘 다 없으면 None (덮어쓰지 않는다).
 fn plan_from_profile_body(body: &Value) -> Option<PlanOverride> {

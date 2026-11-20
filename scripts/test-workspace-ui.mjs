@@ -14,12 +14,11 @@ function fixture(mode = "normal", preview = false) {
   let visibility = { claude:preview!=='no-ai', codex:preview!=='no-ai', github:true, display:true, black:true, tfsd:false };
   const activeApi = new Map(preview===true ? [['claude','project']] : []); let activationFailure = false;
   let codexBlocked = false; let checkFailure = false; let releaseCheck = null; let holdCheck = false;
-  let costFailure = false;
+  let balanceIssue = preview === true ? 'login_required' : null;
+  const consoleCredits = new Map(preview === true ? [['project', { amount_minor:7845,currency:'USD',checked_at:1794300000 }]] : []);
+  let balanceMinor = 7845;
+  let balanceCurrency = "USD";
   let sessionPhase = null;
-  const costs = new Map();
-  const usageFor = (provider, name) => costs.get(provider+'/'+name) ?? {month:'2026-11',budget_usd:195,spent_usd:null,remaining_usd:null,percent:null,source:'manual',api_key_id:'',admin_key_stored:false,checked_at:null,provider_updated_at:null,error:null};
-  const updateCost = (provider,name,value) => { const data={...usageFor(provider,name),...value}; data.remaining_usd=data.spent_usd===null?null:data.budget_usd-data.spent_usd;data.percent=data.spent_usd===null?null:data.spent_usd/data.budget_usd*100;costs.set(provider+'/'+name,data);return data; };
-  if(preview) updateCost('claude','project',{spent_usd:78.45,checked_at:1794300000});
   const connections = new Map(preview ? [['claude/project',{provider:'claude',name:'project',check_state:'ready',checked_at:1794300000}]] : []);
   // A native host drives test interactions even when WebKit throttles page timers.
   let tickId=0; const ticks=new Map();
@@ -38,7 +37,7 @@ function fixture(mode = "normal", preview = false) {
     transformCallback(fn) { callbacks.set(seq,fn); return seq++; },
     unregisterCallback(id) { callbacks.delete(id); },
     async invoke(cmd, args={}) {
-      calls.push({cmd, args: cmd === 'api_save' ? {provider:args.provider,name: args.name, key: '[REDACTED]',replace:args.replace} : cmd==='api_usage_save' ? {...args,settings:{...args.settings,admin_key:args.settings.admin_key?'[REDACTED]':null}} : args});
+      calls.push({cmd, args: cmd === 'api_save' ? {provider:args.provider,name: args.name, key: '[REDACTED]',replace:args.replace} : args});
       if(cmd === 'plugin:event|listen') { const ids = events.get(args.event) ?? []; ids.push(args.handler); events.set(args.event,ids); return seq++; }
       if(cmd === 'get_language') return 'ko';
       if(cmd === 'get_accent_theme') return 'deep-green';
@@ -60,12 +59,15 @@ function fixture(mode = "normal", preview = false) {
       if(cmd === 'fetch_usage') return { windows:[{key:'five_hour',label:'5 Hours',percent:32,resets_at:null},{key:'weekly',label:'Weekly',percent:54,resets_at:null}],stale:args.profile==='work',stale_age_secs:600,issue:args.profile==='work'?'토큰 갱신 권한이 거부됐습니다 — 계정·조직의 접근 정책을 확인하세요':null };
       if(cmd === 'api_list') return [...connections.values()].filter(c=>c.provider===args.provider).map(c=>({...c,active:activeApi.get(c.provider)===c.name}));
       if(cmd === 'start_login') throw 'fixture login stopped';
-      if(cmd === 'api_usage_read') return usageFor(args.provider,args.name);
-      if(cmd === 'api_usage_save') {
-        const old=usageFor(args.provider,args.name), settings=args.settings;
-        return updateCost(args.provider,args.name,{...settings,api_key_id:settings.source==='automatic'?settings.api_key_id:'',spent_usd:settings.source==='automatic'?null:settings.spent_usd??(old.source==='manual'?old.spent_usd:null),admin_key:undefined,admin_key_stored:settings.source==='automatic',error:null,checked_at:1794300000});
+      if(cmd === 'api_balance') {
+        if (args.provider !== 'claude') throw Error('Only Claude has automatic credit lookup');
+        return {credit:balanceIssue ? null : {amount_minor:balanceMinor,currency:balanceCurrency,checked_at:1794300000},
+          issue:balanceIssue,organization:'Demo Studio',import_ref:args.name+'/fixture',console_credit:consoleCredits.get(args.name)??null};
       }
-      if(cmd === 'api_usage_refresh') return updateCost(args.provider,args.name,costFailure?{error:'비용 조회 권한이 없습니다'}:{spent_usd:42.5,error:null,checked_at:1794300000});
+      if(cmd === 'api_import_console_credit') {
+        if(args.reading.organization!=='Demo Studio' || args.reading.import_ref!==args.name+'/fixture') throw 'wrong fixture organization';
+        consoleCredits.set(args.name,{amount_minor:args.reading.amount_minor,currency:'USD',checked_at:1794300000}); return;
+      }
       if(cmd === 'api_save') {
         if(args.key !== 'sk-dummy-test-key-123456') throw 'test input mismatch';
         const id=args.provider+'/'+args.name;
@@ -143,6 +145,9 @@ function fixture(mode = "normal", preview = false) {
           const selected=document.querySelector(mode==='normal'?'.api-active .api-badge':'.compact-api-active');
           record('selected-api-visible-'+mode, selected && box(selected).width>0 && selected.textContent.includes('API'));
           record('selected-api-inside-window-'+mode, selected && box(selected).left>=0 && box(selected).right<=innerWidth);
+          const credit=document.querySelector(mode==='normal'?'.api-active .api-balance-value':'.compact-api-active .api-balance-value');
+          record('actual-credit-in-all-modes-'+mode,credit?.textContent.includes('78.45') && box(credit).width>0 && box(credit).right<=innerWidth);
+          record('copied-credit-shows-source-and-time-'+mode,credit?.parentElement.dataset.state==='console' && credit.parentElement.querySelector('.api-balance-detail').textContent.includes('Console 확인'));
         }
         if(preview==='registration' || preview==='result') {
           await openApi();
@@ -234,19 +239,33 @@ function fixture(mode = "normal", preview = false) {
       let api=await ready('.api-card');
       record('registered-api-immediately-visible',box(api).height>0 && !api.closest('.api-panel').hidden);
       record('verification-persists-after-render',api.querySelector('.api-status').dataset.state==='ready');
-      record('new-api-default-monthly-budget-is-195',api.querySelector('.api-cost-amount').textContent.includes('$195.00') && api.querySelector('.api-cost-amount').textContent.includes('—'));
-      api.querySelector('.api-usage-settings').click();let usageForm=await ready('.api-usage-form');
-      record('usage-settings-start-with-195',usageForm.elements.namedItem('budget').value==='195');
-      usageForm.elements.namedItem('spent').value='78.45';usageForm.requestSubmit();await delay();await delay();api=document.querySelector('.api-card');
-      record('manual-api-cost-and-remaining-budget-visible',api.textContent.includes('$78.45')&&api.textContent.includes('$116.55')&&api.querySelector('[role="progressbar"]'));
-      api.querySelector('.api-usage-settings').click();usageForm=await ready('.api-usage-form');usageForm.elements.namedItem('spent').value='210';usageForm.requestSubmit();await delay();await delay();api=document.querySelector('.api-card');
-      record('over-budget-amount-is-visible-and-bar-is-capped',api.textContent.includes('$15.00 초과')&&api.querySelector('.cost-exceeded')&&api.querySelector('[role="progressbar"]').getAttribute('aria-valuenow')==='100');
-      api.querySelector('.api-usage-settings').click();usageForm=await ready('.api-usage-form');usageForm.elements.namedItem('source').value='automatic';usageForm.elements.namedItem('source').dispatchEvent(new Event('change'));usageForm.elements.namedItem('key-id').value='apikey_fixture';const adminField=usageForm.elements.namedItem('admin-key');adminField.value='sk-dummy-admin-123456';usageForm.requestSubmit();await delay();await delay();api=document.querySelector('.api-card');
-      record('automatic-api-costs-use-separate-secret-and-key-id',adminField.value===''&&api.textContent.includes('$42.50')&&api.textContent.includes('자동 조회')&&calls.some(c=>c.cmd==='api_usage_save'&&c.args.settings.api_key_id==='apikey_fixture'&&c.args.settings.admin_key==='[REDACTED]'));
-      costFailure=true;api.querySelector('.api-usage-refresh').click();await delay();
-      record('cost-query-error-keeps-last-known-amount',api.textContent.includes('$42.50')&&api.textContent.includes('조회 권한'));
-      costFailure=false;api.querySelector('.api-usage-settings').click();usageForm=await ready('.api-usage-form');usageForm.elements.namedItem('source').value='manual';usageForm.elements.namedItem('source').dispatchEvent(new Event('change'));usageForm.elements.namedItem('spent').value='78.45';usageForm.requestSubmit();await delay();await delay();api=document.querySelector('.api-card');
-      record('manual-mode-removes-reporting-credential',!usageFor('claude','project').admin_key_stored);
+      const shown = () => api.querySelector('.api-balance-value').textContent;
+      const checkBalance = async () => { api.querySelector('.api-check').click(); await delay(); await delay(); };
+      record('api-card-shows-organization-prepaid-balance',shown().includes('78.45') && api.textContent.includes('조직 선불 잔액') && !api.querySelector('[role="progressbar"]'));
+      record('registration-and-card-no-longer-offer-budget-controls',!form.querySelector('[type="number"]') && !api.querySelector('.api-usage-settings'));
+      balanceIssue='login_required'; await checkBalance();
+      record('billing-org-visible-without-disclosing-it-in-a-tooltip',api.querySelector('.api-balance-org').textContent.includes('Demo Studio') && !api.querySelector('.api-balance').title.includes('Demo Studio'));
+      record('missing-billing-login-clears-old-value',shown()==='—' && api.textContent.includes('키를 발급한 Claude Console에서 확인'));
+      api.querySelector('.api-billing-link').click(); await delay();
+      record('missing-login-opens-provider-billing',calls.some(c=>c.cmd==='api_open_billing'&&c.args.provider==='claude'));
+      balanceIssue='forbidden'; await checkBalance();
+      record('denied-balance-is-never-zero',shown()==='—' && api.textContent.includes('권한 없음'));
+      api.querySelector('.api-credit-import').click();
+      const pasted=await ready('.api-credit-paste');
+      pasted.value='Other Studio\n조직 크레딧\nUS$12.34'; pasted.dispatchEvent(new Event('input')); await delay();
+      record('wrong-organization-dashboard-rejected',document.querySelector('.api-error')?.textContent.includes('조직 이름') && pasted.value==='' && !calls.some(c=>c.cmd==='api_import_console_credit'));
+      pasted.value='Demo Studio\n조직 크레딧\nUS$12.34\n이번 달 지출\nUS$1.25\nPrivate footer fixture'; pasted.dispatchEvent(new Event('input')); await delay(); await delay();
+      api=await ready('.api-card');
+      record('dashboard-credit-import-labeled-and-dated',shown().includes('12.34') && api.querySelector('.api-balance').dataset.state==='console' && api.querySelector('.api-balance-detail').textContent.includes('Console 확인'));
+      const imported=calls.find(c=>c.cmd==='api_import_console_credit')?.args;
+      record('clipboard-and-key-list-stay-out-of-native-command',imported?.reading.amount_minor===1234 && Object.keys(imported.reading).sort().join(',')==='amount_minor,import_ref,organization' && !JSON.stringify(imported).includes('Private footer'));
+      balanceIssue=null;balanceMinor=0; await checkBalance();
+      record('confirmed-zero-is-visible',shown().includes('0.00') && api.querySelector('.api-balance').dataset.state==='ready');
+      balanceMinor=500;balanceCurrency='JPY';await checkBalance();
+      record('yen-credit-uses-zero-decimal-currency',shown().includes('500') && !shown().includes('.00'));
+      balanceCurrency='USD';balanceMinor=7845;
+      document.getElementById('refresh').click(); await delay(); await delay(); api=await ready('.api-card');
+      record('toolbar-refresh-requests-current-balance',calls.some(c=>c.cmd==='api_balance'&&c.args.name==='project'&&c.args.force===true) && shown().includes('78.45'));
 
       api.querySelector('.api-check').click();await delay();
       record('explicit-api-check',api.textContent.includes('연결 확인됨'));
@@ -281,6 +300,8 @@ function fixture(mode = "normal", preview = false) {
       record('slow-network-check-does-not-trap-dialog',!document.querySelector('.api-dialog'));
       releaseCheck();holdCheck=false;await delay();await delay();
       record('failed-check-persists-after-dialog-close',document.querySelector('.api-status[data-state="invalid_key"]')?.textContent.includes('키 교체'));
+      const openaiCard = [...document.querySelectorAll('.api-card')].find(el=>el.textContent.includes('secondary'));
+      record('openai-credit-opens-billing-without-inventing-amounts',openaiCard?.querySelector('.api-balance-value')?.textContent==='—' && openaiCard.textContent.includes('결제 화면에서 확인') && !calls.some(c=>c.cmd==='api_balance' && c.args.provider==='codex'));
       checkFailure=false;
       api=[...document.querySelectorAll('.api-card')].find(el=>el.textContent.includes('project'));
       const remove=api.querySelector('.api-delete');remove.click();
@@ -314,7 +335,7 @@ function fixture(mode = "normal", preview = false) {
 const allAt=process.argv.indexOf('--all-modes');
 const allDir=allAt>=0 ? path.resolve(process.argv[allAt+1]) : null;
 const outputAt=process.argv.indexOf('--output');
-async function chromium(entry, width, screenshot, profile) {
+async function chromium(entry, width, screenshot, profile, boardHeight) {
   const child=spawn(chrome,['--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check',`--user-data-dir=${profile}`,'--allow-file-access-from-files','--remote-debugging-port=0','about:blank'],{stdio:'ignore'});
   let socket;
   const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -334,8 +355,19 @@ async function chromium(entry, width, screenshot, profile) {
     let seq=0;const pending=new Map();
     socket.onmessage=event=>{const result=JSON.parse(event.data);if(result.id){const job=pending.get(result.id);if(job){pending.delete(result.id);clearTimeout(job.timer);result.error?job.reject(new Error(JSON.stringify(result.error))):job.resolve(result.result);}}};
     const send=(method,params={})=>new Promise((resolve,reject)=>{const id=++seq;const timer=setTimeout(()=>{pending.delete(id);reject(new Error('CDP timeout: '+method));},15000);pending.set(id,{resolve,reject,timer});socket.send(JSON.stringify({id,method,params}));});
-    await send('Emulation.setDeviceMetricsOverride',{width,height:1100,deviceScaleFactor:1,mobile:false});
+    await send('Emulation.setDeviceMetricsOverride',{width,height:boardHeight ?? 1100,deviceScaleFactor:1,mobile:false});
     await send('Page.navigate',{url:pathToFileURL(entry).href});
+    if (boardHeight) {
+      for (let i=0; i<160; i++) {
+        const ready=await send('Runtime.evaluate',{expression:"document.readyState==='complete' && document.images.length>0 && [...document.images].every(im=>im.complete && im.naturalWidth>0)",returnByValue:true});
+        if (ready.result.value) {
+          const shot=await send('Page.captureScreenshot',{format:'png'});
+          fs.writeFileSync(screenshot,Buffer.from(shot.data,'base64')); return;
+        }
+        await sleep(50);
+      }
+      throw new Error('Preview images did not load');
+    }
     let report;
     for(let i=0;i<200;i++) {
       const value=await send('Runtime.evaluate',{expression:"document.querySelector('#ui-test-result')?.textContent",returnByValue:true});
@@ -396,13 +428,11 @@ try {
     const board=`<!doctype html><html lang="ko"><meta charset="utf-8"><title>switcher · 네 가지 모드</title><style>*{box-sizing:border-box}body{margin:0;background:#e8ecec;color:#182024;font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:32px 38px}header{display:flex;align-items:baseline;gap:16px;margin-bottom:28px}h1{font-size:26px;letter-spacing:-1px;margin:0}header span{font-size:12px;color:#566568}.views{display:flex;align-items:flex-start;gap:30px}figure{margin:0;flex:none}figcaption{height:56px}b{font-size:15px;display:block}figcaption span{font-size:10px;color:#566568;display:block;margin-top:6px;white-space:nowrap}figure div{overflow:hidden;border-radius:12px;box-shadow:0 12px 32px #17212221}img{display:block}</style><header><h1>switcher</h1><span>실제 프론트 화면 · 예시 계정 · 4개 모드 유지</span></header><div class="views">${figures}</div></html>`;
     const boardPath=path.join(allDir,'four-modes.html');fs.writeFileSync(boardPath,board);
     const height=Math.ceil(Math.max(...reports.slice(1).map(r=>r.height))+170);
-    const screen=spawnSync(chrome,['--headless=new','--disable-gpu','--no-first-run',`--user-data-dir=${temp}/board`,`--window-size=1100,${height}`,'--hide-scrollbars','--virtual-time-budget=1000',`--screenshot=${path.join(allDir,'four-modes.png')}`,pathToFileURL(boardPath).href],{encoding:'utf8',timeout:30000});
-    if(screen.status!==0) throw new Error('Preview board failed');
+    await chromium(boardPath,1100,path.join(allDir,'four-modes.png'),path.join(temp,'board'),height);
     const apiFigure=(label,file,rect)=>`<section class="api-step"><h3>${label}</h3><div class="crop" style="width:${rect.width}px;height:${rect.height}px"><img src="${file}" style="width:420px;transform:translate(${-rect.x}px,${-rect.y}px)"></div></section>`;
     const complete=`<!doctype html><html lang="ko"><meta charset="utf-8"><title>switcher · 전체 개선 화면</title><style>*{box-sizing:border-box}body{margin:0;background:#e8ecec;color:#182024;font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:32px 38px}header{margin-bottom:30px}h1{font-size:27px;letter-spacing:-1px;margin:0 0 7px}header p{font-size:12px;color:#566568;margin:0}.layout{display:flex;align-items:flex-start;gap:36px}.views{display:flex;align-items:flex-start;gap:24px}figure{margin:0;flex:none}figcaption{height:56px}figcaption b{font-size:15px;display:block}figcaption span{font-size:10px;color:#566568;display:block;margin-top:6px;white-space:nowrap}figure>div,.crop{overflow:hidden;border-radius:12px;box-shadow:0 12px 32px #17212221}img{display:block}.api-column{width:380px;flex:none;border-left:1px solid #cad4d4;padding-left:0}.api-step h3{font-size:13px;margin:0 0 12px}.api-step+.api-step{margin-top:24px}.note{font-size:11px;line-height:1.7;color:#566568;margin-top:20px}.extra{position:absolute;top:770px;left:482px;width:280px;display:flex;align-items:flex-start;gap:16px}.extra img{border-radius:10px;box-shadow:0 8px 24px #17212221}.extra p{font-size:11px;line-height:1.8;color:#566568;margin:6px 0}.extra strong{display:block;color:#182024;font-size:12px;margin-bottom:5px}</style><header><h1>switcher · 전체 개선 화면</h1><p>예시 계정으로 검증한 실제 프론트 · 네 가지 모드 유지 · API 키 등록부터 버튼 전환까지</p></header><div class="layout"><div class="views">${figures}</div><aside class="api-column">${apiFigure('API 01 · 키 등록', 'api-registration.png',registration.dialog)}${apiFigure('API 02 · 저장 후 바로 사용', 'api-result.png',result.dialog)}<p class="note">연결 확인·사용량은 검증용 예시 데이터입니다.<br>실제 키를 등록하면 해당 연결의 결과를 표시합니다.</p></aside></div><div class="extra"><img src="mode-no-ai.png" width="120"><p><strong>AI를 모두 숨겼을 때</strong>SYSTEM과 도구만 남습니다.<br>숨긴 계정의 빈 영역도 사라집니다.<br><br>계정 조작은 같은 위치에:<br>다시 연결 · 이름 변경 · 삭제</p></div></html>`;
     const completePath=path.join(allDir,'complete-preview.html');fs.writeFileSync(completePath,complete);
-    const completeShot=spawnSync(chrome,['--headless=new','--disable-gpu','--no-first-run',`--user-data-dir=${temp}/complete-board`,'--window-size=1490,1200','--hide-scrollbars','--virtual-time-budget=1000',`--screenshot=${path.join(allDir,'complete-preview.png')}`,pathToFileURL(completePath).href],{encoding:'utf8',timeout:30000});
-    if(completeShot.status!==0) throw new Error('Complete preview failed');
+    await chromium(completePath,1490,path.join(allDir,'complete-preview.png'),path.join(temp,'complete-board'),1200);
     reports.push(registration,result,noAI);
 
   }

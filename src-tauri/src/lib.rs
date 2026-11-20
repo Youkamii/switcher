@@ -619,24 +619,27 @@ async fn api_check(provider: String, name: String) -> Result<api_connections::Co
     .map_err(|_| "API 연결 확인 작업 실패")?
 }
 
-/// Only official key consoles can be opened, and only on an explicit UI click.
 #[tauri::command]
-async fn api_usage_read(provider: String, name: String) -> Result<api_connections::costs::Usage, String> {
-    tauri::async_runtime::spawn_blocking(move || api_connections::costs::read(&Env::real()?, &provider, &name)).await.map_err(|_| "API 사용량 읽기 실패")?
+async fn api_balance(provider: String, name: String, force: bool) -> Result<api_connections::balance::Balance, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(api_connections::balance::read(&Env::real()?, &provider, &name, force))
+    }).await.map_err(|_| "API 잔액 조회 실패")?
 }
 #[tauri::command]
-async fn api_usage_save(provider: String, name: String, settings: api_connections::costs::Settings) -> Result<api_connections::costs::Usage, String> {
-    tauri::async_runtime::spawn_blocking(move || api_connections::costs::save(&Env::real()?, &provider, &name, settings)).await.map_err(|_| "API 사용량 설정 실패")?
+async fn api_import_console_credit(name: String, reading: api_connections::balance::ConsoleReading) -> Result<api_connections::balance::Balance, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(api_connections::balance::import(&Env::real()?, &name, reading))
+    }).await.map_err(|_| "Console 잔액을 가져오지 못했습니다")?
 }
 #[tauri::command]
-async fn api_usage_refresh(provider: String, name: String, force: bool) -> Result<api_connections::costs::Usage, String> {
-    tauri::async_runtime::spawn_blocking(move || tauri::async_runtime::block_on(api_connections::costs::refresh(&Env::real()?, &provider, &name, force))).await.map_err(|_| "API 비용 조회 실패")?
-}
-#[tauri::command]
-fn api_open_usage_console(app: tauri::AppHandle, provider: String) -> Result<(), String> {
+fn api_open_billing(app: tauri::AppHandle, provider: String, dashboard: Option<bool>) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
-    let url = match Provider::parse(&provider)? { Provider::Claude => "https://platform.claude.com/cost", Provider::Codex => "https://platform.openai.com/usage" };
-    app.opener().open_url(url, None::<&str>).map_err(|_| "비용 페이지를 열지 못했습니다".into())
+    let url = match Provider::parse(&provider)? {
+        Provider::Claude if dashboard == Some(true) => "https://platform.claude.com/dashboard",
+        Provider::Claude => "https://platform.claude.com/settings/billing",
+        Provider::Codex => "https://platform.openai.com/settings/organization/billing/overview",
+    };
+    app.opener().open_url(url, None::<&str>).map_err(|_| "결제 페이지를 열지 못했습니다".into())
 }
 #[tauri::command]
 fn api_open_console(app: tauri::AppHandle, provider: String) -> Result<(), String> {
@@ -3914,10 +3917,9 @@ pub fn run() {
             api_launch_command,
             api_activate,
             api_deactivate,
-            api_usage_read,
-            api_usage_save,
-            api_usage_refresh,
-            api_open_usage_console,
+            api_balance,
+            api_import_console_credit,
+            api_open_billing,
             api_check,
             api_open_console,
             list_profiles,

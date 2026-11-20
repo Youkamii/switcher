@@ -29,6 +29,7 @@ profiles/
 *.token
 *.dpapi
 api-connections/
+console-credit.json
 api-workspaces/
 api-active/
 codex-session-request.json

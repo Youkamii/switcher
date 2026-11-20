@@ -1293,6 +1293,7 @@ body.minimal .dock-tray button {
 
 /* 계정 정보 가리기 (🙈) — 화면 공유·스크린샷에 이메일·GitHub 계정명이 노출되지
    않게 표시만 블러. 전환·삭제 등 동작은 그대로다 */
+body.privacy .api-balance-org,
 body.privacy .card-name,
 body.privacy .hint.warn {
   filter: blur(5px);
@@ -2436,7 +2437,7 @@ body.edge .compact-api-active { flex-direction: column; gap: 2px; padding: 4px 2
 .api-providers button:disabled { opacity: 1; }
 .api-console { align-self: flex-end; padding: 0; border: 0; color: var(--accent); background: transparent; font-size: 11px; }
 .api-form label { font-size: 11px; line-height: 1.5; }
-.api-form input, .api-launch textarea { display: block; width: 100%; min-width: 0; margin-top: 6px; padding: 10px 11px; border: 1px solid rgb(var(--border-rgb)); border-radius: 7px; background: rgb(var(--panel-rgb)); color: rgb(var(--text-rgb)); font-family: inherit; font-size: 12px; user-select: text; }
+.api-form input, .api-launch textarea, .api-credit-paste { display: block; width: 100%; min-width: 0; margin-top: 6px; padding: 10px 11px; border: 1px solid rgb(var(--border-rgb)); border-radius: 7px; background: rgb(var(--panel-rgb)); color: rgb(var(--text-rgb)); font-family: inherit; font-size: 12px; user-select: text; }
 .api-form input::placeholder { color: #73808b; font-size: 11px; }
 .api-form input:read-only { color: rgb(var(--muted-rgb)); }
 .api-save, .api-copy { display: flex; gap: 7px; justify-content: center; align-items: center; min-height: 36px; width: 100%; }
@@ -2475,26 +2476,22 @@ body:not(.locked) main::-webkit-scrollbar-thumb { background: rgb(var(--border-r
 .connection-subscription p { font-size: 12px; line-height: 1.8; color: var(--muted); margin-bottom: 18px; }
 .connection-login { width: 100%; min-height: 36px; }
 
-.api-form label[hidden], .api-usage-auto[hidden] { display: none; }
-.api-form select { display: block; width: 100%; min-width: 0; margin-top: 6px; padding: 10px 11px; border: 1px solid rgb(var(--border-rgb)); border-radius: 7px; background: rgb(var(--panel-rgb)); color: rgb(var(--text-rgb)); font: inherit; }
-.api-usage-auto { display: grid; gap: 12px; }
-.api-cost { grid-column: 1 / -1; display: flex; align-items: center; gap: 7px; border-top: 1px solid rgba(var(--border-rgb),.5); padding-top: 8px; }
-.api-cost-content { flex: 1; min-width: 0; }
-.api-cost-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 4px; font-size: 9px; color: var(--muted); }
-.api-cost-amount { font-size: 10px; font-weight: 550; color: var(--text); font-variant-numeric: tabular-nums; }
-.api-cost-track { height: 4px; margin: 6px 0 4px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
-.api-cost-track > span { display: block; height: 100%; background: var(--accent); border-radius: inherit; }
-.api-cost-detail { font-size: 9px; color: var(--muted); }
-.api-cost-error { font-size: 10px; color: var(--warn); line-height: 1.5; margin-top: 5px; overflow-wrap: anywhere; }
-.api-cost-actions { display: flex; flex-direction: column; }
-.api-cost-actions .icon-button { width: 24px; height: 24px; }
-.cost-warning .api-cost-track > span { background: var(--warn); }
-.cost-exceeded .api-cost-track > span { background: var(--danger); }
-.cost-exceeded .api-cost-amount { color: var(--danger); }
-.compact-api-active { display: block; }
+.api-balance { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 2px 8px; padding-top: 7px; border-top: 1px solid rgba(var(--border-rgb), .5); }
+.api-balance-label { font-size: 10px; color: var(--muted); }
+.api-balance-org { overflow-wrap: anywhere; }
+.api-balance-value { justify-self: end; font-size: 13px; font-variant-numeric: tabular-nums; color: var(--text); overflow-wrap: anywhere; }
+.api-balance[data-state="ready"] .api-balance-value, .api-balance[data-state="console"] .api-balance-value { color: var(--accent); }
+.api-balance-detail { grid-column: 1; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.api-balance-links { grid-column: 2; display: flex; gap: 9px; justify-content: end; flex-wrap: wrap; }
+.api-billing-link, .api-credit-import { min-height: 24px; background: transparent; border: 0; padding: 2px 0; font-size: 10px; color: var(--muted); }
+.api-billing-link:hover, .api-billing-link:focus-visible, .api-credit-import:hover, .api-credit-import:focus-visible { color: var(--accent); text-decoration: underline; }
+.api-credit-import[hidden] { display: none; }
+.compact-api-active { display: block; min-width: 0; }
 .compact-api-label { display: flex; gap: 5px; align-items: center; overflow: hidden; }
-.compact-api-cost { margin-top: 4px; width: 100%; }
-.compact-cost-meter .api-cost-heading { justify-content: center; }
-.compact-cost-meter .api-cost-amount { font-size: 9px; white-space: normal; overflow-wrap: anywhere; }
+.compact-balance { display: block; margin-top: 3px; border: 0; padding: 0; text-align: center; }
+.compact-balance .api-balance-label { display: none; }
+.compact-balance .api-balance-value { font-size: 10px; }
+.compact-balance .api-balance-detail { display: block; white-space: normal; margin-top: 1px; line-height: 1.3; font-size: 9px; overflow-wrap: anywhere; }
+.compact-balance .api-balance-detail[hidden] { display: none; }
 body.edge .compact-api-label { flex-direction: column; gap: 2px; }
-body.edge .compact-cost-meter .api-cost-amount { font-size: 8px; text-align: center; }
+body.edge .compact-balance .api-balance-value { font-size: 9px; }

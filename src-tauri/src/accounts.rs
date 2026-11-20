@@ -67,6 +67,7 @@ pub struct Env {
     pub home: PathBuf,
     pub store: PathBuf,
     pub codex_home: PathBuf,
+    pub anthropic_config_dir: PathBuf,
     pub claude_live: ClaudeLiveStore,
 }
 
@@ -91,8 +92,14 @@ impl Env {
         };
         #[cfg(not(target_os = "macos"))]
         let claude_live = ClaudeLiveStore::File(claude_file);
+        #[cfg(windows)]
+        let platform_config = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| home.join("AppData/Roaming")).join("Anthropic");
+        #[cfg(not(windows))]
+        let platform_config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| home.join(".config")).join("anthropic");
+        let anthropic_config_dir = std::env::var_os("ANTHROPIC_CONFIG_DIR").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or(platform_config);
         Ok(Env {
             codex_home,
+            anthropic_config_dir,
             home,
             store,
             claude_live,
@@ -242,7 +249,7 @@ pub(crate) mod keychain {
             return Ok(());
         }
         let err = String::from_utf8_lossy(&out.stderr);
-        if err.contains("could not be found") {
+        if out.status.code() == Some(44) || err.contains("could not be found") {
             return Ok(());
         }
         Err(format!("키체인 삭제 실패 ({service}): {}", err.trim()))
@@ -999,7 +1006,7 @@ pub(crate) fn live_identity(env: &Env, provider: Provider) -> Result<Option<Live
 }
 
 /// ~/.claude.json의 oauthAccount 블록 (프로필에 함께 보관해 전환 시 복원)
-fn claude_oauth_block(env: &Env) -> Result<Option<Value>, String> {
+pub(crate) fn claude_oauth_block(env: &Env) -> Result<Option<Value>, String> {
     let path = env.claude_json_path();
     if !path.exists() {
         return Ok(None);
@@ -1084,7 +1091,7 @@ pub(crate) fn read_meta(dir: &Path) -> Option<Meta> {
     serde_json::from_str(&text).ok()
 }
 
-fn profile_dirs(env: &Env, provider: Provider) -> Result<Vec<(String, PathBuf)>, String> {
+pub(crate) fn profile_dirs(env: &Env, provider: Provider) -> Result<Vec<(String, PathBuf)>, String> {
     let root = env.profiles_dir(provider);
     if !root.exists() {
         return Ok(Vec::new());
@@ -1516,6 +1523,7 @@ pub(crate) mod test_support {
         fs::create_dir_all(base.join(".claude")).unwrap();
         Env {
             codex_home: base.join(".codex"),
+            anthropic_config_dir: base.join("anthropic"),
             home: base.clone(),
             store: base.join(".switcher"),
             // 테스트는 어느 플랫폼에서든 파일 저장소로 검증한다 (실키체인은 건드리지 않는다)

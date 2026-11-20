@@ -6,7 +6,7 @@ use std::{fs, path::PathBuf, sync::Mutex};
 
 static LOCK: Mutex<()> = Mutex::new(());
 mod activation;
-pub mod costs;
+pub mod balance;
 #[cfg(all(test, windows))]
 mod windows_tests;
 
@@ -273,8 +273,11 @@ pub fn delete(env: &Env, provider: &str, name: &str) -> Result<(), String> {
         activation::deactivate_locked(env, provider)?;
     }
     OsSecrets(env).remove(&service(provider, name))?;
-    costs::remove_locked(env, provider, name)?;
-    for file in ["connection.json", "run.sh", "run.ps1", "key.sh", "key.ps1", "usage.json"] {
+    // Also retire the reporting credential saved by versions with monthly budgets.
+    if dir.join("usage.json").exists() {
+        OsSecrets(env).remove(&format!("Switcher-Usage-{}-{}", provider.dir_name(), name.to_ascii_lowercase()))?;
+    }
+    for file in ["connection.json", "run.sh", "run.ps1", "key.sh", "key.ps1", "usage.json", "console-credit.json"] {
         match fs::remove_file(dir.join(file)) {
             Ok(()) => (),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
@@ -282,7 +285,8 @@ pub fn delete(env: &Env, provider: &str, name: &str) -> Result<(), String> {
         }
     }
     // CLI history/config lives outside this folder; deleting a connection keeps that history.
-    let _ = fs::remove_dir(dir);
+    let _ = fs::remove_dir(&dir);
+    balance::forget(&dir);
     Ok(())
 }
 
@@ -497,7 +501,7 @@ mod tests {
     use super::*;
     use std::{cell::RefCell, collections::HashMap};
     #[derive(Default)]
-    struct Memory(RefCell<HashMap<String, Vec<u8>>>);
+    pub(super) struct Memory(RefCell<HashMap<String, Vec<u8>>>);
     impl Secrets for Memory {
         fn put(&self, id: &str, key: &[u8]) -> Result<(), String> {
             self.0.borrow_mut().insert(id.into(), key.into());

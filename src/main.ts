@@ -27,7 +27,7 @@ import {
   type GithubStarPromptChoice,
 } from "./firstRunStar";
 import { applyAccentTheme, themeCssColor } from "./theme";
-import { apiConnections, apiIsBusy, openConnectionRegistration, compactApiUsage } from "./apiConnections";
+import { apiConnections, apiIsBusy, openConnectionRegistration, compactApiBalance } from "./apiConnections";
 import { icon, iconButton, setButtonIcon } from "./uiIcons";
 import { edgeGaugeLayout } from "./edgeGaugeLayout";
 
@@ -1357,7 +1357,7 @@ async function renderProvider(
       hint.className = "hint";
       hint.textContent = t("noAccounts");
       section.appendChild(hint);
-      section.appendChild(await apiConnections(provider, { changed: () => render({ immediate: true }), fit: fitHeight, toast }));
+      section.appendChild(await apiConnections(provider, { changed: () => render({ immediate: true }), fit: fitHeight, toast }, forceRetry));
       target.appendChild(section);
       return;
     }
@@ -1381,7 +1381,7 @@ async function renderProvider(
       section.appendChild(note);
     }
 
-    section.appendChild(await apiConnections(provider, { changed: () => render({ immediate: true }), fit: fitHeight, toast }));
+    section.appendChild(await apiConnections(provider, { changed: () => render({ immediate: true }), fit: fitHeight, toast }, forceRetry));
     if (snap.live && !snap.live_saved) {
       // 지금 로그인된 계정이 아직 프로필로 없을 때만 수동 저장 입력칸을 보여준다
       saveForm(provider, section);
@@ -1393,7 +1393,7 @@ async function renderProvider(
     section.appendChild(err);
     // A subscription storage mismatch must not hide the independent API connection manager.
     if (!section.querySelector(".api-panel")) {
-      try { section.appendChild(await apiConnections(provider, { changed: () => render({ immediate: true }), fit: fitHeight, toast })); }
+      try { section.appendChild(await apiConnections(provider, { changed: () => render({ immediate: true }), fit: fitHeight, toast }, forceRetry)); }
       catch (apiError) { err.textContent += ` · ${String(apiError)}`; }
     }
   }
@@ -2269,7 +2269,7 @@ async function renderProviderEdge(
     head.textContent = title;
     section.appendChild(head);
     if (snap.api_active) {
-      section.appendChild(compactApiUsage(provider, snap.api_active));
+      section.appendChild(compactApiBalance(provider, snap.api_active, forceRetry, { fit: fitHeight, toast }));
       edgeGaugeByProvider.delete(provider);
       applyEdgeGauge();
     }
@@ -2438,7 +2438,7 @@ async function renderProviderCompact(
 
     // 카드 골격은 즉시 붙이고 사용량만 뒤에서 병렬로 채운다. 모드 전환이 네트워크
     // 조회를 기다리며 멎지 않게 하면서, 일반 새로고침은 pending을 기다려 한 번에 바뀐다.
-    if (snap.api_active) section.appendChild(compactApiUsage(provider, snap.api_active));
+    if (snap.api_active) section.appendChild(compactApiBalance(provider, snap.api_active, forceRetry, { fit: fitHeight, toast }));
     const cards = snap.profiles.map((profile) =>
       compactCard(provider, profile, minimal, pending, forceRetry),
     );

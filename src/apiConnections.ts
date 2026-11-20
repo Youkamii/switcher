@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { currentLang, t } from "./i18n";
 import { icon, iconButton, setButtonIcon } from "./uiIcons";
+import { readConsoleCredit } from "./consoleCredit";
 
 const messages = {
   ko: {
@@ -9,7 +10,7 @@ const messages = {
     billing: "API는 구독과 별도 과금됩니다. 사용을 선택하면 다음 CLI 실행부터 적용됩니다.",
     saved: "저장됨 · 확인 전", check: "연결 확인", checked: "연결 확인됨", checking: "연결 확인 중…",
     remove: "연결 삭제", confirm: "한 번 더 눌러 삭제", noQuota: "API · 별도 과금", console: "키 발급 페이지 열기 ↗",
-    checkNote: "모델 목록만 조회합니다. 생성 권한·잔액은 확인하지 않습니다.", keyNote: "키는 OS 보안 저장소에 보관하며 다시 표시하지 않습니다.",
+    checkNote: "모델 목록으로 연결을 확인합니다. 선불 잔액은 API 카드에서 확인하세요.", keyNote: "키는 OS 보안 저장소에 보관하며 다시 표시하지 않습니다.",
     claudeNote: "Claude 키는 발급할 때 사용할 워크스페이스를 지정하세요.", invalid_key: "키 교체 필요", forbidden: "조회 권한 확인 필요", rate_limited: "요청 제한 · 다시 확인", unavailable: "연결 확인 필요",
     complete: "API 사용 중", use: "사용", stop: "해제", stopTitle: "API 사용 해제 · 이전 설정 복원", active: "API · 사용 중", applyFailed: "키는 저장됐지만 적용하지 못했습니다", savedOnly: "키 저장 완료", applied: "다음 실행부터 이 API를 사용합니다. 구독으로 돌아가려면 계정 목록에서 전환하세요.", nameHint: "예: work · 영문, 숫자, - 또는 _", replacement: "새 키로 교체하면 다음 CLI 실행부터 적용됩니다.",
   },
@@ -18,7 +19,7 @@ const messages = {
     billing: "API usage is billed separately. Selecting Use applies this key to the next CLI session.",
     saved: "Saved · not checked", check: "Check connection", checked: "Connection checked", checking: "Checking connection…",
     remove: "Delete connection", confirm: "Click again to delete", noQuota: "API · separate billing", console: "Open API key page ↗",
-    checkNote: "Checks the model list only, not generation access or balance.", keyNote: "Keys stay in the OS secure store and are never displayed again.",
+    checkNote: "The model list checks the connection. Open the API card for prepaid balance information.", keyNote: "Keys stay in the OS secure store and are never displayed again.",
     claudeNote: "Select a workspace when creating your Claude API key.", invalid_key: "Replace key", forbidden: "Check model permissions", rate_limited: "Rate limited · retry", unavailable: "Check connection",
     complete: "API active", use: "Use", stop: "Stop", stopTitle: "Stop using API · restore previous settings", active: "API · active", applyFailed: "Key saved, but could not apply it", savedOnly: "Key saved", applied: "Your next CLI session uses this API. Select a subscription account to switch back.", nameHint: "e.g. work · letters, numbers, - or _", replacement: "The replacement key applies to the next CLI launch.",
   },
@@ -108,11 +109,9 @@ export function openApiRegistration(hooks: Hooks, initialProvider = "claude", ex
   const name = document.createElement("input"); name.name = "connection-name"; name.required = true; name.maxLength = 32; name.pattern = "[A-Za-z0-9_-]+"; name.autocomplete = "off";
   name.placeholder = text.nameHint; name.value = existing?.name ?? ""; name.readOnly = Boolean(existing); nameLabel.append(name);
   const keyLabel = document.createElement("label"); keyLabel.textContent = text.key; key.name = "api-key"; key.placeholder = "sk-…"; keyLabel.append(key);
-  const budgetLabel = document.createElement("label"); budgetLabel.textContent = currentLang() === "ko" ? "월 예산 (USD)" : "Monthly budget (USD)";
-  const budget = document.createElement("input"); budget.type = "number"; budget.name = "budget-usd"; budget.min = "0.01"; budget.max = "1000000000"; budget.step = "0.01"; budget.value = "195"; budget.required = !existing; budgetLabel.hidden = Boolean(existing); budgetLabel.append(budget);
   const errorLine = paragraph("", "api-error"); errorLine.setAttribute("role", "alert");
   const save = document.createElement("button"); save.type = "submit"; save.className = "primary api-save"; save.append(icon("shield"), text.save);
-  form.append(providers, consoleLink, nameLabel, keyLabel, budgetLabel, paragraph(existing ? text.replacement : text.keyNote), providerNote, errorLine, save);
+  form.append(providers, consoleLink, nameLabel, keyLabel, paragraph(existing ? text.replacement : text.keyNote), providerNote, errorLine, save);
   const billing = paragraph(text.billing, "api-billing");
   let loginButton: HTMLButtonElement | undefined;
   if (login) {
@@ -142,10 +141,7 @@ export function openApiRegistration(hooks: Hooks, initialProvider = "claude", ex
     saving = true; apiPending++; save.disabled = true; name.readOnly = true; key.readOnly = true; choices.forEach(b => { b.disabled = true; });
     const close = host.querySelector<HTMLButtonElement>(".api-close")!; close.disabled = true;
     const connection: Connection = { provider, name: name.value.trim().toLowerCase() };
-    const apply = async () => {
-      if (!existing) await invoke("api_usage_save", { ...connection, settings: { budget_usd: Number(budget.value), source: "manual", spent_usd: null, api_key_id: null, admin_key: null } });
-      await invoke("api_activate", connection);
-    };
+    const apply = () => invoke("api_activate", connection);
     let stored = false;
     let activationError: string | null = null;
     try {
@@ -182,7 +178,7 @@ export function openApiRegistration(hooks: Hooks, initialProvider = "claude", ex
   host.showModal(); hooks.fit(); (loginButton ?? (existing ? key : name)).focus();
 }
 
-export async function apiConnections(provider: string, hooks: Hooks): Promise<HTMLElement> {
+export async function apiConnections(provider: string, hooks: Hooks, force: boolean): Promise<HTMLElement> {
   const text = apiText();
   const panel = document.createElement("div"); panel.className = "api-panel";
   const connections = await invoke<Connection[]>("api_list", { provider });
@@ -211,9 +207,12 @@ export async function apiConnections(provider: string, hooks: Hooks): Promise<HT
       finally { apiPending--; use.disabled = false; }
       if (changed) await hooks.changed();
     };
-    const check = iconButton("reconnect", text.check, "api-check");
+    const balance = balanceDisplay(provider, connection.name, false, hooks);
+    void balance.refresh(force);
+    const check = iconButton("reconnect", provider === "claude" ? balanceText().refresh : text.check, "api-check");
     check.onclick = async () => {
       check.disabled = true; status.textContent = text.checking;
+      void balance.refresh(true);
       try { const checked = await invoke<Connection>("api_check", { provider, name: connection.name }); status.textContent = stateLabel(checked); status.dataset.state = "ready"; }
       catch (error) { status.textContent = String(error); status.dataset.state = "error"; }
       finally { check.disabled = false; hooks.fit(); }
@@ -237,121 +236,153 @@ export async function apiConnections(provider: string, hooks: Hooks): Promise<HT
       finally { apiPending--; remove.disabled = false; hooks.fit(); }
       if (changed) await hooks.changed();
     };
-    actions.append(use, check, replace, remove); card.append(head, actions, await apiUsageRow(provider, connection.name, hooks)); panel.append(card);
+    actions.append(use, check, replace, remove); card.append(head, actions, balance.element); panel.append(card);
   }
   return panel;
 }
 
+type BalanceIssue = "unsupported" | "login_required" | "login_expired" | "key_rejected" | "forbidden" | "rate_limited" | "unavailable";
+type Credit = { amount_minor: number; currency: string; checked_at: number };
+type Balance = { credit: Credit | null; issue: BalanceIssue | null; organization: string | null; console_credit: Credit | null; import_ref: string | null };
 
-type ApiUsage = {
-  month: string; budget_usd: number; spent_usd: number | null; remaining_usd: number | null; percent: number | null;
-  source: "manual" | "automatic"; api_key_id: string; admin_key_stored: boolean;
-  checked_at: number | null; provider_updated_at: string | null; error: string | null;
-};
-const money = (amount: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(amount);
-const defaultUsage = (): ApiUsage => ({ month: new Date().toISOString().slice(0, 7), budget_usd: 195, spent_usd: null, remaining_usd: null, percent: null, source: "manual", api_key_id: "", admin_key_stored: false, checked_at: null, provider_updated_at: null, error: null });
-
-function usageMeter(usage: ApiUsage, compact = false): HTMLElement {
-  const ko = currentLang() === "ko";
-  const box = document.createElement("div"); box.className = `api-cost-meter${compact ? " compact-cost-meter" : ""}`;
-  const top = document.createElement("div"); top.className = "api-cost-heading";
-  if (!compact) { const month = document.createElement("span"); month.textContent = `${usage.month} · UTC`; top.append(month); }
-  const amount = document.createElement("strong"); amount.className = "api-cost-amount";
-  amount.textContent = `${usage.spent_usd === null ? "—" : money(usage.spent_usd)} / ${compact ? new Intl.NumberFormat("en-US").format(usage.budget_usd) : money(usage.budget_usd)}`;
-  top.append(amount);
-  const track = document.createElement("div"); track.className = "api-cost-track";
-  const fill = document.createElement("span"); fill.style.width = `${Math.min(100, Math.max(0, usage.percent ?? 0))}%`; track.append(fill);
-  if (usage.percent !== null) { track.setAttribute("role", "progressbar"); track.setAttribute("aria-valuenow", String(Math.min(100, Math.max(0, usage.percent)))); track.setAttribute("aria-valuemin", "0"); track.setAttribute("aria-valuemax", "100"); track.setAttribute("aria-label", ko ? "API 월 예산 사용률" : "API monthly budget usage"); }
-  box.classList.toggle("cost-warning", (usage.percent ?? 0) >= 80); box.classList.toggle("cost-exceeded", (usage.percent ?? 0) >= 100);
-  box.append(top, track);
-  const detail = usage.spent_usd === null ? (ko ? "사용 금액 미입력 · 조회 전" : "Amount not entered or fetched") : usage.remaining_usd! < 0 ? (ko ? `${money(-usage.remaining_usd!)} 초과` : `${money(-usage.remaining_usd!)} over budget`) : (ko ? `${money(usage.remaining_usd!)} 남음` : `${money(usage.remaining_usd!)} remaining`);
-  box.title = `${detail} · ${usage.source === "manual" ? (ko ? "직접 입력" : "Manual") : (ko ? "API 집계 · 반영 지연 가능" : "API report · may be delayed")}${usage.checked_at ? " · " + new Date(usage.checked_at * 1000).toLocaleString() : ""}${usage.provider_updated_at ? " · " + usage.provider_updated_at : ""}${usage.error ? " · " + usage.error : ""}`;
-  if (!compact) {
-    box.append(paragraph(`${detail} · ${usage.source === "manual" ? (ko ? "직접 입력" : "Manual") : (ko ? "자동 조회" : "Automatic")}`, "api-cost-detail"));
-    if (usage.error) box.append(paragraph(usage.error, "api-cost-error"));
-  }
-  return box;
-}
-
-async function apiUsageRow(provider: string, name: string, hooks: Hooks): Promise<HTMLElement> {
-  let usage: ApiUsage;
-  try { usage = await invoke<ApiUsage>("api_usage_read", { provider, name }); }
-  catch (error) { usage = { ...defaultUsage(), error: String(error) }; }
-  const row = document.createElement("div"); row.className = "api-cost";
-  const meter = document.createElement("div"); meter.className = "api-cost-content"; meter.append(usageMeter(usage));
-  const actions = document.createElement("div"); actions.className = "api-cost-actions";
-  const edit = iconButton("edit", currentLang() === "ko" ? "사용량·예산 설정" : "Usage and budget settings", "api-usage-settings");
-  edit.dataset.apiFocus = `${provider}/${name}/usage`;
-  edit.onclick = () => openUsageSettings(provider, name, usage, hooks);
-  const refresh = iconButton("reconnect", currentLang() === "ko" ? "비용 새로고침" : "Refresh costs", "api-usage-refresh");
-  const repaint = () => { meter.replaceChildren(usageMeter(usage)); refresh.hidden = usage.source !== "automatic"; hooks.fit(); };
-  const update = async (force: boolean) => {
-    refresh.disabled = true;
-    try { usage = await invoke<ApiUsage>("api_usage_refresh", { provider, name, force }); }
-    catch (error) { usage = { ...usage, error: String(error) }; }
-    finally { refresh.disabled = false; repaint(); }
+function balanceText() {
+  return currentLang() === "ko" ? {
+    label: "조직 선불 잔액", checking: "조회 중…", time: "확인 시각", billing: "결제 화면 ↗", refresh: "연결 및 잔액 새로고침",
+    unsupported: "결제 화면에서 확인", login_required: "키를 발급한 Claude Console에서 확인", login_expired: "Claude 계정 다시 연결 필요",
+    key_rejected: "API 키 확인 필요", forbidden: "잔액 조회 권한 없음", rate_limited: "잠시 후 다시 조회", unavailable: "잔액 조회 실패",
+    consoleLabel: "조직 크레딧", copied: "Console 확인", paste: "대시보드 가져오기", pasteHint: "Claude Console 대시보드에서 조직 이름과 ‘조직 크레딧’ 금액을 함께 복사한 뒤 여기에 붙여넣으세요.",
+    pasteError: "이 연결의 조직 이름과 ‘조직 크레딧’ 금액을 함께 복사하세요.", pasteHere: "대시보드 내용 붙여넣기",
+  } : {
+    label: "Organization prepaid balance", checking: "Checking…", time: "Checked", billing: "View billing ↗", refresh: "Refresh connection and balance",
+    unsupported: "Check billing", login_required: "Check the Claude Console that issued this key", login_expired: "Reconnect your Claude account",
+    key_rejected: "Check API key", forbidden: "Balance access denied", rate_limited: "Try again shortly", unavailable: "Balance unavailable",
+    consoleLabel: "Organization credits", copied: "From Console", paste: "Import dashboard", pasteHint: "Copy the organization name and Organization credits amount from your Claude Console dashboard, then paste them here.",
+    pasteError: "Copy this connection’s organization name together with its Organization credits amount.", pasteHere: "Paste dashboard text",
   };
-  refresh.hidden = usage.source !== "automatic"; refresh.onclick = () => void update(true);
-  actions.append(edit, refresh); row.append(meter, actions);
-  if (usage.source === "automatic") void update(false);
-  return row;
 }
 
-export function compactApiUsage(provider: string, name: string): HTMLElement {
+function openConsoleImport(hooks: Hooks, name: string, organization: string, reference: string) {
+  const text = balanceText();
+  let saving = false;
+  const host = dialog(hooks, text.paste, () => !saving);
+  const identity = paragraph(organization, "api-balance-org");
+  const dashboard = document.createElement("button"); dashboard.type = "button"; dashboard.className = "api-billing-link";
+  dashboard.textContent = currentLang() === "ko" ? "대시보드 열기 ↗" : "Open dashboard ↗";
+  dashboard.onclick = () => { void invoke("api_open_billing", { provider: "claude", dashboard: true }).catch(cause => hooks.toast(String(cause), true)); };
+  const entry = document.createElement("textarea");
+  entry.className = "api-credit-paste"; entry.rows = 2; entry.spellcheck = false;
+  entry.placeholder = text.pasteHere; entry.setAttribute("aria-label", text.pasteHere);
+  entry.autocomplete = "off";
+  const error = paragraph("", "api-error"); error.setAttribute("role", "status");
+  async function save(raw: string) {
+    if (saving) return;
+    const amount = readConsoleCredit(raw, organization);
+    if (amount === undefined) { error.textContent = text.pasteError; return; }
+    saving = true; entry.disabled = true;
+    try {
+      await invoke("api_import_console_credit", { name, reading: { organization, import_ref: reference, amount_minor: amount } });
+      saving = false; host.dispatchEvent(new Event("api-dismiss"));
+    } catch (cause) { saving = false; entry.disabled = false; error.textContent = String(cause); entry.focus(); }
+  }
+  entry.onpaste = event => {
+    if (!event.clipboardData) return;
+    event.preventDefault(); void save(event.clipboardData.getData("text/plain"));
+  };
+  entry.oninput = () => { const raw = entry.value; entry.value = ""; void save(raw); };
+  host.append(identity, dashboard, paragraph(text.pasteHint), entry, error);
+  host.showModal(); hooks.fit(); entry.focus();
+}
+
+function formatCredit(credit: Credit): string | undefined {
+  if (!Number.isSafeInteger(credit.amount_minor)) return;
+  try {
+    // The provider reports minor units. Intl knows USD has two decimals, JPY zero, KWD three.
+    const intl = Intl as typeof Intl & { supportedValuesOf?: (kind: "currency") => string[] };
+    if (intl.supportedValuesOf && !intl.supportedValuesOf("currency").includes(credit.currency)) return;
+    const format = new Intl.NumberFormat(currentLang(), { style: "currency", currency: credit.currency });
+    const digits = format.resolvedOptions().maximumFractionDigits;
+    if (digits === undefined) return;
+    return format.format(credit.amount_minor / 10 ** digits);
+  } catch { return; }
+}
+
+function balanceDisplay(provider: string, name: string, compact: boolean, hooks: Pick<Hooks, "fit" | "toast"> & Partial<Pick<Hooks, "changed">>) {
+  const text = balanceText();
+  const element = document.createElement("div");
+  element.className = compact ? "api-balance compact-balance" : "api-balance";
+  const label = document.createElement("span");
+  label.className = "api-balance-label";
+  const caption = document.createTextNode(text.label); label.append(caption);
+  const organization = document.createElement("span");
+  organization.className = "api-balance-org";
+  label.append(organization);
+  const value = document.createElement("strong"); value.className = "api-balance-value";
+  value.setAttribute("role", "status");
+  const openBilling = () => { void invoke("api_open_billing", { provider }).catch(error => hooks.toast?.(String(error), true)); };
+  const detail = document.createElement(compact ? "button" : "span"); detail.className = "api-balance-detail";
+  if (detail instanceof HTMLButtonElement) {
+    detail.type = "button"; detail.onclick = openBilling; detail.title = text.billing;
+    detail.classList.add("api-billing-link");
+  }
+  element.append(label, value, detail);
+  let importer: HTMLButtonElement | undefined;
+  if (!compact) {
+    const links = document.createElement("div"); links.className = "api-balance-links";
+    if (provider === "claude" && hooks.changed) {
+      importer = document.createElement("button"); importer.type = "button"; importer.className = "api-credit-import";
+      importer.textContent = text.paste; importer.hidden = true; links.append(importer);
+    }
+    const link = document.createElement("button"); link.type = "button"; link.className = "api-billing-link";
+    link.textContent = text.billing;
+    link.onclick = openBilling;
+    links.append(link); element.append(links);
+  }
+  function paint(data: Partial<Balance>) {
+    const { issue, organization: org, import_ref: reference } = data;
+    const saved = !data.credit && data.console_credit;
+    const credit = data.credit || saved;
+    caption.textContent = saved ? text.consoleLabel : text.label;
+    organization.textContent = org ? " · " + org : "";
+    if (importer) {
+      importer.hidden = !(org && reference && !data.credit);
+      importer.onclick = org && reference && hooks.changed ? () => openConsoleImport({ ...hooks, changed: hooks.changed! }, name, org, reference) : null;
+    }
+    const amount = credit && formatCredit(credit);
+    const status = issue ? text[issue] : credit && !amount ? text.unavailable : "";
+    const time = credit && amount ? new Date(credit.checked_at * 1000) : undefined;
+    const when = time ? (saved ? text.copied : text.time) + " " + time.toLocaleString(currentLang()) : "";
+    const shortTime = time?.toLocaleString(currentLang(), { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    value.textContent = amount || (status ? "—" : text.checking);
+    detail.textContent = saved && shortTime ? text.copied + " · " + shortTime : compact && status ? status + " ↗" : status;
+    detail.hidden = !detail.textContent;
+    element.dataset.state = amount ? (saved ? "console" : "ready") : issue ?? (credit ? "unavailable" : "checking");
+    element.title = [caption.textContent, amount, when, status].filter(Boolean).join(" · ");
+    element.setAttribute("aria-label", element.title);
+    if (element.isConnected) hooks.fit();
+  }
+  let generation = 0;
+  paint({ issue: provider === "codex" ? "unsupported" : null });
+  async function refresh(force: boolean) {
+    if (provider !== "claude") return;
+    const version = ++generation;
+    try {
+      const data = await invoke<Balance>("api_balance", { provider, name, force });
+      if (generation === version) paint(data);
+    } catch {
+      if (generation === version) paint({issue: "unavailable"});
+    }
+  }
+  return { element, refresh };
+}
+
+export function compactApiBalance(provider: string, name: string, force: boolean, hooks: Pick<Hooks, "fit" | "toast">): HTMLElement {
   const row = document.createElement("div"); row.className = "compact-api-active";
   const label = document.createElement("div"); label.className = "compact-api-label";
   const badge = document.createElement("strong"); badge.textContent = "API";
   const title = document.createElement("span"); title.textContent = name; label.append(badge, title);
-  row.title = `API · ${name}`; const meter = document.createElement("div"); meter.className = "compact-api-cost";
-  meter.append(usageMeter(defaultUsage(), true)); row.append(label, meter);
-  void invoke<ApiUsage>("api_usage_read", { provider, name }).then(async usage => {
-    meter.replaceChildren(usageMeter(usage, true));
-    if (usage.source === "automatic") { const updated = await invoke<ApiUsage>("api_usage_refresh", { provider, name, force: false }); meter.replaceChildren(usageMeter(updated, true)); }
-  }).catch(error => { meter.title = String(error); meter.classList.add("cost-warning"); });
+  row.title = `API · ${name}`;
+  const balance = balanceDisplay(provider, name, true, hooks);
+  row.append(label, balance.element);
+  void balance.refresh(force);
   return row;
-}
-
-function openUsageSettings(provider: string, name: string, current: ApiUsage, hooks: Hooks) {
-  if (apiIsBusy()) return;
-  const ko = currentLang() === "ko"; let saving = false;
-  const host = dialog(hooks, ko ? `${name} · 사용량` : `${name} · Usage`, () => !saving);
-  const form = document.createElement("form"); form.className = "api-form api-usage-form";
-  const input = (label: string, field: string, type: string, value: string) => {
-    const wrapper = document.createElement("label"); wrapper.textContent = label;
-    const control = document.createElement("input"); control.name = field; control.type = type; control.value = value; wrapper.append(control); return { wrapper, control };
-  };
-  const budget = input(ko ? "월 예산 (USD)" : "Monthly budget (USD)", "budget", "number", String(current.budget_usd));
-  budget.control.required = true; budget.control.min = "0.01"; budget.control.max = "1000000000"; budget.control.step = "0.01";
-  const methodLabel = document.createElement("label"); methodLabel.textContent = ko ? "사용 금액 입력 방법" : "Cost source";
-  const method = document.createElement("select"); method.name = "source";
-  for (const [value, label] of [["manual", ko ? "직접 입력" : "Manual"], ["automatic", ko ? "API에서 자동 조회" : "Automatic API reporting"]]) { const option = document.createElement("option"); option.value = value; option.textContent = label; method.append(option); }
-  method.value = current.source; methodLabel.append(method);
-  const manual = input(ko ? `${current.month} 사용 금액 (USD)` : `${current.month} spent (USD)`, "spent", "number", current.source === "manual" && current.spent_usd !== null ? String(current.spent_usd) : "");
-  manual.control.min = "0"; manual.control.max = "1000000000"; manual.control.step = "0.01"; manual.control.placeholder = ko ? "미입력 상태 유지 가능" : "Leave blank if unknown";
-  const automatic = document.createElement("div"); automatic.className = "api-usage-auto";
-  const keyId = input("API key ID", "key-id", "text", current.api_key_id); keyId.control.placeholder = provider === "claude" ? "apikey_…" : "key_…"; keyId.control.maxLength = 200;
-  const admin = input(ko ? "비용 조회용 관리자 API 키" : "Admin API key for cost reports", "admin-key", "password", ""); admin.control.autocomplete = "new-password"; admin.control.maxLength = 4096; admin.control.minLength = 16; admin.control.placeholder = current.admin_key_stored ? (ko ? "저장됨 · 비워 두면 기존 키 유지" : "Saved · leave blank to keep") : "sk-…";
-  automatic.append(keyId.wrapper, admin.wrapper, paragraph(ko ? "관리자 권한이 있는 조회용 키가 필요합니다. API key ID는 조회할 실행 키의 식별자이며 비밀 키와 다릅니다." : "Requires an administrative reporting key. API key ID identifies the inference key to report, not its secret."));
-  const console = document.createElement("button"); console.type = "button"; console.className = "api-console"; console.textContent = ko ? "공급자 비용 페이지 ↗" : "Provider cost dashboard ↗";
-  const error = paragraph("", "api-error"); error.setAttribute("role", "alert");
-  console.onclick = () => { void invoke("api_open_usage_console", { provider }).catch(reason => { error.textContent = String(reason); }); };
-  const save = document.createElement("button"); save.type = "submit"; save.className = "primary api-save";
-  const change = () => {
-    const auto = method.value === "automatic"; manual.wrapper.hidden = auto; automatic.hidden = !auto; keyId.control.required = auto; admin.control.required = auto && !current.admin_key_stored; admin.control.value = "";
-    save.textContent = auto ? (ko ? "저장하고 조회" : "Save and fetch") : (ko ? "저장" : "Save"); hooks.fit();
-  };
-  method.onchange = change;
-  form.append(budget.wrapper, methodLabel, manual.wrapper, automatic, console, paragraph(ko ? "API별 월 예산이며 UTC 기준으로 월이 바뀝니다. 공급자의 결제 한도나 실행 중인 CLI를 차단하지 않습니다." : "A monthly budget for this API, using UTC months. This does not set a provider billing limit or stop a running CLI."), error, save);
-  host.append(form); change();
-  form.onsubmit = async event => {
-    event.preventDefault(); if (saving) return;
-    saving = true; apiPending++; save.disabled = true; host.querySelector<HTMLButtonElement>(".api-close")!.disabled = true;
-    let saved = false;
-    try {
-      await invoke("api_usage_save", { provider, name, settings: { budget_usd: Number(budget.control.value), source: method.value, spent_usd: method.value === "manual" && manual.control.value !== "" ? Number(manual.control.value) : null, api_key_id: keyId.control.value.trim(), admin_key: admin.control.value.trim() || null } }); saved = true;
-    } catch (reason) { error.textContent = String(reason); }
-    finally { admin.control.value = ""; saving = false; apiPending--; save.disabled = false; host.querySelector<HTMLButtonElement>(".api-close")!.disabled = false; }
-    if (saved) host.dispatchEvent(new Event("api-dismiss"));
-  };
-  host.showModal(); hooks.fit(); budget.control.focus();
 }
