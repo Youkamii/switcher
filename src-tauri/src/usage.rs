@@ -2678,6 +2678,8 @@ mod tests {
                         Err(e) => panic!("inactive account did not refresh: {e}"),
                     }
                 };
+                // A socket accepted by a nonblocking listener can inherit that mode on macOS.
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(3)))
                     .unwrap();
