@@ -555,8 +555,134 @@
       "mode": "edge",
       "width": 80,
       "height": 658
+    },
+    {
+      "checks": [
+        {
+          "id": "no-accounts-has-no-key-or-profile-rows-normal",
+          "passed": true
+        },
+        {
+          "id": "no-accounts-keeps-both-registration-entries",
+          "passed": true
+        },
+        {
+          "id": "no-browser-errors-empty-normal",
+          "passed": true
+        }
+      ],
+      "errors": [],
+      "mode": "normal",
+      "width": 420,
+      "height": 542
+    },
+    {
+      "checks": [
+        {
+          "id": "no-accounts-has-no-key-or-profile-rows-compact",
+          "passed": true
+        },
+        {
+          "id": "no-accounts-omits-provider-sections-compact",
+          "passed": true
+        },
+        {
+          "id": "no-accounts-same-height-and-system-position-as-hidden-compact",
+          "passed": true
+        },
+        {
+          "id": "no-browser-errors-empty-compact",
+          "passed": true
+        }
+      ],
+      "errors": [],
+      "mode": "compact",
+      "width": 280,
+      "height": 263,
+      "emptyLayout": {
+        "enabled": {
+          "height": 263,
+          "systemTop": 93
+        },
+        "hidden": {
+          "height": 263,
+          "systemTop": 93
+        }
+      }
+    },
+    {
+      "checks": [
+        {
+          "id": "no-accounts-has-no-key-or-profile-rows-minimal",
+          "passed": true
+        },
+        {
+          "id": "no-accounts-omits-provider-sections-minimal",
+          "passed": true
+        },
+        {
+          "id": "no-accounts-same-height-and-system-position-as-hidden-minimal",
+          "passed": true
+        },
+        {
+          "id": "no-browser-errors-empty-minimal",
+          "passed": true
+        }
+      ],
+      "errors": [],
+      "mode": "minimal",
+      "width": 120,
+      "height": 157,
+      "emptyLayout": {
+        "enabled": {
+          "height": 157,
+          "systemTop": 38
+        },
+        "hidden": {
+          "height": 157,
+          "systemTop": 38
+        }
+      }
+    },
+    {
+      "checks": [
+        {
+          "id": "no-accounts-has-no-key-or-profile-rows-edge",
+          "passed": true
+        },
+        {
+          "id": "no-accounts-omits-provider-sections-edge",
+          "passed": true
+        },
+        {
+          "id": "no-accounts-removes-edge-ai-gauges-and-divider",
+          "passed": true
+        },
+        {
+          "id": "no-accounts-same-height-and-system-position-as-hidden-edge",
+          "passed": true
+        },
+        {
+          "id": "no-browser-errors-empty-edge",
+          "passed": true
+        }
+      ],
+      "errors": [],
+      "mode": "edge",
+      "width": 80,
+      "height": 317,
+      "emptyLayout": {
+        "enabled": {
+          "height": 317,
+          "systemTop": 36
+        },
+        "hidden": {
+          "height": 317,
+          "systemTop": 36
+        }
+      }
     }
   ],
-  "passed": 131,
+  "passed": 147,
   "failed": 0
 }

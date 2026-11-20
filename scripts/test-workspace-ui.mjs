@@ -12,6 +12,8 @@ function fixture(mode = "normal", preview = false) {
   const callbacks = new Map(); const events = new Map(); let seq = 1;
   const calls = []; const errors = []; const checks = [];
   let visibility = { claude:preview!=='no-ai', codex:preview!=='no-ai', github:true, display:true, black:true, tfsd:false };
+  const emptyAccounts = preview === 'empty-accounts';
+  let emptyLayout;
   const activeApi = new Map(preview===true ? [['claude','project']] : []); let activationFailure = false;
   let codexBlocked = false; let checkFailure = false; let releaseCheck = null; let holdCheck = false;
   let balanceIssue = preview === true ? 'login_required' : null;
@@ -19,7 +21,7 @@ function fixture(mode = "normal", preview = false) {
   let balanceMinor = 7845;
   let balanceCurrency = "USD";
   let sessionPhase = null;
-  const connections = new Map(preview ? [['claude/project',{provider:'claude',name:'project',account_id:'claude-2',check_state:'ready',checked_at:1794300000}]] : []);
+  const connections = new Map(preview && !emptyAccounts ? [['claude/project',{provider:'claude',name:'project',account_id:'claude-2',check_state:'ready',checked_at:1794300000}]] : []);
   // A native host drives test interactions even when WebKit throttles page timers.
   let tickId=0; const ticks=new Map();
   window.__uiTick=id=>{ticks.get(id)?.();ticks.delete(id);};
@@ -52,6 +54,7 @@ function fixture(mode = "normal", preview = false) {
       if(cmd === 'display_list') return [{id:0,name:'Built-in display',brightness:65}];
       if(cmd === 'stats_read') return {cpu:18,mem_used:6*1024**3,mem_total:16*1024**3,disk_read:2*1024**2,disk_write:1024**2,net_rx:600*1024,net_tx:200*1024};
       if(cmd === 'list_profiles' && args.provider==='codex' && codexBlocked) throw 'Codex가 파일 외 인증 저장소를 사용합니다';
+      if(cmd === 'list_profiles' && emptyAccounts) return {profiles:[],live:null,live_saved:false,api_active:null,api_active_account_id:null};
       if(cmd === 'list_profiles') return { api_active:activeApi.get(args.provider)??null, api_active_account_id:connections.get(args.provider+'/'+activeApi.get(args.provider))?.account_id, live:activeApi.has(args.provider)?null:{id:args.provider+'-1',email:'personal@example.test'},live_saved:!activeApi.has(args.provider),profiles:[
         {name:'personal', id:args.provider+'-1',email:'personal@example.test',plan:args.provider==='claude'?'Max':'Plus',active:!activeApi.has(args.provider),saved_at:1,plan_tier:null},
         ...(args.provider==='claude' ? [{name:'work',id:'claude-2',email:'work@example.test',plan:'Pro',active:false,saved_at:1,plan_tier:null}] : [])] };
@@ -119,8 +122,59 @@ function fixture(mode = "normal", preview = false) {
     return ready('.api-form');
   };
   const saveAndUse = form => form.requestSubmit(form.querySelector('.api-save-use'));
+  async function checkEmptyAccounts() {
+    const body = {normal:'body:not(.locked)', compact:'body.locked:not(.minimal):not(.edge)', minimal:'body.minimal', edge:'body.edge'}[mode];
+    const systemSelector = body+' #app section[data-key="system"]';
+    await ready(systemSelector);
+    if(mode === 'edge') {
+      emit('edge-hover', true);
+      await ready('body.edge-out');
+    }
+    for(let i=0;i<6;i++) await delay();
+    const providers = '#app section[data-key="claude"], #app section[data-key="codex"]';
+    const accountElements = [
+      '.profile-card', '.compact-card.prov-claude', '.compact-card.prov-codex',
+      '.edge-account', '.account-apis', '.compact-api-active', '.api-recovery',
+    ].map(selector => '#app '+selector).join(', ');
+    record('no-accounts-has-no-key-or-profile-rows-'+mode,
+      !document.querySelector(accountElements));
+    if(mode === 'normal') {
+      const sections = [...document.querySelectorAll(providers)];
+      record('no-accounts-keeps-both-registration-entries',
+        sections.length === 2 && sections.every(section => section.querySelector('.add-account')?.getBoundingClientRect().width > 0));
+      return;
+    }
+    record('no-accounts-omits-provider-sections-'+mode, !document.querySelector(providers));
+    if(mode === 'edge') {
+      const gauges = [...document.querySelectorAll('#edge-gauge [data-provider="claude"], #edge-gauge [data-provider="codex"]')];
+      record('no-accounts-removes-edge-ai-gauges-and-divider',
+        gauges.length === 2 && gauges.every(row => row.hidden) && document.querySelector('#edge-gauge').dataset.separatedSystem === 'false');
+    }
+    const system = () => document.querySelector(systemSelector);
+    const geometry = () => {
+      const shell = document.querySelector('.shell').getBoundingClientRect();
+      return {height: shell.height, systemTop: system().getBoundingClientRect().top - shell.top};
+    };
+    const before = system();
+    const enabled = geometry();
+    visibility = {...visibility, claude:false, codex:false};
+    emit('visibility-changed');
+    for(let i=0;i<100 && system()===before;i++) await delay();
+    if(!system() || system() === before) throw Error('Hidden AI layout did not render');
+    for(let i=0;i<6;i++) await delay();
+    const hidden = geometry();
+    emptyLayout = {enabled, hidden};
+    record('no-accounts-same-height-and-system-position-as-hidden-'+mode,
+      enabled.height > 0 && hidden.height > 0 &&
+      Math.abs(enabled.height - hidden.height) < 1 && Math.abs(enabled.systemTop - hidden.systemTop) < 1);
+  }
   window.addEventListener('load', async () => {
     try {
+      if(emptyAccounts) {
+        await checkEmptyAccounts();
+        record('no-browser-errors-empty-'+mode,errors.length===0);
+        return;
+      }
       await ready(preview==='no-ai' ? '.mon-section' : mode === 'normal' ? '.workspace-heading' : mode === 'edge' ? '.edge-account' : '.compact-card');
       if(mode === 'edge') { emit('edge-hover',true); for(let i=0;i<45;i++) await delay(); }
       for(let i=0;i<5;i++) await delay();
@@ -359,7 +413,7 @@ function fixture(mode = "normal", preview = false) {
       record('no-browser-errors',errors.length===0);
     } catch(e) { errors.push(String(e)); record('completed',false); } finally {
     const output=document.createElement('pre');output.id='ui-test-result';output.hidden=true;
-    output.textContent=JSON.stringify({checks,errors,mode,width:document.querySelector('.shell').getBoundingClientRect().width,height:document.querySelector('.shell').getBoundingClientRect().height});document.body.append(output);
+    output.textContent=JSON.stringify({checks,errors,mode,width:document.querySelector('.shell').getBoundingClientRect().width,height:document.querySelector('.shell').getBoundingClientRect().height,emptyLayout});document.body.append(output);
     window.webkit?.messageHandlers?.report?.postMessage(output.textContent);
     }
   });
@@ -445,7 +499,7 @@ try {
   }
   const screenshotAt=process.argv.indexOf('--screenshot');
   const reports=[await run('normal',false,screenshotAt>=0?path.resolve(process.argv[screenshotAt+1]):null)];
-  if(useWebKit) {
+  if(useWebKit || !allDir) {
     for(const mode of ['compact','minimal','edge']) reports.push(await run(mode,true,null));
   }
   if(allDir && !useWebKit) {
@@ -468,6 +522,7 @@ try {
     reports.push(registration,result,noAI);
 
   }
+  for(const mode of ['normal','compact','minimal','edge']) reports.push(await run(mode,'empty-accounts',null));
   const result={reports,passed:reports.reduce((n,r)=>n+r.checks.filter(c=>c.passed).length,0),failed:reports.reduce((n,r)=>n+r.checks.filter(c=>!c.passed).length,0)};
   if(outputAt>=0) fs.writeFileSync(process.argv[outputAt+1],JSON.stringify(result,null,2)+'\n');
   console.log(JSON.stringify(result,null,2));process.exitCode=result.failed?1:0;
