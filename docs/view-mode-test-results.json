@@ -1256,8 +1256,148 @@
       "width": 80,
       "height": 620,
       "dialog": null
+    },
+    {
+      "checks": [
+        {
+          "id": "untouched-handle-sits-mid-window-on-the-right-wall",
+          "passed": true
+        },
+        {
+          "id": "a-press-that-barely-moves-is-not-a-drag",
+          "passed": true
+        },
+        {
+          "id": "dragging-folds-the-panel-and-shows-the-handle",
+          "passed": true
+        },
+        {
+          "id": "handle-follows-the-pointer-inside-the-window",
+          "passed": true
+        },
+        {
+          "id": "handle-and-gauge-do-not-animate-while-dragged",
+          "passed": true
+        },
+        {
+          "id": "window-follows-once-the-handle-reaches-its-end",
+          "passed": true
+        },
+        {
+          "id": "handle-reaches-the-top-of-the-wall",
+          "passed": true
+        },
+        {
+          "id": "handle-reaches-the-bottom-of-the-wall",
+          "passed": true
+        },
+        {
+          "id": "coming-back-moves-the-handle-first",
+          "passed": true
+        },
+        {
+          "id": "drop-ends-the-drag-and-keeps-the-panel-folded",
+          "passed": true
+        },
+        {
+          "id": "drop-saves-height-wall-and-offset",
+          "passed": true
+        },
+        {
+          "id": "drag-never-presses-the-card-under-the-handle",
+          "passed": true
+        },
+        {
+          "id": "hover-zone-moves-with-the-handle",
+          "passed": true
+        },
+        {
+          "id": "pressing-the-dropped-handle-opens-the-panel",
+          "passed": true
+        },
+        {
+          "id": "press-before-content-shows-does-not-switch-accounts",
+          "passed": true
+        },
+        {
+          "id": "press-on-visible-card-still-switches",
+          "passed": true
+        },
+        {
+          "id": "shorter-panel-keeps-the-handle-on-screen",
+          "passed": true
+        },
+        {
+          "id": "a-squeezed-panel-does-not-overwrite-the-users-arrangement",
+          "passed": true
+        },
+        {
+          "id": "taller-panel-keeps-the-handle-on-screen",
+          "passed": true
+        },
+        {
+          "id": "setup-handle-mid-wall",
+          "passed": true
+        },
+        {
+          "id": "panel-dropped-past-the-bottom-comes-back-and-the-handle-stays",
+          "passed": true
+        },
+        {
+          "id": "grip-moves-the-panel-to-the-other-wall-and-remembers-it",
+          "passed": true
+        },
+        {
+          "id": "handle-keeps-its-place-in-the-moved-panel",
+          "passed": true
+        },
+        {
+          "id": "other-window-moves-do-not-throw-the-handle-to-the-top",
+          "passed": true
+        },
+        {
+          "id": "no-browser-errors-edge-drag",
+          "passed": true
+        }
+      ],
+      "errors": [],
+      "mode": "edge",
+      "width": 80,
+      "height": 1100
+    },
+    {
+      "checks": [
+        {
+          "id": "restart-returns-to-the-remembered-wall",
+          "passed": true
+        },
+        {
+          "id": "restart-returns-the-handle-to-its-height",
+          "passed": true
+        },
+        {
+          "id": "restart-keeps-the-users-panel-arrangement",
+          "passed": true
+        },
+        {
+          "id": "restart-does-not-rewrite-what-the-user-chose",
+          "passed": true
+        },
+        {
+          "id": "hover-zone-is-on-the-restored-handle",
+          "passed": true
+        },
+        {
+          "id": "no-browser-errors-edge-restore",
+          "passed": true
+        }
+      ],
+      "errors": [],
+      "mode": "edge",
+      "width": 80,
+      "height": 1100
     }
   ],
-  "passed": 269,
+  "passed": 300,
   "failed": 0
 }

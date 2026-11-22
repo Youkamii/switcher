@@ -130,7 +130,8 @@ New in **v2.0**. The widget rests as a handle on whichever screen edge is closer
 - **Panel** — every account as vertical segmented bars with %, followed by SYSTEM, DISPLAY (a vertical brightness slider per monitor) and the tool dock. The active account has an accent-colored border and a dot before its name.
 - **Switch** — a short click on another account card switches right away. Click the account in use once more to use its API key, and again to return to the subscription.
 - **Time to reset** — press and hold the panel to replace the % with the time left: `4d` in blue, `2h` in green, `52m` in red.
-- **Collapse** — about half a second after the mouse leaves, it returns to the handle. Drag ☰ past the middle of the screen to dock on the other edge. When the panel is too tall to move any further up or down, keep dragging ☰ past the top or bottom of the screen and the handle moves by that much.
+- **Collapse** — about half a second after the mouse leaves, it returns to the handle. Drag ☰ past the middle of the screen to dock on the other edge.
+- **Moving the handle** — press the collapsed handle and drag it up or down; it slides along the edge, from the very top to the very bottom. Where you drop it, and which edge it is on, are remembered across restarts. Moving the open panel with ☰ takes the handle along.
 - The expanded panel takes the mouse (no click-through). While collapsed, only the area outside the handle passes through.
 
 <sub>Sample account names; the cursor was added in editing.</sub>
@@ -201,7 +202,7 @@ New in **v2.0**. The widget rests as a handle on whichever screen edge is closer
 | Subscription ↔ API key | In Minimal and Edge, press the account in use (marked `API ›`) **once more** for that account's API key, and **again** for the subscription (double-click in Minimal) |
 | See time to reset | **Press and hold** the Edge panel |
 | Move Edge to the other side | Drag ☰ past the middle of the screen |
-| Move the Edge handle up or down | Drag ☰ past the top or bottom of the screen |
+| Move the Edge handle up or down | Press the collapsed handle and drag it |
 | Reorder sections | Drag section titles in the Full mode |
 | Use the window underneath | Empty areas in Minimal and the area outside the collapsed Edge handle pass clicks through |
 | Open the tool dock | **▲** at the bottom of the window: 📝 memo · 🚗 TFSD · 🙈 privacy · ☕ clamshell · 🌙 black monitor |
