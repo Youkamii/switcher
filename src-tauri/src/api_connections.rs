@@ -62,6 +62,7 @@ fn service(provider: Provider, name: &str) -> String {
         name.to_ascii_lowercase()
     )
 }
+const KEY_FORMAT_ERROR: &str = "API 키 형식을 확인하세요 (sk-로 시작하는 공백 없는 키)";
 fn valid_key(key: &str) -> bool {
     (16..=4096).contains(&key.len())
         && key.starts_with("sk-")
@@ -242,7 +243,7 @@ fn store_key(
 ) -> Result<Connection, String> {
     let (_, dir) = checked(env, provider.dir_name(), name)?;
     if !valid_key(key) {
-        return Err("API 키 형식을 확인하세요 (sk-로 시작하는 공백 없는 키)".into());
+        return Err(KEY_FORMAT_ERROR.into());
     }
     fs::create_dir_all(&dir).map_err(|_| "API 연결 폴더 생성 실패")?;
     #[cfg(unix)]
@@ -351,8 +352,28 @@ fn save_for_account(
             existing.label,
         );
     }
-    let label = name.to_ascii_lowercase();
     let connections = stored_connections(env, provider)?;
+    store_new_key(
+        env,
+        secrets,
+        provider,
+        account_id,
+        name.to_ascii_lowercase(),
+        key,
+        &connections,
+    )
+}
+
+/// 새 키를 계정 밑에 저장한다 — 호출자가 MUTATION_LOCK과 LOCK을 쥐고 있어야 한다.
+fn store_new_key(
+    env: &Env,
+    secrets: &impl Secrets,
+    provider: Provider,
+    account_id: &str,
+    label: String,
+    key: &str,
+    connections: &[Connection],
+) -> Result<Connection, String> {
     if connections
         .iter()
         .any(|c| c.account_id.as_deref() == Some(account_id) && c.display_name() == label)
@@ -378,6 +399,221 @@ fn save_for_account(
         Some(account_id),
         display,
     )
+}
+
+// ── 계정을 고르지 않은 등록 (#187) ─────────────────────────────────
+// 공급자 제목 줄의 「API 키 추가」는 키만 받는다. 주인 계정은 앱이 찾는다: 저장된 계정이
+// 하나뿐이면 그 계정, Claude 키는 발급 조직의 이름이 가리키는 계정. 추정으로 정하지
+// 않는다 — 정확히 한 계정이 맞을 때만 저장하고, 아니면 저장하지 않고 사용자에게 묻는다.
+
+/// 이름을 비운 등록에 붙이는 기본 표시 이름. 같은 계정에 이미 있으면 번호를 붙인다.
+const DEFAULT_KEY_NAME: &str = "api";
+
+/// 주인 계정을 정한 근거 — 화면이 "어떻게 알았는지"를 말할 때 쓴다.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OwnerMatch {
+    /// 사용자가 계정을 골랐다.
+    Chosen,
+    /// 저장된 계정이 하나뿐이다.
+    OnlyAccount,
+    /// 키를 발급한 조직의 이름이 이 계정을 가리킨다.
+    OrganizationName,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum AutoSave {
+    /// 주인 계정 밑에 저장했다. `account`는 그 계정의 프로필 이름이다.
+    Saved {
+        connection: Connection,
+        account_id: String,
+        account: String,
+        matched_by: OwnerMatch,
+    },
+    /// 주인을 알 수 없다. 아무것도 저장하지 않았다 — 사용자가 계정을 고른 뒤 다시 보낸다.
+    NeedsAccount,
+}
+
+/// 주인 계정을 찾는 데 쓰는 저장된 계정의 단서. 이름·이메일은 이 컴퓨터 밖으로 나가지 않는다.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AccountHint {
+    id: String,
+    profile: String,
+    names: Vec<String>,
+}
+
+fn account_hints(env: &Env, provider: Provider) -> Result<Vec<AccountHint>, String> {
+    let _mutation = crate::accounts::MUTATION_LOCK
+        .lock()
+        .map_err(|_| "내부 잠금 오류")?;
+    let mut hints: Vec<AccountHint> = Vec::new();
+    for (profile, dir) in crate::accounts::profile_dirs(env, provider)? {
+        if validate_name(&profile).is_err() {
+            continue;
+        }
+        let Some(meta) = crate::accounts::read_meta(&dir) else {
+            continue;
+        };
+        // 같은 계정이 두 이름으로 저장돼 있어도 계정은 하나다
+        if hints.iter().any(|known| known.id == meta.id) {
+            continue;
+        }
+        let mut names: Vec<String> = meta.email.into_iter().collect();
+        if provider == Provider::Claude {
+            if let Ok(block) = crate::accounts::read_json(&dir.join("oauth_account.json")) {
+                for field in ["fullName", "displayName", "emailAddress"] {
+                    if let Some(value) = block.get(field).and_then(serde_json::Value::as_str) {
+                        names.push(value.to_owned());
+                    }
+                }
+            }
+        }
+        hints.push(AccountHint {
+            id: meta.id,
+            profile,
+            names,
+        });
+    }
+    Ok(hints)
+}
+
+/// 조직 이름이 "<계정 이름>’s …" 꼴일 때 그 계정을 찾는다 (개인 Console 조직의 기본 이름은
+/// 「<이름>’s Individual Org」다). 이름 뒤에 소유격이 바로 와야 하고 — "Kim"이 "Kimberly’s …"에
+/// 걸리지 않게 — 정확히 한 계정만 맞아야 한다. 회사 이름처럼 계정을 가리키지 않으면 None.
+fn owner_by_org_name<'a>(org_name: &str, accounts: &'a [AccountHint]) -> Option<&'a AccountHint> {
+    let org = org_name.trim().to_lowercase();
+    let owns = |account: &&AccountHint| {
+        account.names.iter().any(|name| {
+            let name = name.trim().to_lowercase();
+            !name.is_empty()
+                && org
+                    .strip_prefix(name.as_str())
+                    .is_some_and(|rest| rest.starts_with("'s ") || rest.starts_with("’s "))
+        })
+    };
+    let mut owners = accounts.iter().filter(owns);
+    let first = owners.next()?;
+    owners.next().is_none().then_some(first)
+}
+
+fn pick_owner<'a>(
+    accounts: &'a [AccountHint],
+    org_name: Option<&str>,
+) -> Option<(&'a AccountHint, OwnerMatch)> {
+    match accounts {
+        [only] => Some((only, OwnerMatch::OnlyAccount)),
+        _ => org_name
+            .and_then(|org| owner_by_org_name(org, accounts))
+            .map(|account| (account, OwnerMatch::OrganizationName)),
+    }
+}
+
+fn free_label(connections: &[Connection], account_id: &str) -> String {
+    let taken = |label: &str| {
+        connections
+            .iter()
+            .any(|c| c.account_id.as_deref() == Some(account_id) && c.display_name() == label)
+    };
+    std::iter::once(DEFAULT_KEY_NAME.to_owned())
+        .chain((2..).map(|n| format!("{DEFAULT_KEY_NAME}-{n}")))
+        .find(|label| !taken(label))
+        .expect("an unused label always exists")
+}
+
+/// 계정 밑에 새 키를 저장한다. 이름을 비우면 기본 이름을 그 계정 안에서 비는 번호로 붙인다.
+fn save_new_for_account(
+    env: &Env,
+    secrets: &impl Secrets,
+    provider: &str,
+    account_id: &str,
+    name: Option<&str>,
+    key: &str,
+) -> Result<Connection, String> {
+    let _mutation = crate::accounts::MUTATION_LOCK
+        .lock()
+        .map_err(|_| "내부 잠금 오류")?;
+    let _guard = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
+    let (provider, _) = checked(env, provider, name.unwrap_or(DEFAULT_KEY_NAME))?;
+    require_account(env, provider, account_id)?;
+    let connections = stored_connections(env, provider)?;
+    let label = match name {
+        Some(name) => name.to_ascii_lowercase(),
+        None => free_label(&connections, account_id),
+    };
+    store_new_key(env, secrets, provider, account_id, label, key, &connections)
+}
+
+/// 계정을 고르지 않은 등록. `account_id`가 있으면(주인을 못 찾아 사용자가 고른 뒤) 그 계정에 넣는다.
+pub async fn save_detecting(
+    env: &Env,
+    provider: &str,
+    account_id: Option<&str>,
+    name: &str,
+    key: &str,
+) -> Result<AutoSave, String> {
+    save_detecting_with(
+        env,
+        &OsSecrets(env),
+        provider,
+        account_id,
+        name,
+        key,
+        balance::API,
+    )
+    .await
+}
+
+async fn save_detecting_with(
+    env: &Env,
+    secrets: &impl Secrets,
+    provider_name: &str,
+    account_id: Option<&str>,
+    name: &str,
+    key: &str,
+    base: &str,
+) -> Result<AutoSave, String> {
+    // 입력은 공급자에게 묻기 전에 확인한다 — 형식이 틀린 값은 밖으로 나가지 않는다
+    let provider = Provider::parse(provider_name)?;
+    let name = Some(name.trim()).filter(|name| !name.is_empty());
+    if let Some(name) = name {
+        validate_name(name)?;
+    }
+    if !valid_key(key) {
+        return Err(KEY_FORMAT_ERROR.into());
+    }
+    let accounts = account_hints(env, provider)?;
+    if accounts.is_empty() {
+        return Err("API 키를 넣을 계정이 없습니다 — 먼저 계정을 추가하세요".into());
+    }
+    let (owner, matched_by) = match account_id.filter(|id| !id.is_empty()) {
+        Some(id) => {
+            let account = accounts
+                .iter()
+                .find(|account| account.id == id)
+                .ok_or("API 키를 추가할 계정을 찾을 수 없습니다")?;
+            (account, OwnerMatch::Chosen)
+        }
+        None => {
+            // 계정이 하나면 물을 것이 없다. 조직 이름을 주는 공급자는 Claude뿐이다.
+            let org_name = if accounts.len() > 1 && provider == Provider::Claude {
+                balance::key_organization_name(key, base).await
+            } else {
+                None
+            };
+            match pick_owner(&accounts, org_name.as_deref()) {
+                Some(found) => found,
+                None => return Ok(AutoSave::NeedsAccount),
+            }
+        }
+    };
+    let connection = save_new_for_account(env, secrets, provider_name, &owner.id, name, key)?;
+    Ok(AutoSave::Saved {
+        connection,
+        account_id: owner.id.clone(),
+        account: owner.profile.clone(),
+        matched_by,
+    })
 }
 
 pub fn attach(env: &Env, provider: &str, name: &str, account_id: &str) -> Result<(), String> {
@@ -668,6 +904,208 @@ mod tests {
             None,
         )
         .unwrap();
+    }
+
+    fn hint(id: &str, names: &[&str]) -> AccountHint {
+        AccountHint {
+            id: id.into(),
+            profile: id.into(),
+            names: names.iter().map(|name| (*name).to_owned()).collect(),
+        }
+    }
+
+    /// 개인 Console 조직의 기본 이름은 「<이름>’s Individual Org」다 (#187). 그 이름의 주인을
+    /// 저장된 계정에서 찾되, 정확히 한 계정이 맞을 때만 — 추정으로 키를 남의 계정에 붙이지 않는다.
+    #[test]
+    fn key_owner_is_the_one_account_the_possessive_organization_name_points_to() {
+        let accounts = [
+            hint("lia", &["lia@example.test", "Lia Choi", "Lia"]),
+            hint("kim", &["kim@example.test", "Kim"]),
+            hint("kimberly", &["Kimberly Park"]),
+            hint("face", &["ᕕ༼✿•̀︿•́༽ᕗ"]),
+            hint("blank", &["", "   "]),
+        ];
+        let owner = |org: &str| owner_by_org_name(org, &accounts).map(|account| account.id.as_str());
+        assert_eq!(owner("Lia Choi’s Individual Org"), Some("lia"));
+        assert_eq!(owner("  lia choi's individual org "), Some("lia"), "straight quote, any case, padded");
+        assert_eq!(owner("lia@example.test’s Individual Org"), Some("lia"), "an account without a name is known by its email");
+        assert_eq!(owner("Lia’s Team"), Some("lia"), "any organization named after the account holder");
+        // 이름 뒤에 소유격이 바로 와야 한다 — 앞부분만 같은 다른 사람의 조직이 아니다
+        assert_eq!(owner("KIM’s Individual Org"), Some("kim"));
+        assert_eq!(owner("Kimberly Park’s Individual Org"), Some("kimberly"));
+        assert_eq!(owner("Kimberly’s Individual Org"), None);
+        // 글자가 아닌 이름도 그대로 맞춘다
+        assert_eq!(owner("ᕕ༼✿•̀︿•́༽ᕗ’s Individual Org"), Some("face"));
+        // 계정을 가리키지 않는 이름·빈 이름은 주인이 없다
+        for org in ["Demo Studio", "Lia Choi", "Lia Choi Org", "’s Individual Org", "'s ", ""] {
+            assert_eq!(owner(org), None, "{org:?}");
+        }
+        // 둘이 맞으면 고르지 않는다
+        let twins = [hint("one", &["Sam Lee"]), hint("two", &["sam lee"])];
+        assert!(owner_by_org_name("Sam Lee’s Individual Org", &twins).is_none());
+    }
+
+    #[test]
+    fn a_single_saved_account_owns_a_new_key_and_several_need_a_naming_organization() {
+        let one = [hint("only", &[])];
+        assert_eq!(
+            pick_owner(&one, None).map(|(account, how)| (account.id.as_str(), how)),
+            Some(("only", OwnerMatch::OnlyAccount))
+        );
+        // 계정이 하나면 조직 이름이 무엇이든 그 계정이다
+        assert_eq!(
+            pick_owner(&one, Some("Someone Else’s Individual Org")).map(|(_, how)| how),
+            Some(OwnerMatch::OnlyAccount)
+        );
+        let two = [hint("a", &["Ann"]), hint("b", &["Bo"])];
+        assert!(pick_owner(&two, None).is_none());
+        assert!(pick_owner(&two, Some("Demo Studio")).is_none());
+        assert_eq!(
+            pick_owner(&two, Some("Bo’s Individual Org")).map(|(account, how)| (account.id.as_str(), how)),
+            Some(("b", OwnerMatch::OrganizationName))
+        );
+        assert!(pick_owner(&[], Some("Ann’s Individual Org")).is_none());
+    }
+
+    /// 화면(apiConnections.ts의 AutoSave)이 읽는 모양 — 이름이 바뀌면 화면이 결과를 못 알아본다.
+    #[test]
+    fn key_only_save_result_keeps_the_shape_the_dialog_reads() {
+        let connection: Connection = serde_json::from_value(serde_json::json!({
+            "provider": "claude", "name": "api", "account_id": "alpha"
+        }))
+        .unwrap();
+        let saved = serde_json::to_value(AutoSave::Saved {
+            connection,
+            account_id: "alpha".into(),
+            account: "first".into(),
+            matched_by: OwnerMatch::OrganizationName,
+        })
+        .unwrap();
+        assert_eq!(saved["status"], "saved");
+        assert_eq!(saved["account_id"], "alpha");
+        assert_eq!(saved["account"], "first");
+        assert_eq!(saved["matched_by"], "organization_name");
+        assert_eq!(saved["connection"]["name"], "api");
+        assert_eq!(saved["connection"]["account_id"], "alpha");
+        assert_eq!(
+            serde_json::to_value(AutoSave::NeedsAccount).unwrap(),
+            serde_json::json!({"status": "needs_account"})
+        );
+        for (how, wire) in [
+            (OwnerMatch::Chosen, "chosen"),
+            (OwnerMatch::OnlyAccount, "only_account"),
+            (OwnerMatch::OrganizationName, "organization_name"),
+        ] {
+            assert_eq!(serde_json::to_value(how).unwrap(), wire);
+        }
+    }
+
+    #[test]
+    fn unnamed_keys_get_the_default_label_numbered_inside_their_own_account() {
+        let env = crate::accounts::test_support::test_env("api-default-labels");
+        let vault = Memory::default();
+        add_account(&env, Provider::Claude, "one", "alpha");
+        add_account(&env, Provider::Claude, "two", "beta");
+        let add = |account, name, key| save_new_for_account(&env, &vault, "claude", account, name, key);
+        let labels: Vec<String> = [
+            add("alpha", None, "sk-dummy-default-label-1").unwrap(),
+            add("alpha", None, "sk-dummy-default-label-2").unwrap(),
+            add("beta", None, "sk-dummy-default-label-3").unwrap(),
+            add("alpha", None, "sk-dummy-default-label-4").unwrap(),
+        ]
+        .iter()
+        .map(|connection| connection.display_name().to_owned())
+        .collect();
+        // 번호는 계정마다 따로 센다 — 다른 계정의 "api"가 내 계정의 번호를 밀지 않는다
+        assert_eq!(labels, ["api", "api-2", "api", "api-3"]);
+        let stored = stored_connections(&env, Provider::Claude).unwrap();
+        let mut storage: Vec<&str> = stored.iter().map(|connection| connection.name.as_str()).collect();
+        storage.sort_unstable();
+        storage.dedup();
+        assert_eq!(storage.len(), 4, "every key keeps its own secret id");
+        // 직접 적은 이름은 그대로 쓰고, 그 계정에 이미 있으면 덮어쓰지 않고 거절한다
+        assert_eq!(add("alpha", Some("Work"), "sk-dummy-default-label-5").unwrap().display_name(), "work");
+        assert!(add("alpha", Some("work"), "sk-dummy-default-label-6").is_err());
+        assert!(add("alpha", Some("api"), "sk-dummy-default-label-7").is_err());
+        assert!(add("missing", None, "sk-dummy-default-label-8").is_err());
+        assert!(add("alpha", None, "not-a-key").is_err());
+        assert_eq!(stored_connections(&env, Provider::Claude).unwrap().len(), 5);
+    }
+
+    #[test]
+    fn owner_hints_come_from_saved_profiles_one_per_account() {
+        let env = crate::accounts::test_support::test_env("api-owner-hints");
+        let save = |provider, profile: &str, id: &str, email: Option<&str>, block: Option<serde_json::Value>| {
+            crate::accounts::write_profile_parts(
+                &env,
+                provider,
+                profile,
+                &crate::accounts::LiveIdentity { id: id.into(), email: email.map(str::to_owned) },
+                b"{}",
+                block.as_ref(),
+            )
+            .unwrap();
+        };
+        save(
+            Provider::Claude,
+            "first",
+            "alpha",
+            Some("first@example.test"),
+            Some(serde_json::json!({"accountUuid": "alpha", "fullName": "First Person", "displayName": "First", "emailAddress": "first@example.test"})),
+        );
+        // 같은 계정을 다른 이름으로 한 번 더 저장해도 계정은 하나다
+        save(Provider::Claude, "first-copy", "alpha", None, None);
+        save(Provider::Claude, "second", "beta", None, None);
+        save(Provider::Codex, "codex-one", "gamma", Some("codex@example.test"), None);
+        let claude = account_hints(&env, Provider::Claude).unwrap();
+        assert_eq!(claude.iter().map(|account| account.id.as_str()).collect::<Vec<_>>(), ["alpha", "beta"]);
+        assert_eq!(claude[0].profile, "first");
+        for expected in ["first@example.test", "First Person", "First"] {
+            assert!(claude[0].names.iter().any(|name| name == expected), "{expected}");
+        }
+        assert!(claude[1].names.is_empty());
+        let codex = account_hints(&env, Provider::Codex).unwrap();
+        assert_eq!(codex.len(), 1);
+        assert_eq!(codex[0].names, ["codex@example.test"]);
+        assert_eq!(
+            owner_by_org_name("First Person’s Individual Org", &claude).map(|account| account.id.as_str()),
+            Some("alpha")
+        );
+    }
+
+    /// 로컬 전용(실계정): 이 컴퓨터에 저장된 Claude 키마다, 조직 이름으로 찾은 주인이 지금 연결된
+    /// 계정과 같은지 본다. 읽기만 한다 — 조직 조회는 과금되지 않고 아무것도 저장하지 않는다.
+    /// 키·이름·이메일은 출력하지 않는다.
+    #[tokio::test]
+    #[ignore]
+    async fn real_stored_keys_are_matched_to_the_accounts_they_are_linked_to() {
+        let env = Env::real().unwrap();
+        let accounts = account_hints(&env, Provider::Claude).unwrap();
+        let mut seen = 0;
+        for connection in stored_connections(&env, Provider::Claude).unwrap() {
+            let Some(current) = connection.account_id.as_deref() else {
+                continue;
+            };
+            let key = OsSecrets(&env)
+                .get(&service(Provider::Claude, &connection.name))
+                .unwrap();
+            let key = String::from_utf8(key).unwrap();
+            let org = balance::key_organization_name(&key, balance::API).await;
+            let found = pick_owner(&accounts, org.as_deref());
+            eprintln!(
+                "stored key {seen}: {} saved accounts, organization named = {}, owner found = {}, same as linked = {}",
+                accounts.len(),
+                org.is_some(),
+                found.is_some(),
+                found.is_some_and(|(account, _)| account.id == current)
+            );
+            assert!(
+                found.is_some_and(|(account, _)| account.id == current),
+                "the detected owner must be the account the key is linked to"
+            );
+            seen += 1;
+        }
+        assert!(seen > 0, "no linked Claude key is stored on this machine");
     }
 
     #[test]

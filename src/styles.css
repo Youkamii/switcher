@@ -2331,10 +2331,11 @@ button:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus
 .mode-tabs button { min-width: 0; padding: 6px 2px; border: 0; background: transparent; font-size: 11px; color: var(--muted); }
 .mode-tabs button[aria-current="page"] { background: var(--panel-2); color: var(--text); box-shadow: 0 1px 3px #0003; }
 #app:not(.locked) .section-title { font-size: 10px; letter-spacing: 1.2px; margin: 14px 0 8px; min-height: 24px; }
-#app:not(.locked) .section-title .add-row { display: inline-flex; margin: 0 0 0 auto; padding: 0; }
-.add-account { display: inline-flex; align-items: center; gap: 3px; padding: 4px 0 4px 6px; border: 0; background: transparent; color: var(--muted); font-size: 10px; }
-.add-account:hover { color: var(--accent); }
-.add-account .ui-icon { width: 13px; height: 13px; }
+#app:not(.locked) .section-title .add-row { display: inline-flex; gap: 8px; margin: 0 0 0 auto; padding: 0; }
+/* .add-api-key: 제목 줄의 「API 키 추가」(#187) — 「계정 추가」와 같은 모양으로 그 앞에 선다 */
+.add-account, .add-api-key { display: inline-flex; align-items: center; gap: 3px; padding: 4px 0 4px 6px; border: 0; background: transparent; color: var(--muted); font-size: 10px; white-space: nowrap; }
+.add-account:hover, .add-api-key:hover { color: var(--accent); }
+.add-account .ui-icon, .add-api-key .ui-icon { width: 13px; height: 13px; }
 .codex-session-note { margin: 7px 0 9px; font-size: 10px; line-height: 1.6; color: var(--muted); }
 #app:not(.locked) .card { border-radius: 10px; margin-bottom: 7px; }
 #app:not(.locked) .card:not(.active) { filter: none; }
@@ -2397,7 +2398,12 @@ body.edge .compact-api-active { flex-direction: column; gap: 2px; padding: 4px 2
 .api-dialog .help, .api-billing { font-size: 11px; line-height: 1.65; color: rgb(var(--muted-rgb)); overflow-wrap: anywhere; }
 .api-billing { padding: 10px 12px; border-radius: 7px; background: rgba(var(--panel-2-rgb),.7); margin-bottom: 16px; }
 .api-form { display: flex; flex-direction: column; gap: 12px; }
-.api-owner { color: var(--text); font-size: 12px; overflow-wrap: anywhere; margin-bottom: 10px; }
+.api-owner, .api-auto-note { color: var(--text); font-size: 12px; overflow-wrap: anywhere; margin-bottom: 10px; }
+/* 계정을 고르지 않은 등록(#187): 주인을 못 찾았을 때만 보이는 계정 선택, 찾는 동안의 안내, 넣은 계정 알림 */
+.api-form .api-account-pick { color: var(--warn); }
+.api-account-pick select { display: block; width: 100%; min-width: 0; margin-top: 6px; padding: 9px 10px; border: 1px solid rgb(var(--border-rgb)); border-radius: 7px; background: rgb(var(--panel-rgb)); color: rgb(var(--text-rgb)); font-family: inherit; font-size: 12px; }
+.api-finding { font-size: 11px; line-height: 1.5; color: rgb(var(--muted-rgb)); }
+.api-placed { color: var(--accent); font-size: 12px; line-height: 1.7; margin-bottom: 14px; overflow-wrap: anywhere; }
 .api-save-actions { display: flex; gap: 8px; }
 .api-save-actions > button { flex: 1; width: auto; min-height: 36px; }
 .api-recovery { color: var(--muted); margin: 6px 0; font-size: 11px; }
@@ -2472,7 +2478,7 @@ body:not(.locked) main::-webkit-scrollbar-thumb { background: rgb(var(--border-r
 @keyframes api-flash { 0% { box-shadow: 0 0 0 0 rgba(var(--api-rgb), .55); } 100% { box-shadow: 0 0 16px 5px rgba(var(--api-rgb), 0); } }
 .card.api-flash { animation: api-flash .4s ease-out; }
 body.edge .edge-account + .account-with-api { margin-top: 3px; }
-body.privacy .api-owner, body.privacy .api-recovery select, body.privacy .compact-api-label span { filter: blur(4px); }
+body.privacy .api-owner, body.privacy .api-recovery select, body.privacy .compact-api-label span, body.privacy .api-placed, body.privacy .api-account-pick select { filter: blur(4px); }
 
 .api-balance { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 2px 8px; padding-top: 7px; border-top: 1px solid rgba(var(--border-rgb), .5); }
 .api-balance-label { font-size: 10px; color: var(--muted); }

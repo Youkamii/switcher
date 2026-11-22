@@ -14,7 +14,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const API: &str = "https://api.anthropic.com";
+pub(super) const API: &str = "https://api.anthropic.com";
 const FRESH: Duration = Duration::from_secs(300);
 const RETRY: Duration = Duration::from_secs(30);
 
@@ -114,6 +114,14 @@ fn logins_for_org(env: &Env, org: Uuid, owner: Option<&str>) -> Result<Vec<Login
         }
     }
     Ok(logins)
+}
+
+/// 키를 발급한 조직의 이름 — 계정을 고르지 않은 등록(#187)이 주인 계정을 찾는 단서다.
+/// 이름을 확인하지 못하면(키 거절·권한·네트워크·이름 없는 응답) None이고, 호출자는 추정하지 않고 묻는다.
+pub(super) async fn key_organization_name(key: &str, base: &str) -> Option<String> {
+    let api = Api::new(base).ok()?;
+    let org = api.organization(Auth::Key(key)).await.ok()?;
+    org.named.then_some(org.label)
 }
 
 struct Api<'a> {

@@ -536,3 +536,147 @@ async fn active_platform_login_reads_only_the_organization_issued_to_its_token()
         server.join().unwrap();
     }
 }
+
+// ── 계정을 고르지 않은 등록 (#187) ─────────────────────────────────
+use crate::api_connections::{save_detecting_with, stored_connections, AutoSave, OwnerMatch};
+
+fn named_account(env: &Env, profile: &str, id: &str, full_name: &str) {
+    write_profile_parts(
+        env,
+        Provider::Claude,
+        profile,
+        &LiveIdentity {
+            id: id.into(),
+            email: None,
+        },
+        b"{}",
+        Some(&json!({"accountUuid": id, "fullName": full_name})),
+    )
+    .unwrap();
+}
+
+fn organization_named(name: &str) -> Reply {
+    Reply::new(
+        "/v1/organizations/me",
+        200,
+        json!({"type":"organization","id":ORG,"name":name}),
+    )
+}
+
+#[tokio::test]
+async fn key_added_without_an_account_lands_under_the_account_its_organization_names() {
+    let env = test_env("auto-owner-by-organization");
+    let secrets = Memory::default();
+    named_account(&env, "first", ACCOUNT, "First Person");
+    named_account(&env, "second", OTHER, "Second Person");
+    let (url, server) = serve(vec![organization_named("Second Person’s Individual Org")], |_| {});
+    let saved = save_detecting_with(&env, &secrets, "claude", None, "  ", KEY, &url)
+        .await
+        .unwrap();
+    server.join().unwrap();
+    let AutoSave::Saved {
+        connection,
+        account_id,
+        account,
+        matched_by,
+    } = saved
+    else {
+        panic!("the organization names exactly one saved account");
+    };
+    assert_eq!((account_id.as_str(), account.as_str()), (OTHER, "second"));
+    assert_eq!(matched_by, OwnerMatch::OrganizationName);
+    assert_eq!(connection.account_id.as_deref(), Some(OTHER));
+    assert_eq!(connection.display_name(), "api");
+    let stored = stored_connections(&env, Provider::Claude).unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].account_id.as_deref(), Some(OTHER));
+    // 키 원문은 보안 저장소에만 있다 — 메타데이터에는 없다
+    assert_eq!(secrets.get(&service(Provider::Claude, &connection.name)).unwrap(), KEY.as_bytes());
+    let (_, dir) = checked(&env, "claude", &connection.name).unwrap();
+    assert!(!fs::read_to_string(dir.join("connection.json")).unwrap().contains(KEY));
+}
+
+#[tokio::test]
+async fn key_whose_owner_cannot_be_told_is_not_stored_until_the_user_names_the_account() {
+    let env = test_env("auto-owner-unknown");
+    let secrets = Memory::default();
+    named_account(&env, "first", ACCOUNT, "First Person");
+    named_account(&env, "second", OTHER, "Second Person");
+    let (url, server) = serve(
+        vec![
+            // 회사 이름은 계정을 가리키지 않는다
+            organization_named("Demo Studio"),
+            // 조직을 확인하지 못해도(키 거절) 추정하지 않는다
+            Reply::new("/v1/organizations/me", 401, json!({})),
+            Reply::new("/v1/models?limit=1", 401, json!({})),
+            // 이름 없는 응답(워크스페이스 키)도 마찬가지다
+            Reply::new("/v1/organizations/me", 403, json!({})),
+            Reply::models(),
+        ],
+        |_| {},
+    );
+    for _ in 0..3 {
+        let outcome = save_detecting_with(&env, &secrets, "claude", None, "work", KEY, &url)
+            .await
+            .unwrap();
+        assert!(matches!(outcome, AutoSave::NeedsAccount));
+        assert!(stored_connections(&env, Provider::Claude).unwrap().is_empty());
+        assert!(secrets.get(&service(Provider::Claude, "work")).is_err());
+    }
+    // 사용자가 계정을 고르면 공급자에게 다시 묻지 않고 그 계정에 넣는다 (가짜 서버는 요청을 더 받지 않는다)
+    let chosen = save_detecting_with(&env, &secrets, "claude", Some(ACCOUNT), "work", KEY, &url)
+        .await
+        .unwrap();
+    server.join().unwrap();
+    assert!(matches!(
+        &chosen,
+        AutoSave::Saved { account_id, matched_by: OwnerMatch::Chosen, connection, .. }
+            if account_id == ACCOUNT && connection.display_name() == "work"
+    ));
+    // 없는 계정·틀린 입력은 저장하지 않는다
+    for (account, name, key) in [
+        (Some("missing"), "other", KEY),
+        (None, "bad name", KEY),
+        (None, "other", "not-a-key"),
+    ] {
+        assert!(save_detecting_with(&env, &secrets, "claude", account, name, key, &url)
+            .await
+            .is_err());
+    }
+    assert_eq!(stored_connections(&env, Provider::Claude).unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn single_accounts_and_codex_keys_are_placed_without_asking_the_provider() {
+    let env = test_env("auto-owner-offline");
+    let secrets = Memory::default();
+    // 요청을 하나도 받지 않는 가짜 서버 — 조회가 나가면 연결 거부로 드러나지 않고 None이 되므로,
+    // 저장 결과(근거)로 조회가 없었음을 확인한다
+    let (url, server) = serve(Vec::new(), |_| {});
+    server.join().unwrap();
+    // 계정이 없으면 넣을 곳이 없다
+    assert!(save_detecting_with(&env, &secrets, "claude", None, "", KEY, &url)
+        .await
+        .is_err());
+    named_account(&env, "only", ACCOUNT, "Only Person");
+    let saved = save_detecting_with(&env, &secrets, "claude", None, "", KEY, &url)
+        .await
+        .unwrap();
+    assert!(matches!(
+        &saved,
+        AutoSave::Saved { account_id, account, matched_by: OwnerMatch::OnlyAccount, .. }
+            if account_id == ACCOUNT && account == "only"
+    ));
+    // Codex는 조직 이름을 묻지 않는다: 계정이 하나면 그 계정, 여럿이면 사용자에게 묻는다
+    crate::api_connections::tests::add_account(&env, Provider::Codex, "codex-one", "codex-alpha");
+    let codex = save_detecting_with(&env, &secrets, "codex", None, "", KEY, &url)
+        .await
+        .unwrap();
+    assert!(matches!(&codex, AutoSave::Saved { matched_by: OwnerMatch::OnlyAccount, .. }));
+    crate::api_connections::tests::add_account(&env, Provider::Codex, "codex-two", "codex-beta");
+    let asked = save_detecting_with(&env, &secrets, "codex", None, "", KEY, &url)
+        .await
+        .unwrap();
+    assert!(matches!(asked, AutoSave::NeedsAccount));
+    assert_eq!(stored_connections(&env, Provider::Codex).unwrap().len(), 1);
+}

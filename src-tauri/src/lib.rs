@@ -687,6 +687,27 @@ async fn api_save(
     .await
     .map_err(|_| "API 저장 작업 실패")?
 }
+/// 계정을 고르지 않은 API 키 등록 (#187) — 주인 계정을 찾아 그 계정 밑에 저장한다.
+/// 못 찾으면 저장하지 않고 `needs_account`를 돌려주며, 화면이 계정을 받아 `account_id`와 함께 다시 부른다.
+#[tauri::command]
+async fn api_save_auto(
+    provider: String,
+    account_id: Option<String>,
+    name: String,
+    key: String,
+) -> Result<api_connections::AutoSave, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri::async_runtime::block_on(api_connections::save_detecting(
+            &Env::real()?,
+            &provider,
+            account_id.as_deref(),
+            &name,
+            &key,
+        ))
+    })
+    .await
+    .map_err(|_| "API 저장 작업 실패")?
+}
 #[tauri::command]
 async fn api_attach(provider: String, name: String, account_id: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -4105,6 +4126,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             api_list,
             api_save,
+            api_save_auto,
             api_attach,
             api_delete,
             api_launch_command,

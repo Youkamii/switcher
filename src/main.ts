@@ -27,7 +27,7 @@ import {
   type GithubStarPromptChoice,
 } from "./firstRunStar";
 import { applyAccentTheme, themeCssColor } from "./theme";
-import { accountApis, apiIsBusy, apiText, compactApiBalance, existingKeys, type Connection } from "./apiConnections";
+import { accountApis, apiIsBusy, apiText, compactApiBalance, existingKeys, providerApiAdd, type Connection } from "./apiConnections";
 import { cardClickAction, pickAccountKey, rememberKey, rememberedKey, type KeyRef, type LastChange } from "./apiToggle";
 import { icon, iconButton, setButtonIcon } from "./uiIcons";
 import { edgeGaugeLayout } from "./edgeGaugeLayout";
@@ -1401,6 +1401,9 @@ async function renderProvider(
     if (snap.api_active && snap.api_active_account_id) {
       rememberKey(localStorage, provider, snap.api_active_account_id, snap.api_active);
     }
+    // 저장된 계정이 있으면 제목 줄에 「API 키 추가」 — 계정을 고르지 않아도 키의 주인 계정을 찾아 넣는다 (#187)
+    const accounts = snap.profiles.filter((profile, index, all) => all.findIndex(other => other.id === profile.id) === index);
+    if (accounts.length > 0) heading.querySelector(".add-row")?.prepend(providerApiAdd(provider, accounts, hooks));
     const savedIds = new Set<string>();
     for (const profile of snap.profiles) {
       const ownedKeys = connections.filter(c => c.account_id === profile.id);

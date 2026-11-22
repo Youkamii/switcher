@@ -13,6 +13,8 @@ const messages = {
     checkNote: "모델 목록으로 연결을 확인합니다. 선불 잔액은 API 카드에서 확인하세요.", keyNote: "키는 OS 보안 저장소에 보관하며 다시 표시하지 않습니다.",
     claudeNote: "Claude 키는 발급할 때 사용할 워크스페이스를 지정하세요.", invalid_key: "키 교체 필요", forbidden: "조회 권한 확인 필요", rate_limited: "요청 제한 · 다시 확인", unavailable: "연결 확인 필요",
     complete: "API 사용 중", use: "사용", stop: "해제", stopTitle: "API 사용 해제 · 이전 설정 복원", active: "API · 사용 중", applyFailed: "키는 저장됐지만 적용하지 못했습니다", savedOnly: "키 저장 완료", applied: "이제 이 API를 사용합니다 — Claude Code는 실행 중인 세션에도 바로, Codex는 다음 실행부터. 구독으로 돌아가려면 계정 목록에서 전환하세요.", nameHint: "예: work · 영문, 숫자, - 또는 _", replacement: "새 키로 교체하면 다음 CLI 실행부터 적용됩니다.",
+    autoOwner: "키를 보고 맞는 계정에 넣습니다", nameOptional: "비워 두면 api · 영문, 숫자, - 또는 _", chooseOne: "계정 선택", finding: "키의 계정을 확인하는 중…",
+    pickAccount: "이 키가 어느 계정 것인지 알 수 없습니다. 계정을 골라 주세요.", placed: "{account} 계정에 키를 저장했습니다.", placedByOrg: "키를 발급한 조직의 이름으로 찾았습니다.",
     again: "한 번 더 누르면 API 키 사용 · 별도 과금", againDouble: "더블클릭하면 API 키 사용 · 별도 과금", back: "다시 누르면 구독으로 돌아갑니다", backDouble: "다시 더블클릭하면 구독으로 돌아갑니다",
   },
   en: {
@@ -23,6 +25,8 @@ const messages = {
     checkNote: "The model list checks the connection. Open the API card for prepaid balance information.", keyNote: "Keys stay in the OS secure store and are never displayed again.",
     claudeNote: "Select a workspace when creating your Claude API key.", invalid_key: "Replace key", forbidden: "Check model permissions", rate_limited: "Rate limited · retry", unavailable: "Check connection",
     complete: "API active", use: "Use", stop: "Stop", stopTitle: "Stop using API · restore previous settings", active: "API · active", applyFailed: "Key saved, but could not apply it", savedOnly: "Key saved", applied: "This API is now in use: at once for running Claude Code sessions, from the next session for Codex. Select a subscription account to switch back.", nameHint: "e.g. work · letters, numbers, - or _", replacement: "The replacement key applies to the next CLI launch.",
+    autoOwner: "The key goes to the account it belongs to", nameOptional: "Blank for “api” · letters, numbers, - or _", chooseOne: "Choose account", finding: "Finding the key's account…",
+    pickAccount: "Couldn't tell which account this key belongs to. Choose the account.", placed: "Key saved to {account}.", placedByOrg: "Matched by the name of the organization that issued the key.",
     again: "Click again to use the API key · billed separately", againDouble: "Double-click to use the API key · billed separately", back: "Click again to return to the subscription", backDouble: "Double-click again to return to the subscription",
   },
 };
@@ -32,6 +36,10 @@ export function apiIsBusy(): boolean { return apiPending > 0 || document.querySe
 type CheckState = "unchecked" | "ready" | "invalid_key" | "forbidden" | "rate_limited" | "unavailable";
 export type Connection = { provider: string; name: string; label?: string | null; account_id?: string | null; active?: boolean; checked_at?: number | null; check_state?: CheckState };
 type Account = { id: string; name: string; email: string | null };
+/// 계정을 고르지 않은 등록(#187)의 결과 — 주인 계정에 저장했거나, 주인을 몰라 아무것도 저장하지 않았거나
+type AutoSave =
+  | { status: "saved"; connection: Connection; account_id: string; account: string; matched_by: "chosen" | "only_account" | "organization_name" }
+  | { status: "needs_account" };
 type Hooks = { changed: () => Promise<void>; fit: () => void; toast: (message: string, error?: boolean) => void };
 function paragraph(content: string, className = "help") {
   const p = document.createElement("p"); p.className = className; p.textContent = content; return p;
@@ -83,13 +91,17 @@ function dialog(hooks: Hooks, title: string, canClose = () => true) {
   return host;
 }
 
-function openApiRegistration(hooks: Hooks, provider: string, account: Account, existing?: Connection) {
+/// account가 null이면 계정을 고르지 않은 등록이다 (#187, 공급자 제목 줄의 「API 키 추가」):
+/// 키만 받아 `api_save_auto`가 주인 계정을 찾고, 못 찾으면 그때 계정을 묻는다 (accounts가 그 후보).
+function openApiRegistration(hooks: Hooks, provider: string, account: Account | null, existing?: Connection, accounts: Account[] = []) {
   if (apiIsBusy()) return;
   const text = apiText();
   let saving = false;
   const providerTitle = provider === "claude" ? "Claude" : "Codex";
   const host = dialog(hooks, existing ? text.replace : t("addApiKey"), () => !saving);
-  const owner = paragraph(`${providerTitle} · ${account.email ?? account.name}`, "api-owner");
+  const owner = account
+    ? paragraph(`${providerTitle} · ${account.email ?? account.name}`, "api-owner")
+    : paragraph(`${providerTitle} · ${text.autoOwner}`, "api-auto-note");
   const form = document.createElement("form"); form.className = "api-form";
   const providerNote = paragraph(text.claudeNote);
   const key = document.createElement("input"); key.type = "password"; key.required = true; key.maxLength = 4096; key.minLength = 16; key.autocomplete = "new-password"; key.spellcheck = false; key.pattern = "sk-[!-~]+";
@@ -99,6 +111,7 @@ function openApiRegistration(hooks: Hooks, provider: string, account: Account, e
   const nameLabel = document.createElement("label"); nameLabel.textContent = text.name;
   const name = document.createElement("input"); name.name = "connection-name"; name.required = true; name.maxLength = 32; name.pattern = "[A-Za-z0-9_-]+"; name.autocomplete = "off";
   name.placeholder = text.nameHint; name.value = existing?.label ?? existing?.name ?? ""; name.readOnly = Boolean(existing); nameLabel.append(name);
+  if (!account) { name.required = false; name.placeholder = text.nameOptional; }
   const keyLabel = document.createElement("label"); keyLabel.textContent = text.key; key.name = "api-key"; key.placeholder = "sk-…"; keyLabel.append(key);
   const errorLine = paragraph("", "api-error"); errorLine.setAttribute("role", "alert");
   const buttons = document.createElement("div"); buttons.className = "api-save-actions";
@@ -107,33 +120,71 @@ function openApiRegistration(hooks: Hooks, provider: string, account: Account, e
   if (!existing?.active) buttons.append(save);
   else use.classList.add("primary");
   buttons.append(use);
-  form.append(nameLabel, keyLabel, consoleLink, paragraph(existing?.active ? text.replacement : text.keyNote), providerNote, errorLine, buttons);
+  // 주인 계정을 찾지 못했을 때만 드러나는 계정 선택(질문이 곧 이름표다 — 오류가 아니라 물음)과, 찾는 동안의 안내
+  const pick = document.createElement("label"); pick.className = "api-account-pick"; pick.textContent = text.pickAccount; pick.hidden = true;
+  const select = document.createElement("select"); select.name = "api-account";
+  select.add(new Option(text.chooseOne, ""));
+  for (const candidate of accounts) select.add(new Option(candidate.email ?? candidate.name, candidate.id));
+  pick.append(select);
+  const finding = paragraph(text.finding, "api-finding"); finding.setAttribute("role", "status"); finding.hidden = true;
+  const keyNote = paragraph(existing?.active ? text.replacement : text.keyNote);
+  if (account) form.append(nameLabel, keyLabel, consoleLink, keyNote, providerNote, errorLine, buttons);
+  else form.append(keyLabel, nameLabel, consoleLink, keyNote, providerNote, finding, errorLine, pick, buttons);
   host.append(owner, paragraph(text.billing, "api-billing"), form);
   // A save is a short local mutation. Network checks may continue after the dialog closes.
   form.onsubmit = async event => {
     event.preventDefault(); if (saving) return;
     const useNow = Boolean(existing?.active) || event.submitter === use;
-    saving = true; apiPending++; save.disabled = use.disabled = true; name.readOnly = true; key.readOnly = true;
+    saving = true; apiPending++; save.disabled = use.disabled = true; name.readOnly = true; key.readOnly = true; select.disabled = true;
     const close = host.querySelector<HTMLButtonElement>(".api-close")!; close.disabled = true;
     let storedName = existing?.name ?? name.value.trim().toLowerCase();
     const apply = () => invoke("api_activate", { provider, name: storedName });
     let stored = false;
     let activationError: string | null = null;
+    // 계정을 고르지 않은 등록: 앱이 찾은 주인(placed), 또는 못 찾아서 물어야 하는 상태(askAccount)
+    let placed: Extract<AutoSave, { status: "saved" }> | null = null;
+    let askAccount = false;
+    errorLine.textContent = "";
+    if (!account) { finding.hidden = false; hooks.fit(); }
     try {
-      const saved = await invoke<Connection>("api_save", { provider, accountId: account.id, name: storedName, key: key.value.trim(), replace: Boolean(existing) });
-      storedName = saved.name; stored = true;
-      collapsedAccounts.delete(focusPrefix(provider, account));
-      key.value = "";
-      try { if (useNow) await apply(); }
-      catch (error) { activationError = String(error); }
+      let ownerId = account?.id ?? "";
+      if (account) {
+        const saved = await invoke<Connection>("api_save", { provider, accountId: account.id, name: storedName, key: key.value.trim(), replace: Boolean(existing) });
+        storedName = saved.name;
+      } else {
+        const outcome = await invoke<AutoSave>("api_save_auto", { provider, accountId: pick.hidden ? null : select.value, name: storedName, key: key.value.trim() });
+        if (outcome.status === "saved") { placed = outcome; storedName = outcome.connection.name; ownerId = outcome.account_id; }
+        else askAccount = true;
+      }
+      if (!askAccount) {
+        stored = true;
+        collapsedAccounts.delete(`${provider}/account/${ownerId}`);
+        key.value = "";
+        try { if (useNow) await apply(); }
+        catch (error) { activationError = String(error); }
+      }
     } catch (error) { errorLine.textContent = String(error); }
     finally {
-      key.value = ""; saving = false; apiPending--; close.disabled = save.disabled = use.disabled = false;
-      name.readOnly = Boolean(existing); key.readOnly = false;
+      // 계정을 물어야 할 때는 키를 다시 붙여 넣지 않게 입력을 남긴다(가려진 채). 그 밖에는 지운다.
+      if (!askAccount) key.value = "";
+      saving = false; apiPending--; close.disabled = save.disabled = use.disabled = false;
+      name.readOnly = Boolean(existing); key.readOnly = false; select.disabled = false; finding.hidden = true;
     }
-    if (!stored) { key.focus(); return; }
+    if (askAccount) {
+      pick.hidden = false; select.required = true;
+      hooks.fit(); select.focus(); return;
+    }
+    if (!stored) { hooks.fit(); key.focus(); return; }
     form.remove(); host.querySelector("h2")!.textContent = useNow && !activationError ? text.complete : text.savedOnly;
-    const result = paragraph(activationError ? `${text.applyFailed} · ${activationError}` : useNow ? text.applied : text.linked, activationError ? "api-error" : useNow ? "api-applied" : "api-saved");
+    // 어느 계정에 넣었는지 알려 준다. 조직 이름으로 찾았으면 그 근거도 함께
+    let where: string | null = null;
+    if (placed) {
+      const { account_id, account: profile, matched_by } = placed;
+      const found = accounts.find(candidate => candidate.id === account_id);
+      where = text.placed.replace("{account}", found?.email ?? found?.name ?? profile) + (matched_by === "organization_name" ? ` ${text.placedByOrg}` : "");
+    }
+    if (where && (useNow || activationError)) host.append(paragraph(where, "api-placed"));
+    const result = paragraph(activationError ? `${text.applyFailed} · ${activationError}` : useNow ? text.applied : where ?? text.linked, activationError ? "api-error" : useNow ? "api-applied" : where ? "api-saved api-placed" : "api-saved");
     host.append(result);
     if (activationError) {
       const retry = document.createElement("button"); retry.className = "primary api-apply"; retry.textContent = text.use;
@@ -152,7 +203,18 @@ function openApiRegistration(hooks: Hooks, provider: string, account: Account, e
     catch (error) { if (host.isConnected) { status.textContent = String(error); status.dataset.state = "error"; } }
     finally { if (!host.isConnected) void hooks.changed(); hooks.fit(); }
   };
-  host.showModal(); hooks.fit(); (existing ? key : name).focus();
+  host.showModal(); hooks.fit(); (existing || !account ? key : name).focus();
+}
+
+/// 공급자 제목 줄의 「API 키 추가」 (#187) — 계정을 고르지 않는다. 키만 넣으면 주인 계정을 찾아
+/// 그 계정 밑에 저장하고, 못 찾을 때만 묻는다. 계정 카드의 「API 키 추가」는 그 계정에 직접 넣는다.
+export function providerApiAdd(provider: string, accounts: Account[], hooks: Hooks): HTMLButtonElement {
+  const add = document.createElement("button"); add.type = "button"; add.className = "add-api-key";
+  add.dataset.provider = provider; add.dataset.apiFocus = `${provider}/add-api`;
+  add.title = apiText().autoOwner;
+  add.append(icon("plus"), t("addApiKey"));
+  add.onclick = () => openApiRegistration(hooks, provider, null, undefined, accounts);
+  return add;
 }
 
 const collapsedAccounts = new Set<string>();

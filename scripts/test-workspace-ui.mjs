@@ -29,6 +29,8 @@ function fixture(mode = "normal", preview = false) {
   // Toggle scenario controls: a simulated clock (the app measures elapsed time at each press, it runs no
   // timers), how long the fake backend takes on that clock, and a gate that keeps usage requests pending.
   let clockSkew = 0; let backendLatency = 0; let usageGate = null; let openUsage = null;
+  // Key-only registration (#187): the account the fixture "finds" for a key when several are saved (null = unknown).
+  let autoOwner = null;
   // A native host drives test interactions even when WebKit throttles page timers.
   let tickId=0; const ticks=new Map();
   window.__uiTick=id=>{ticks.get(id)?.();ticks.delete(id);};
@@ -46,7 +48,8 @@ function fixture(mode = "normal", preview = false) {
     transformCallback(fn) { callbacks.set(seq,fn); return seq++; },
     unregisterCallback(id) { callbacks.delete(id); },
     async invoke(cmd, args={}) {
-      calls.push({cmd, args: cmd === 'api_save' ? {provider:args.provider,accountId:args.accountId,name:args.name,key:'[REDACTED]',replace:args.replace} : args});
+      calls.push({cmd, args: cmd === 'api_save' ? {provider:args.provider,accountId:args.accountId,name:args.name,key:'[REDACTED]',replace:args.replace}
+        : cmd === 'api_save_auto' ? {provider:args.provider,accountId:args.accountId,name:args.name,key:'[REDACTED]'} : args});
       if(cmd === 'plugin:event|listen') { const ids = events.get(args.event) ?? []; ids.push(args.handler); events.set(args.event,ids); return seq++; }
       if(cmd === 'get_language') return 'ko';
       if(cmd === 'get_accent_theme') return 'deep-green';
@@ -90,6 +93,23 @@ function fixture(mode = "normal", preview = false) {
         if(args.replace && previous?.account_id!==args.accountId) throw 'wrong owner';
         const saved={provider:args.provider,name,account_id:args.accountId,label:previous?.label??args.name,check_state:'unchecked'};
         connections.set(id,saved); return saved;
+      }
+      if(cmd === 'api_save_auto') {
+        // Stands in for the owner lookup: an explicit account wins, a lone account owns the key,
+        // otherwise the fixture's "organization name" (autoOwner) points at an account or at nobody.
+        if(args.key !== 'sk-dummy-test-key-123456') throw 'test input mismatch';
+        const accounts = args.provider==='claude' ? {'claude-1':'personal','claude-2':'work'} : {[args.provider+'-1']:'personal'};
+        const ids = Object.keys(accounts);
+        const owner = args.accountId || (ids.length===1 ? ids[0] : autoOwner);
+        if(!ids.includes(owner)) { if(args.accountId) throw 'API 키를 추가할 계정을 찾을 수 없습니다'; return {status:'needs_account'}; }
+        const taken = label => [...connections.values()].some(c=>c.provider===args.provider && c.account_id===owner && (c.label??c.name)===label);
+        let label = args.name;
+        if(!label) { label='api'; for(let n=2; taken(label); n++) label='api-'+n; }
+        else if(taken(label)) throw '이 계정에 같은 이름의 API 키가 있습니다';
+        let name = label; for(let n=2; connections.has(args.provider+'/'+name); n++) name=label+'-'+n;
+        const saved={provider:args.provider,name,account_id:owner,label,check_state:'unchecked'};
+        connections.set(args.provider+'/'+name,saved);
+        return {status:'saved',connection:saved,account_id:owner,account:accounts[owner],matched_by:args.accountId?'chosen':ids.length===1?'only_account':'organization_name'};
       }
       if(cmd === 'api_attach') {
         const entry=connections.get(args.provider+'/'+args.name);
@@ -153,6 +173,8 @@ function fixture(mode = "normal", preview = false) {
       const sections = [...document.querySelectorAll(providers)];
       record('no-accounts-keeps-both-registration-entries',
         sections.length === 2 && sections.every(section => section.querySelector('.add-account')?.getBoundingClientRect().width > 0));
+      // A key needs an account to live under: with none saved, only "add account" is offered.
+      record('no-accounts-offers-no-key-add', !document.querySelector('.add-api-key'));
       return;
     }
     record('no-accounts-omits-provider-sections-'+mode, !document.querySelector(providers));
@@ -367,11 +389,113 @@ function fixture(mode = "normal", preview = false) {
     }
     } finally { Date.now=realNow; backendLatency=0; releaseUsage(); }
   }
+  // Key-only registration (#187): the provider header takes a key without an account and the app files it
+  // under the account it belongs to; it asks only when it cannot tell.
+  async function checkAutoKey() {
+    await ready('.profile-card');
+    for(let i=0;i<4;i++) await delay();
+    const rect = el => el.getBoundingClientRect();
+    const header = provider => document.querySelector('.section-title .add-api-key[data-provider="'+provider+'"]');
+    const accountAdd = provider => document.querySelector('.section-title .add-account[data-provider="'+provider+'"]');
+    const openAuto = async provider => { header(provider).click(); return ready('.api-form'); };
+    const keyInput = form => form.querySelector('input[name="api-key"]');
+    const nameInput = form => form.querySelector('input[name="connection-name"]');
+    const fill = (form, name='') => { keyInput(form).value='sk-dummy-test-key-123456'; nameInput(form).value=name; };
+    const keysOf = (provider, account) => [...document.querySelectorAll('.profile-card[data-provider="'+provider+'"][data-name="'+account+'"] .api-card .card-name')].map(el=>el.textContent);
+    const autoCalls = () => calls.filter(c=>c.cmd==='api_save_auto');
+    const closeDialog = async () => { document.querySelector('.api-dialog .api-close').click(); await settle(()=>!document.querySelector('.api-dialog')); for(let i=0;i<6;i++) await delay(); };
+    const stored = () => connections.size;
+
+    record('provider-title-offers-key-add-beside-account-add', ['claude','codex'].every(p=>{ const api=header(p), account=accountAdd(p); return api && account && api.parentElement===account.parentElement && api.textContent==='API 키 추가' && rect(api).width>0 && rect(api).right<=rect(account).left+0.5; }));
+    record('title-row-buttons-fit-without-overlap', ['claude','codex'].every(p=>{ const title=header(p).closest('.section-title'), t=rect(title), a=rect(header(p)), b=rect(accountAdd(p)), label=rect(title.querySelector('svg, img, .provider-icon') ?? title); return a.left>=t.left && b.right<=t.right+0.5 && Math.abs(a.top-b.top)<3 && a.left>label.left && title.scrollWidth<=title.clientWidth+1; }));
+    record('account-cards-keep-their-own-key-add', document.querySelectorAll('.profile-card .account-api-add').length===3);
+
+    // 1) Several accounts, and the key's organization names one of them: saved there, no question.
+    autoOwner='claude-1';
+    let before=stored();
+    let form = await openAuto('claude');
+    const dialog = document.querySelector('.api-dialog');
+    record('key-only-dialog-asks-for-no-account', !dialog.querySelector('.api-owner') && dialog.querySelector('.api-auto-note')?.textContent.includes('Claude') && form.querySelector('.api-account-pick').hidden && keyInput(form).required && !nameInput(form).required && document.activeElement===keyInput(form) && rect(form.querySelector('.api-account-pick')).height===0);
+    record('key-only-dialog-stays-inside-window', (()=>{ const r=rect(dialog); return r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight; })());
+    fill(form);
+    form.requestSubmit(form.querySelector('.api-save'));
+    await ready('.api-saved');
+    record('key-alone-is-filed-under-the-account-it-belongs-to', autoCalls().length===1 && autoCalls()[0].args.provider==='claude' && !autoCalls()[0].args.accountId && autoCalls()[0].args.name==='' && autoCalls()[0].args.key==='[REDACTED]' && !calls.some(c=>c.cmd==='api_save') && !calls.some(c=>c.cmd==='api_activate') && stored()===before+1 && connections.get('claude/api')?.account_id==='claude-1');
+    const placed = document.querySelector('.api-dialog .api-placed');
+    record('result-names-the-account-and-how-it-was-found', placed?.textContent.includes('personal@example.test') && placed.textContent.includes('조직의 이름') && !document.querySelector('.api-dialog .api-form') && !document.querySelector('.api-dialog input'));
+    document.body.classList.add('privacy');
+    record('privacy-mode-blurs-the-account-in-the-result', getComputedStyle(placed).filter.includes('blur'));
+    document.body.classList.remove('privacy');
+    await closeDialog();
+    await settle(()=>keysOf('claude','personal').includes('api'));
+    record('new-key-appears-under-that-account-only', keysOf('claude','personal').includes('api') && !keysOf('claude','work').includes('api'));
+
+    // 2) Nobody is named: nothing is stored, the dialog asks once, and the typed key survives the question.
+    autoOwner=null; before=stored();
+    form = await openAuto('claude');
+    fill(form,'team');
+    form.requestSubmit(form.querySelector('.api-save'));
+    const pick = form.querySelector('.api-account-pick'), select = pick.querySelector('select');
+    await settle(()=>!pick.hidden);
+    record('unknown-owner-stores-nothing-and-asks-for-the-account', !pick.hidden && rect(select).height>0 && stored()===before && form.isConnected && pick.textContent.includes('계정을 골라') && form.querySelector('.api-error').textContent==='' && document.activeElement===select && [...select.options].map(o=>o.value).join()===',claude-1,claude-2' && [...select.options].slice(1).map(o=>o.textContent).join()==='personal@example.test,work@example.test' && select.required);
+    record('the-question-keeps-the-typed-key-and-name', keyInput(form).value==='sk-dummy-test-key-123456' && nameInput(form).value==='team' && !keyInput(form).readOnly && !form.querySelector('.api-save').disabled && keyInput(form).type==='password');
+    record('saving-waits-for-an-account-choice', !form.checkValidity() && autoCalls().length===2);
+    record('account-question-stays-inside-window', (()=>{ const r=rect(document.querySelector('.api-dialog')); return r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight && rect(select).right<=r.right; })());
+    select.value='claude-2'; select.dispatchEvent(new Event('change',{bubbles:true}));
+    form.requestSubmit(form.querySelector('.api-save'));
+    await ready('.api-saved');
+    const chosen = document.querySelector('.api-dialog .api-placed');
+    record('chosen-account-receives-the-key', autoCalls().length===3 && autoCalls()[2].args.accountId==='claude-2' && autoCalls()[2].args.name==='team' && autoCalls()[2].args.key==='[REDACTED]' && stored()===before+1 && chosen?.textContent.includes('work@example.test') && !chosen.textContent.includes('조직의 이름'));
+    await closeDialog();
+    await settle(()=>keysOf('claude','work').includes('team'));
+    record('chosen-key-appears-under-the-chosen-account', keysOf('claude','work').includes('team') && !keysOf('claude','personal').includes('team'));
+
+    // 3) One saved account: it owns the key without any question, and "save and use" applies it at once.
+    before=stored();
+    form = await openAuto('codex');
+    record('single-account-dialog-is-the-same-key-only-form', document.querySelector('.api-dialog .api-auto-note')?.textContent.includes('Codex') && form.querySelector('.api-account-pick').hidden);
+    fill(form);
+    saveAndUse(form);
+    await ready('.api-applied');
+    const only = document.querySelector('.api-dialog .api-placed');
+    record('lone-account-takes-the-key-and-can-use-it-at-once', autoCalls().length===4 && autoCalls()[3].args.provider==='codex' && !autoCalls()[3].args.accountId && stored()===before+1 && only?.textContent.includes('personal@example.test') && !only.textContent.includes('조직의 이름') && calls.some(c=>c.cmd==='api_activate' && c.args.provider==='codex' && c.args.name==='api') && activeApi.get('codex')==='api');
+    await closeDialog();
+
+    // 4) A refused save says why, stores nothing, and does not keep the key on screen.
+    autoOwner='claude-2'; before=stored();
+    form = await openAuto('claude');
+    fill(form,'team');
+    form.requestSubmit(form.querySelector('.api-save'));
+    await settle(()=>form.querySelector('.api-error').textContent.includes('같은 이름'));
+    record('refused-save-says-why-and-clears-the-key', form.isConnected && form.querySelector('.api-error').textContent.includes('같은 이름') && keyInput(form).value==='' && stored()===before && form.querySelector('.api-account-pick').hidden && form.querySelector('.api-finding').hidden);
+    await closeDialog();
+    // The harness script itself spells the fixture key, so look at the page without its scripts.
+    const page = document.body.cloneNode(true); page.querySelectorAll('script').forEach(script=>script.remove());
+    record('key-text-never-reaches-the-page-or-the-call-log', !page.outerHTML.includes('sk-dummy-test-key-123456') && ![...document.querySelectorAll('input, textarea')].some(field=>field.value.includes('sk-dummy-test-key-123456')) && !JSON.stringify(calls).includes('sk-dummy-test-key-123456'));
+  }
   window.addEventListener('load', async () => {
     try {
       if(emptyAccounts) {
         await checkEmptyAccounts();
         record('no-browser-errors-empty-'+mode,errors.length===0);
+        return;
+      }
+      if(preview === 'auto-key-ask') {
+        // Screenshot state: the key-only dialog after the app could not tell the owner.
+        await ready('.profile-card');
+        document.querySelector('.section-title .add-api-key[data-provider="claude"]').click();
+        const form = await ready('.api-form');
+        form.querySelector('input[name="api-key"]').value='sk-dummy-test-key-123456';
+        form.requestSubmit(form.querySelector('.api-save'));
+        const pick = form.querySelector('.api-account-pick');
+        await settle(()=>!pick.hidden);
+        for(let i=0;i<4;i++) await delay();
+        record('key-only-dialog-shows-the-account-question', !pick.hidden && errors.length===0);
+        return;
+      }
+      if(preview === 'auto-key') {
+        await checkAutoKey();
+        record('no-browser-errors-auto-key-'+mode,errors.length===0);
         return;
       }
       if(preview === 'toggle') {
@@ -455,7 +579,7 @@ function fixture(mode = "normal", preview = false) {
       sessionPhase=null;document.getElementById('refresh').click();await delay();await delay();
       document.querySelector('.add-account[data-provider="claude"]').click();await delay();await delay();await delay();
       record('provider-add-starts-account-login',calls.some(c=>c.cmd==='start_login'&&c.args.provider==='claude')&&!document.querySelector('.api-dialog'));
-      record('key-registration-only-inside-accounts',[...document.querySelectorAll('.account-api-add')].length===3 && [...document.querySelectorAll('.account-api-add')].every(button=>button.closest('.profile-card')));
+      record('key-registration-is-offered-per-account-and-per-provider',[...document.querySelectorAll('.account-api-add')].length===3 && [...document.querySelectorAll('.account-api-add')].every(button=>button.closest('.profile-card')) && ['claude','codex'].every(p=>document.querySelector('.section-title .add-api-key[data-provider="'+p+'"]')));
       await ready('.profile-card');
       document.querySelector('.shell').style.width='420px';
       await delay();
@@ -475,7 +599,7 @@ function fixture(mode = "normal", preview = false) {
       const stale=cards[1].querySelector('.stale-overlay');
       record('auth-error-visible-with-stale-usage', stale?.textContent.includes('권한'));
       record('auth-error-does-not-overlap-bars', stale.getBoundingClientRect().top >= [...cards[1].querySelectorAll('.usage-row')].at(-1).getBoundingClientRect().bottom);
-      record('header-buttons-only-add-accounts',[...document.querySelectorAll('.add-account')].every(button=>button.textContent==='계정 추가'));
+      record('header-buttons-add-accounts-and-keys',[...document.querySelectorAll('.add-account')].every(button=>button.textContent==='계정 추가') && [...document.querySelectorAll('.add-api-key')].length===2 && [...document.querySelectorAll('.add-api-key')].every(button=>button.textContent==='API 키 추가' && button.closest('.section-title')));
       record('no-empty-api-space',!document.querySelector('.api-panel, .api-card'));
       await openApi();
       let form=await ready('.api-form');
@@ -741,6 +865,8 @@ try {
   }
   for(const mode of ['normal','minimal','edge']) reports.push(await run(mode,'empty-accounts',null));
   for(const mode of ['minimal','edge']) reports.push(await run(mode,'toggle',null));
+  reports.push(await run('normal','auto-key',null));
+  if(allDir && !useWebKit) reports.push(await run('normal','auto-key-ask',path.join(allDir,'api-key-only.png')));
   reports.push(await run('edge','api-folded',allDir && !useWebKit ? path.join(allDir,'mode-edge-api-folded.png') : null));
   const result={reports,passed:reports.reduce((n,r)=>n+r.checks.filter(c=>c.passed).length,0),failed:reports.reduce((n,r)=>n+r.checks.filter(c=>!c.passed).length,0)};
   if(outputAt>=0) fs.writeFileSync(process.argv[outputAt+1],JSON.stringify(result,null,2)+'\n');
