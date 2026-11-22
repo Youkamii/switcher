@@ -47,6 +47,9 @@
           <button id="clambtn" hidden title="클램셸 슬립 방지"><svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v11H5zM2 19h20M9 15v4M15 15v4"/></svg><span class="tool-label">잠자기 방지</span></button>
           <button id="blackbtn" title="블랙 모니터 — 마우스를 흔들거나 ESC로 해제"><svg class="tool-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14A8 8 0 0 1 10 4a8 8 0 1 0 10 10Z"/></svg><span class="tool-label">화면 끄기</span></button>
         </div>
+        <!-- 엣지 판 아래쪽의 이동 손잡이 (#188). 접힌 손잡이가 판 아래쪽 끝에 있을 때(판이 위로 열릴 때)
+             마우스 바로 옆에 잡는 곳이 오게 한다 — 위쪽의 ☰(main.ts edgeBar)와 짝이다. 엣지에서만 보인다. -->
+        <span id="edge-grip-bottom" class="edge-ui edge-handle edge-handle-bottom" data-tauri-drag-region title="드래그로 이동">☰</span>
       </footer>
     </div>
     <!-- Type4(벽 붙임) 액체 층 (#151) — 다이내믹 아일랜드식. 벽에 맺힌 물방울
