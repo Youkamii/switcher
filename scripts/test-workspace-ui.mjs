@@ -14,14 +14,21 @@ function fixture(mode = "normal", preview = false) {
   let visibility = { claude:preview!=='no-ai', codex:preview!=='no-ai', github:true, display:true, black:true, tfsd:false };
   const emptyAccounts = preview === 'empty-accounts';
   let emptyLayout;
-  const activeApi = new Map(preview===true ? [['claude','project']] : []); let activationFailure = false;
+  const activeApi = new Map(preview===true || preview==='api-folded' ? [['claude','project']] : []); let activationFailure = false;
   let codexBlocked = false; let checkFailure = false; let releaseCheck = null; let holdCheck = false;
-  let balanceIssue = preview === true ? 'login_required' : null;
+  // With no billing login the compact balance shows its billing link, so the frame tests can press it.
+  let balanceIssue = preview === true || preview === 'toggle' ? 'login_required' : null;
   const consoleCredits = new Map(preview === true ? [['project', { amount_minor:7845,currency:'USD',checked_at:1794300000 }]] : []);
   let balanceMinor = 7845;
   let balanceCurrency = "USD";
   let sessionPhase = null;
-  const connections = new Map(preview && !emptyAccounts ? [['claude/project',{provider:'claude',name:'project',account_id:'claude-2',check_state:'ready',checked_at:1794300000}]] : []);
+  // 'toggle'·'api-ready': the key belongs to the account in use, so one more click can select it.
+  const ownKey = preview === 'toggle' || preview === 'api-ready';
+  const connections = new Map(preview && !emptyAccounts ? [['claude/project',{provider:'claude',name:'project',account_id:ownKey?'claude-1':'claude-2',check_state:'ready',checked_at:1794300000}]] : []);
+  const activeProfile = new Map([['claude','personal'],['codex','personal']]);
+  // Toggle scenario controls: a simulated clock (the app measures elapsed time at each press, it runs no
+  // timers), how long the fake backend takes on that clock, and a gate that keeps usage requests pending.
+  let clockSkew = 0; let backendLatency = 0; let usageGate = null; let openUsage = null;
   // A native host drives test interactions even when WebKit throttles page timers.
   let tickId=0; const ticks=new Map();
   window.__uiTick=id=>{ticks.get(id)?.();ticks.delete(id);};
@@ -56,10 +63,12 @@ function fixture(mode = "normal", preview = false) {
       if(cmd === 'list_profiles' && args.provider==='codex' && codexBlocked) throw 'Codex가 파일 외 인증 저장소를 사용합니다';
       if(cmd === 'list_profiles' && emptyAccounts) return {profiles:[],live:null,live_saved:false,api_active:null,api_active_account_id:null};
       if(cmd === 'list_profiles') return { api_active:activeApi.get(args.provider)??null, api_active_account_id:connections.get(args.provider+'/'+activeApi.get(args.provider))?.account_id, live:activeApi.has(args.provider)?null:{id:args.provider+'-1',email:'personal@example.test'},live_saved:!activeApi.has(args.provider),profiles:[
-        {name:'personal', id:args.provider+'-1',email:'personal@example.test',plan:args.provider==='claude'?'Max':'Plus',active:!activeApi.has(args.provider),saved_at:1,plan_tier:null},
-        ...(args.provider==='claude' ? [{name:'work',id:'claude-2',email:'work@example.test',plan:'Pro',active:false,saved_at:1,plan_tier:null}] : [])] };
+        {name:'personal', id:args.provider+'-1',email:'personal@example.test',plan:args.provider==='claude'?'Max':'Plus',active:!activeApi.has(args.provider)&&activeProfile.get(args.provider)==='personal',saved_at:1,plan_tier:null},
+        ...(args.provider==='claude' ? [{name:'work',id:'claude-2',email:'work@example.test',plan:'Pro',active:!activeApi.has('claude')&&activeProfile.get('claude')==='work',saved_at:1,plan_tier:null}] : [])] };
+      // Like the backend: selecting a subscription account releases the API selection first.
+      if(cmd === 'switch_profile') { clockSkew+=backendLatency; activeApi.delete(args.provider); activeProfile.set(args.provider,args.name); return {backed_up_to:null,switched_to:args.name}; }
       if(cmd === 'codex_session_status') return sessionPhase ? {phase:sessionPhase,reason:null} : null;
-      if(cmd === 'fetch_usage') return { windows:[{key:'five_hour',label:'5 Hours',percent:32,resets_at:null},{key:'weekly',label:'Weekly',percent:54,resets_at:null}],stale:args.profile==='work',stale_age_secs:600,issue:args.profile==='work'?'토큰 갱신 권한이 거부됐습니다 — 계정·조직의 접근 정책을 확인하세요':null };
+      if(cmd === 'fetch_usage') { const usage = { windows:[{key:'five_hour',label:'5 Hours',percent:32,resets_at:null},{key:'weekly',label:'Weekly',percent:54,resets_at:null}],stale:args.profile==='work',stale_age_secs:600,issue:args.profile==='work'?'토큰 갱신 권한이 거부됐습니다 — 계정·조직의 접근 정책을 확인하세요':null }; return usageGate ? usageGate.then(()=>usage) : usage; }
       if(cmd === 'api_list') return [...connections.values()].filter(c=>c.provider===args.provider).map(c=>({...c,active:activeApi.get(c.provider)===c.name}));
       if(cmd === 'start_login') throw 'fixture login stopped';
       if(cmd === 'api_balance') {
@@ -89,6 +98,7 @@ function fixture(mode = "normal", preview = false) {
       }
       if(cmd === 'api_activate') {
         if(activationFailure) throw 'API 설정 적용 실패';
+        clockSkew+=backendLatency;
         activeApi.set(args.provider,args.name); return {...connections.get(args.provider+'/'+args.name),active:true};
       }
       if(cmd === 'api_deactivate') {activeApi.delete(args.provider);return;}
@@ -117,6 +127,7 @@ function fixture(mode = "normal", preview = false) {
   };
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener(){} };
   const ready = async(selector) => { for(let i=0;i<100;i++) {const el=document.querySelector(selector);if(el)return el;await delay();} throw new Error('Missing '+selector); };
+  const settle = async(test) => { for(let i=0;i<120 && !test();i++) await delay(); return test(); };
   const openApi = async(provider='claude', account=provider==='claude'?'work':'personal') => {
     (await ready('.profile-card[data-provider="'+provider+'"][data-name="'+account+'"] .account-api-add')).click();
     return ready('.api-form');
@@ -168,11 +179,209 @@ function fixture(mode = "normal", preview = false) {
       enabled.height > 0 && hidden.height > 0 &&
       Math.abs(enabled.height - hidden.height) < 1 && Math.abs(enabled.systemTop - hidden.systemTop) < 1);
   }
+  // While an API key is in use, the collapsed edge handle shows it without opening the panel (#186).
+  async function checkFolded() {
+    await ready('.edge-account');
+    const row = () => document.querySelector('#edge-gauge .edge-gauge-row[data-provider="claude"]');
+    await settle(()=>row()?.classList.contains('api') && document.querySelector('#edge-gauge .edge-gauge-row[data-provider="codex"] .edge-gauge-bar'));
+    for(let i=0;i<8;i++) await delay();
+    const mark = row()?.querySelector('.edge-gauge-api')?.getBoundingClientRect();
+    const tab = document.getElementById('edge-tab').getBoundingClientRect();
+    const gauge = document.getElementById('edge-gauge').getBoundingClientRect();
+    record('collapsed-handle-stays-collapsed', !document.body.classList.contains('edge-out'));
+    record('collapsed-api-mark-is-visible', mark && mark.width>0 && mark.height>0 && Number(getComputedStyle(document.getElementById('edge-gauge')).opacity)>0.9);
+    record('collapsed-api-mark-fits-the-gauge-column', mark && mark.left>=gauge.left-0.5 && mark.right<=gauge.right+0.5 && mark.top>=gauge.top-0.5 && mark.bottom<=gauge.bottom+0.5);
+    record('collapsed-api-mark-fits-inside-the-handle', mark && mark.left>=tab.left && mark.right<=innerWidth+0.5 && mark.top>=tab.top && mark.bottom<=tab.bottom);
+    record('collapsed-api-row-keeps-the-usage-row-height', Math.abs(row().getBoundingClientRect().height-19)<0.5);
+    const zone = calls.filter(c=>c.cmd==='set_edge_zone').at(-1)?.args.zone?.rect;
+    record('collapsed-hover-zone-follows-the-handle', zone && Math.abs(zone[3]-(tab.height+8))<1.5);
+  }
+  // One click = account, one more click on the account in use = its API key (#186).
+  async function checkToggle() {
+    const edge = mode === 'edge';
+    const card = name => document.querySelector((edge?'.edge-account':'.compact-card.prov-claude')+'[data-name="'+name+'"]'+(edge?'[data-provider="claude"]':''));
+    const activeCard = () => document.querySelector(edge?'.edge-account.active[data-provider="claude"]':'.compact-card.active.prov-claude');
+    const regions = () => calls.filter(c=>c.cmd==='set_hit_regions').at(-1)?.args.regions ?? [];
+    const center = el => { const r=el.getBoundingClientRect(); return [r.left+r.width/2, r.top+r.height/2]; };
+    const hitsAt = el => { const [x,y]=center(el); return regions().filter(({rect})=>x>=rect[0]&&y>=rect[1]&&x<=rect[0]+rect[2]&&y<=rect[1]+rect[3]); };
+    const click = (el, detail=1) => el.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,detail}));
+    const activations = () => calls.filter(c=>c.cmd==='api_activate');
+    const token = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim().replace(/\s+/g,'');
+    const sameRgb = (color, name) => color.replace(/\s+/g,'').startsWith('rgb('+token(name)) || color.replace(/\s+/g,'').startsWith('rgba('+token(name));
+    await ready(edge?'.edge-account':'.compact-card');
+    if(edge) { emit('edge-hover',true); await ready('body.edge-out'); }
+    await settle(()=>activeCard()?.querySelector(edge?'.edge-col':'.compact-row'));
+    for(let i=0;i<6;i++) await delay();
+    let active = activeCard();
+    record('account-in-use-with-key-offers-api-next-'+mode, active?.dataset.name==='personal' && active.classList.contains('api-ready') && active.dataset.apiKey==='project' && active.querySelector('.api-next')?.textContent.includes('API') && active.querySelector('.api-next').getBoundingClientRect().width>0);
+    record('api-next-names-the-key-and-separate-billing-'+mode, active.title.includes('project') && active.title.includes('별도 과금') && active.title.includes(edge?'한 번 더':'더블클릭'));
+    record('api-next-stays-inside-the-card-'+mode, (()=>{const h=active.querySelector('.api-next').getBoundingClientRect(),c=active.getBoundingClientRect();return h.left>=c.left-0.5&&h.right<=c.right+0.5&&h.bottom<=c.bottom+0.5;})());
+    record('other-accounts-and-keyless-providers-have-no-api-next-'+mode, !card('work')?.querySelector('.api-next') && !card('work')?.classList.contains('api-ready') && !document.querySelector(edge?'.edge-account[data-provider="codex"] .api-next':'.compact-card.prov-codex .api-next'));
+    record('api-next-uses-the-api-colour-not-the-account-colour-'+mode, token('--api-rgb')!==token('--accent-rgb') && token('--api-rgb')!==token('--accent-alt-rgb') && sameRgb(getComputedStyle(active.querySelector('.api-next')).color,'--api-rgb'));
+    // Native hit test: where regions overlap, the first plain control wins, otherwise the first hit.
+    const winnerAt = el => { const hits=hitsAt(el); return hits.find(hit=>hit.action===null) ?? hits[0]; };
+    if(edge) {
+      const own = hitsAt(active);
+      record('edge-card-in-use-is-a-hover-target-before-the-whole-panel', own.length>=2 && own[0].action===null && !own[0].api && Math.abs(own[0].rect[3]-active.getBoundingClientRect().height)<1.5);
+      click(active); await settle(()=>activations().length===1);
+      record('one-more-press-selects-the-accounts-own-key', activations().length===1 && activations()[0].args.provider==='claude' && activations()[0].args.name==='project' && !('key' in activations()[0].args) && !calls.some(c=>c.cmd==='switch_profile'));
+      // The card and the collapsed handle change as soon as the backend answers, before usage reloads.
+      const marked = await settle(()=>card('personal')?.classList.contains('api-live') || card('personal')?.closest('.account-with-api'));
+      record('api-state-shows-at-once-on-card-and-collapsed-handle', Boolean(marked) && document.querySelector('#edge-gauge .edge-gauge-row[data-provider="claude"]')?.classList.contains('api'));
+      // The second half of the same double-click must not undo the selection it just made.
+      click(card('personal'),2); await delay(); await delay();
+      record('tail-of-the-same-gesture-does-not-undo-the-api-selection', !calls.some(c=>c.cmd==='switch_profile'));
+      await settle(()=>document.querySelector('.account-with-api[data-name="personal"] .compact-api-active'));
+    } else {
+      const own = hitsAt(active);
+      record('minimal-card-in-use-reports-its-key-for-native-double-click', own.length===1 && own[0].api===true && own[0].action?.[0]==='claude' && own[0].action?.[1]==='project');
+      const other = hitsAt(card('work'));
+      record('minimal-other-account-still-reports-a-plain-switch', other.length===1 && !other[0].api && other[0].action?.[1]==='work');
+      // A failed native activation leaves the subscription in use and says why on the card.
+      emit('account-switched',{ok:false,error:'API 키체인을 읽지 못했습니다',provider:'claude',name:'project',api:true});
+      await delay();
+      record('native-api-failure-is-shown-on-the-card', active.classList.contains('active') && !active.classList.contains('api-live') && active.querySelector('.usage-issue.api-issue')?.title.includes('키체인') && !document.querySelector('.account-with-api'));
+      // The native poller applies the stored key, then reports it like an account switch.
+      activeApi.set('claude','project');
+      emit('account-switched',{ok:true,provider:'claude',name:'project',api:true});
+      await delay();
+      record('native-api-result-marks-the-card-at-once', card('personal').classList.contains('api-live') || card('personal').closest('.account-with-api')!==null);
+      await settle(()=>document.querySelector('.account-with-api[data-name="personal"] .compact-api-active'));
+    }
+    for(let i=0;i<6;i++) await delay();
+    const group = document.querySelector('.account-with-api[data-name="personal"]');
+    const owner = card('personal');
+    record('api-state-frames-the-owner-account-'+mode, group && owner?.closest('.account-with-api')===group && owner.classList.contains('owns-api') && owner.classList.contains('switchable') && !owner.classList.contains('active') && !activeCard());
+    record('api-state-uses-its-own-colour-'+mode, group && sameRgb(getComputedStyle(group).borderTopColor,'--api-rgb') && sameRgb(getComputedStyle(group.querySelector('.compact-api-label strong')).backgroundColor,'--api-rgb') && group.querySelector('.compact-api-label strong').textContent==='API');
+    record('api-state-names-the-key-'+mode, group?.querySelector('.compact-api-label span')?.textContent==='project');
+    // The pointer usually still rests on the card that was just pressed: hover must not wash the API colour out.
+    owner.classList.add('hit-hover');
+    record('hover-keeps-the-api-colour-'+mode, sameRgb(getComputedStyle(group).borderTopColor,'--api-rgb') && !sameRgb(getComputedStyle(group).borderTopColor,'--accent-rgb'));
+    owner.classList.remove('hit-hover');
+    record('api-state-stays-inside-window-'+mode, group && group.getBoundingClientRect().left>=0 && group.getBoundingClientRect().right<=innerWidth+0.5);
+    const chip = () => document.querySelector('.account-with-api[data-name="personal"] .compact-api-label strong');
+    const link = () => document.querySelector('.account-with-api[data-name="personal"] .api-billing-link');
+    const switches = () => calls.filter(c=>c.cmd==='switch_profile');
+    // Simulated clock: the app measures elapsed time at each press instead of running timers.
+    const realNow=Date.now; Date.now=()=>realNow()+clockSkew;
+    const later = ms => { clockSkew+=ms; };
+    const holdUsage = () => { usageGate = new Promise(resolve => { openUsage = resolve; }); };
+    const releaseUsage = () => { openUsage?.(); usageGate = null; openUsage = null; };
+    try {
+    if(edge) {
+      const row=document.querySelector('#edge-gauge .edge-gauge-row[data-provider="claude"]');
+      const mark=row?.querySelector('.edge-gauge-api');
+      record('collapsed-handle-shows-api-instead-of-usage-bars', row && !row.hidden && row.classList.contains('api') && mark?.textContent==='API' && !row.querySelector('.edge-gauge-bar') && sameRgb(getComputedStyle(mark).backgroundColor,'--api-rgb'));
+      record('collapsed-handle-keeps-other-provider-usage', !!document.querySelector('#edge-gauge .edge-gauge-row[data-provider="codex"] .edge-gauge-bar'));
+      // The whole frame is one target: its hover area covers the API block, not just the account row.
+      const frame=hitsAt(chip());
+      record('api-frame-is-one-hover-and-press-target', frame.length>=2 && frame[0].action===null && Math.abs(frame[0].rect[3]-group.getBoundingClientRect().height)<1.5);
+      // The key dialog's owner paragraph style must not leak into the card (type size, colour, privacy blur).
+      record('owner-card-keeps-its-own-type-and-spacing-'+mode, !owner.classList.contains('api-owner') && ['fontSize','color','filter'].every(prop=>getComputedStyle(owner)[prop]===getComputedStyle(card('work'))[prop]) && getComputedStyle(owner).marginBottom!=='10px');
+      const before=activations().length;
+      // A deliberate second press comes back, even when the system still counts it as a double-click.
+      later(300); click(chip(),2); await settle(()=>switches().length===1);
+      record('press-on-the-api-block-returns-to-the-subscription', switches().length===1 && switches()[0].args.provider==='claude' && switches()[0].args.name==='personal' && activations().length===before);
+      await settle(()=>activeCard()?.classList.contains('api-ready') && !document.querySelector('.account-with-api'));
+      for(let i=0;i<6;i++) await delay();
+      active = activeCard();
+      record('returning-to-subscription-restores-usage-handle', !document.querySelector('#edge-gauge .edge-gauge-row.api') && !document.querySelector('.account-with-api') && active?.classList.contains('api-ready') && !!active.querySelector(edge?'.edge-col':'.compact-row'));
+      click(active); await delay(); await delay();
+      record('api-waits-out-the-previous-account-change', activations().length===before);
+      later(700); click(active); await settle(()=>activations().length===before+1);
+      record('api-selectable-again-after-the-pause', activations().length===before+1);
+      await settle(()=>document.querySelector('.account-with-api[data-name="personal"]'));
+      // Press on the account row itself: back again. Press, press, press keeps toggling.
+      later(400); click(card('personal')); await settle(()=>switches().length===2);
+      await settle(()=>activeCard()?.classList.contains('api-ready') && !document.querySelector('.account-with-api'));
+      later(700); click(activeCard()); await settle(()=>activations().length===before+2);
+      await settle(()=>document.querySelector('.account-with-api[data-name="personal"]'));
+      record('every-press-keeps-toggling-account-and-api', switches().length===2 && activations().length===before+2 && switches().every(c=>c.args.name==='personal'));
+
+      // A steady 0.7 s beat with a backend that takes 0.3 s, while usage is still loading: every press
+      // still lands. The "one more = API" mark does not wait for the usage reload, and the wait before
+      // the API is measured from the press, not from the end of the change.
+      holdUsage(); backendLatency=300;
+      later(700); click(card('personal')); await settle(()=>switches().length===3);
+      await delay(); await delay();
+      const back=activeCard();
+      record('one-more-press-is-offered-before-usage-reloads', back?.dataset.name==='personal' && back.classList.contains('api-ready') && back.dataset.apiKey==='project' && back.querySelectorAll('.api-next').length===1 && back.querySelector('.api-next').textContent==='API ›' && !back.classList.contains('owns-api') && !!document.querySelector('.account-with-api.api-ended'));
+      record('optimistic-api-mark-is-a-hover-target', hitsAt(back).some(hit=>hit.action===null && Math.abs(hit.rect[3]-back.getBoundingClientRect().height)<1.5));
+      record('returned-frame-already-looks-like-the-account-in-use', sameRgb(getComputedStyle(document.querySelector('.account-with-api.api-ended')).borderTopColor,'--accent-rgb'));
+      record('optimistic-api-mark-names-the-key-once', (back.title.match(/별도 과금/g)??[]).length===1 && back.title.includes('project') && !back.title.includes('구독으로'));
+      later(100); click(back); await delay(); await delay();
+      record('press-right-after-the-change-shows-is-not-an-api-decision', activations().length===before+2);
+      later(300); click(activeCard()); await settle(()=>activations().length===before+3);
+      record('steady-beat-reaches-the-api-while-usage-is-loading', activations().length===before+3);
+      await settle(()=>card('personal')?.classList.contains('api-live') || card('personal')?.closest('.account-with-api:not(.api-ended)'));
+      later(400); click(card('personal')); await settle(()=>switches().length===4);
+      record('steady-beat-comes-back-while-usage-is-loading', switches().length===4 && switches().at(-1).args.name==='personal');
+      await delay(); await delay();
+      later(400); click(activeCard()); await settle(()=>activations().length===before+4);
+      record('steady-beat-keeps-toggling-without-waiting-for-usage', activations().length===before+4 && switches().length===4);
+      backendLatency=0; releaseUsage();
+      await settle(()=>document.querySelector('.account-with-api[data-name="personal"]:not(.api-ended) .compact-api-active'));
+      for(let i=0;i<6;i++) await delay();
+      record('held-usage-settles-into-the-real-api-state', card('personal')?.classList.contains('owns-api') && !activeCard() && !!document.querySelector('#edge-gauge .edge-gauge-row.api'));
+
+      // The billing link keeps its own job and does not toggle.
+      await settle(()=>link()?.getBoundingClientRect().width>0);
+      later(400); const billed=calls.filter(c=>c.cmd==='api_open_billing').length; const switched=switches().length; link().click(); await delay(); await delay();
+      record('billing-link-inside-the-frame-opens-billing-without-toggling', calls.filter(c=>c.cmd==='api_open_billing').length===billed+1 && switches().length===switched);
+      // Another account: one press leaves the API for that account's subscription.
+      click(card('work')); await settle(()=>switches().length===switched+1);
+      await settle(()=>activeCard()?.dataset.name==='work');
+      record('press-on-another-account-leaves-api-for-that-account', switches().at(-1).args.name==='work' && activeCard()?.dataset.name==='work' && !document.querySelector('.account-with-api') && !activeCard().classList.contains('api-ready'));
+      // A failed activation stays on the subscription and says why.
+      click(card('personal')); await settle(()=>activeCard()?.dataset.name==='personal' && activeCard().classList.contains('api-ready'));
+      activationFailure=true; later(700);
+      const tried=activations().length; click(activeCard()); await settle(()=>activations().length===tried+1);
+      for(let i=0;i<4;i++) await delay();
+      const failed=activeCard();
+      record('failed-api-selection-keeps-subscription-and-shows-reason', failed?.dataset.name==='personal' && !failed.classList.contains('api-live') && !document.querySelector('.account-with-api') && failed.querySelector('.usage-issue.api-issue')?.title.includes('API 설정 적용 실패') && !document.querySelector('#edge-gauge .edge-gauge-row.api'));
+      activationFailure=false;
+    } else {
+      // Native double-click: the whole frame switches back, wherever inside it the pointer is.
+      for(const [id, el] of [['account-row', owner], ['api-block', chip()]]) {
+        const hit = winnerAt(el);
+        record('minimal-api-frame-switches-back-from-'+id, hit && !hit.api && hit.action?.[0]==='claude' && hit.action?.[1]==='personal' && Math.abs(hit.rect[3]-group.getBoundingClientRect().height)<1.5);
+      }
+      record('minimal-billing-link-stays-a-plain-control', link().getBoundingClientRect().width>0 && winnerAt(link())?.action===null);
+      record('owner-card-keeps-its-own-type-and-spacing-'+mode, !owner.classList.contains('api-owner') && ['fontSize','color','filter'].every(prop=>getComputedStyle(owner)[prop]===getComputedStyle(card('work'))[prop]) && getComputedStyle(owner).marginBottom!=='10px');
+      // The native poller switched back. Usage is still loading: the card must already offer its key again,
+      // and report it to the poller, so the next double-click does not wait for the reload.
+      holdUsage();
+      activeApi.delete('claude');
+      emit('account-switched',{ok:true,provider:'claude',name:'personal'});
+      await delay(); await delay();
+      const back=activeCard();
+      const again=back ? winnerAt(back) : null;
+      record('native-switch-back-offers-the-key-before-usage-reloads', back?.dataset.name==='personal' && back.classList.contains('api-ready') && back.querySelectorAll('.api-next').length===1 && again?.api===true && again.action?.[0]==='claude' && again.action?.[1]==='project');
+      releaseUsage();
+      await settle(()=>activeCard()?.classList.contains('api-ready') && !document.querySelector('.account-with-api'));
+      record('native-switch-back-restores-the-subscription-card', activeCard()?.dataset.name==='personal' && !document.querySelector('.account-with-api') && !!activeCard().querySelector('.compact-row') && activeCard().querySelectorAll('.api-next').length===1);
+      // A plain native switch to another account with no key offers nothing.
+      emit('account-switched',{ok:true,provider:'claude',name:'work'});
+      await delay(); await delay();
+      record('native-switch-to-keyless-account-offers-no-api', !card('work')?.classList.contains('api-ready') && !card('work')?.querySelector('.api-next'));
+    }
+    } finally { Date.now=realNow; backendLatency=0; releaseUsage(); }
+  }
   window.addEventListener('load', async () => {
     try {
       if(emptyAccounts) {
         await checkEmptyAccounts();
         record('no-browser-errors-empty-'+mode,errors.length===0);
+        return;
+      }
+      if(preview === 'toggle') {
+        await checkToggle();
+        record('no-browser-errors-toggle-'+mode,errors.length===0);
+        return;
+      }
+      if(preview === 'api-folded') {
+        await checkFolded();
+        record('no-browser-errors-api-folded',errors.length===0);
         return;
       }
       await ready(preview==='no-ai' ? '.mon-section' : mode === 'normal' ? '.workspace-heading' : mode === 'edge' ? '.edge-account' : '.compact-card');
@@ -216,7 +425,9 @@ function fixture(mode = "normal", preview = false) {
             const link=credit.parentElement.querySelector('.api-billing-link'), r=box(link);
             const x=r.left+r.width/2, y=r.top+r.height/2;
             const hits=(calls.filter(c=>c.cmd==='set_hit_regions').at(-1)?.args.regions??[]).filter(({rect})=>x>=rect[0] && y>=rect[1] && x<rect[0]+rect[2] && y<rect[1]+rect[3]);
-            record('balance-link-native-hit-does-not-switch-subscription-'+mode,hits.length && hits.every(hit=>hit.action===null));
+            // Same rule as the native hit test: where regions overlap, a plain control wins over a switch area.
+            const winner=hits.find(hit=>hit.action===null) ?? hits[0];
+            record('balance-link-native-hit-does-not-switch-subscription-'+mode,hits.length && winner.action===null);
             link.click();await delay();
             record('balance-link-opens-own-billing-'+mode,calls.some(c=>c.cmd==='api_open_billing'&&c.args.provider==='claude') && !calls.some(c=>c.cmd==='switch_profile'));
           }
@@ -504,16 +715,21 @@ try {
   }
   if(allDir && !useWebKit) {
     fs.mkdirSync(allDir,{recursive:true});
-    for(const mode of ['normal','minimal','edge']) reports.push(await run(mode,true,path.join(allDir,`mode-${mode}.png`)));
+    const labels={normal:['01 일반','계정 · API 키 · 전체 도구'],minimal:['02 미니멀','사용량만 작게'],edge:['03 엣지','벽 붙임 · 펼친 상태']};
+    // One figure per screenshot on the comparison board: each mode, then the "one more = API" cue.
+    const shots=[];
+    const shoot=async(mode,preview,file,label)=>{const report=await run(mode,preview,path.join(allDir,file));reports.push(report);shots.push({report,file,label});};
+    for(const mode of ['normal','minimal','edge']) await shoot(mode,true,`mode-${mode}.png`,labels[mode]);
     const registration=await run('normal','registration',path.join(allDir,'api-registration.png'));
     const result=await run('normal','result',path.join(allDir,'api-result.png'));
     const noAI=await run('minimal','no-ai',path.join(allDir,'mode-no-ai.png'));
+    // Account in use with a stored key: the "API ›" cue before the second click (#186).
+    for(const mode of ['minimal','edge']) await shoot(mode,'api-ready',`mode-${mode}-api-next.png`,[labels[mode][0],'사용 중인 계정 · 한 번 더 = API']);
     fs.writeFileSync(path.join(allDir,'api-preview-layout.json'),JSON.stringify({registration:registration.dialog,result:result.dialog},null,2)+'\n');
-    const labels={normal:['01 일반','계정 · API 키 · 전체 도구'],minimal:['02 미니멀','사용량만 작게'],edge:['03 엣지','벽 붙임 · 펼친 상태']};
-    const figures=reports.slice(1).map(r=>`<figure style="width:${r.width}px"><figcaption><b>${labels[r.mode][0]}</b><span>${labels[r.mode][1]}</span></figcaption><div style="height:${Math.ceil(r.height)}px"><img src="mode-${r.mode}.png" style="width:${r.width}px"></div></figure>`).join('');
+    const figures=shots.map(({report:r,file,label})=>`<figure style="width:${r.width}px"><figcaption><b>${label[0]}</b><span>${label[1]}</span></figcaption><div style="height:${Math.ceil(r.height)}px"><img src="${file}" style="width:${r.width}px"></div></figure>`).join('');
     const board=`<!doctype html><html lang="ko"><meta charset="utf-8"><title>switcher · 세 가지 모드</title><style>*{box-sizing:border-box}body{margin:0;background:#e8ecec;color:#182024;font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:32px 38px}header{display:flex;align-items:baseline;gap:16px;margin-bottom:28px}h1{font-size:26px;letter-spacing:-1px;margin:0}header span{font-size:12px;color:#566568}.views{display:flex;align-items:flex-start;gap:30px}figure{margin:0;flex:none}figcaption{height:56px}b{font-size:15px;display:block}figcaption span{font-size:10px;color:#566568;display:block;margin-top:6px;white-space:nowrap}figure div{overflow:hidden;border-radius:12px;box-shadow:0 12px 32px #17212221}img{display:block}</style><header><h1>switcher</h1><span>실제 프론트 화면 · 예시 계정 · 3개 모드</span></header><div class="views">${figures}</div></html>`;
     const boardPath=path.join(allDir,'view-modes.html');fs.writeFileSync(boardPath,board);
-    const height=Math.ceil(Math.max(...reports.slice(1).map(r=>r.height))+170);
+    const height=Math.ceil(Math.max(...shots.map(({report})=>report.height))+170);
     await chromium(boardPath,1100,path.join(allDir,'view-modes.png'),path.join(temp,'board'),height);
     const apiFigure=(label,file,rect)=>`<section class="api-step"><h3>${label}</h3><div class="crop" style="width:${rect.width}px;height:${rect.height}px"><img src="${file}" style="width:420px;transform:translate(${-rect.x}px,${-rect.y}px)"></div></section>`;
     const complete=`<!doctype html><html lang="ko"><meta charset="utf-8"><title>switcher · 전체 개선 화면</title><style>*{box-sizing:border-box}body{margin:0;background:#e8ecec;color:#182024;font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:32px 38px}header{margin-bottom:30px}h1{font-size:27px;letter-spacing:-1px;margin:0 0 7px}header p{font-size:12px;color:#566568;margin:0}.layout{display:flex;align-items:flex-start;gap:36px}.views{display:flex;align-items:flex-start;gap:24px}figure{margin:0;flex:none}figcaption{height:56px}figcaption b{font-size:15px;display:block}figcaption span{font-size:10px;color:#566568;display:block;margin-top:6px;white-space:nowrap}figure>div,.crop{overflow:hidden;border-radius:12px;box-shadow:0 12px 32px #17212221}img{display:block}.api-column{width:380px;flex:none;border-left:1px solid #cad4d4;padding-left:0}.api-step h3{font-size:13px;margin:0 0 12px}.api-step+.api-step{margin-top:24px}.note{font-size:11px;line-height:1.7;color:#566568;margin-top:20px}.extra{position:absolute;top:770px;left:482px;width:280px;display:flex;align-items:flex-start;gap:16px}.extra img{border-radius:10px;box-shadow:0 8px 24px #17212221}.extra p{font-size:11px;line-height:1.8;color:#566568;margin:6px 0}.extra strong{display:block;color:#182024;font-size:12px;margin-bottom:5px}</style><header><h1>switcher · 전체 개선 화면</h1><p>예시 계정으로 검증한 실제 프론트 · 세 가지 모드 · API 키 등록부터 버튼 전환까지</p></header><div class="layout"><div class="views">${figures}</div><aside class="api-column">${apiFigure('API 01 · 키 등록', 'api-registration.png',registration.dialog)}${apiFigure('API 02 · 저장 후 바로 사용', 'api-result.png',result.dialog)}<p class="note">연결 확인·사용량은 검증용 예시 데이터입니다.<br>실제 키를 등록하면 해당 연결의 결과를 표시합니다.</p></aside></div><div class="extra"><img src="mode-no-ai.png" width="120"><p><strong>AI를 모두 숨겼을 때</strong>SYSTEM과 도구만 남습니다.<br>숨긴 계정의 빈 영역도 사라집니다.<br><br>계정 조작은 같은 위치에:<br>다시 연결 · 이름 변경 · 삭제</p></div></html>`;
@@ -523,6 +739,8 @@ try {
 
   }
   for(const mode of ['normal','minimal','edge']) reports.push(await run(mode,'empty-accounts',null));
+  for(const mode of ['minimal','edge']) reports.push(await run(mode,'toggle',null));
+  reports.push(await run('edge','api-folded',allDir && !useWebKit ? path.join(allDir,'mode-edge-api-folded.png') : null));
   const result={reports,passed:reports.reduce((n,r)=>n+r.checks.filter(c=>c.passed).length,0),failed:reports.reduce((n,r)=>n+r.checks.filter(c=>!c.passed).length,0)};
   if(outputAt>=0) fs.writeFileSync(process.argv[outputAt+1],JSON.stringify(result,null,2)+'\n');
   console.log(JSON.stringify(result,null,2));process.exitCode=result.failed?1:0;

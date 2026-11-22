@@ -7,21 +7,23 @@ import { readConsoleCredit } from "./consoleCredit";
 const messages = {
   ko: {
     title: "API 키", onlySave: "저장", linked: "이 계정에 키를 저장했습니다.", legacy: "기존 키 연결", chooseAccount: "저장된 계정을 선택해 기존 키를 연결하세요.", needsAccount: "계정을 추가한 뒤 기존 키를 연결할 수 있습니다.", name: "키 이름", key: "API 키", save: "저장하고 사용", cancel: "닫기", replace: "키 교체",
-    billing: "API는 구독과 별도 과금됩니다. 사용을 선택하면 다음 CLI 실행부터 적용됩니다.",
+    billing: "API는 구독과 별도 과금됩니다. 사용을 선택하면 Claude Code는 실행 중인 세션에도 바로, Codex는 다음 실행부터 적용됩니다.",
     saved: "저장됨 · 확인 전", check: "연결 확인", checked: "연결 확인됨", checking: "연결 확인 중…",
     remove: "연결 삭제", confirm: "한 번 더 눌러 삭제", noQuota: "API · 별도 과금", console: "키 발급 페이지 열기 ↗",
     checkNote: "모델 목록으로 연결을 확인합니다. 선불 잔액은 API 카드에서 확인하세요.", keyNote: "키는 OS 보안 저장소에 보관하며 다시 표시하지 않습니다.",
     claudeNote: "Claude 키는 발급할 때 사용할 워크스페이스를 지정하세요.", invalid_key: "키 교체 필요", forbidden: "조회 권한 확인 필요", rate_limited: "요청 제한 · 다시 확인", unavailable: "연결 확인 필요",
-    complete: "API 사용 중", use: "사용", stop: "해제", stopTitle: "API 사용 해제 · 이전 설정 복원", active: "API · 사용 중", applyFailed: "키는 저장됐지만 적용하지 못했습니다", savedOnly: "키 저장 완료", applied: "다음 실행부터 이 API를 사용합니다. 구독으로 돌아가려면 계정 목록에서 전환하세요.", nameHint: "예: work · 영문, 숫자, - 또는 _", replacement: "새 키로 교체하면 다음 CLI 실행부터 적용됩니다.",
+    complete: "API 사용 중", use: "사용", stop: "해제", stopTitle: "API 사용 해제 · 이전 설정 복원", active: "API · 사용 중", applyFailed: "키는 저장됐지만 적용하지 못했습니다", savedOnly: "키 저장 완료", applied: "이제 이 API를 사용합니다 — Claude Code는 실행 중인 세션에도 바로, Codex는 다음 실행부터. 구독으로 돌아가려면 계정 목록에서 전환하세요.", nameHint: "예: work · 영문, 숫자, - 또는 _", replacement: "새 키로 교체하면 다음 CLI 실행부터 적용됩니다.",
+    again: "한 번 더 누르면 API 키 사용 · 별도 과금", againDouble: "더블클릭하면 API 키 사용 · 별도 과금", back: "다시 누르면 구독으로 돌아갑니다", backDouble: "다시 더블클릭하면 구독으로 돌아갑니다",
   },
   en: {
     title: "API keys", onlySave: "Save", linked: "Key saved to the account.", legacy: "Link existing key", chooseAccount: "Choose the account for this existing key.", needsAccount: "Add an account to link your existing keys.", name: "Key name", key: "API key", save: "Save and use", cancel: "Close", replace: "Replace key",
-    billing: "API usage is billed separately. Selecting Use applies this key to the next CLI session.",
+    billing: "API usage is billed separately. Selecting Use applies this key at once to running Claude Code sessions, and to the next Codex session.",
     saved: "Saved · not checked", check: "Check connection", checked: "Connection checked", checking: "Checking connection…",
     remove: "Delete connection", confirm: "Click again to delete", noQuota: "API · separate billing", console: "Open API key page ↗",
     checkNote: "The model list checks the connection. Open the API card for prepaid balance information.", keyNote: "Keys stay in the OS secure store and are never displayed again.",
     claudeNote: "Select a workspace when creating your Claude API key.", invalid_key: "Replace key", forbidden: "Check model permissions", rate_limited: "Rate limited · retry", unavailable: "Check connection",
-    complete: "API active", use: "Use", stop: "Stop", stopTitle: "Stop using API · restore previous settings", active: "API · active", applyFailed: "Key saved, but could not apply it", savedOnly: "Key saved", applied: "Your next CLI session uses this API. Select a subscription account to switch back.", nameHint: "e.g. work · letters, numbers, - or _", replacement: "The replacement key applies to the next CLI launch.",
+    complete: "API active", use: "Use", stop: "Stop", stopTitle: "Stop using API · restore previous settings", active: "API · active", applyFailed: "Key saved, but could not apply it", savedOnly: "Key saved", applied: "This API is now in use: at once for running Claude Code sessions, from the next session for Codex. Select a subscription account to switch back.", nameHint: "e.g. work · letters, numbers, - or _", replacement: "The replacement key applies to the next CLI launch.",
+    again: "Click again to use the API key · billed separately", againDouble: "Double-click to use the API key · billed separately", back: "Click again to return to the subscription", backDouble: "Double-click again to return to the subscription",
   },
 };
 export function apiText() { return currentLang() === "ko" ? messages.ko : messages.en; }

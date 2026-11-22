@@ -1508,6 +1508,23 @@ body.edge.edge-out #edge-gauge {
   height: 19px;
 }
 
+/* API 키를 쓰는 중인 프로바이더: 구독 사용량 막대 대신 "API" 표식 — 접힌 채로도
+   2번(유료 API) 상태가 보인다 (#186). 사용량 막대처럼 --bar-alpha를 따라 남는다 */
+.edge-gauge-row.api {
+  align-items: center;
+}
+
+.edge-gauge-api {
+  padding: 2px 3px;
+  border-radius: 3px;
+  font-size: 7px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.3px;
+  color: rgb(var(--separator-rgb));
+  background: rgba(var(--api-rgb), var(--bar-alpha));
+}
+
 /* SYSTEM 줄은 에이전트 줄(클로드·코덱스)과 구분선으로 가른다 — 같은 굵기의 막대가
    3px 간격으로 이어지면 셋이 한 덩어리로 읽힌다 (사용자 지적). 구분선 위 4px(gap 6과
    합쳐 10)·아래 5px. 19+6+19+10+25 = 79 ≤ 86(손잡이 직선 구간)이라 막대가 호에 안
@@ -2323,7 +2340,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus
 #app:not(.locked) .card:not(.active) { filter: none; }
 #app:not(.locked) .card-name { color: var(--text); font-weight: 550; }
 #app:not(.locked) .card.active { border-color: rgba(var(--accent-rgb), calc(.4 * var(--fg-alpha))); }
-#app:not(.locked) .profile-card.api-selected { border-color: rgba(var(--accent-rgb), calc(.4 * var(--fg-alpha))); }
+#app:not(.locked) .profile-card.api-selected { border-color: rgba(var(--api-rgb), calc(.6 * var(--fg-alpha))); }
 #app:not(.locked) .status-dot { box-shadow: none; }
 #app:not(.locked) .profile-card { display: grid; grid-template-columns: minmax(0,1fr) 88px; column-gap: 14px; row-gap: 5px; padding: 12px; }
 .profile-card > .card-head { grid-column: 1; grid-row: 1; margin: 0; min-width: 0; gap: 6px; }
@@ -2358,6 +2375,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus
 .api-card-info { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 3px 6px; }
 .api-card .card-name { font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .api-badge { font-size: 9px; color: var(--accent); padding: 1px 4px; border-radius: 3px; border: 1px solid rgba(var(--accent-rgb),.25); }
+.api-card.api-active .api-badge { color: rgb(var(--separator-rgb)); background: rgb(var(--api-rgb)); border-color: transparent; font-weight: 700; }
 .api-status { grid-column: 1 / -1; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
 .api-status[data-state="ready"], .api-check-result[data-state="ready"] { color: var(--accent); }
 .api-status[data-state="error"], .api-check-result[data-state="error"] { color: var(--warn); }
@@ -2365,7 +2383,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus
 .api-use { min-width: 42px; height: 28px; padding: 3px 7px; margin-right: 3px; color: var(--accent); }
 .api-active { border-color: rgba(var(--accent-rgb), .55); }
 .api-applied, .api-saved { color: var(--accent); font-size: 12px; line-height: 1.7; margin-bottom: 14px; }
-.compact-api-active { display: flex; align-items: center; gap: 5px; padding: 6px; margin-bottom: 5px; color: var(--accent); border: 1px solid rgba(var(--accent-rgb), .5); border-radius: 6px; font-size: 10px; overflow: hidden; }
+.compact-api-active { display: flex; align-items: center; gap: 5px; padding: 6px; margin-bottom: 5px; color: rgb(var(--api-rgb)); border: 1px solid rgba(var(--api-rgb), calc(.7 * var(--bar-alpha))); border-radius: 6px; font-size: 10px; overflow: hidden; }
 .compact-api-active span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .unlinked-key-note { display: block; color: var(--muted); font-size: 9px; }
 body.edge .compact-api-active { flex-direction: column; gap: 2px; padding: 4px 2px; font-size: 8px; }
@@ -2423,9 +2441,36 @@ body:not(.locked) main::-webkit-scrollbar { display: block; width: 4px; }
 body:not(.locked) main::-webkit-scrollbar-thumb { background: rgb(var(--border-rgb)); border-radius: 3px; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 
-.account-with-api { border: 1px solid rgba(var(--accent-rgb), .45); border-radius: 7px; background: var(--panel); min-width: 0; margin-bottom: 5px; }
+/* 2번(API) 상태: API 키를 쓰는 중인 계정 — 틀·"API" 칩·잔액이 전용 색(--api-rgb)이다.
+   계정을 한 번 더 누르면 구독으로 돌아간다 (#186). 유료 사용 표시라 --bar-alpha를 따라 남는다 */
+.account-with-api { border: 1px solid rgba(var(--api-rgb), calc(.85 * var(--bar-alpha))); border-radius: 7px; background: var(--panel); min-width: 0; margin-bottom: 5px; }
 .account-with-api > .card, .account-with-api > .edge-account { margin: 0; border-color: transparent; background: transparent; }
-.account-with-api > .compact-api-active { margin: 0 4px; padding: 3px 2px; border: 0; border-top: 1px solid rgba(var(--accent-rgb), .28); border-radius: 0; }
+.account-with-api > .compact-api-active { margin: 0 4px; padding: 3px 2px; border: 0; border-top: 1px solid rgba(var(--api-rgb), calc(.4 * var(--bar-alpha))); border-radius: 0; }
+.compact-api-label strong { flex: none; padding: 1px 4px; border-radius: 3px; font-size: 8px; line-height: 1.2; letter-spacing: .5px; color: rgb(var(--separator-rgb)); background: rgba(var(--api-rgb), var(--bar-alpha)); }
+.compact-api-active .api-balance[data-state="ready"] .api-balance-value, .compact-api-active .api-balance[data-state="console"] .api-balance-value { color: rgb(var(--api-rgb)); }
+.account-with-api > .edge-account .edge-name::before, .edge-account.api-live .edge-name::before { content: ""; display: inline-block; width: 4px; height: 4px; margin-right: 3px; vertical-align: middle; border-radius: 50%; background: rgba(var(--api-rgb), var(--bar-alpha)); }
+/* 틀 어디든 누르면 구독으로 돌아간다. 호버는 같은 API 색을 더 진하게만 한다 — 방금 누른
+   포인터가 그대로 올라가 있어도 2번(API) 상태의 색이 지워지지 않는다(실측: 계정색으로 바꾸면
+   전환 직후의 틀이 구독 카드처럼 보였다). .hit-hover는 러스트 커서 폴링(맥·투과 모드), :hover는 그 밖 */
+.account-with-api:hover, .account-with-api:has(> .switchable.hit-hover) { border-color: rgb(var(--api-rgb)); background: linear-gradient(rgba(var(--api-rgb), .1), rgba(var(--api-rgb), .1)), var(--panel); cursor: pointer; }
+.account-with-api > .edge-account.switchable.hit-hover, .account-with-api > .edge-account.switchable:hover, #app.locked .account-with-api > .card.switchable.hit-hover { border-color: transparent; }
+/* 구독으로 돌아가는 낙관적 표시 — 교체 렌더가 오기 전에 API 틀을 걷는다 */
+.account-with-api.api-ended { border-color: rgba(var(--accent-rgb), var(--fg-alpha)); background: var(--panel); cursor: default; }
+.account-with-api.api-ended > .compact-api-active { display: none; }
+.account-with-api.api-ended > .edge-account .edge-name::before { background: var(--accent); }
+
+/* 1번 상태의 예고: 사용 중인 계정에 저장된 키가 있으면 "API ›" — 한 번 더 누르면(미니멀은
+   더블클릭) 그 키로 넘어간다. 색이 다음 상태를 미리 보여준다 */
+.api-next { display: block; width: fit-content; padding: 1px 4px; border: 1px solid rgba(var(--api-rgb), calc(.5 * var(--fg-alpha))); border-radius: 3px; font-size: 7px; font-weight: 700; line-height: 1.15; letter-spacing: .4px; white-space: nowrap; color: rgba(var(--api-rgb), calc(.85 * var(--fg-alpha))); }
+.edge-account .api-next { margin-top: 1px; }
+.compact-card .api-next { margin: 2px 0 1px auto; }
+.edge-account.api-ready:hover, .edge-account.api-ready.hit-hover, #app.locked .card.api-ready.hit-hover { border-color: rgba(var(--api-rgb), .9); }
+.api-ready:hover .api-next, .api-ready.hit-hover .api-next { color: rgb(var(--api-rgb)); border-color: rgb(var(--api-rgb)); background: rgba(var(--api-rgb), .16); }
+/* 전환 직후(교체 렌더 전)의 2번 상태 — 카드가 곧 API 틀로 바뀐다 */
+.edge-account.api-live, .card.api-live { border-color: rgba(var(--api-rgb), calc(.85 * var(--bar-alpha))); filter: none; }
+.api-live .api-next { color: rgb(var(--separator-rgb)); border-color: transparent; background: rgba(var(--api-rgb), var(--bar-alpha)); }
+@keyframes api-flash { 0% { box-shadow: 0 0 0 0 rgba(var(--api-rgb), .55); } 100% { box-shadow: 0 0 16px 5px rgba(var(--api-rgb), 0); } }
+.card.api-flash { animation: api-flash .4s ease-out; }
 body.edge .edge-account + .account-with-api { margin-top: 3px; }
 body.privacy .api-owner, body.privacy .api-recovery select, body.privacy .compact-api-label span { filter: blur(4px); }
 

@@ -27,7 +27,8 @@ import {
   type GithubStarPromptChoice,
 } from "./firstRunStar";
 import { applyAccentTheme, themeCssColor } from "./theme";
-import { accountApis, apiIsBusy, compactApiBalance, existingKeys, type Connection } from "./apiConnections";
+import { accountApis, apiIsBusy, apiText, compactApiBalance, existingKeys, type Connection } from "./apiConnections";
+import { cardClickAction, pickAccountKey, rememberKey, rememberedKey, type KeyRef, type LastChange } from "./apiToggle";
 import { icon, iconButton, setButtonIcon } from "./uiIcons";
 import { edgeGaugeLayout } from "./edgeGaugeLayout";
 
@@ -73,7 +74,7 @@ async function updateCodexSessionStatus() {
       el.dataset.phase = codexSessionStatus?.phase ?? "unknown";
     });
     document.querySelectorAll<HTMLElement>('.card.active[data-provider="codex"], .compact-card.active.prov-codex, .edge-account.active[data-provider="codex"]')
-      .forEach(el => { el.title = visibility.tfsd ? `${t("tfsdTooltip")} · ${text}` : text; });
+      .forEach(el => { el.title = [visibility.tfsd ? t("tfsdTooltip") : "", text, el.dataset.apiHint ?? ""].filter(Boolean).join(" · "); });
   } catch { /* A status lookup must never clear the account list. */ }
 }
 
@@ -149,6 +150,19 @@ function markActiveOptimistic(card: HTMLElement) {
   }
   card.classList.add("active");
   card.classList.remove("switchable");
+  // API를 쓰다 구독으로 돌아온 경우(#186): API 틀과 접힌 손잡이의 API 표식도 바로 걷는다 —
+  // 교체 렌더가 실제 상태로 다시 그린다
+  for (const group of section.querySelectorAll<HTMLElement>(".account-with-api")) group.classList.add("api-ended");
+  for (const el of section.querySelectorAll<HTMLElement>(".api-live")) el.classList.remove("api-live");
+  for (const el of section.querySelectorAll<HTMLElement>(".owns-api")) {
+    el.classList.remove("owns-api");
+    // "누르면 구독으로 돌아갑니다"는 이제 틀린 안내다
+    el.title = "";
+  }
+  // 저장된 키가 있는 계정이면 "한 번 더 = API"를 바로 단다 — 교체 렌더(사용량 대기)를 기다리지 않는다
+  offerApiOptimistic(card);
+  const changed = card.dataset.provider;
+  if ((changed === "claude" || changed === "codex") && edgeApiLive.delete(changed)) applyEdgeGauge();
   // 상태 dot 툴팁(#102)도 함께 옮긴다 — 색은 .active로 바뀌지만 title은 생성 시 값이라
   // 교체 렌더까지(최대 10초) 회색 점에 "사용 중"이 남았다 (review)
   for (const dot of section.querySelectorAll<HTMLElement>(".status-dot")) dot.removeAttribute("title");
@@ -1383,6 +1397,10 @@ async function renderProvider(
       section.appendChild(hint);
     }
 
+    // 위젯 모드의 "한 번 더 = API"(#186)가 다시 고를 키 — 여기서 "사용"으로 고른 키도 기억한다
+    if (snap.api_active && snap.api_active_account_id) {
+      rememberKey(localStorage, provider, snap.api_active_account_id, snap.api_active);
+    }
     const savedIds = new Set<string>();
     for (const profile of snap.profiles) {
       const ownedKeys = connections.filter(c => c.account_id === profile.id);
@@ -1940,6 +1958,7 @@ function compactCard(
   profile: ProfileInfo,
   pending: Promise<unknown>[],
   forceRetry: boolean,
+  nextKey: KeyRef | null,
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = "card compact-card" + (profile.active ? " active" : "");
@@ -1956,6 +1975,9 @@ function compactCard(
     card.title = t("tfsdTooltip");
   }
   if (provider === "codex" && profile.active) card.title = [card.title, codexSessionText()].filter(Boolean).join(" · ");
+  // 사용 중인 계정 + 저장된 키: 더블클릭하면 그 키로 넘어간다 (#186). 사용량 줄은 이 표식 위에 쌓인다
+  if (nextKey) markApiReady(card, provider, profile.name, nextKey, true);
+  const tail = card.querySelector(".api-next");
 
   const load = (async () => {
     try {
@@ -1973,7 +1995,7 @@ function compactCard(
           const note = document.createElement("div");
           note.className = "usage-note";
           note.textContent = retry;
-          card.appendChild(note);
+          card.insertBefore(note, tail);
           card.title = [card.title, retry].filter(Boolean).join(" · ");
         }
         return;
@@ -2011,7 +2033,7 @@ function compactCard(
         used.textContent = String(Math.min(100, Math.max(0, Math.round(win.percent))));
         wrap.appendChild(used);
         row.append(label, wrap);
-        card.appendChild(row);
+        card.insertBefore(row, tail);
       }
     } catch (error) {
       showUsageIssue(card, String(error), true);
@@ -2047,6 +2069,9 @@ function edgeBar(): HTMLElement {
 /// 전부 얇은 세로 막대로 한 줄에 나란히(클로드 5h·W·F 세 개 위, 코덱스 W 한 개
 /// 아래), 그 아래 SYSTEM 한 줄(CPU·MEM·DSK·NET, 샘플이 있을 때).
 const edgeGaugeByProvider = new Map<ProviderId, number[]>();
+/// API 키를 쓰는 중인 프로바이더 (#186) — 구독 사용량 막대 대신 "API" 표식을 그려, 접힌
+/// 채로도 2번 상태(유료 API)임이 보이게 한다. 렌더(목록 조회)와 전환 직후의 낙관적 표시가 갱신한다.
+const edgeApiLive = new Set<ProviderId>();
 
 /// 활성 계정 카드가 받은 손잡이 게이지 값 — 카드 노드에 묶어 맡겨 두고, 카드가 실제
 /// 화면(#app)에 붙어 있을 때만 전역 게이지(edgeGaugeByProvider)로 옮긴다 (#177).
@@ -2078,12 +2103,22 @@ function applyEdgeGauge() {
     .querySelectorAll<HTMLElement>("#edge-gauge .edge-gauge-row")
     .forEach((row) => {
       const kind = row.dataset.provider as ProviderId | "system";
+      const api = kind !== "system" && edgeApiLive.has(kind);
       const pcts =
         kind === "system"
           ? edgeGaugeSystem ?? []
-          : (edgeGaugeByProvider.get(kind) ?? []);
-      row.hidden = pcts.length === 0;
+          : api
+            ? []
+            : (edgeGaugeByProvider.get(kind) ?? []);
+      row.hidden = pcts.length === 0 && !api;
+      row.classList.toggle("api", api);
       row.replaceChildren();
+      if (api) {
+        const mark = document.createElement("span");
+        mark.className = "edge-gauge-api";
+        mark.textContent = "API";
+        row.appendChild(mark);
+      }
       pcts.forEach((pct, i) => {
         const bar = document.createElement("div");
         bar.className = "edge-gauge-bar";
@@ -2102,11 +2137,9 @@ function applyEdgeGauge() {
         row.appendChild(bar);
       });
     });
-  const geometry = edgeGaugeLayout(
-    (edgeGaugeByProvider.get("claude")?.length ?? 0) > 0,
-    (edgeGaugeByProvider.get("codex")?.length ?? 0) > 0,
-    (edgeGaugeSystem?.length ?? 0) > 0,
-  );
+  // API 표식 줄도 한 줄을 차지한다
+  const shown = (kind: ProviderId) => edgeApiLive.has(kind) || (edgeGaugeByProvider.get(kind)?.length ?? 0) > 0;
+  const geometry = edgeGaugeLayout(shown("claude"), shown("codex"), (edgeGaugeSystem?.length ?? 0) > 0);
   const gauge = document.getElementById("edge-gauge")!;
   gauge.dataset.separatedSystem = String(geometry.separatedSystem);
   const style = document.documentElement.style;
@@ -2180,6 +2213,7 @@ function edgeLabel(win: UsageWindow): string {
 /// (#151, 사용자 지시: "4계정이 들어가도 벽을 다 채우면 안 된다", "계정 선택이 돼야").
 /// 창 라벨(5h·W·F)은 제목 아래 한 줄로 한 번만, 계정마다 이름 + 세로 막대 + %.
 /// 비활성 계정은 짧게 클릭하면 전환(.switchable), 꾹 누르면 초기화 남은 시간.
+/// 사용 중인 계정에 저장된 API 키가 있으면 한 번 더 클릭해 그 키로 넘어간다 (#186).
 async function renderProviderEdge(
   provider: ProviderId,
   title: string,
@@ -2188,9 +2222,10 @@ async function renderProviderEdge(
   forceRetry: boolean,
 ) {
   try {
-    const snap = await invoke<Snapshot>("list_profiles", { provider });
+    const [snap, keys] = await widgetAccounts(provider);
     if (snap.profiles.length === 0 && !snap.api_active) {
       edgeGaugeByProvider.delete(provider);
+      edgeApiLive.delete(provider);
       applyEdgeGauge();
       return;
     }
@@ -2202,6 +2237,9 @@ async function renderProviderEdge(
     section.appendChild(head);
     if (snap.api_active) {
       edgeGaugeByProvider.delete(provider);
+      edgeApiLive.add(provider);
+      applyEdgeGauge();
+    } else if (edgeApiLive.delete(provider)) {
       applyEdgeGauge();
     }
     if (visibility.tfsd && snap.profiles.some((p) => p.active)) {
@@ -2212,7 +2250,8 @@ async function renderProviderEdge(
     const labels = document.createElement("div");
     labels.className = "edge-labels";
     section.appendChild(labels);
-    appendWidgetAccounts(section, provider, snap, forceRetry, profile => edgeAccount(provider, profile, labels, pending, forceRetry));
+    appendWidgetAccounts(section, provider, snap, keys, forceRetry, false, (profile, nextKey) =>
+      edgeAccount(provider, profile, labels, pending, forceRetry, nextKey));
     target.appendChild(section);
   } catch {
     // 목록 실패도 조용히
@@ -2228,6 +2267,7 @@ function edgeAccount(
   labels: HTMLElement,
   pending: Promise<unknown>[],
   forceRetry: boolean,
+  nextKey: KeyRef | null,
 ): HTMLElement {
   const card = document.createElement("div");
   card.className = "edge-account" + (profile.active ? " active" : " switchable");
@@ -2242,6 +2282,7 @@ function edgeAccount(
   const bars = document.createElement("div");
   bars.className = "edge-bars";
   card.appendChild(bars);
+  if (nextKey) markApiReady(card, provider, profile.name, nextKey, false);
 
   const load = (async () => {
     try {
@@ -2324,9 +2365,11 @@ async function edgeSwitch(card: HTMLElement) {
   }
   if (edgeSwitching) return;
   edgeSwitching = true;
+  const pressAt = Date.now();
   card.classList.add("switching");
   try {
     await invoke("switch_profile", { provider: card.dataset.provider, name: card.dataset.name });
+    lastAccountChange = { kind: "account", pressAt, at: Date.now() };
     // 전환은 끝났다 — 가드와 반투명을 바로 풀고, 활성 표시만 옮긴 뒤 스무스 렌더를
     // 기다린다 (대기 중 다른 카드를 눌러도 render()가 큐로 직렬화한다)
     edgeSwitching = false;
@@ -2341,13 +2384,161 @@ async function edgeSwitch(card: HTMLElement) {
   }
 }
 
+// ── 위젯 모드의 계정 ↔ API 전환 (#186) ─────────────────────────────
+// 누를 때마다 넘어간다: 한 번 누르면 그 계정(구독), 사용 중인 계정을 한 번 더 누르면 그
+// 계정의 API 키, API를 쓰는 중인 계정(틀 어디든)을 다시 누르면 구독(사용량)으로 돌아온다.
+// 엣지는 짧은 클릭, 미니멀은 더블클릭(러스트 감지)이 "한 번"이다. 등록·교체·삭제는 일반
+// 모드에서 한다. 판정 규칙은 apiToggle.ts — 돌아오는 길은 항상 열려 있고, 유료인 API
+// 쪽은 "새로 시작한 누름"일 때만 받는다(더블클릭의 뒷누름이 유료 전환이 되지 않게).
+
+/// 마지막 계정·API 전환 — 종류, 그 전환을 시작한 누름의 시각(pressAt), 끝나서 화면에
+/// 반영된 시각(at). 타이머가 아니라 다음 누름의 시점에 경과를 잰다 (숨은 웹뷰는 타이머가 언다).
+/// 러스트가 실행한 전환(미니멀 더블클릭)은 누름 시각을 모르므로 끝난 시각으로 대신한다.
+let lastAccountChange: { kind: "api" | "account"; pressAt: number; at: number } | null = null;
+function sinceLastChange(): LastChange {
+  if (!lastAccountChange) return null;
+  const now = Date.now();
+  return {
+    kind: lastAccountChange.kind,
+    sincePressMs: now - lastAccountChange.pressAt,
+    sinceLandedMs: now - lastAccountChange.at,
+  };
+}
+
+/// 마지막으로 그린 위젯 모드의 계정·키 목록 — 전환 직후의 낙관적 "한 번 더 = API" 표식에 쓴다
+const widgetSeen = new Map<ProviderId, { profiles: ProfileInfo[]; keys: Connection[] }>();
+
+/// 방금 사용 중이 된 계정 카드에 "한 번 더 = API"를 바로 단다 (#186). 교체 렌더는 사용량까지
+/// 받은 뒤에야 화면을 바꾸므로(스무스 렌더), 그때까지 기다리면 전환 직후의 "한 번 더"가
+/// 먹지 않는 구간이 생긴다. 마지막으로 받은 계정·키 목록으로 고르고, 교체 렌더가 실제
+/// 상태로 다시 그린다 — 그새 지워진 키였다면 적용이 실패하고 사유가 카드에 남는다(구독 유지).
+function offerApiOptimistic(card: HTMLElement) {
+  if (!card.matches(".edge-account, .compact-card")) return;
+  const provider = card.dataset.provider;
+  if (provider !== "claude" && provider !== "codex") return;
+  const seen = widgetSeen.get(provider);
+  const profile = seen?.profiles.find((candidate) => candidate.name === card.dataset.name);
+  if (!seen || !profile) return;
+  const key = pickAccountKey(seen.keys, profile.id, rememberedKey(localStorage, provider, profile.id));
+  if (!key) return;
+  markApiReady(card, provider, profile.name, key, card.classList.contains("compact-card"));
+  refreshHitRegionsAfterLayout();
+}
+
+/// 위젯 모드의 계정 목록 + 저장된 API 키. 키 목록 조회 실패는 "키 없음"으로 본다 —
+/// 계정 표시는 그대로 두고 API 전환만 빠진다.
+async function widgetAccounts(provider: ProviderId): Promise<[Snapshot, Connection[]]> {
+  return Promise.all([
+    invoke<Snapshot>("list_profiles", { provider }),
+    invoke<Connection[]>("api_list", { provider }).catch(() => [] as Connection[]),
+  ]);
+}
+
+/// 구독으로 쓰는 중인 계정 카드에 "한 번 더 = 이 계정의 API 키" 표식을 단다.
+/// 좁은 판에 툴팁이 뜨지 않는 맥에서도 보이게 카드 안에 "API ›"를 그린다.
+function markApiReady(card: HTMLElement, provider: ProviderId, name: string, key: KeyRef, double: boolean) {
+  const text = apiText();
+  card.classList.add("api-ready");
+  card.dataset.provider = provider;
+  card.dataset.name = name;
+  card.dataset.apiKey = key.name;
+  // 낙관적 표시로 같은 카드에 다시 불릴 수 있다 — 전에 붙인 안내·표식을 갈아 끼운다
+  const previous = card.dataset.apiHint;
+  const base = previous && card.title.endsWith(previous)
+    ? card.title.slice(0, -previous.length).replace(/ · $/, "")
+    : card.title;
+  card.dataset.apiHint = `${double ? text.againDouble : text.again} (${key.label ?? key.name})`;
+  card.title = [base, card.dataset.apiHint].filter(Boolean).join(" · ");
+  const hint = card.querySelector<HTMLElement>(":scope > .api-next") ?? document.createElement("span");
+  hint.className = "api-next";
+  hint.textContent = "API ›";
+  if (hint.parentElement !== card) card.appendChild(hint);
+}
+
+/// API 전환 직후의 낙관적 표시 — 스무스 렌더가 화면을 바꾸기 전에 카드와 접힌 손잡이를
+/// 2번(API) 상태로 바꾼다. 이 카드는 이제 누르면 구독으로 돌아가는 전환 후보다.
+function markApiOptimistic(card: HTMLElement) {
+  if (!card.isConnected) {
+    const { provider, name } = card.dataset;
+    const live = [...app.querySelectorAll<HTMLElement>(".card, .edge-account")].find(
+      (el) => el.dataset.provider === provider && el.dataset.name === name,
+    );
+    if (!live) return;
+    card = live;
+  }
+  card.classList.remove("active", "api-ready");
+  card.classList.add("api-live", "switchable");
+  card.title = card.dataset.apiHint = "";
+  const hint = card.querySelector<HTMLElement>(".api-next");
+  if (hint) hint.textContent = "API";
+  const provider = card.dataset.provider;
+  if (provider === "claude" || provider === "codex") {
+    edgeGaugeByProvider.delete(provider);
+    edgeApiLive.add(provider);
+    applyEdgeGauge();
+  }
+  refreshHitRegionsAfterLayout();
+}
+
+/// 엣지: 사용 중인 계정을 한 번 더 누름 → 그 계정의 API 키를 CLI에 적용한다 (일반 모드의
+/// "사용"과 같은 api_activate 경로 — 키 원문은 프론트를 지나지 않는다).
+async function edgeUseApi(card: HTMLElement, key: string) {
+  if (loginOpen) {
+    toast(t("loginBusy"), true);
+    return;
+  }
+  if (edgeSwitching || apiIsBusy()) return;
+  edgeSwitching = true;
+  const pressAt = Date.now();
+  card.classList.add("switching");
+  try {
+    await invoke("api_activate", { provider: card.dataset.provider, name: key });
+    lastAccountChange = { kind: "api", pressAt, at: Date.now() };
+    edgeSwitching = false;
+    card.classList.remove("switching");
+    markApiOptimistic(card);
+    await render();
+  } catch (error) {
+    toast(String(error), true);
+    card.classList.remove("switching");
+    showApiIssue(card, String(error));
+  } finally {
+    edgeSwitching = false;
+  }
+}
+
+/// API 적용 실패를 카드에 남긴다 — 위젯 모드에는 토스트가 없다. "!"와 사유(툴팁·접근성
+/// 이름)를 붙이고, 구독은 그대로 쓰는 중이다. 사용량 조회 실패 표시는 건드리지 않는다.
+function showApiIssue(card: HTMLElement, message: string) {
+  card.querySelector(".usage-issue.api-issue")?.remove();
+  showUsageIssue(card, message, true);
+  card.lastElementChild?.classList.add("api-issue");
+  fitHeight();
+}
+
 /// 위젯 모드(미니멀·엣지) 공용 — 계정 카드를 쌓고, 사용 중인 API 키를 소속 계정 아래에 묶는다
-function appendWidgetAccounts(section: HTMLElement, provider: ProviderId, snap: Snapshot, force: boolean, makeCard: (profile: ProfileInfo) => HTMLElement) {
+function appendWidgetAccounts(
+  section: HTMLElement,
+  provider: ProviderId,
+  snap: Snapshot,
+  keys: Connection[],
+  force: boolean,
+  /// 미니멀은 더블클릭(러스트 감지), 엣지는 짧은 클릭이 "한 번"이다 — 안내 문구만 다르다
+  double: boolean,
+  makeCard: (profile: ProfileInfo, nextKey: KeyRef | null) => HTMLElement,
+) {
+  widgetSeen.set(provider, { profiles: snap.profiles, keys });
   const name = snap.api_active;
   const owner = name && snap.profiles.find(profile => profile.id === snap.api_active_account_id);
+  // 이 계정이 마지막으로 쓴 키 — 다음 "한 번 더"가 같은 키를 고른다 (#186)
+  if (name && owner) rememberKey(localStorage, provider, owner.id, name);
   const balance = name ? compactApiBalance(provider, name, snap.api_active_label ?? name, force, { fit: fitHeight, toast }) : null;
   for (const profile of snap.profiles) {
-    const card = makeCard(profile);
+    // 구독으로 쓰는 중인 계정에 저장된 키가 있으면, 한 번 더 눌러 그 키로 넘어갈 수 있다
+    const nextKey = profile.active
+      ? pickAccountKey(keys, profile.id, rememberedKey(localStorage, provider, profile.id))
+      : null;
+    const card = makeCard(profile, nextKey);
     if (profile === owner && balance) {
       // The balance and subscription share a frame, but only the subscription
       // receives native double-click (or edge tap) switch events.
@@ -2355,6 +2546,11 @@ function appendWidgetAccounts(section: HTMLElement, provider: ProviderId, snap: 
       group.className = "account-with-api"; group.dataset.name = profile.name;
       group.setAttribute("role", "group"); group.setAttribute("aria-label", profile.email ?? profile.name);
       balance.title = `${profile.name} · ${balance.title}`;
+      // 2번(API) 상태의 소유 계정 — 누르면 구독으로 돌아간다. (.api-owner는 키 등록 창의
+      // 소속 문단이 이미 쓰는 이름이라 여기에 붙이면 그 여백·블러가 카드에 묻는다)
+      card.classList.add("owns-api");
+      const back = double ? apiText().backDouble : apiText().back;
+      card.title = [apiText().active, back].join(" · ");
       group.append(card, balance); section.append(group);
     } else {
       section.append(card);
@@ -2378,13 +2574,14 @@ async function renderProviderCompact(
   forceRetry: boolean,
 ) {
   try {
-    const snap = await invoke<Snapshot>("list_profiles", { provider });
+    const [snap, keys] = await widgetAccounts(provider);
     if (snap.profiles.length === 0 && !snap.api_active) return;
 
     const section = document.createElement("section");
     // 카드 골격은 즉시 붙이고 사용량만 뒤에서 병렬로 채운다. 모드 전환이 네트워크
     // 조회를 기다리며 멎지 않게 하면서, 일반 새로고침은 pending을 기다려 한 번에 바뀐다.
-    appendWidgetAccounts(section, provider, snap, forceRetry, profile => compactCard(provider, profile, pending, forceRetry));
+    appendWidgetAccounts(section, provider, snap, keys, forceRetry, true, (profile, nextKey) =>
+      compactCard(provider, profile, pending, forceRetry, nextKey));
     target.appendChild(section);
   } catch {
     // 목록 실패도 조용히 — 위젯 모드는 표시 전용
@@ -2482,8 +2679,9 @@ async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
         parts.map(async ({ key, frag }) => {
           if (key === "claude" || key === "codex") {
             if (mode === "edge" && !visibility[key]) {
-              // 숨긴 프로바이더의 옛 게이지 값이 손잡이에 남지 않게
+              // 숨긴 프로바이더의 옛 게이지 값·API 표식이 손잡이에 남지 않게
               edgeGaugeByProvider.delete(key);
+              edgeApiLive.delete(key);
               applyEdgeGauge();
             }
             if (!visibility[key] && !starPromptOpen) return;
@@ -2687,15 +2885,19 @@ function visibleHitRect(
 
 function reportHitRegions() {
   hitElements = [];
-  const regions: { rect: number[]; action: [string, string] | null }[] = [];
+  const regions: { rect: number[]; action: [string, string] | null; api?: true }[] = [];
   const interactionPanelOpen = loginOpen || starPromptOpen;
   // 모든 영역은 창 안으로 잘라 보고한다 — 창 밖 좌표가 그대로 가면 러스트는 커서를
   // 창 크기로 제한하지 않으므로 옆 모니터의 더블클릭이 전환을 일으킬 수 있다
   // (red-review).
-  const pushVisible = (el: HTMLElement, action: [string, string] | null) => {
-    const rect = visibleHitRect(el.getBoundingClientRect(), window.innerWidth, window.innerHeight);
+  // api: 더블클릭이 계정 전환이 아니라 그 계정의 API 키 적용인 영역 (action = [provider, 키 이름])
+  const pushVisible = (el: HTMLElement, action: [string, string] | null, api = false) => {
+    // API를 쓰는 중인 계정은 틀 전체(계정 카드 + API 칸)가 한 단위다 — 어디를 눌러도 구독으로
+    // 돌아간다 (#186). 틀 안의 결제 화면 링크는 action 없는 영역이라 러스트가 먼저 고른다.
+    const box = el.classList.contains("owns-api") ? (el.closest<HTMLElement>(".account-with-api") ?? el) : el;
+    const rect = visibleHitRect(box.getBoundingClientRect(), window.innerWidth, window.innerHeight);
     if (!rect) return;
-    regions.push({ rect, action });
+    regions.push(api ? { rect, action, api: true } : { rect, action });
     hitElements.push(el);
   };
   // Type4가 벽에 숨어 있는 동안은 손잡이만 마우스를 받는다 — 낡은 카드·버튼
@@ -2720,6 +2922,10 @@ function reportHitRegions() {
     if (!interactionPanelOpen) {
       document.querySelectorAll<HTMLElement>(".card.switchable").forEach((el) => {
         pushVisible(el, [el.dataset.provider ?? "", el.dataset.name ?? ""]);
+      });
+      // 사용 중인 계정 + 저장된 키: 더블클릭 = 그 키로 전환 (#186). 러스트가 api 표시로 구분한다
+      document.querySelectorAll<HTMLElement>(".card.api-ready").forEach((el) => {
+        if (el.dataset.apiKey) pushVisible(el, [el.dataset.provider ?? "", el.dataset.apiKey], true);
       });
     }
     // 로그인 패널이 높이 상한 아래로 밀려도 현재 보이는 스크롤 포트가 휠과
@@ -2770,9 +2976,10 @@ function reportHitRegions() {
 // 폴링(edge-hover)이 맡는다 — 투과 중인 웹뷰는 mouseenter를 못 받고, 비활성 웹뷰의
 // 타이머는 믿을 수 없다 (CLAUDE.md macOS 절).
 const edgeTabEl = document.getElementById("edge-tab") as HTMLDivElement;
-/// 펼친 엣지 판에서 짧은 클릭이 동작을 일으키는 카드 — 전환 후보(.switchable). 호버 표시
-/// (hover-poll)와 히트 영역 보고가 같은 목록을 쓴다.
-const EDGE_CLICKABLE = ".edge-account.switchable";
+/// 펼친 엣지 판에서 짧은 클릭이 동작을 일으키는 카드 — 전환 후보(.switchable)와, 한 번 더
+/// 누르면 API 키로 넘어가는 사용 중 계정(.api-ready, #186). 호버 표시(hover-poll)와 히트
+/// 영역 보고가 같은 목록을 쓴다.
+const EDGE_CLICKABLE = ".edge-account.switchable, .edge-account.api-ready";
 let edgeActive = false;
 /// 패널이 벽에서 나와 있는가 (러스트 호버 신호가 갱신)
 let edgeOut = false;
@@ -2952,17 +3159,35 @@ app.addEventListener("pointerdown", (event) => {
 for (const type of ["pointerup", "pointercancel", "pointerleave"] as const) {
   app.addEventListener(type, endEdgeHold);
 }
-// 짧은 클릭 = 계정 전환 (꾹 누르기가 발동한 뒤의 click은 무시)
+// 짧은 클릭이 넘긴다 (#186): 다른 계정 = 그 계정, 사용 중인 계정을 한 번 더 = 그 계정의
+// API 키, API를 쓰는 중인 계정을 다시 = 구독(사용량)으로. 꾹 누르기가 발동한 뒤의 click은
+// 무시한다. 판정 규칙은 apiToggle.ts (cardClickAction).
 app.addEventListener("click", (event) => {
   if (!edgeActive || !edgeOut) return;
   if (edgeHoldFired) {
     edgeHoldFired = false;
     return;
   }
-  const card = (event.target as HTMLElement | null)?.closest<HTMLElement>(
-    ".edge-account.switchable",
+  const target = event.target as HTMLElement | null;
+  // 자체 동작이 있는 조작(모드 버튼·결제 화면 링크·밝기 슬라이더)은 그대로 둔다
+  if (target?.closest("button, a, input")) return;
+  // API를 쓰는 중인 계정은 틀 전체가 한 단위다 — 계정 이름이든 API 칸이든 누르면 돌아온다
+  const card =
+    target?.closest<HTMLElement>(".edge-account") ??
+    target?.closest<HTMLElement>(".account-with-api")?.querySelector<HTMLElement>(":scope > .edge-account") ??
+    null;
+  if (!card) return;
+  const action = cardClickAction(
+    {
+      switchable: card.classList.contains("switchable"),
+      active: card.classList.contains("active"),
+      apiKey: card.dataset.apiKey,
+      apiOwner: card.classList.contains("owns-api") || card.classList.contains("api-live"),
+    },
+    sinceLastChange(),
   );
-  if (card) void edgeSwitch(card);
+  if (action?.kind === "switch") void edgeSwitch(card);
+  else if (action?.kind === "api") void edgeUseApi(card, action.key);
 });
 
 document.getElementById("edge-body")!.addEventListener("animationend", (event) => {
@@ -3100,25 +3325,43 @@ void invoke<boolean>("demo_mode").then((on) => {
   if (on) applyAlpha(55);
 });
 
-// Rust가 실행한 더블클릭 전환의 결과
-void listen<{ ok: boolean; provider?: string; name?: string; error?: string }>(
+// Rust가 실행한 더블클릭 전환의 결과. api가 참이면 계정 전환이 아니라 그 계정의 API 키를
+// 적용한 것이다 (name = 키 이름, #186).
+void listen<{ ok: boolean; provider?: string; name?: string; api?: boolean; error?: string }>(
   "account-switched",
   (event) => {
     if (event.payload.ok) {
+      const { provider, name, api } = event.payload;
+      const at = Date.now();
+      lastAccountChange = { kind: api ? "api" : "account", pressAt: at, at };
       const el = hitElements.find(
         (candidate) =>
-          candidate.dataset.provider === event.payload.provider &&
-          candidate.dataset.name === event.payload.name,
+          candidate.dataset.provider === provider &&
+          (api
+            ? candidate.classList.contains("api-ready") && candidate.dataset.apiKey === name
+            : candidate.dataset.name === name),
       );
       // 전환된 카드가 살짝 빛나고 활성 표시가 옮겨간다 — 성공 토스트는 띄우지 않는다.
       // 다시 그리기는 스무스 렌더(사용량까지 받은 뒤 한 번에 교체)라 화면이 비지 않는다.
       if (el) {
-        el.classList.add("switch-flash");
-        markActiveOptimistic(el);
+        el.classList.add(api ? "api-flash" : "switch-flash");
+        if (api) markApiOptimistic(el);
+        else markActiveOptimistic(el);
       }
       window.setTimeout(() => void render(), 380);
-    } else if (!demoMode) {
-      toast(event.payload.error ?? t("switchFailed"), true);
+    } else {
+      const { provider, name, api, error } = event.payload;
+      // 더블클릭 API 적용 실패는 그 카드에 사유를 남긴다 — 구독은 그대로다 (#186)
+      const card = api
+        ? hitElements.find(
+            (candidate) =>
+              candidate.dataset.provider === provider &&
+              candidate.classList.contains("api-ready") &&
+              candidate.dataset.apiKey === name,
+          )
+        : undefined;
+      if (card) showApiIssue(card, error ?? t("switchFailed"));
+      if (!demoMode) toast(error ?? t("switchFailed"), true);
     }
   },
 );
