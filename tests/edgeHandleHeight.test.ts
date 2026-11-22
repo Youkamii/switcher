@@ -12,26 +12,38 @@ const libSource = read("../src-tauri/src/lib.rs");
 /// 길목에 물려 있는지를 본다.
 const fn = (name: string) => mainSource.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n}\\n`))?.[0] ?? "";
 
-test("a panel dropped with the grip leaves the handle where it was dropped", () => {
+test("a panel moved with the grip leaves the small handle where the mouse let go", () => {
   // ☰를 누른 뒤 정착한 이동만 사용자의 판 옮기기다 — 크기 맞춤·손잡이 끌기·OS가 옮긴 창은
-  // 저장된 자리를 기준으로 다시 놓는다 (커서로 넘침을 재는 위쪽 판정이 엉뚱한 이동에 걸리지 않는다)
+  // 저장된 자리를 기준으로 다시 놓는다
   const settle = fn("settleMonitorSync");
   assert.match(settle, /if \(edgeGripPressed\) \{\s*edgeGripPressed = false;\s*edgeGripDrop = edgeActive;\s*\}\s*void syncCurrentMonitor\(forceSync\);/);
-  // ☰를 누르면 창이 움직이지 않아도(이미 화면 끝) 놓은 뒤 한 번은 정착 판정이 돈다
-  assert.match(
-    mainSource,
-    /if \(target\?\.closest\("\.edge-handle"\)\) \{\s*(?:\/\/[^\n]*\n\s*)*edgeGripPressed = true;\s*scheduleMonitorSync\(\);\s*return;/,
-  );
+  // ☰를 누르면: 러스트에 그 누름의 기록을 걸어 두고, 누를 때의 창 위치를 적고, 창이 움직이지
+  // 않아도(이미 화면 끝) 놓은 뒤 한 번은 정착 판정이 돈다
+  const press = mainSource.match(/if \(target\?\.closest\("\.edge-handle"\)\) \{[\s\S]*?return;\s*\}/)?.[0] ?? "";
+  assert.match(press, /edgeGripPressed = true;/);
+  assert.match(press, /void invoke\("arm_grip_drop"\)/);
+  assert.match(press, /if \(edgeGripPressed\) edgeGripStart = \{ x: at\.x, y: at\.y \};/);
+  assert.match(press, /scheduleMonitorSync\(\);/);
   const snap = fn("placeOnEdge");
   // 정착 판정이 세운 표시를 스냅이 거둔다 — 그 사이에 다른 길로 온 스냅이 옛 자리로 되돌리지 못한다
-  assert.match(snap, /const fromGrip = edgeGripDrop;\s*edgeGripDrop = false;/);
-  // 놓인 판 안의 손잡이 자리가 새 자리 — 작업영역 밖에 놓았으면 배치가 창만 안으로 들인다
-  assert.match(snap, /if \(fromGrip\) \{[\s\S]*?let anchor = frame\.top \+ edgeTabCenter\(frame\.height\);[\s\S]*?storeEdgeAnchor\(anchor, frame\.work\);/);
-  // 위 벽은 OS가 창을 먼저 막는다(맥 메뉴 막대) — 커서가 ☰보다 위면 그만큼, 화면 맨 위면 끝까지
-  assert.match(snap, /invoke<\[number, number\] \| null>\("pointer_position"\)/);
-  assert.match(snap, /if \(cursor\[1\] <= 1\) anchor = Number\.NEGATIVE_INFINITY;/);
-  assert.match(libSource, /fn pointer_position\(app: tauri::AppHandle\) -> Option<\(f64, f64\)>/);
-  assert.match(libSource, /\n\s+pointer_position,\n/, "the command must be registered");
+  assert.match(snap, /const gripSettled = edgeGripDrop;\s*edgeGripDrop = false;/);
+  // 끌었는가: 커서가 움직였거나(창이 화면 끝에 막혀 못 움직였어도 끈 것이다) 창이 움직였거나.
+  // 누르기만 한 ☰는 손잡이를 옮기지 않는다
+  assert.match(snap, /await invoke<GripDrop \| null>\("take_grip_drop"\)/);
+  assert.match(snap, /Math\.hypot\(press\.up\[0\] - press\.down\[0\], press\.up\[1\] - press\.down\[1\]\) >= EDGE_GRIP_MOVE_MIN \* scale;/);
+  assert.match(snap, /dragged = cursorMoved \|\| windowMoved;/);
+  // 작은 손잡이는 마우스를 놓은 자리 — 놓인 판의 위쪽 끝, ☰ 옆 — 에 선다 (사용자 지시: 마우스는
+  // 위에 있는데 작아진 창이 아래에 있으면 소용없다). 판 안에서 예전에 있던 자리를 따라가지 않는다.
+  assert.match(
+    snap,
+    /if \(dragged\) \{\s*(?:\/\/[^\n]*\n\s*)*storeEdgeAnchor\(frame\.top \+ edgeTabRange\(frame\.height, edgeTabHeight\)\.min, frame\.work\);\s*localStorage\.setItem\("switcher\.edgeside", edgeSide\);/,
+  );
+  assert.doesNotMatch(snap, /pointer_position/);
+  // 러스트: 걸어 둔 누름이 끝나면 누른 자리·놓은 자리를 남긴다 (버튼을 쥔 채 마지막으로 본 커서)
+  assert.match(libSource, /fn arm_grip_drop\(\)/);
+  assert.match(libSource, /fn take_grip_drop\(\) -> Option<PointerPress>/);
+  assert.match(libSource, /\n\s+arm_grip_drop,\n\s+take_grip_drop,\n/, "the commands must be registered");
+  assert.match(libSource, /if let Some\(press\) = presses\.update\(primary_button_down\(\), global_cursor_pos\(\)\) \{\s*if GRIP_ARMED\.swap\(false, Ordering::Relaxed\) \{/);
 });
 
 test("every snap puts the window around the stored handle height, so a resized panel does not carry the handle away", () => {
@@ -43,9 +55,9 @@ test("every snap puts the window around the stored handle height, so a resized p
   );
   // 창은 사용자가 정한 "판 안에서의 손잡이 자리"가 되는 곳에서 출발한다 — 다시 띄운 직후에도,
   // 판이 커져 화면 끝에 눌렸다 줄어든 뒤에도 같은 모양으로 돌아온다. 방금 놓은 판만 놓인 자리에서.
-  assert.match(snap, /prevTop: fromGrip \|\| edgeTabY === null \? frame\.top : anchor - edgeTabY,/);
+  assert.match(snap, /prevTop: dragged \|\| edgeTabY === null \? frame\.top : anchor - edgeTabY,/);
   // 눌려서 달라진 자리는 그리기만 하고 저장하지 않는다 — 저장은 사용자가 옮겼을 때만
-  assert.match(snap, /target\.y = innerY - frame\.insetTop;\s*showEdgeTab\(placed\.anchor - innerY \/ scale\);\s*if \(fromGrip\) storeEdgeTabY\(\);/);
+  assert.match(snap, /target\.y = innerY - frame\.insetTop;\s*showEdgeTab\(placed\.anchor - innerY \/ scale\);\s*if \(dragged\) storeEdgeTabY\(\);/);
   assert.doesNotMatch(fn("showEdgeTab"), /localStorage/);
   // 크기를 맞춘 뒤의 스냅이 이 길로 온다
   assert.match(mainSource, /if \(edgeActive\) await snapToEdge\(\);/);
@@ -68,14 +80,14 @@ test("the handle height, the wall and the in-window offset survive a restart", (
   assert.match(place, /if \(edgeRestoreSide && target\.x === pos\.x\) edgeRestoreSide = false;/);
   assert.doesNotMatch(place, /setPosition[\s\S]*edgeRestoreSide = false/);
   // 사용자가 ☰로 벽을 골랐으면 지난번 벽으로 되돌리지 않는다
-  assert.match(place, /if \(fromGrip\) edgeRestoreSide = false;/);
+  assert.match(place, /if \(dragged\) edgeRestoreSide = false;/);
   assert.match(place, /localStorage\.setItem\("switcher\.edgeside", edgeSide\);/);
   // 스냅은 한 번에 하나만 돈다 — 겹친 요청은 끝난 뒤 한 번 더
   const serial = fn("snapToEdge");
   assert.match(serial, /if \(edgeSnapRun\) \{\s*edgeSnapAgain = true;\s*return edgeSnapRun;/);
   assert.match(serial, /do \{\s*edgeSnapAgain = false;\s*await placeOnEdge\(\);\s*\} while \(edgeSnapAgain\);/);
   // 엣지를 떠나면 남은 표시를 지운다 — 다른 모드에서의 창 위치를 드롭으로 읽지 않는다
-  assert.match(fn("applyEdgeMode"), /edgeGripPressed = false;\s*edgeGripDrop = false;\s*edgeRestoreSide = false;/);
+  assert.match(fn("applyEdgeMode"), /edgeGripPressed = false;\s*edgeGripDrop = false;\s*edgeGripStart = null;\s*edgeRestoreSide = false;/);
   assert.match(fn("finishEdgeTabDrag"), /storeEdgeAnchor\(drag\.anchor, drag\.geo\.work\);\s*storeEdgeTabY\(\);\s*localStorage\.setItem\("switcher\.edgeside", edgeSide\);/);
 });
 

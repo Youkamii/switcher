@@ -176,6 +176,54 @@ static EDGE_TAB_DRAG: AtomicBool = AtomicBool::new(false);
 /// 받지 못해도(창 밖에서 놓음·비활성 웹뷰) 창이 마우스를 잡은 채 남지 않게 러스트가 마무리한다.
 const EDGE_DRAG_RELEASE_TICKS: u32 = 3;
 
+/// 주 버튼 누름 하나의 시작·끝 커서 위치 (창 위치와 같은 화면 좌표계, 물리 px).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize)]
+struct PointerPress {
+    down: (f64, f64),
+    up: (f64, f64),
+}
+
+/// 엣지의 ☰를 잡은 누름이 끝났을 때의 기록 (#188). 프론트가 ☰를 누르는 순간 `arm_grip_drop`으로
+/// 걸어 두면 폴링이 그 누름이 끝날 때 채우고, 프론트가 정착 뒤 `take_grip_drop`으로 가져간다.
+/// ☰는 네이티브 창 드래그라 그동안 웹뷰는 포인터 이벤트를 받지 못한다 — 사용자가 실제로 끌었는지
+/// (창이 화면 끝에 막혀 움직이지 않았어도)는 커서로만 알 수 있다. 걸어 둔 누름만 기록하므로 그 뒤의
+/// 다른 클릭이 덮어쓰지 않는다.
+static GRIP_ARMED: AtomicBool = AtomicBool::new(false);
+static GRIP_DROP: Mutex<Option<PointerPress>> = Mutex::new(None);
+
+/// 누름 추적기 — 폴링이 25ms마다 버튼 상태와 커서를 넣는다.
+struct PressTracker {
+    down_at: Option<(f64, f64)>,
+    /// 버튼을 쥔 채 마지막으로 본 커서. 놓은 자리로 쓴다 — 놓은 뒤에는 커서가 곧 다른 데로 간다.
+    held_at: (f64, f64),
+}
+
+impl PressTracker {
+    const fn new() -> Self {
+        PressTracker {
+            down_at: None,
+            held_at: (0.0, 0.0),
+        }
+    }
+
+    /// 버튼이 방금 떨어졌으면 그 누름의 (누른 자리, 놓은 자리)를 돌려준다.
+    fn update(&mut self, down: bool, cursor: Option<(f64, f64)>) -> Option<PointerPress> {
+        if down {
+            if let Some(at) = cursor {
+                self.held_at = at;
+            }
+            if self.down_at.is_none() {
+                self.down_at = Some(self.held_at);
+            }
+            return None;
+        }
+        self.down_at.take().map(|start| PointerPress {
+            down: start,
+            up: self.held_at,
+        })
+    }
+}
+
 /// 끄는 중 폴링 한 번: 버튼이 계속 떨어져 있으면 true(끝났다)를 돌려준다.
 fn edge_drag_released(button_down: bool, up_ticks: &mut u32) -> bool {
     if button_down {
@@ -354,6 +402,37 @@ mod edge_hover_tests {
         assert_eq!(
             quick.update(Some(&zone(false)), on_tab, t0 + Duration::from_millis(25)),
             None
+        );
+    }
+
+    /// #188 — ☰를 잡았던 누름의 누른 자리와 놓은 자리. 놓은 자리는 버튼을 쥔 채 마지막으로 본
+    /// 커서다 — 놓은 뒤에는 커서가 곧 다른 데로 가므로 그 값은 쓰지 않는다.
+    #[test]
+    fn a_press_reports_where_it_started_and_where_it_was_let_go() {
+        let mut presses = PressTracker::new();
+        assert_eq!(presses.update(false, Some((10.0, 10.0))), None);
+        assert_eq!(presses.update(true, Some((100.0, 600.0))), None);
+        assert_eq!(presses.update(true, Some((100.0, 300.0))), None);
+        assert_eq!(presses.update(true, Some((100.0, 40.0))), None);
+        // 놓은 뒤 커서는 이미 딴 데 가 있다
+        assert_eq!(
+            presses.update(false, Some((900.0, 900.0))),
+            Some(PointerPress {
+                down: (100.0, 600.0),
+                up: (100.0, 40.0)
+            })
+        );
+        // 한 누름은 한 번만 보고한다
+        assert_eq!(presses.update(false, Some((900.0, 900.0))), None);
+        // 커서를 못 읽은 틱이 끼어도 마지막으로 본 자리를 쓴다
+        assert_eq!(presses.update(true, Some((5.0, 5.0))), None);
+        assert_eq!(presses.update(true, None), None);
+        assert_eq!(
+            presses.update(false, None),
+            Some(PointerPress {
+                down: (5.0, 5.0),
+                up: (5.0, 5.0)
+            })
         );
     }
 
@@ -3487,14 +3566,6 @@ fn pointer_button_down() -> bool {
     return false;
 }
 
-/// 전역 커서 위치(물리 px, 창 좌표와 같은 화면 좌표계) — 엣지 손잡이 높이의 위쪽 넘침
-/// 판정용 (#185). 맥은 메뉴 막대 아래로 창을 못 올리므로 창 위치로는 넘침이 안 보이고,
-/// 커서가 ☰보다 얼마나 위에 있는지로 잰다.
-#[tauri::command]
-fn pointer_position(app: tauri::AppHandle) -> Option<(f64, f64)> {
-    app.cursor_position().ok().map(|p| (p.x, p.y))
-}
-
 /// Type4 벽 붙임의 호버 존 보고 (None = Type4 아님)
 #[tauri::command]
 fn set_edge_zone(zone: Option<EdgeZone>) {
@@ -3514,6 +3585,21 @@ fn set_edge_zone(zone: Option<EdgeZone>) {
     if let Ok(mut guard) = EDGE_ZONE.lock() {
         *guard = zone;
     }
+}
+
+/// ☰를 누른 순간 (#188) — 이 누름이 끝나면 누른 자리·놓은 자리를 기록한다 (위 GRIP_DROP 주석)
+#[tauri::command]
+fn arm_grip_drop() {
+    if let Ok(mut guard) = GRIP_DROP.lock() {
+        *guard = None;
+    }
+    GRIP_ARMED.store(true, Ordering::Relaxed);
+}
+
+/// ☰를 잡았던 누름의 기록을 가져간다 — 없으면(아직 쥐고 있거나, 걸기 전에 놓았으면) None
+#[tauri::command]
+fn take_grip_drop() -> Option<PointerPress> {
+    GRIP_DROP.lock().ok().and_then(|mut guard| guard.take())
 }
 
 /// 엣지 손잡이 끌기의 시작·끝 (#188) — 위 EDGE_TAB_DRAG 주석 참조
@@ -3908,11 +3994,37 @@ pub fn run() {
                     let mut edge_hover = EdgeHover::new();
                     // 엣지 손잡이를 끄는 중 버튼이 떨어져 있던 폴링 횟수 (#188)
                     let mut edge_drag_up_ticks: u32 = 0;
+                    let mut presses = PressTracker::new();
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(25));
                         let Some(window) = handle.get_webview_window("main") else {
                             continue;
                         };
+                        // 누름 추적 (#188): ☰를 잡았던 누름이 끝나면 누른 자리·놓은 자리를 남긴다.
+                        // 모드와 무관하게 매번 돈다 — 아래의 이른 continue보다 앞에 둔다.
+                        if let Some(press) = presses.update(primary_button_down(), global_cursor_pos()) {
+                            if GRIP_ARMED.swap(false, Ordering::Relaxed) {
+                                // 맥의 전역 커서는 포인트다 — 창 위치와 같은 물리 px로 맞춘다
+                                let scale = if cfg!(target_os = "macos") {
+                                    window.scale_factor().unwrap_or(1.0)
+                                } else {
+                                    1.0
+                                };
+                                let scaled = PointerPress {
+                                    down: (press.down.0 * scale, press.down.1 * scale),
+                                    up: (press.up.0 * scale, press.up.1 * scale),
+                                };
+                                if std::env::var("SWITCHER_DIAG").is_ok() {
+                                    eprintln!(
+                                        "[diag] grip drop: down=({:.0},{:.0}) up=({:.0},{:.0})",
+                                        scaled.down.0, scaled.down.1, scaled.up.0, scaled.up.1
+                                    );
+                                }
+                                if let Ok(mut guard) = GRIP_DROP.lock() {
+                                    *guard = Some(scaled);
+                                }
+                            }
+                        }
                         if EDGE_TAB_DRAG.load(Ordering::Relaxed) {
                             // 엣지 손잡이를 끄는 중: 창이 마우스를 계속 받는다. 호버·투과·더블클릭
                             // 판정은 쉬고, 버튼이 놓였는지만 본다.
@@ -4277,8 +4389,9 @@ pub fn run() {
             set_hover_poll,
             set_edge_zone,
             set_edge_drag,
+            arm_grip_drop,
+            take_grip_drop,
             pointer_button_down,
-            pointer_position,
             set_window_shadow,
             memo_load,
             memo_save,
