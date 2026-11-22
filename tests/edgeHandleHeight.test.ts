@@ -32,11 +32,12 @@ test("a panel moved with the grip leaves the small handle where the mouse let go
   assert.match(snap, /await invoke<GripDrop \| null>\("take_grip_drop"\)/);
   assert.match(snap, /Math\.hypot\(press\.up\[0\] - press\.down\[0\], press\.up\[1\] - press\.down\[1\]\) >= EDGE_GRIP_MOVE_MIN \* scale;/);
   assert.match(snap, /dragged = cursorMoved \|\| windowMoved;/);
-  // 작은 손잡이는 마우스를 놓은 자리 — 놓인 판의 위쪽 끝, ☰ 옆 — 에 선다 (사용자 지시: 마우스는
-  // 위에 있는데 작아진 창이 아래에 있으면 소용없다). 판 안에서 예전에 있던 자리를 따라가지 않는다.
+  // 사용자 지시(2026-11-23): 잡고 끌어 놓으면 접힌 손잡이의 맨 위가 끌어 놓은 자리에 온다.
+  // 놓은 높이는 러스트 기록이 이 ☰ 누름의 것일 때만 쓰고, 아니면 놓인 판의 맨 위다.
+  assert.match(snap, /if \(Math\.abs\(press\.down\[1\] \/ scale - pressedAt\) <= EDGE_GRIP_TRUST\) released = press\.up\[1\] \/ scale;/);
   assert.match(
     snap,
-    /if \(dragged\) \{\s*(?:\/\/[^\n]*\n\s*)*storeEdgeAnchor\(frame\.top \+ edgeTabRange\(frame\.height, edgeTabHeight\)\.min, frame\.work\);\s*localStorage\.setItem\("switcher\.edgeside", edgeSide\);/,
+    /const tabTop = released \?\? frame\.top \+ EDGE_TAB_MARGIN;\s*storeEdgeAnchor\(tabTop \+ edgeTabHeight \/ 2, frame\.work\);\s*localStorage\.setItem\("switcher\.edgeside", edgeSide\);/,
   );
   assert.doesNotMatch(snap, /pointer_position/);
   // 러스트: 걸어 둔 누름이 끝나면 누른 자리·놓은 자리를 남긴다 (버튼을 쥔 채 마지막으로 본 커서)
@@ -55,9 +56,9 @@ test("every snap puts the window around the stored handle height, so a resized p
   );
   // 창은 사용자가 정한 "판 안에서의 손잡이 자리"가 되는 곳에서 출발한다 — 다시 띄운 직후에도,
   // 판이 커져 화면 끝에 눌렸다 줄어든 뒤에도 같은 모양으로 돌아온다. 방금 놓은 판만 놓인 자리에서.
-  assert.match(snap, /prevTop: dragged \|\| edgeTabY === null \? frame\.top : anchor - edgeTabY,/);
+  assert.match(snap, /prevTop: dragged \? anchor - edgeTabRange\(frame\.height, edgeTabHeight\)\.min : edgeTabY === null \? frame\.top : anchor - edgeTabY,/);
   // 눌려서 달라진 자리는 그리기만 하고 저장하지 않는다 — 저장은 사용자가 옮겼을 때만
-  assert.match(snap, /target\.y = innerY - frame\.insetTop;\s*showEdgeTab\(placed\.anchor - innerY \/ scale\);\s*if \(dragged\) storeEdgeTabY\(\);/);
+  assert.match(snap, /target\.y = innerY - frame\.insetTop;\s*showEdgeTab\(placed\.anchor - innerY \/ scale\);\s*if \(dragged\) \{\s*(?:\/\/[^\n]*\n\s*)*edgeTabY = edgeTabRange\(frame\.height, edgeTabHeight\)\.min;/);
   assert.doesNotMatch(fn("showEdgeTab"), /localStorage/);
   // 크기를 맞춘 뒤의 스냅이 이 길로 온다
   assert.match(mainSource, /if \(edgeActive\) await snapToEdge\(\);/);

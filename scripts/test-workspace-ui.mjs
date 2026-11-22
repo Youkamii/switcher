@@ -378,7 +378,7 @@ function fixture(mode = "normal", preview = false) {
     await gripDrag({x:1320,y:40},[1340,1060],[1340,12]);
     await wait(()=>win.y===40 && Math.abs(tabY()-min())<=1);
     check('panel-carried-to-the-top-brings-the-small-handle-to-the-top', win.y===40 && Math.abs(onScreen()-wallMin())<=1 && Math.abs(Number(stored('edgeanchor')))<0.001);
-    check('the-handle-sits-beside-the-grip', Math.abs(tabY()-min())<=1 && stored('edgetab')===String(Math.round(min())));
+    check('the-handle-sits-beside-the-grip', Math.abs(tabY()-min())<=1 && Number(stored('edgetab'))===min());
     // Carried down to the bottom of the screen: the panel comes back inside, the handle stays at the bottom.
     await gripDrag({x:1320,y:2150},[1340,65],[1340,2175]);
     await wait(()=>win.y===1040 && Math.abs(onScreen()-wallMax())<=1);
@@ -389,22 +389,35 @@ function fixture(mode = "normal", preview = false) {
     await gripDrag({x:1320,y:40},[1340,65],[1340,3]);
     await wait(()=>Math.abs(tabY()-min())<=1);
     check('pushing-the-grip-against-the-top-lifts-a-low-handle', stuckTab>400 && win.y===40 && Math.abs(onScreen()-wallMin())<=1);
-    // Dropped in the middle: the panel stays where it was dropped and hangs from the handle.
+    // Dropped in the middle: the top of the folded handle is exactly where the mouse let go (user's rule),
+    // and the panel hangs from it.
     await gripDrag({x:1320,y:700},[1340,65],[1340,725]);
-    await wait(()=>win.y===700 && Math.abs(tabY()-min())<=1);
-    check('panel-dropped-mid-wall-hangs-from-the-handle', win.y===700 && Math.abs(onScreen()-(700+min()))<=1 && moves()>lowMoves);
+    await wait(()=>win.y===721 && Math.abs(tabY()-min())<=1);
+    check('folded-handle-top-is-where-the-mouse-let-go', win.y===721 && Math.abs(onScreen()-(min()-4)-725)<=1 && moves()>lowMoves);
+    // Let go low on the wall where the panel cannot hang below: the handle top is still at the mouse.
+    await gripDrag({x:1320,y:1800},[1340,741],[1340,1825]);
+    await wait(()=>win.y===1040 && Math.abs(onScreen()-(min()-4)-1825)<=1);
+    check('handle-top-at-the-mouse-low-on-the-wall', win.y===1040 && Math.abs(onScreen()-(min()-4)-1825)<=1);
+    await gripDrag({x:1320,y:700},[1340,1060],[1340,725]);
+    await wait(()=>win.y===721 && Math.abs(tabY()-min())<=1);
+    check('and-back-up-from-the-low-place', win.y===721 && Math.abs(onScreen()-(min()-4)-725)<=1);
     // Carried to the other wall: it docks there, remembered, with the handle at the height where it was dropped.
-    await gripDrag({x:100,y:600},[1340,725],[120,625]);
+    await gripDrag({x:100,y:600},[1340,741],[120,625]);
     await wait(()=>win.x===0 && document.body.classList.contains('edge-left') && stored('edgeside')==='left');
-    check('grip-moves-the-panel-to-the-other-wall-and-remembers-it', win.x===0 && win.y===600 && document.body.classList.contains('edge-left') && stored('edgeside')==='left');
-    check('handle-is-where-the-panel-was-dropped-on-the-new-wall', Math.abs(onScreen()-(600+min()))<=1.5);
+    check('grip-moves-the-panel-to-the-other-wall-and-remembers-it', win.x===0 && win.y===621 && document.body.classList.contains('edge-left') && stored('edgeside')==='left');
+    check('handle-top-is-at-the-mouse-on-the-new-wall', Math.abs(onScreen()-(min()-4)-625)<=1.5);
+    // A pointer record that is not this grip press is ignored: the handle goes to the top of the dropped panel.
+    const beforeForeign = stored('edgeanchor');
+    await gripDrag({x:0,y:300},[500,5],[500,900]);
+    await wait(()=>stored('edgeanchor')!==beforeForeign && win.y===300 && Math.abs(tabY()-min())<=1);
+    check('foreign-pointer-record-is-ignored', win.y===300 && Math.abs(onScreen()-(300+min()))<=1.5);
 
     // A window move nobody made with the grip leaves the handle where the user put it.
     const kept = wallMin()+Number(stored('edgeanchor'))*(wallMax()-wallMin());
     win.y = 900; emit('tauri://move',{x:0,y:900});
-    const settled = await wait(()=>win.y===600 && Math.abs(win.y+tabY()-kept)<=1.5);
+    const settled = await wait(()=>win.y===300 && Math.abs(win.y+tabY()-kept)<=1.5);
     for(let i=0;i<20;i++) await delay();
-    check('other-window-moves-return-to-the-users-place', settled && win.y===600 && Math.abs(onScreen()-kept)<=1.5);
+    check('other-window-moves-return-to-the-users-place', settled && win.y===300 && Math.abs(onScreen()-kept)<=1.5);
   }
   // One click = account, one more click on the account in use = its API key (#186).
   async function checkToggle() {
