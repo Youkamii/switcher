@@ -41,7 +41,7 @@ node scripts/review-layout.mjs
 | 미니멀: 1.1초 박자로 더블클릭 4번 | API·구독·API·구독 — 매번 전환 |
 | 미니멀: Codex 계정에서 더블클릭 4번 | `auth.json`·`config.toml`이 API 키 ↔ ChatGPT 로그인을 두 번 왕복 |
 
-실계정에서 관측한 것(2026-11-22, Claude Code 2.1.328): 구독으로 작업 중이던 세션이 API 선택 직후의 요청에서 `billing_error`("Credit balance is too low")로 거절됐고, 구독으로 돌아오자 이어졌다. 그 키의 조직은 이틀 전 Console에 크레딧이 표시된 곳이었다 — 플랜의 월간 API 크레딧은 대화형 Claude Code에 쓰이지 않는다는 [공식 안내](https://support.claude.com/en/articles/17154008-monthly-api-credits-for-max-ultra-and-team-plans)와 맞는다. Claude Code의 API 선택·해제는 실행 중인 세션에도 바로 적용된다는 뜻이어서 앱과 문서의 "다음 CLI 실행부터" 안내를 고쳤다.
+실계정에서 관측한 것(2026-11-22, Claude Code 2.1.328): 구독으로 작업 중이던 세션이 API 선택 직후의 요청에서 `billing_error`("Credit balance is too low")로 거절됐고, 구독으로 돌아오자 이어졌다. 그 키의 조직은 이틀 전 Console에 크레딧이 표시된 곳이었다 — 플랜의 월간 API 크레딧은 대화형 Claude Code에 쓰이지 않는다는 [공식 안내](https://support.claude.com/en/articles/17154008-monthly-api-credits-for-max-ultra-and-team-plans)와 맞는다. 같은 키를 환경변수로 준 `claude -p`는 사용자 승인하에 실제로 호출해 Haiku 5.5·Fable 5.2 모두 응답을 받았다(합계 약 0.11달러). 월간 크레딧은 이 경로로 쓴다 — [쓰는 법](API_CONNECTIONS.md). Claude Code의 API 선택·해제는 실행 중인 세션에도 바로 적용된다는 뜻이어서 앱과 문서의 "다음 CLI 실행부터" 안내를 고쳤다.
 
 남은 범위:
 

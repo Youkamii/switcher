@@ -36,6 +36,16 @@
 
 **플랜의 월간 API 크레딧은 대화형 Claude Code에 쓰이지 않는다.** Max·Ultra·Team 플랜에 포함된 월간 크레딧은 직접 API 호출, Console Playground, Managed Agents, Agent SDK, 그리고 연결된 Console 조직의 키로 직접 돌리는 `claude -p`에 쓰인다. 터미널·IDE·데스크톱·웹의 대화형 Claude Code는 대상이 아니다. 그래서 Console과 위젯에 금액이 보여도, 그것이 월간 지급분뿐이면 대화형 세션을 API 키로 넘겼을 때 요청이 `Credit balance is too low`로 거절될 수 있다(위 실측의 키도 이틀 전 Console에 크레딧이 표시된 조직의 것이었다). 대화형 세션을 API 키로 쓰려면 Console에서 크레딧을 구매하거나 자동 충전을 켠다. 모델과는 무관하다. [월간 API 크레딧 안내](https://support.claude.com/en/articles/17154008-monthly-api-credits-for-max-ultra-and-team-plans)
 
+**월간 크레딧으로 Claude Code를 쓰는 법.** 대화창 없이 실행하는 `claude -p`에 키를 환경변수로 준다. 위젯의 API 전환(`API ›`)은 켜지 않는다 — 켜면 대화형 세션까지 그 키로 넘어가 거절된다.
+
+```bash
+ANTHROPIC_API_KEY="$(security find-generic-password -s 'Switcher-API-claude-<키 이름>' -w)" claude -p "시킬 일"
+```
+
+`-p`에서는 로그인한 구독보다 환경변수의 키가 먼저 쓰이고, 구독 로그인과 위젯 설정은 그대로 남는다. 모델을 적지 않으면 설정의 기본 모델로 돈다. 이어서 시키려면 끝에 `-c`를 붙인다. Claude Code 세션 안이 아니라 일반 터미널에서 실행한다. `claude.ai connectors are disabled…` 경고 한 줄은 키가 쓰이고 있다는 표시다.
+
+실측(2026-11-22, macOS, Claude Code 2.1.330, Ultra 플랜에 연결된 조직의 키, 사용자 승인하에 실제 과금): 같은 키로 대화형 세션은 `Credit balance is too low`였고, `claude -p`는 Haiku 5.5와 Fable 5.2 모두 응답했다. 한 번 실행에 기본으로 깔리는 입력이 약 2만 2천 토큰이어서, 캐시가 없는 첫 호출은 Fable 5.2 기준 약 0.11달러부터다. 도구를 쓰는 긴 작업과 Windows(키가 DPAPI에 있어 위 한 줄을 그대로 쓸 수 없다)는 확인하지 않았다.
+
 ## 위젯 모드에서 구독 ↔ API
 
 미니멀과 엣지에서는 일반 모드로 가지 않고 계정 카드만으로 오간다. 엣지는 **짧은 클릭**, 미니멀은 **더블클릭**이 "한 번"이다.

@@ -78,6 +78,7 @@
 - **Claude Code는 API 선택·해제를 실행 중인 세션에도 바로 적용한다** (2.1.328 실측: 구독으로 돌던 세션이 선택 직후의 요청에서 `billing_error` "Credit balance is too low"). 그러므로 사용자의 실제 위젯에서 사용 중인 계정 카드를 시험 삼아 누르지 말 것 — 실행 중인 세션(이 작업 세션 포함)이 유료 키로 넘어간다. 실제 포인터 검증은 아래 격리 실행으로만 한다.
 
 - **플랜의 월간 API 크레딧(Max·Ultra·Team)은 대화형 Claude Code에 쓰이지 않는다** (Anthropic 안내, 2026-11-22 확인 — 대상은 직접 API 호출·Console Playground·Managed Agents·Agent SDK·`claude -p`). Console과 위젯에 금액이 보여도 대화형 세션을 API 키로 넘기면 `Credit balance is too low`가 날 수 있고, 모델과는 무관하다. 이 오류를 "잔액이 없다"로 옮겨 설명하지 말 것 — 위젯에 금액이 보이는 사용자에게 그렇게 답해서 틀렸다. 위젯이 저장한 금액(`api-connections/<provider>/<name>/console-credit.json`)과 플랜을 먼저 대조한다.
+- **월간 크레딧은 `claude -p`로 쓴다** (실측 2026-11-22, 2.1.330, 사용자 승인하에 과금 호출): `ANTHROPIC_API_KEY`를 환경변수로 준 `claude -p`는 Haiku 5.5·Fable 5.2 모두 응답했다. `-p`에서는 구독 로그인보다 환경변수 키가 먼저다(가짜 키로 401 확인 — 과금 없이 볼 수 있다). 바이너리는 요청마다 청구 표시(`cc_entrypoint`)를 보내며 `-p`는 `sdk-cli`, 대화형은 `cli`다. 위젯의 API 전환(`apiKeyHelper`)은 대화형까지 키로 넘기므로 월간 크레딧만 있는 조직에는 맞지 않는다. 실키로 하는 호출은 금액과 함께 물어 승인받은 뒤에만, 깨끗한 환경(`env -i`)에서 키를 화면·인자에 내지 않고 한다.
 
 ## 격리 실행 검증 (macOS, 실측 2026-11-22)
 
