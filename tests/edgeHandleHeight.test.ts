@@ -32,27 +32,12 @@ test("a panel moved with the grip leaves the small handle where the mouse let go
   assert.match(snap, /await invoke<GripDrop \| null>\("take_grip_drop"\)/);
   assert.match(snap, /Math\.hypot\(press\.up\[0\] - press\.down\[0\], press\.up\[1\] - press\.down\[1\]\) >= EDGE_GRIP_MOVE_MIN \* scale;/);
   assert.match(snap, /dragged = cursorMoved \|\| windowMoved;/);
-  // 작은 손잡이는 마우스를 놓은 자리에 서고, 판은 그 손잡이의 위쪽이나 아래쪽 끝에 붙는다 (사용자
-  // 지시: "마우스는 저 위에 있는데 작아진 창은 아래 있어봐야", "위는 되어도 아래가"). 판 안에서 예전에
-  // 있던 자리를 따라가지 않는다. 계산은 edgeAnchor.ts edgeDropPlacement (tests/edgeAnchor.test.ts).
+  // 작은 손잡이는 마우스를 놓은 자리 — 놓인 판의 위쪽 끝, ☰ 옆 — 에 선다 (사용자 지시: 마우스는
+  // 위에 있는데 작아진 창이 아래에 있으면 소용없다). 판 안에서 예전에 있던 자리를 따라가지 않는다.
   assert.match(
     snap,
-    /if \(dragged\) \{\s*(?:\/\/[^\n]*\n\s*)*const drop = edgeDropPlacement\(\{\s*dropTop: frame\.top,\s*height: frame\.height,\s*tabHeight: edgeTabHeight,\s*work: frame\.work,\s*cursor: released,\s*grip: gripEnd,\s*\}\);\s*storeEdgeAnchor\(drop\.anchor, frame\.work\);\s*storeEdgeArrangement\(drop\.end, drop\.end === "bottom" \? frame\.height - drop\.tabY : drop\.tabY\);\s*localStorage\.setItem\("switcher\.edgeside", edgeSide\);/,
+    /if \(dragged\) \{\s*(?:\/\/[^\n]*\n\s*)*storeEdgeAnchor\(frame\.top \+ edgeTabRange\(frame\.height, edgeTabHeight\)\.min, frame\.work\);\s*localStorage\.setItem\("switcher\.edgeside", edgeSide\);/,
   );
-  // 러스트의 "놓은 자리"는 그 기록의 "누른 자리"가 ☰를 실제로 누른 자리와 맞을 때만 쓴다 —
-  // 아니면 쥐었던 끝이다 (좌표 단위가 어긋나거나 다른 누름의 기록이어도 손잡이가 엉뚱한 끝으로 가지 않는다)
-  assert.match(snap, /const pressedAt = \(start\.y \+ \(innerPos\.y - pos\.y\)\) \/ scale \+ edgeGripClientY;\s*if \(Math\.abs\(press\.down\[1\] \/ scale - pressedAt\) <= EDGE_GRIP_TRUST\) released = press\.up\[1\] \/ scale;/);
-  assert.match(press, /edgeGripClientY = event\.clientY;/);
-  // 쥔 ☰가 판의 어느 끝인지는 누를 때 적는다 — 위쪽(본문 맨 위 줄)과 아래쪽(독 맨 아래) 둘이 있다
-  assert.match(press, /edgeGripEnd = target\.closest\("\.edge-handle-bottom"\) \? "bottom" : "top";/);
-  const html = read("../index.html");
-  assert.match(html, /<span id="edge-grip-bottom" class="edge-ui edge-handle edge-handle-bottom" data-tauri-drag-region /);
-  assert.match(mainSource, /handle\.className = "edge-ui edge-handle";\s*handle\.textContent = "☰";\s*handle\.setAttribute\("data-tauri-drag-region", ""\);/);
-  // 잡는 곳은 벽 쪽(접힌 손잡이가 있는 쪽)에 둔다 — 손잡이에 댄 마우스 바로 옆에 ☰가 온다
-  assert.match(cssSource, /body\.edge:not\(\.edge-left\) \.edge-bar \{\s*flex-direction: row-reverse;/);
-  assert.match(cssSource, /body\.edge \.edge-handle-bottom \{\s*display: block;\s*order: 3;\s*align-self: flex-end;/);
-  assert.match(cssSource, /body\.edge\.edge-left \.edge-handle-bottom \{\s*align-self: flex-start;/);
-  assert.match(cssSource, /\.edge-handle-bottom \{\s*display: none;/);
   assert.doesNotMatch(snap, /pointer_position/);
   // 러스트: 걸어 둔 누름이 끝나면 누른 자리·놓은 자리를 남긴다 (버튼을 쥔 채 마지막으로 본 커서)
   assert.match(libSource, /fn arm_grip_drop\(\)/);
@@ -66,15 +51,14 @@ test("every snap puts the window around the stored handle height, so a resized p
   // 자리가 정해져 있으면 창 위치는 그 자리에서 나온다 — 단순한 작업영역 clamp가 아니다
   assert.match(
     snap,
-    /else if \(edgeAnchor !== null\) \{\s*const anchor = edgeAnchorAt\(edgeAnchor, frame\.work, edgeTabHeight\);\s*placed = edgePlacement\(\{\s*anchor,\s*height: frame\.height,\s*tabHeight: edgeTabHeight,\s*work: frame\.work,/,
+    /if \(edgeAnchor !== null\) \{\s*const anchor = edgeAnchorAt\(edgeAnchor, frame\.work, edgeTabHeight\);\s*const placed = edgePlacement\(\{\s*anchor,\s*height: frame\.height,\s*tabHeight: edgeTabHeight,\s*work: frame\.work,/,
   );
-  // 창은 사용자가 정한 배치(손잡이가 판의 어느 끝에서 얼마나 떨어져 있는가)가 되는 곳에서 출발한다 —
-  // 다시 띄운 직후에도, 판이 커져 화면 끝에 눌렸다 줄어든 뒤에도 같은 모양으로 돌아온다.
-  assert.match(snap, /prevTop: edgeTabOffset === null \? frame\.top : edgeArrangedTop\(anchor, frame\.height, edgeTabEnd, edgeTabOffset\),/);
+  // 창은 사용자가 정한 "판 안에서의 손잡이 자리"가 되는 곳에서 출발한다 — 다시 띄운 직후에도,
+  // 판이 커져 화면 끝에 눌렸다 줄어든 뒤에도 같은 모양으로 돌아온다. 방금 놓은 판만 놓인 자리에서.
+  assert.match(snap, /prevTop: dragged \|\| edgeTabY === null \? frame\.top : anchor - edgeTabY,/);
   // 눌려서 달라진 자리는 그리기만 하고 저장하지 않는다 — 저장은 사용자가 옮겼을 때만
-  assert.match(snap, /target\.y = innerY - frame\.insetTop;\s*showEdgeTab\(placed\.anchor - innerY \/ scale\);/);
+  assert.match(snap, /target\.y = innerY - frame\.insetTop;\s*showEdgeTab\(placed\.anchor - innerY \/ scale\);\s*if \(dragged\) storeEdgeTabY\(\);/);
   assert.doesNotMatch(fn("showEdgeTab"), /localStorage/);
-  assert.equal((snap.match(/storeEdgeArrangement\(/g) ?? []).length, 1, "only a user's drop stores the arrangement");
   // 크기를 맞춘 뒤의 스냅이 이 길로 온다
   assert.match(mainSource, /if \(edgeActive\) await snapToEdge\(\);/);
   // 손잡이를 끄는 동안과 그 창 이동이 끝나기 전에는 스냅이 끼어들지 않는다
@@ -86,10 +70,7 @@ test("the handle height, the wall and the in-window offset survive a restart", (
   assert.match(libSource, /position_bottom_right\(&window\);/);
   assert.match(mainSource, /localStorage\.getItem\("switcher\.edgeanchor"\)/);
   assert.match(fn("storeEdgeAnchor"), /edgeAnchor = edgeAnchorFraction\(anchor, work, edgeTabHeight\);\s*localStorage\.setItem\("switcher\.edgeanchor", edgeAnchor\.toFixed\(5\)\);/);
-  // 배치는 "어느 끝에서 얼마나"로 적는다 — 판 높이가 달라도 그 끝이 손잡이에 붙어 있다
-  assert.match(fn("storeEdgeArrangement"), /localStorage\.setItem\("switcher\.edgeend", end\);\s*localStorage\.setItem\("switcher\.edgetab", String\(edgeTabOffset\)\);/);
-  assert.match(mainSource, /let edgeTabEnd: EdgeEnd = localStorage\.getItem\("switcher\.edgeend"\) === "bottom" \? "bottom" : "top";/);
-  assert.match(fn("edgeTabArranged"), /return edgeTabEnd === "bottom" \? height - edgeTabOffset : edgeTabOffset;/);
+  assert.match(fn("storeEdgeTabY"), /edgeTabY = edgeTabShown;\s*localStorage\.setItem\("switcher\.edgetab", String\(edgeTabY\)\);/);
   // 지난번 벽: 엣지에 들어오면 첫 스냅이 창이 놓인 쪽이 아니라 저장된 벽으로 간다
   assert.match(fn("applyEdgeMode"), /const side = storedEdgeSide\(\);\s*if \(side\) \{\s*edgeSide = side;\s*edgeRestoreSide = true;/);
   const place = fn("placeOnEdge");
@@ -107,7 +88,7 @@ test("the handle height, the wall and the in-window offset survive a restart", (
   assert.match(serial, /do \{\s*edgeSnapAgain = false;\s*await placeOnEdge\(\);\s*\} while \(edgeSnapAgain\);/);
   // 엣지를 떠나면 남은 표시를 지운다 — 다른 모드에서의 창 위치를 드롭으로 읽지 않는다
   assert.match(fn("applyEdgeMode"), /edgeGripPressed = false;\s*edgeGripDrop = false;\s*edgeGripStart = null;\s*edgeRestoreSide = false;/);
-  assert.match(fn("finishEdgeTabDrag"), /storeEdgeAnchor\(drag\.anchor, drag\.geo\.work\);[\s\S]*?storeEdgeArrangement\(fromBottom \? "bottom" : "top", fromBottom \? drag\.geo\.height - edgeTabShown : edgeTabShown\);[\s\S]*?localStorage\.setItem\("switcher\.edgeside", edgeSide\);/);
+  assert.match(fn("finishEdgeTabDrag"), /storeEdgeAnchor\(drag\.anchor, drag\.geo\.work\);\s*storeEdgeTabY\(\);\s*localStorage\.setItem\("switcher\.edgeside", edgeSide\);/);
 });
 
 test("the handle stays inside the window for any gauge height", () => {

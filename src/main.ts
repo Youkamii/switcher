@@ -35,11 +35,8 @@ import {
   EDGE_TAB_MARGIN,
   edgeAnchorAt,
   edgeAnchorFraction,
-  edgeArrangedTop,
-  edgeDropPlacement,
   edgePlacement,
   edgeTabRange,
-  type EdgeEnd,
   type EdgeWork,
 } from "./edgeAnchor";
 
@@ -3010,24 +3007,16 @@ let edgeSide: EdgeSide = "right";
 // 앱은 늘 화면 오른쪽 아래에서 뜨므로(lib.rs position_bottom_right) 엣지에 들어올 때마다
 // 저장된 높이와 벽으로 되돌린다 — 저장하지 않던 때는 위젯을 다시 띄울 때마다 손잡이가 아래로
 // 돌아갔다(사용자 보고: 위치 조정이 또 안 된다). 한 번도 옮긴 적이 없으면(null) 창이 놓인 곳의
-// 세로 중앙이다.
-// 판이 손잡이의 어느 쪽으로 열리는가는 따로 적는다: 손잡이가 판의 어느 끝에서 얼마나 떨어져 있는가
-// (edgeTabEnd·edgeTabOffset, switcher.edgeend·switcher.edgetab). 위쪽 끝이면 판이 손잡이 아래로,
-// 아래쪽 끝이면 손잡이 위로 열린다 — 화면 아래쪽에 둔 손잡이는 판이 위로 열려야 화면에 들어간다.
-// 끝에서 잰 거리로 적어 두므로 판 높이가 바뀌어도 그 끝이 손잡이에 붙어 있고, 다시 띄워도 같은
-// 모양이다. 판이 커져 화면 끝에 눌렸다가 줄어들면 제자리로 돌아온다.
-let edgeTabOffset: number | null = (() => {
+// 세로 중앙이다. edgeTabY는 사용자가 정한 "판 안에서의 손잡이 자리"(창 위에서 손잡이 중심까지,
+// CSS px, switcher.edgetab) — 판이 손잡이의 어느 쪽으로 열리는지를 정한다. 창은 늘 이 관계가
+// 되는 자리를 먼저 고르므로 다시 띄워도 같은 모양이고, 판이 커져 화면 끝에 눌렸다가 줄어들면
+// 제자리로 돌아온다.
+let edgeTabY: number | null = (() => {
   const stored = Number(localStorage.getItem("switcher.edgetab"));
   return Number.isFinite(stored) && stored > 0 ? stored : null;
 })();
-let edgeTabEnd: EdgeEnd = localStorage.getItem("switcher.edgeend") === "bottom" ? "bottom" : "top";
-/// 저장된 배치가 가리키는 창 안의 손잡이 자리 (창 위에서 CSS px)
-function edgeTabArranged(height: number): number | null {
-  if (edgeTabOffset === null) return null;
-  return edgeTabEnd === "bottom" ? height - edgeTabOffset : edgeTabOffset;
-}
-/// 지금 그려진 손잡이 자리 (창 위에서 CSS px). 판 높이나 화면 끝에 눌리면 저장된 배치와 달라진다 —
-/// 저장하지 않는다. null이면 저장된 배치를 그대로 그린다.
+/// 지금 그려진 손잡이 자리 (창 위에서 CSS px). 판 높이나 화면 끝에 눌리면 edgeTabY와 달라진다 —
+/// 저장하지 않는다. null이면 edgeTabY를 그대로 그린다.
 let edgeTabShown: number | null = null;
 let edgeAnchor: number | null = (() => {
   const raw = localStorage.getItem("switcher.edgeanchor");
@@ -3050,14 +3039,14 @@ function edgeTabBounds(): { min: number; max: number } {
 /// 지금 그려진 손잡이 중심 (창 위에서 CSS px)
 function edgeTabCenter(height = window.innerHeight): number {
   const { min, max } = edgeTabRange(height, edgeTabHeight);
-  const y = edgeTabShown ?? edgeTabArranged(height);
+  const y = edgeTabShown ?? edgeTabY;
   return y === null ? height / 2 : Math.min(max, Math.max(min, y));
 }
 
 /// 손잡이 자리를 현재 창·손잡이 크기 안으로 눌러 CSS 변수로 적용한다. 손잡이·게이지·
 /// 판 변환 원점·덩어리 자리(styles.css --edge-tab-y)가 함께 따라간다.
 function applyEdgeTabY() {
-  const want = edgeTabShown ?? edgeTabArranged(window.innerHeight);
+  const want = edgeTabShown ?? edgeTabY;
   if (want === null) {
     document.documentElement.style.removeProperty("--edge-tab-y");
     return;
@@ -3083,13 +3072,11 @@ function showEdgeTab(y: number) {
   refreshHitRegionsAfterLayout();
 }
 
-/// 판이 손잡이의 어느 쪽으로 열리는지를 저장한다 — 사용자가 옮겼을 때만 (☰ 드롭·손잡이 끌기).
-/// offset: 손잡이 중심이 그 끝에서 떨어진 거리(CSS px)
-function storeEdgeArrangement(end: EdgeEnd, offset: number) {
-  edgeTabEnd = end;
-  edgeTabOffset = Math.round(offset * 10) / 10;
-  localStorage.setItem("switcher.edgeend", end);
-  localStorage.setItem("switcher.edgetab", String(edgeTabOffset));
+/// 지금 그려진 자리를 "판 안에서의 손잡이 자리"로 저장한다 — 사용자가 옮겼을 때만 (끌기·☰ 드롭)
+function storeEdgeTabY() {
+  if (edgeTabShown === null) return;
+  edgeTabY = edgeTabShown;
+  localStorage.setItem("switcher.edgetab", String(edgeTabY));
 }
 // 창 높이가 바뀌면(계정 수·섹션 변화) 다시 가둔다 — 비활성 웹뷰 타이머가 아니라 resize 이벤트
 window.addEventListener("resize", () => {
@@ -3244,13 +3231,6 @@ let edgeGripPressed = false;
 let edgeGripDrop = false;
 /// ☰를 누를 때의 창 위치(물리 px) — 놓았을 때와 견주어 실제로 옮겼는지 본다
 let edgeGripStart: { x: number; y: number } | null = null;
-/// 쥔 ☰가 판의 어느 끝에 있는가 — 위쪽(본문 맨 위 줄)이나 아래쪽(독 맨 아래)
-let edgeGripEnd: EdgeEnd = "top";
-/// ☰를 누른 자리(창 위에서 CSS px) — 러스트가 남긴 커서 기록이 이 누름의 것인지 맞춰 본다
-let edgeGripClientY = 0;
-/// 러스트의 "누른 자리"가 실제로 누른 자리에서 이만큼(CSS px) 안이어야 그 기록의 "놓은 자리"를 믿는다.
-/// 폴링이 25ms 간격이라 빠르게 끌기 시작하면 조금 어긋난다. 어긋나면 쥐었던 끝을 쓴다.
-const EDGE_GRIP_TRUST = 40;
 /// 이만큼(CSS px)은 움직여야 "☰로 끌었다"로 본다 — 누르기만 한 것은 손잡이를 옮기지 않는다
 const EDGE_GRIP_MOVE_MIN = 4;
 /// 러스트가 남긴 ☰ 누름의 누른 자리·놓은 자리 (물리 px, 창 위치와 같은 좌표계)
@@ -3408,11 +3388,7 @@ function finishEdgeTabDrag() {
   setEdgeDragHold(false);
   if (drag.geo) {
     storeEdgeAnchor(drag.anchor, drag.geo.work);
-    if (edgeTabShown !== null) {
-      // 가까운 끝에서 잰 거리로 적는다 — 판 높이가 바뀌어도 그 끝이 손잡이 곁에 남는다
-      const fromBottom = edgeTabShown > drag.geo.height / 2;
-      storeEdgeArrangement(fromBottom ? "bottom" : "top", fromBottom ? drag.geo.height - edgeTabShown : edgeTabShown);
-    }
+    storeEdgeTabY();
     localStorage.setItem("switcher.edgeside", edgeSide);
   }
   // 손잡이가 옮겨졌다 — 호버 존·히트 영역을 새 자리로
@@ -3430,8 +3406,6 @@ window.addEventListener(
       // ☰: 창을 옮기는 것은 네이티브 드래그다. 창이 움직이지 않아도(이미 화면 끝) 놓은 뒤
       // 한 번은 자리를 다시 잡게 정착 판정을 걸어 둔다.
       edgeGripPressed = true;
-      edgeGripEnd = target.closest(".edge-handle-bottom") ? "bottom" : "top";
-      edgeGripClientY = event.clientY;
       edgeGripStart = null;
       // 네이티브 드래그 동안 웹뷰는 포인터를 못 본다 — 끌었는지는 러스트의 커서 기록과 창 위치로 안다
       void invoke("arm_grip_drop").catch(() => {});
@@ -3666,9 +3640,6 @@ async function placeOnEdge() {
   // ☰를 눌렀다 놓기만 했으면 아무것도 옮기지 않는다. 끌었는지는 커서가 움직였는가(창이 화면 끝에
   // 막혀 못 움직였어도 끈 것이다)와 창이 움직였는가로 본다.
   let dragged = false;
-  /// 마우스를 놓은 높이(화면 좌표, 논리 px) — 러스트의 기록이 이 누름의 것으로 확인될 때만
-  let released: number | null = null;
-  const gripEnd = edgeGripEnd;
   if (gripSettled) {
     const start = edgeGripStart;
     edgeGripStart = null;
@@ -3678,11 +3649,6 @@ async function placeOnEdge() {
       Math.hypot(press.up[0] - press.down[0], press.up[1] - press.down[1]) >= EDGE_GRIP_MOVE_MIN * scale;
     const windowMoved = start !== null && (Math.abs(pos.x - start.x) > 2 || Math.abs(pos.y - start.y) > 2);
     dragged = cursorMoved || windowMoved;
-    if (press !== null && start !== null) {
-      // 기록의 "누른 자리"가 ☰를 실제로 누른 자리와 맞아야 "놓은 자리"를 쓴다 (좌표 단위·다른 누름 방지)
-      const pressedAt = (start.y + (innerPos.y - pos.y)) / scale + edgeGripClientY;
-      if (Math.abs(press.down[1] / scale - pressedAt) <= EDGE_GRIP_TRUST) released = press.up[1] / scale;
-    }
   }
   if (busy() || !currentWorkArea) return;
   // 사용자가 벽을 골랐으면 지난번 벽으로 되돌리지 않는다
@@ -3698,42 +3664,32 @@ async function placeOnEdge() {
   // 창이 그 벽에 와 있는 것을 본 뒤에야 복원을 마친다 — 옮기라고 한 것만으로는 아직 모른다
   if (edgeRestoreSide && target.x === pos.x) edgeRestoreSide = false;
   const frame = edgeFrame(pos, size, innerPos, innerSize, currentWorkArea, scale);
-  // 여기부터 창을 옮길 때까지는 기다림이 없다 — 그 사이에 손잡이 끌기가 끼어들지 못한다
-  let placed: { top: number; anchor: number } | null = null;
   if (dragged) {
-    // 작은 손잡이는 마우스를 놓은 자리에 서고, 판은 그 손잡이의 위쪽이나 아래쪽 끝에 붙는다 — 화면 안에
-    // 들어가는 쪽으로 (사용자 지시: "마우스는 저 위에 있는데 작아진 창은 아래 있어봐야", "위는 되어도
-    // 아래가"). 위쪽에 놓으면 판이 손잡이 아래로 열려 위쪽 ☰가 손잡이 옆에, 아래쪽에 놓으면 판이 위로
-    // 열려 아래쪽 ☰가 손잡이 옆에 온다. 계산은 edgeAnchor.ts edgeDropPlacement.
-    const drop = edgeDropPlacement({
-      dropTop: frame.top,
-      height: frame.height,
-      tabHeight: edgeTabHeight,
-      work: frame.work,
-      cursor: released,
-      grip: gripEnd,
-    });
-    storeEdgeAnchor(drop.anchor, frame.work);
-    storeEdgeArrangement(drop.end, drop.end === "bottom" ? frame.height - drop.tabY : drop.tabY);
+    // 작은 손잡이는 마우스를 놓은 자리에 선다 (사용자 지시: 마우스는 위에 있는데 작아진 창이 아래에
+    // 있으면 소용없다). 끄는 동안 마우스는 ☰를 쥐고 있으므로 그 자리는 놓인 판의 위쪽 끝, ☰ 옆이다.
+    // 판을 작업영역 밖에 놓았으면 아래 배치가 창만 안으로 들이고 손잡이는 놓인 높이에 남는다 —
+    // 화면 맨 아래까지 끌어 놓으면 손잡이가 벽 아래 끝에 선다. 맨 위는 OS가 창을 막아도 같다.
+    storeEdgeAnchor(frame.top + edgeTabRange(frame.height, edgeTabHeight).min, frame.work);
     localStorage.setItem("switcher.edgeside", edgeSide);
-    placed = drop;
-  } else if (edgeAnchor !== null) {
+  }
+  // 여기부터 창을 옮길 때까지는 기다림이 없다 — 그 사이에 손잡이 끌기가 끼어들지 못한다
+  if (edgeAnchor !== null) {
     const anchor = edgeAnchorAt(edgeAnchor, frame.work, edgeTabHeight);
-    placed = edgePlacement({
+    const placed = edgePlacement({
       anchor,
       height: frame.height,
       tabHeight: edgeTabHeight,
       work: frame.work,
-      // 사용자가 정한 배치가 되는 창 위치에서 출발한다 — 다시 띄운 직후(창이 화면 오른쪽 아래)에도,
-      // 판 높이가 여러 번 바뀌어도 같은 자리가 나오고, 화면 밖으로 나가는 만큼만 들인다
-      prevTop: edgeTabOffset === null ? frame.top : edgeArrangedTop(anchor, frame.height, edgeTabEnd, edgeTabOffset),
+      // 방금 놓은 판은 놓인 자리에서, 그 밖에는 사용자가 정한 "판 안에서의 손잡이 자리"가 되는
+      // 창 위치에서 출발한다 — 다시 띄운 직후(창이 화면 오른쪽 아래)에도, 판 높이가 여러 번
+      // 바뀌어도 같은 자리가 나온다
+      prevTop: dragged || edgeTabY === null ? frame.top : anchor - edgeTabY,
     });
-  }
-  if (placed) {
     // 창은 물리 px 정수 자리에 놓인다 — 손잡이까지의 거리는 그 자리에서 다시 잰다
     const innerY = Math.round(placed.top * scale);
     target.y = innerY - frame.insetTop;
     showEdgeTab(placed.anchor - innerY / scale);
+    if (dragged) storeEdgeTabY();
   }
   if (target.x !== pos.x || target.y !== pos.y) {
     await appWindow.setPosition(new PhysicalPosition(target.x, target.y));
@@ -4177,7 +4133,6 @@ function applyStaticText() {
   refreshBtn.textContent = t("refresh");
   refreshBtn.setAttribute("title", t("refreshTooltip"));
   document.getElementById("drag-handle")!.setAttribute("title", t("dragHandle"));
-  document.getElementById("edge-grip-bottom")!.setAttribute("title", t("dragHandle"));
   labelIconButton("blackbtn", t("blackTooltip"));
   if (clamMode >= 0) applyClamshell(clamMode); // 클램셸 툴팁도 새 언어로
   labelIconButton("memobtn", t("memoTooltip"));

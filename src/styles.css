@@ -1962,28 +1962,6 @@ body.edge main:hover .edge-ui {
   cursor: grab;
 }
 
-/* 잡는 곳(☰)은 벽 쪽 — 접힌 손잡이가 있는 쪽 — 에 둔다 (#188). 손잡이에 마우스를 대면 판이
-   펼쳐지는데, 그 마우스 바로 옆에 ☰가 있어야 다시 잡으러 가지 않는다. 오른쪽 벽이면 오른쪽 끝. */
-body.edge:not(.edge-left) .edge-bar {
-  flex-direction: row-reverse;
-}
-
-/* 아래쪽 ☰: 접힌 손잡이가 판 아래쪽 끝에 있을 때(판이 손잡이 위로 열릴 때)의 잡는 곳.
-   독의 맨 아래, 벽 쪽. 엣지에서만 보인다 */
-.edge-handle-bottom {
-  display: none;
-}
-
-body.edge .edge-handle-bottom {
-  display: block;
-  order: 3;
-  align-self: flex-end;
-}
-
-body.edge.edge-left .edge-handle-bottom {
-  align-self: flex-start;
-}
-
 .edge-mode {
   font-size: 9px;
   color: var(--accent);

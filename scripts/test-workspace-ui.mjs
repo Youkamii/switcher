@@ -34,16 +34,13 @@ function fixture(mode = "normal", preview = false) {
   // Handle drag (#188): a window that really moves. The window is the viewport (80x1100) on a wall that is
   // 2100 tall (work area 40..2140), so there is room to travel. buttonHeld/cursorAt answer the native probes.
   const restoreScene = preview === 'edge-restore';
-  const dragScene = preview === 'edge-drag' || restoreScene || preview === 'edge-restore-low';
+  const dragScene = preview === 'edge-drag' || restoreScene;
   const win = {x:1320, y:500, h:1100}; let buttonHeld = false;
   // What the native side recorded for the press that grabbed the grip: where it went down and where it let go.
   let gripPress = null;
   // A widget that was left on the left wall, a quarter of the way down, with the handle 200px into the panel.
   // The app always starts at the bottom right of the screen, so this is what a restart looks like.
   if(restoreScene) { win.y = 1040; localStorage.setItem('switcher.edgeanchor','0.25000'); localStorage.setItem('switcher.edgetab','200'); localStorage.setItem('switcher.edgeside','left'); }
-  // The same after a restart, for a handle left low on the right wall with the panel standing above it.
-  const restoreLowScene = preview === 'edge-restore-low';
-  if(restoreLowScene) { localStorage.setItem('switcher.edgeanchor','0.75000'); localStorage.setItem('switcher.edgeend','bottom'); localStorage.setItem('switcher.edgetab','58.5'); localStorage.setItem('switcher.edgeside','right'); }
   const findXY = v => { if(!v || typeof v!=='object') return null; if(typeof v.x==='number' && typeof v.y==='number') return {x:v.x,y:v.y};
     for(const k of Object.keys(v)) { const hit=findXY(v[k]); if(hit) return hit; } return null; };
   // A native host drives test interactions even when WebKit throttles page timers.
@@ -265,25 +262,6 @@ function fixture(mode = "normal", preview = false) {
     const zone = calls.filter(c=>c.cmd==='set_edge_zone').at(-1)?.args.zone?.rect;
     check('hover-zone-is-on-the-restored-handle', zone && zone[0]<=0 && Math.abs(zone[1]+zone[3]/2-tabY())<=2);
   }
-  async function checkEdgeRestoreLow() {
-    await ready('.edge-account');
-    await settle(()=>!document.querySelector('#edge-gauge .edge-gauge-row[data-provider="system"]')?.hidden);
-    const root = document.documentElement;
-    const tabY = () => parseFloat(getComputedStyle(root).getPropertyValue('--edge-tab-y'));
-    const tabH = () => parseFloat(getComputedStyle(root).getPropertyValue('--edge-tab-height'));
-    const edge = () => tabH()/2 + 4;
-    const kept = () => 40 + edge() + 0.75*(2100 - 2*edge());           // three quarters of the way down the wall
-    const state = () => JSON.stringify({x:win.x,y:win.y,tab:tabY(),kept:kept(),end:localStorage.getItem('switcher.edgeend'),off:localStorage.getItem('switcher.edgetab')});
-    const check = (id, passed) => record(passed ? id : id+' '+state(), passed);
-    let settled = false;
-    for(let i=0;i<400 && !settled;i++) { await delay(); settled = win.x===1320 && Math.abs(win.y+tabY()-kept())<=1.5 && Math.abs(win.y+innerHeight-edge()-kept())<=1.5; }
-    for(let i=0;i<40;i++) await delay();
-    check('restart-returns-a-low-handle-to-its-height', Math.abs(win.y+tabY()-kept())<=1.5);
-    check('restart-keeps-the-panel-standing-above-a-low-handle', Math.abs(win.y+innerHeight-edge()-kept())<=1.5 && win.y>=40 && localStorage.getItem('switcher.edgeend')==='bottom' && localStorage.getItem('switcher.edgetab')==='58.5');
-    emit('edge-hover',true); await ready('body.edge-out');
-    const grip = document.getElementById('edge-grip-bottom').getBoundingClientRect(); const mid = grip.top+grip.height/2;
-    check('the-bottom-grip-is-beside-the-restored-handle', grip.width>0 && mid>=tabY()-tabH()/2-2 && mid<=tabY()+tabH()/2+2 && grip.right>=innerWidth-14);
-  }
   // The small handle is dragged up and down the wall, and its place is kept (#188).
   async function checkEdgeDrag() {
     await ready('.edge-account');
@@ -340,7 +318,7 @@ function fixture(mode = "normal", preview = false) {
     const calmBefore = accountCalls();
     const clickReached = release(handleX,500,450); await delay(); await delay();
     check('drop-ends-the-drag-and-keeps-the-panel-folded', !document.body.classList.contains('edge-dragging') && !document.body.classList.contains('edge-out') && flags().at(-1)===false && flags().filter(Boolean).length===1);
-    check('drop-saves-height-wall-and-offset', Math.abs(Number(stored('edgeanchor'))-(1500-wallMin())/(wallMax()-wallMin()))<0.001 && stored('edgetab')===String(Math.round(1500-1040)) && stored('edgeend')==='top' && stored('edgeside')==='right');
+    check('drop-saves-height-wall-and-offset', Math.abs(Number(stored('edgeanchor'))-(1500-wallMin())/(wallMax()-wallMin()))<0.001 && stored('edgetab')===String(Math.round(1500-1040)) && stored('edgeside')==='right');
     check('drag-never-presses-the-card-under-the-handle', accountCalls()===calmBefore && clickReached===false);
     const zone = calls.filter(c=>c.cmd==='set_edge_zone').at(-1)?.args.zone?.rect;
     check('hover-zone-moves-with-the-handle', zone && Math.abs(zone[1]+zone[3]/2-tabY())<=2);
@@ -372,100 +350,56 @@ function fixture(mode = "normal", preview = false) {
     // The fixture changes the window height; a re-render makes the app fit and place the window again.
     const refit = async() => { document.getElementById('refresh').click(); for(let i=0;i<8;i++) await delay(); };
     win.h = 900; await refit(); await wait(()=>win.y===1240);
-    // The arrangement is stored as a distance from the nearer end of the panel: here the bottom end.
     const arranged = stored('edgetab');
-    check('a-handle-low-in-the-panel-is-measured-from-the-bottom-end', stored('edgeend')==='bottom' && Math.abs(Number(arranged)-min())<=1);
     check('shorter-panel-keeps-the-handle-on-screen', win.y===1240 && Math.abs(onScreen()-wallMax())<=1);
     // What the squeeze changed is only drawn: the user's own arrangement stays stored and comes back.
-    check('a-squeezed-panel-does-not-overwrite-the-users-arrangement', stored('edgetab')===arranged && stored('edgeend')==='bottom' && Math.abs(Number(stored('edgeanchor'))-1)<0.001);
+    check('a-squeezed-panel-does-not-overwrite-the-users-arrangement', stored('edgetab')===arranged && Math.abs(Number(stored('edgeanchor'))-1)<0.001);
     win.h = 1100; await refit(); await wait(()=>win.y===1040);
-    check('taller-panel-keeps-the-handle-on-screen', win.y===1040 && Math.abs(onScreen()-wallMax())<=1 && Math.abs(tabY()-(win.h-Number(arranged)))<=1);
+    check('taller-panel-keeps-the-handle-on-screen', win.y===1040 && Math.abs(onScreen()-wallMax())<=1 && Math.abs(tabY()-Number(arranged))<=1);
 
-    // Moving the panel with a grip: the small handle ends up where the mouse let go, and the panel opens
-    // below it or above it, whichever fits the screen, so that a grip is always right beside the handle.
+    // Moving the panel with its grip: the small handle ends up where the mouse let go, beside the grip.
     // The app cannot see the pointer during a native window drag, so the fixture plays the native record.
     emit('edge-hover',false); await wait(()=>!document.body.classList.contains('edge-out'));
     emit('edge-hover',true); await ready('body.edge-out');
     press(handleX,tabY()); await delay(); dragTo(handleX,500,-578); await delay(); release(handleX,500,-578); await delay();
     check('setup-handle-low-in-the-panel', win.y===1040 && Math.abs(onScreen()-(wallMax()-578))<=1 && tabY()>400);
-    const topGrip = () => document.querySelector('.edge-bar .edge-handle');
-    const bottomGrip = () => document.getElementById('edge-grip-bottom');
-    const box = el => el.getBoundingClientRect();
-    check('both-grips-are-on-the-wall-side-of-the-panel', box(topGrip()).width>0 && box(bottomGrip()).width>0 && box(topGrip()).right>=innerWidth-14 && box(bottomGrip()).right>=innerWidth-14 && box(bottomGrip()).bottom<=innerHeight);
-    // grip: the grip element pressed (at its centre). to: where the native drag left the window.
-    // up: where the pointer let go (screen px). The native record starts where the grip really was.
-    const gripDrag = async(grip, to, up, recordedDown) => {
-      const g = box(grip); const cx = g.left+g.width/2, cy = g.top+g.height/2; const down = recordedDown ?? [win.x+cx, win.y+cy];
-      const taken = calls.filter(c=>c.cmd==='take_grip_drop').length;
-      buttonHeld = true; fire('pointerdown',cx,cy,win.y+cy,1,grip); await delay(); await delay();
+    const grip = document.querySelector('.edge-handle');
+    // down/up: where the pointer pressed and released (screen px); to: where the native drag left the window.
+    const gripDrag = async(to, down, up) => {
+      buttonHeld = true; fire('pointerdown',20,20,win.y+20,1,grip); await delay(); await delay();
       if(to) { win.x = to.x; win.y = to.y; emit('tauri://move',to); }
-      gripPress = {down, up: up ?? [down[0], down[1]+1]}; await delay(); buttonHeld = false;
-      // The app settles a moment after the button is released; wait until it has picked the record up.
-      await wait(()=>calls.filter(c=>c.cmd==='take_grip_drop').length>taken); await delay(); await delay();
+      gripPress = {down, up}; await delay(); buttonHeld = false;
     };
-    const span = () => [tabY()-tabH()/2, tabY()+tabH()/2];              // the folded handle, top to bottom, in the window
-    const beside = grip => { const g=box(grip), [from,to]=span(); const mid=g.top+g.height/2; return mid>=from-2 && mid<=to+2; };
     const lowTab = tabY(); const lowAnchor = stored('edgeanchor'); const lowMoves = moves();
     // A press on the grip that goes nowhere moves nothing.
-    await gripDrag(topGrip(),null,null); for(let i=0;i<40;i++) await delay();
+    await gripDrag(null,[1340,1060],[1340,1061]); for(let i=0;i<40;i++) await delay();
     check('pressing-the-grip-without-dragging-changes-nothing', win.y===1040 && Math.abs(tabY()-lowTab)<=1 && stored('edgeanchor')===lowAnchor && moves()===lowMoves);
-
-    // Up. The panel is carried to the top of the screen: the small handle is up there too, the panel hangs below it.
-    await gripDrag(topGrip(),{x:1320,y:40},[1340,12]);
+    // The reported case: the panel is carried up to the top of the screen. The small handle must be up there too.
+    await gripDrag({x:1320,y:40},[1340,1060],[1340,12]);
     await wait(()=>win.y===40 && Math.abs(tabY()-min())<=1);
     check('panel-carried-to-the-top-brings-the-small-handle-to-the-top', win.y===40 && Math.abs(onScreen()-wallMin())<=1 && Math.abs(Number(stored('edgeanchor')))<0.001);
-    check('at-the-top-the-panel-hangs-from-the-handle-and-the-top-grip-is-beside-it', stored('edgeend')==='top' && Math.abs(tabY()-min())<=1 && beside(topGrip()));
-
-    // Down. Carried to the bottom of the screen: the handle is down there, and now the panel stands above it.
-    await gripDrag(topGrip(),{x:1320,y:2150},[1340,2175]);
+    check('the-handle-sits-beside-the-grip', Math.abs(tabY()-min())<=1 && stored('edgetab')===String(Math.round(min())));
+    // Carried down to the bottom of the screen: the panel comes back inside, the handle stays at the bottom.
+    await gripDrag({x:1320,y:2150},[1340,65],[1340,2175]);
     await wait(()=>win.y===1040 && Math.abs(onScreen()-wallMax())<=1);
-    check('panel-carried-to-the-bottom-brings-the-small-handle-to-the-bottom', win.y===1040 && Math.abs(onScreen()-wallMax())<=1 && Math.abs(Number(stored('edgeanchor'))-1)<0.001);
-    check('at-the-bottom-the-panel-stands-on-the-handle-and-the-bottom-grip-is-beside-it', stored('edgeend')==='bottom' && Math.abs(tabY()-(innerHeight-min()))<=1 && beside(bottomGrip()));
-
-    // Dropped low but not at the very bottom: handle at the mouse, panel above it, back on screen.
-    await gripDrag(bottomGrip(),{x:1320,y:500},[1340,1575]);
-    await wait(()=>win.y===500 && Math.abs(onScreen()-(500+innerHeight-min()))<=1);
-    const low = onScreen();
-    check('low-handle-keeps-the-panel-above-it', stored('edgeend')==='bottom' && win.y===500 && Math.abs(low-(1600-min()))<=1 && beside(bottomGrip()));
-    // From down there, a little further down and a little back up: the handle moves exactly that much.
-    // (It must not jump up to the top grip, which is what "down does not work" was.)
-    await gripDrag(bottomGrip(),{x:1320,y:580},[1340,1655]);
-    await wait(()=>win.y===580 && Math.abs(onScreen()-(low+80))<=1);
-    check('a-low-handle-moves-down-by-what-the-grip-moved', win.y===580 && Math.abs(onScreen()-(low+80))<=1 && stored('edgeend')==='bottom');
-    await gripDrag(bottomGrip(),{x:1320,y:380},[1340,1455]);
-    await wait(()=>win.y===380 && Math.abs(onScreen()-(low-120))<=1);
-    check('a-low-handle-moves-up-by-what-the-grip-moved', win.y===380 && Math.abs(onScreen()-(low-120))<=1 && stored('edgeend')==='bottom');
-
-    // Pushed up past where the window can go (the OS stops it under the menu bar) while the mouse goes on:
-    // the handle goes to the mouse, and the panel turns over to hang below it.
-    await gripDrag(bottomGrip(),{x:1320,y:40},[1340,300]);
-    await wait(()=>Math.abs(onScreen()-300)<=1 && stored('edgeend')==='top');
-    check('a-low-handle-is-carried-into-the-top-half-in-one-drag', Math.abs(onScreen()-300)<=1 && Math.abs(win.y-(300-min()))<=1 && stored('edgeend')==='top' && beside(topGrip()));
-
-    // The panel is against the top and cannot move, the handle is lower down: pushing the top grip up still counts.
-    await gripDrag(topGrip(),{x:1320,y:40},[1340,3]);
-    await wait(()=>win.y===40 && Math.abs(tabY()-min())<=1);
-    check('pushing-the-grip-against-the-top-lifts-the-handle', win.y===40 && Math.abs(onScreen()-wallMin())<=1);
-    // Dropped in the middle where it fits below: the panel stays where it was dropped and hangs from the handle.
-    await gripDrag(topGrip(),{x:1320,y:700},[1340,725]);
+    check('panel-carried-to-the-bottom-leaves-the-handle-at-the-bottom', win.y===1040 && Math.abs(onScreen()-wallMax())<=1 && Math.abs(Number(stored('edgeanchor'))-1)<0.001);
+    // The panel is already against the top and cannot move, the handle is low: pushing the grip up still counts.
+    win.y = 40; emit('tauri://move',{x:1320,y:40}); await wait(()=>Math.abs(win.y+tabY()-wallMax())<=1.5);
+    const stuckTab = tabY();
+    await gripDrag({x:1320,y:40},[1340,65],[1340,3]);
+    await wait(()=>Math.abs(tabY()-min())<=1);
+    check('pushing-the-grip-against-the-top-lifts-a-low-handle', stuckTab>400 && win.y===40 && Math.abs(onScreen()-wallMin())<=1);
+    // Dropped in the middle: the panel stays where it was dropped and hangs from the handle.
+    await gripDrag({x:1320,y:700},[1340,65],[1340,725]);
     await wait(()=>win.y===700 && Math.abs(tabY()-min())<=1);
-    check('panel-dropped-mid-wall-hangs-from-the-handle', win.y===700 && Math.abs(onScreen()-(700+min()))<=1 && stored('edgeend')==='top');
+    check('panel-dropped-mid-wall-hangs-from-the-handle', win.y===700 && Math.abs(onScreen()-(700+min()))<=1 && moves()>lowMoves);
     // Carried to the other wall: it docks there, remembered, with the handle at the height where it was dropped.
-    await gripDrag(topGrip(),{x:100,y:600},[120,625]);
+    await gripDrag({x:100,y:600},[1340,725],[120,625]);
     await wait(()=>win.x===0 && document.body.classList.contains('edge-left') && stored('edgeside')==='left');
     check('grip-moves-the-panel-to-the-other-wall-and-remembers-it', win.x===0 && win.y===600 && document.body.classList.contains('edge-left') && stored('edgeside')==='left');
     check('handle-is-where-the-panel-was-dropped-on-the-new-wall', Math.abs(onScreen()-(600+min()))<=1.5);
-    check('on-the-left-wall-the-grips-are-on-the-left', box(topGrip()).left<=14 && box(bottomGrip()).left<=14);
 
-    // A native record that does not start where the grip was pressed (another press, wrong units) is not
-    // believed: the handle goes to the end that was held, not to that record's release point.
-    await gripDrag(topGrip(),{x:0,y:500},[900,1500],[900,900]);
-    await wait(()=>win.y===500 && Math.abs(tabY()-min())<=1);
-    check('a-pointer-record-from-elsewhere-is-not-believed', win.x===0 && win.y===500 && Math.abs(onScreen()-(500+min()))<=1 && stored('edgeend')==='top');
-    await gripDrag(topGrip(),{x:0,y:600},null);
-    await wait(()=>win.y===600 && Math.abs(tabY()-min())<=1);
-
-    // A window move nobody made with a grip leaves the handle where the user put it.
+    // A window move nobody made with the grip leaves the handle where the user put it.
     const kept = wallMin()+Number(stored('edgeanchor'))*(wallMax()-wallMin());
     win.y = 900; emit('tauri://move',{x:0,y:900});
     const settled = await wait(()=>win.y===600 && Math.abs(win.y+tabY()-kept)<=1.5);
@@ -759,11 +693,6 @@ function fixture(mode = "normal", preview = false) {
       if(preview === 'toggle') {
         await checkToggle();
         record('no-browser-errors-toggle-'+mode,errors.length===0);
-        return;
-      }
-      if(preview === 'edge-restore-low') {
-        await checkEdgeRestoreLow();
-        record('no-browser-errors-edge-restore-low',errors.length===0);
         return;
       }
       if(preview === 'edge-restore') {
@@ -1155,7 +1084,6 @@ try {
   reports.push(await run('edge','api-folded',allDir && !useWebKit ? path.join(allDir,'mode-edge-api-folded.png') : null));
   reports.push(await run('edge','edge-drag',null));
   reports.push(await run('edge','edge-restore',null));
-  reports.push(await run('edge','edge-restore-low',null));
   const result={reports,passed:reports.reduce((n,r)=>n+r.checks.filter(c=>c.passed).length,0),failed:reports.reduce((n,r)=>n+r.checks.filter(c=>!c.passed).length,0)};
   if(outputAt>=0) fs.writeFileSync(process.argv[outputAt+1],JSON.stringify(result,null,2)+'\n');
   console.log(JSON.stringify(result,null,2));process.exitCode=result.failed?1:0;
