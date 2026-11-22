@@ -544,7 +544,7 @@
       "errors": [],
       "mode": "edge",
       "width": 80,
-      "height": 677,
+      "height": 660,
       "dialog": null
     },
     {
@@ -626,7 +626,7 @@
       "errors": [],
       "mode": "edge",
       "width": 80,
-      "height": 613,
+      "height": 596,
       "dialog": null
     },
     {
@@ -846,14 +846,14 @@
       "errors": [],
       "mode": "edge",
       "width": 80,
-      "height": 334,
+      "height": 317,
       "emptyLayout": {
         "enabled": {
-          "height": 334,
+          "height": 317,
           "systemTop": 36
         },
         "hidden": {
-          "height": 334,
+          "height": 317,
           "systemTop": 36
         }
       }
@@ -1104,7 +1104,7 @@
       "errors": [],
       "mode": "edge",
       "width": 80,
-      "height": 630
+      "height": 613
     },
     {
       "checks": [
@@ -1254,7 +1254,7 @@
       "errors": [],
       "mode": "edge",
       "width": 80,
-      "height": 637,
+      "height": 620,
       "dialog": null
     },
     {
@@ -1324,10 +1324,6 @@
           "passed": true
         },
         {
-          "id": "a-handle-low-in-the-panel-is-measured-from-the-bottom-end",
-          "passed": true
-        },
-        {
           "id": "shorter-panel-keeps-the-handle-on-screen",
           "passed": true
         },
@@ -1344,10 +1340,6 @@
           "passed": true
         },
         {
-          "id": "both-grips-are-on-the-wall-side-of-the-panel",
-          "passed": true
-        },
-        {
           "id": "pressing-the-grip-without-dragging-changes-nothing",
           "passed": true
         },
@@ -1356,35 +1348,15 @@
           "passed": true
         },
         {
-          "id": "at-the-top-the-panel-hangs-from-the-handle-and-the-top-grip-is-beside-it",
+          "id": "the-handle-sits-beside-the-grip",
           "passed": true
         },
         {
-          "id": "panel-carried-to-the-bottom-brings-the-small-handle-to-the-bottom",
+          "id": "panel-carried-to-the-bottom-leaves-the-handle-at-the-bottom",
           "passed": true
         },
         {
-          "id": "at-the-bottom-the-panel-stands-on-the-handle-and-the-bottom-grip-is-beside-it",
-          "passed": true
-        },
-        {
-          "id": "low-handle-keeps-the-panel-above-it",
-          "passed": true
-        },
-        {
-          "id": "a-low-handle-moves-down-by-what-the-grip-moved",
-          "passed": true
-        },
-        {
-          "id": "a-low-handle-moves-up-by-what-the-grip-moved",
-          "passed": true
-        },
-        {
-          "id": "a-low-handle-is-carried-into-the-top-half-in-one-drag",
-          "passed": true
-        },
-        {
-          "id": "pushing-the-grip-against-the-top-lifts-the-handle",
+          "id": "pushing-the-grip-against-the-top-lifts-a-low-handle",
           "passed": true
         },
         {
@@ -1397,14 +1369,6 @@
         },
         {
           "id": "handle-is-where-the-panel-was-dropped-on-the-new-wall",
-          "passed": true
-        },
-        {
-          "id": "on-the-left-wall-the-grips-are-on-the-left",
-          "passed": true
-        },
-        {
-          "id": "a-pointer-record-from-elsewhere-is-not-believed",
           "passed": true
         },
         {
@@ -1452,32 +1416,8 @@
       "mode": "edge",
       "width": 80,
       "height": 1100
-    },
-    {
-      "checks": [
-        {
-          "id": "restart-returns-a-low-handle-to-its-height",
-          "passed": true
-        },
-        {
-          "id": "restart-keeps-the-panel-standing-above-a-low-handle",
-          "passed": true
-        },
-        {
-          "id": "the-bottom-grip-is-beside-the-restored-handle",
-          "passed": true
-        },
-        {
-          "id": "no-browser-errors-edge-restore-low",
-          "passed": true
-        }
-      ],
-      "errors": [],
-      "mode": "edge",
-      "width": 80,
-      "height": 1100
     }
   ],
-  "passed": 318,
+  "passed": 305,
   "failed": 0
 }
