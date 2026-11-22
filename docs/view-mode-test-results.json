@@ -51,7 +51,7 @@
           "passed": true
         },
         {
-          "id": "key-registration-only-inside-accounts",
+          "id": "key-registration-is-offered-per-account-and-per-provider",
           "passed": true
         },
         {
@@ -87,7 +87,7 @@
           "passed": true
         },
         {
-          "id": "header-buttons-only-add-accounts",
+          "id": "header-buttons-add-accounts-and-keys",
           "passed": true
         },
         {
@@ -773,6 +773,10 @@
           "passed": true
         },
         {
+          "id": "no-accounts-offers-no-key-add",
+          "passed": true
+        },
+        {
           "id": "no-browser-errors-empty-normal",
           "passed": true
         }
@@ -1105,6 +1109,120 @@
     {
       "checks": [
         {
+          "id": "provider-title-offers-key-add-beside-account-add",
+          "passed": true
+        },
+        {
+          "id": "title-row-buttons-fit-without-overlap",
+          "passed": true
+        },
+        {
+          "id": "account-cards-keep-their-own-key-add",
+          "passed": true
+        },
+        {
+          "id": "key-only-dialog-asks-for-no-account",
+          "passed": true
+        },
+        {
+          "id": "key-only-dialog-stays-inside-window",
+          "passed": true
+        },
+        {
+          "id": "key-alone-is-filed-under-the-account-it-belongs-to",
+          "passed": true
+        },
+        {
+          "id": "result-names-the-account-and-how-it-was-found",
+          "passed": true
+        },
+        {
+          "id": "result-header-names-the-owner-account",
+          "passed": true
+        },
+        {
+          "id": "privacy-mode-blurs-the-account-in-the-result",
+          "passed": true
+        },
+        {
+          "id": "new-key-appears-under-that-account-only",
+          "passed": true
+        },
+        {
+          "id": "unknown-owner-stores-nothing-and-asks-for-the-account",
+          "passed": true
+        },
+        {
+          "id": "the-question-keeps-the-typed-key-and-name",
+          "passed": true
+        },
+        {
+          "id": "saving-waits-for-an-account-choice",
+          "passed": true
+        },
+        {
+          "id": "account-list-is-as-tall-as-the-inputs",
+          "passed": true
+        },
+        {
+          "id": "account-question-stays-inside-window",
+          "passed": true
+        },
+        {
+          "id": "chosen-account-receives-the-key",
+          "passed": true
+        },
+        {
+          "id": "chosen-key-appears-under-the-chosen-account",
+          "passed": true
+        },
+        {
+          "id": "single-account-dialog-is-the-same-key-only-form",
+          "passed": true
+        },
+        {
+          "id": "lone-account-takes-the-key-and-can-use-it-at-once",
+          "passed": true
+        },
+        {
+          "id": "refused-save-says-why-and-clears-the-key",
+          "passed": true
+        },
+        {
+          "id": "key-text-never-reaches-the-page-or-the-call-log",
+          "passed": true
+        },
+        {
+          "id": "no-browser-errors-auto-key-normal",
+          "passed": true
+        }
+      ],
+      "errors": [],
+      "mode": "normal",
+      "width": 420,
+      "height": 990
+    },
+    {
+      "checks": [
+        {
+          "id": "key-only-dialog-shows-the-account-question",
+          "passed": true
+        }
+      ],
+      "errors": [],
+      "mode": "normal",
+      "width": 420,
+      "height": 990,
+      "dialog": {
+        "x": 20,
+        "y": 219.96875,
+        "width": 380,
+        "height": 550.0625
+      }
+    },
+    {
+      "checks": [
+        {
           "id": "collapsed-handle-stays-collapsed",
           "passed": true
         },
@@ -1140,6 +1258,6 @@
       "dialog": null
     }
   ],
-  "passed": 245,
+  "passed": 269,
   "failed": 0
 }

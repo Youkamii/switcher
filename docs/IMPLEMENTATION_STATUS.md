@@ -14,10 +14,11 @@
 | [#184](https://github.com/Youkamii/switcher/issues/184) | 엣지의 펼친 판에서 누를 수 있는 카드에 호버를 그린다. macOS의 비활성 패널에는 `:hover`가 오지 않아 러스트 커서 폴링으로 그린다. | `5bc7886` |
 | [#185](https://github.com/Youkamii/switcher/issues/185) | 엣지 손잡이의 높이. 패널이 길어 창을 더 옮길 수 없을 때 ☰를 화면 위·아래 끝 너머로 끌면 손잡이가 그만큼 옮겨진다. | `5bc7886` |
 | [#186](https://github.com/Youkamii/switcher/issues/186) | 미니멀·엣지에서 사용 중인 계정을 한 번 더 누르면 그 계정의 API 키, 다시 누르면 구독. API 상태는 테마별 API 색으로 표시한다. [사용법](API_CONNECTIONS.md#위젯-모드에서-구독--api) | `73e899e` |
+| [#187](https://github.com/Youkamii/switcher/issues/187) | 일반 모드 제목 줄의 **API 키 추가**는 계정을 고르지 않는다. 키만 넣으면 주인 계정을 찾아 그 계정 밑에 저장하고, 못 찾을 때만 묻는다. [규칙](API_CONNECTIONS.md#계정을-고르지-않고-추가하기) · [화면](design/api-key-only.png) | `daa5036`, `51dc73a` |
 
 ### 검증
 
-Rust 252개(무시 22개 제외), 프론트 단위 119개, Chromium 화면 검사 245개, macOS WKWebView 화면 검사 193개, 배치 검사 7개가 통과했다. 화면 검사는 빌드된 프론트와 가상 계정을 쓴다. [Chromium 검사 원문](view-mode-test-results.json) · [WKWebView 검사 원문](view-mode-webkit-test-results.json) · [세 모드와 `API ›` 예고 화면](design/view-modes.png)
+Rust 260개(무시 23개 제외), 프론트 단위 119개, Chromium 화면 검사 269개, macOS WKWebView 화면 검사 216개, 배치 검사 7개가 통과했다. 화면 검사는 빌드된 프론트와 가상 계정을 쓴다. [Chromium 검사 원문](view-mode-test-results.json) · [WKWebView 검사 원문](view-mode-webkit-test-results.json) · [세 모드와 `API ›` 예고 화면](design/view-modes.png)
 
 ```bash
 npm test
@@ -40,12 +41,18 @@ node scripts/review-layout.mjs
 | 미니멀: 더블클릭으로 다른 계정 → 다시 더블클릭 → 같은 자리 더블클릭 | 계정 전환 → API 키 적용 → 구독 복귀 |
 | 미니멀: 1.1초 박자로 더블클릭 4번 | API·구독·API·구독 — 매번 전환 |
 | 미니멀: Codex 계정에서 더블클릭 4번 | `auth.json`·`config.toml`이 API 키 ↔ ChatGPT 로그인을 두 번 왕복 |
+| 일반: Claude 제목 줄 **API 키 추가** → 합성 키 입력 → 저장 (계정 둘, 네트워크 차단) | 아무것도 저장하지 않고 계정을 물었다. 입력한 키는 창에 남았다 |
+| 일반: 위 창에서 둘째 계정을 고르고 저장 | 그 계정 밑에 `api`로 저장. 키는 가짜 키체인에만 있고 메타데이터에는 없다 |
+| 일반: Codex 제목 줄 **API 키 추가** → 합성 키 입력 → 저장 (계정 하나) | 묻지 않고 그 계정에 저장. 구독 인증은 그대로 |
 
 실계정에서 관측한 것(2026-11-22, Claude Code 2.1.328): 구독으로 작업 중이던 세션이 API 선택 직후의 요청에서 `billing_error`("Credit balance is too low")로 거절됐고, 구독으로 돌아오자 이어졌다. 그 키의 조직은 이틀 전 Console에 크레딧이 표시된 곳이었다 — 플랜의 월간 API 크레딧은 대화형 Claude Code에 쓰이지 않는다는 [공식 안내](https://support.claude.com/en/articles/17154008-monthly-api-credits-for-max-ultra-and-team-plans)와 맞는다. 같은 키를 환경변수로 준 `claude -p`는 사용자 승인하에 실제로 호출해 Haiku 5.5·Fable 5.2 모두 응답을 받았다(합계 약 0.11달러). 월간 크레딧은 이 경로로 쓴다 — [쓰는 법](API_CONNECTIONS.md). Claude Code의 API 선택·해제는 실행 중인 세션에도 바로 적용된다는 뜻이어서 앱과 문서의 "다음 CLI 실행부터" 안내를 고쳤다.
 
+조직 이름으로 주인을 찾는 경로는 격리 앱에서는 볼 수 없다(네트워크를 막는다). 대신 로컬 전용 검사 `real_stored_keys_are_matched_to_the_accounts_they_are_linked_to`로, 이 컴퓨터에 저장된 실제 키가 저장된 세 계정 가운데 지금 연결된 계정으로 짚이는 것을 확인했다(읽기만 하고 과금·저장이 없다). 가짜 서버를 쓴 통합 검사는 조직 이름 대조·주인 불명·무조회 경로를 본다.
+
 남은 범위:
 
-- Windows 실기기의 포인터 동작은 확인하지 못했다 — 엣지의 클릭 전환과 색, 미니멀의 더블클릭 전환, ☰를 화면 위·아래 끝 너머로 끌기, `API` 칩의 글자 폭.
+- Windows 실기기의 포인터 동작은 확인하지 못했다 — 엣지의 클릭 전환과 색, 미니멀의 더블클릭 전환, ☰를 화면 위·아래 끝 너머로 끌기, `API` 칩의 글자 폭, 제목 줄 **API 키 추가** 창과 계정 목록의 모양(WebView2).
+- 실제 키를 새로 등록해 조직 이름으로 다른 계정에 들어가는 것은 사용자의 키가 하나뿐이라 해 보지 못했다(이미 등록된 키의 주인 판별만 확인).
 - `docs/screenshot.png`(README 첫 그림)는 아직 네 모드 화면이다.
 - 실제 유료 API 호출과 실키 적용은 수행하지 않았다.
 

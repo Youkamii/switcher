@@ -87,6 +87,8 @@
 - 화면이 잠겨 있으면 키체인 unlock이 실패하고 합성 클릭은 잠금 화면으로 간다 — 잠금이 풀린 뒤에만 할 수 있다.
 - 위젯의 실제 localStorage는 `~/Library/WebKit/com.youkamii.switcher/…`에 있다. `~/Library/WebKit/switcher/…`는 옛 개발 실행의 잔재다.
 - 이 맥(macOS 27.2 SDK)에서는 `clang` 링크가 실패한다(tapi `arm64e.x1`) — 보조 도구는 `swiftc`로 만든다. `screencapture -R`은 간헐적으로 실패하므로 전체를 찍고 `sips`로 자른다.
+- 글자 입력은 `CGEvent.postToPid`로 격리 앱 프로세스에만 보낸다 — HID로 보내면 패널이 키 창이 아닐 때 사용자의 터미널에 글자가 찍힌다. 마우스는 HID로 보내되, 창 좌표는 **가장 큰 창**으로 고른다: `<select>` 목록이 열려 있으면 그 팝업도 switcher 소유 창이라 먼저 잡힌다(실제로 그 좌표를 써서 클릭 두 번이 화면 밖으로 빗나갔다). 합성 입력은 사용자가 자리를 비웠을 때만(HIDIdleTime) 한다.
+- **WKWebView는 `<select>`의 네이티브 모양(menulist·menulist-button)에서 padding·min-height를 제 값으로 덮어쓴다** (실측: 높이 20px). 입력칸과 맞추려면 `appearance: none`으로 끄고 화살표를 직접 그린다. Chromium 스크린샷만 보면 놓친다 — 크기는 두 엔진의 하네스에서 수치로 검사한다.
 - `scripts/test-workspace-ui.mjs --all-modes <폴더>`는 바로 다음 인자를 출력 폴더로 받는다. `--all-modes --output x`라고 쓰면 저장소에 `--output/` 폴더가 생긴다.
 
 ## 배포·서명 (사용자 결정 2026-10-02)
@@ -100,6 +102,6 @@
 - API는 사용자가 **저장하고 사용/사용**을 누르면 일반 CLI 설정에 적용한다. 위젯 모드에서 사용 중인 계정 카드를 한 번 더 누르는 것도 같은 명시적 선택이다(#186, 위 절). Claude는 `apiKeyHelper`, Codex는 공식 공급자 설정 + 활성 `auth.json`(Unix 0600). 적용 전 OAuth·설정 백업, 구독 전환/해제/삭제 시 앱이 소유한 설정만 복원한다. API 선택은 TFSD를 해제하며 자동 유료 전환은 금지한다.
 - Codex 구독·API 어댑터는 파일 저장소만 지원한다. `keyring`/`auto`/`ephemeral` 설정이면 전환·쓰기 차단.
 - 화면 회귀 검사: `npm run build && node scripts/test-workspace-ui.mjs`, 배치 검사: `node scripts/review-layout.mjs`. 가짜 데이터만 사용한다.
-- 일반 모드의 **계정 추가**는 로그인을 시작한다. 새 API 키는 저장된 계정 카드의 **API 키 추가**에서만 등록한다. 소속은 공급자와 프로필의 영구 ID로 기록하고 키 이름은 계정 안에서 구분한다. 기존 키는 사용자가 고른 계정에 연결한다. 이때 OS 보안 항목, 키 교체 버전, 잔액 기록과 활성 CLI 설정을 보존한다.
+- 일반 모드의 **계정 추가**는 로그인을 시작한다. 새 API 키는 두 곳에서 등록한다: 공급자 제목 줄의 **API 키 추가**(계정을 고르지 않는다 — 주인 계정을 찾아 붙인다, #187, 사용자 지시 2026-11-22 "그냥 API 추가하면 있는 계정에 알아서 추가되도록")와 계정 카드의 **API 키 추가**(그 계정에 직접). 주인 찾기(`api_connections.rs` `save_detecting`): 계정이 하나면 그 계정, Claude는 키의 조직 이름이 「<계정 이름>’s …」 꼴로 **정확히 한 계정**을 가리킬 때만(개인 Console 조직의 기본 이름이 「<fullName>’s Individual Org」 — 실키로 확인). 추정으로 붙이지 않는다 — 못 찾으면 저장하지 않고 묻는다. 구독 조직과 Console 조직은 ID가 다르므로 ID로는 못 맞춘다. 소속은 공급자와 프로필의 영구 ID로 기록하고 키 이름은 계정 안에서 구분한다(이름을 비우면 `api`, `api-2`…). 기존 키는 사용자가 고른 계정에 연결한다. 이때 OS 보안 항목, 키 교체 버전, 잔액 기록과 활성 CLI 설정을 보존한다.
 - `api_connections/balance.rs`는 실행 키로 조직을 확인한다. 위젯 로그인은 소속 계정과 발급 조직이 일치할 때 사용하고, Console 로그인은 발급 조직을 확인한다. 같은 조직의 키는 잔액을 공유한다. Console에서 가져온 크레딧에는 출처와 확인 시각을 표시하고 대시보드 원문은 저장하지 않는다. OpenAI는 공식 결제 화면을 제공한다.
 - API 사용법·검증 한계: `docs/API_CONNECTIONS.md`, `docs/IMPLEMENTATION_STATUS.md`.
