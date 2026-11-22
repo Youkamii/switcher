@@ -77,6 +77,8 @@
 - API 상태 색은 테마별 `--api-rgb`(계정색·코덱스색·경고색과 겹치지 않게 고른 값)다. 호버에서도 이 색을 유지한다 — 누른 직후 포인터가 그대로 올라가 있으므로, 호버가 색을 바꾸면 전환이 안 된 것처럼 보인다.
 - **Claude Code는 API 선택·해제를 실행 중인 세션에도 바로 적용한다** (2.1.328 실측: 구독으로 돌던 세션이 선택 직후의 요청에서 `billing_error` "Credit balance is too low"). 그러므로 사용자의 실제 위젯에서 사용 중인 계정 카드를 시험 삼아 누르지 말 것 — 실행 중인 세션(이 작업 세션 포함)이 유료 키로 넘어간다. 실제 포인터 검증은 아래 격리 실행으로만 한다.
 
+- **플랜의 월간 API 크레딧(Max·Ultra·Team)은 대화형 Claude Code에 쓰이지 않는다** (Anthropic 안내, 2026-11-22 확인 — 대상은 직접 API 호출·Console Playground·Managed Agents·Agent SDK·`claude -p`). Console과 위젯에 금액이 보여도 대화형 세션을 API 키로 넘기면 `Credit balance is too low`가 날 수 있고, 모델과는 무관하다. 이 오류를 "잔액이 없다"로 옮겨 설명하지 말 것 — 위젯에 금액이 보이는 사용자에게 그렇게 답해서 틀렸다. 위젯이 저장한 금액(`api-connections/<provider>/<name>/console-credit.json`)과 플랜을 먼저 대조한다.
+
 ## 격리 실행 검증 (macOS, 실측 2026-11-22)
 
 - 실제 앱의 포인터 동작은 가짜 홈에서 확인한다. `HOME`과 `CFFIXED_USER_HOME`을 임시 폴더로 주면 `Env::real()`과 `/usr/bin/security`가 그 안만 본다. 그 홈에 키체인을 새로 만든다: `security create-keychain -p "" <홈>/Library/Keychains/login.keychain-db` → `default-keychain -s` → `list-keychains -d user -s` → `unlock-keychain -p ""` → `set-keychain-settings` (전부 `HOME=<홈>`으로). 합성 프로필·합성 키만 넣고 `sandbox-exec -p '(version 1)(allow default)(deny network-outbound (remote ip))'`로 번들 실행 파일을 직접 띄운다. `SWITCHER_VIEW=edge|minimal|normal`, `SWITCHER_DIAG=1`.
