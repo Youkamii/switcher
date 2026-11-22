@@ -19,8 +19,8 @@
 
 <p align="center">
   <a href="#install">Install</a> ·
-  <a href="#four-view-modes">Modes</a> ·
-  <a href="#type-4--the-liquid-edge-widget">Type 4</a> ·
+  <a href="#three-view-modes">Modes</a> ·
+  <a href="#edge--the-liquid-edge-widget">Edge</a> ·
   <a href="#tfsd-autopilot">TFSD</a> ·
   <a href="#cheat-sheet">Cheat sheet</a> ·
   <a href="#data--security">Security</a> ·
@@ -67,7 +67,7 @@ switcher
 <summary><strong>Adding accounts</strong> — Claude · Codex · GitHub</summary>
 <br />
 
-1. In Type 1, press **+ Add account** under Claude or Codex.
+1. In the Full mode, press **+ Add account** under Claude or Codex.
 2. Open the address the widget shows in your browser.
 3. Claude: paste the code from the browser into the widget. Codex: enter the one-time code (valid for 15 minutes) in the browser.
 4. When sign-in finishes a card appears. The currently active account does not change.
@@ -94,43 +94,43 @@ Claude Code and Codex CLI use one account at a time. With several accounts you s
 
 <br />
 
-## Four view modes
+## Three view modes
 
 <p align="center">
-  <img src="screenshot.png" width="100%" alt="switcher's four view modes — Type 1 full, Type 2 widget, Type 3 compact, Type 4 docked to the screen edge" />
+  <img src="screenshot.png" width="100%" alt="switcher's view modes — from the full control panel down to a panel docked to the screen edge" />
 </p>
 
-Cycle with the **Type** button at the top right. One widget scales from the full control panel down to an 80 px panel.
+Cycle with the mode button at the top right (the Full mode also has tabs at the top). One widget scales from the full control panel down to an 80 px panel.
 
 | Mode | What it is | Switch accounts |
 | --- | --- | --- |
-| **Type 1** | Full panel with account add/remove and every tool. Drag section titles to reorder | Button on the card |
-| **Type 2** | Compact widget that keeps emails and plan info | Double-click a card |
-| **Type 3** | 120 px widget with labels and usage bars only | Double-click a card |
-| **Type 4** | A liquid handle on the screen edge that swells into an 80 px panel on hover | Click a card |
+| **1 Full** | Full panel with account add/remove, API keys and every tool. Drag section titles to reorder | Button on the card |
+| **2 Minimal** | 120 px widget with labels and usage bars only | Double-click a card |
+| **3 Edge** | A liquid handle on the screen edge that swells into an 80 px panel on hover | Click a card |
+
+**Subscription ↔ API key.** In Minimal and Edge, the account in use shows `API ›` when it has a stored API key. Press that card once more (double-click in Minimal) to use that account's key, and press it again to return to the subscription. While the API is in use the account is framed in the API color, and the collapsed Edge handle shows `API` instead of usage bars. API usage is billed separately from the subscription.
 
 <img align="right" width="300" src="transparency.gif" alt="Adjusting the widget's transparency over a code editor" />
 
 **It stays out of your way.**
 
-- In Type 2/3, clicks and drags on empty areas pass through to the window behind.
+- In Minimal, clicks and drags on empty areas pass through to the window behind.
 - Transparency steps down from the background to the bars; at the lowest step only the usage bars remain.
 - 🙈 blurs emails and GitHub user names, so the widget is safe to keep up while screen sharing.
-- Type 2 shortens reset times: `h:mm` under 24 hours, `d::hh` beyond.
 
 <br clear="all" />
 
-## Type 4 — the liquid edge widget
+## Edge — the liquid edge widget
 
-<img align="left" width="128" src="type4.gif" alt="Type 4 demo — a handle docked to the screen edge swells into a panel on hover, shows time-to-reset while pressed, and seeps back when the mouse leaves" />
+<img align="left" width="128" src="type4.gif" alt="Edge mode demo — a handle docked to the screen edge swells into a panel on hover, shows time-to-reset while pressed, and seeps back when the mouse leaves" />
 
 New in **v2.0**. The widget rests as a handle on whichever screen edge is closer, swells into a panel when the mouse touches it, and seeps back when the mouse leaves.
 
 - **Handle** — even collapsed, it shows the current Claude and Codex accounts' usage windows (e.g. 5h·W·F) and SYSTEM (CPU·MEM·DSK·NET) as thin bars.
 - **Panel** — every account as vertical segmented bars with %, followed by SYSTEM, DISPLAY (a vertical brightness slider per monitor) and the tool dock. The active account has an accent-colored border and a dot before its name.
-- **Switch** — a short click on another account card switches right away.
+- **Switch** — a short click on another account card switches right away. Click the account in use once more to use its API key, and again to return to the subscription.
 - **Time to reset** — press and hold the panel to replace the % with the time left: `4d` in blue, `2h` in green, `52m` in red.
-- **Collapse** — about half a second after the mouse leaves, it returns to the handle. Drag ☰ past the middle of the screen to dock on the other edge.
+- **Collapse** — about half a second after the mouse leaves, it returns to the handle. Drag ☰ past the middle of the screen to dock on the other edge. When the panel is too tall to move any further up or down, keep dragging ☰ past the top or bottom of the screen and the handle moves by that much.
 - The expanded panel takes the mouse (no click-through). While collapsed, only the area outside the handle passes through.
 
 <sub>Sample account names; the cursor was added in editing.</sub>
@@ -167,7 +167,7 @@ New in **v2.0**. The widget rests as a handle on whichever screen edge is closer
 | Feature | Windows | macOS |
 | --- | :---: | :---: |
 | Claude · Codex switching, usage, TFSD | ✓ | ✓ |
-| Type 4 edge dock | ✓ | ✓ |
+| Edge dock | ✓ | ✓ |
 | GitHub switching | ✓ | ✓ |
 | Click-through · transparency | ✓ | ✓ |
 | DISPLAY brightness | External monitors (DDC/CI) | Built-in display |
@@ -196,12 +196,14 @@ New in **v2.0**. The widget rests as a handle on whichever screen edge is closer
 
 | I want to… | How |
 | --- | --- |
-| Change the view mode | **Type** button at the top right cycles 1 → 2 → 3 → 4. In Type 4, use the **Type4** button on the expanded panel |
-| Switch accounts | Type 1: button on the card · Type 2/3: **double-click** a card · Type 4: **click** a card |
-| See time to reset | **Press and hold** the Type 4 panel |
-| Move Type 4 to the other edge | Drag ☰ past the middle of the screen |
-| Reorder sections | Drag section titles in Type 1 |
-| Use the window underneath | Empty areas in Type 2/3 and the area outside the collapsed Type 4 handle pass clicks through |
+| Change the view mode | The mode button at the top right cycles 1 Full → 2 Minimal → 3 Edge. In Full use the tabs at the top; in Edge use the **3 Edge** button on the expanded panel |
+| Switch accounts | Full: button on the card · Minimal: **double-click** a card · Edge: **click** a card |
+| Subscription ↔ API key | In Minimal and Edge, press the account in use (marked `API ›`) **once more** for that account's API key, and **again** for the subscription (double-click in Minimal) |
+| See time to reset | **Press and hold** the Edge panel |
+| Move Edge to the other side | Drag ☰ past the middle of the screen |
+| Move the Edge handle up or down | Drag ☰ past the top or bottom of the screen |
+| Reorder sections | Drag section titles in the Full mode |
+| Use the window underneath | Empty areas in Minimal and the area outside the collapsed Edge handle pass clicks through |
 | Open the tool dock | **▲** at the bottom of the window: 📝 memo · 🚗 TFSD · 🙈 privacy · ☕ clamshell · 🌙 black monitor |
 | Dismiss the black monitor | Shake the mouse hard for 1–2 s, or `Esc` |
 | Clamshell mode | ☕ once until the lid opens, twice to keep it on |

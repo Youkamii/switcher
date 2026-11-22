@@ -1,12 +1,57 @@
 # 개선 적용 현황
 
-작업 브랜치는 `feat/connection-workspace`다. 2026-11-20 로컬 빌드에 계정별 API 키와 Claude 조직 잔액을 반영했다. 공개 앱·npm 패키지는 2026-11-17에 게시한 `v2.1.2`이며, 이 버전에는 Codex 공유 서버 자동 갱신이 포함돼 있다.
+작업 브랜치는 `feat/connection-workspace`다. 2026-11-20 로컬 빌드에 계정별 API 키와 Claude 조직 잔액을 반영했다. 2026-11-22에는 그 위의 `feat/api-token-click`에서 보기 모드를 셋으로 줄이고 위젯 모드의 구독 ↔ API 전환을 넣었다(바로 아래 절). 공개 앱·npm 패키지는 2026-11-17에 게시한 `v2.1.2`이며, 이 버전에는 Codex 공유 서버 자동 갱신이 포함돼 있다.
 
 [전체 화면 한 장](design/complete-preview.png) · [원본 크기 보기](design/complete-preview.html) · [API 등록·사용법](API_CONNECTIONS.md)
 
+## 보기 모드 3종 · 위젯 모드의 구독 ↔ API 전환 · 2026-11-22 로컬 빌드
+
+브랜치 `feat/api-token-click`(`feat/connection-workspace` 위)의 로컬 빌드다. 푸시·배포 전이다. 이 절 아래의 "네 모드"·"컴팩트"는 각 날짜 당시의 기록이다.
+
+| 이슈 | 바뀐 것 | 커밋 |
+| --- | --- | --- |
+| [#183](https://github.com/Youkamii/switcher/issues/183) | 2 컴팩트를 없앴다. 보기 모드는 **1 일반 / 2 미니멀 / 3 엣지**. 저장돼 있던 컴팩트 선택은 미니멀로 옮긴다. | `acfb499` |
+| [#184](https://github.com/Youkamii/switcher/issues/184) | 엣지의 펼친 판에서 누를 수 있는 카드에 호버를 그린다. macOS의 비활성 패널에는 `:hover`가 오지 않아 러스트 커서 폴링으로 그린다. | `5bc7886` |
+| [#185](https://github.com/Youkamii/switcher/issues/185) | 엣지 손잡이의 높이. 패널이 길어 창을 더 옮길 수 없을 때 ☰를 화면 위·아래 끝 너머로 끌면 손잡이가 그만큼 옮겨진다. | `5bc7886` |
+| [#186](https://github.com/Youkamii/switcher/issues/186) | 미니멀·엣지에서 사용 중인 계정을 한 번 더 누르면 그 계정의 API 키, 다시 누르면 구독. API 상태는 테마별 API 색으로 표시한다. [사용법](API_CONNECTIONS.md#위젯-모드에서-구독--api) | `73e899e` |
+
+### 검증
+
+Rust 252개(무시 22개 제외), 프론트 단위 119개, Chromium 화면 검사 245개, macOS WKWebView 화면 검사 193개, 배치 검사 7개가 통과했다. 화면 검사는 빌드된 프론트와 가상 계정을 쓴다. [Chromium 검사 원문](view-mode-test-results.json) · [WKWebView 검사 원문](view-mode-webkit-test-results.json) · [세 모드와 `API ›` 예고 화면](design/view-modes.png)
+
+```bash
+npm test
+cargo test --manifest-path src-tauri/Cargo.toml --lib
+npm run build
+node scripts/test-workspace-ui.mjs --all-modes docs/design --output docs/view-mode-test-results.json
+node scripts/test-workspace-ui.mjs --webkit --output docs/view-mode-webkit-test-results.json
+node scripts/review-layout.mjs
+```
+
+실제 앱의 포인터 동작은 macOS 27.2에서 격리해 확인했다. 가짜 홈(`HOME`·`CFFIXED_USER_HOME`)과 그 안에 새로 만든 키체인, 합성 계정·합성 키, 네트워크 차단(`sandbox-exec`) 상태로 번들 실행 파일을 띄우고 실제 마우스 이벤트를 보냈다. 실계정·실키·실제 CLI 설정은 쓰지 않았고, 실행 전후 실제 설정 파일의 해시가 같았다.
+
+| 확인한 동작 | 결과 |
+| --- | --- |
+| 엣지: 사용 중 카드의 `API ›`를 누르고, 같은 자리를 다시 누름 | API 키 적용 → 구독 복귀. 전환 직후 포인터 밑은 API 칸이며, 틀 전체가 복귀 대상이다 |
+| 엣지: 계정 이름 줄을 누름 | 구독 복귀 |
+| 엣지: 0.76초 박자로 6번 누름 | API·구독·API·구독·API·구독 — 매번 전환 |
+| 엣지: 빠른 더블클릭 (사용 중 카드 / API 틀) | 각각 한 번만 전환 (API 적용 / 구독 복귀) |
+| 엣지: 다른 계정을 누름 | 그 계정의 구독으로 전환 |
+| 미니멀: 더블클릭으로 다른 계정 → 다시 더블클릭 → 같은 자리 더블클릭 | 계정 전환 → API 키 적용 → 구독 복귀 |
+| 미니멀: 1.1초 박자로 더블클릭 4번 | API·구독·API·구독 — 매번 전환 |
+| 미니멀: Codex 계정에서 더블클릭 4번 | `auth.json`·`config.toml`이 API 키 ↔ ChatGPT 로그인을 두 번 왕복 |
+
+실계정에서 관측한 것(2026-11-22, Claude Code 2.1.328): 구독으로 작업 중이던 세션이 API 선택 직후의 요청에서 그 키의 조직 잔액 부족(`billing_error`, "Credit balance is too low")으로 멈췄고, 구독으로 돌아오자 이어졌다. Claude Code의 API 선택·해제는 실행 중인 세션에도 바로 적용된다는 뜻이어서 앱과 문서의 "다음 CLI 실행부터" 안내를 고쳤다.
+
+남은 범위:
+
+- Windows 실기기의 포인터 동작은 확인하지 못했다 — 엣지의 클릭 전환과 색, 미니멀의 더블클릭 전환, ☰를 화면 위·아래 끝 너머로 끌기, `API` 칩의 글자 폭.
+- `docs/screenshot.png`(README 첫 그림)는 아직 네 모드 화면이다.
+- 실제 유료 API 호출과 실키 적용은 수행하지 않았다.
+
 ## 계정별 API 키 · 2026-11-20 로컬 빌드
 
-일반 모드의 **계정 추가**는 로그인을 시작한다. 카드를 만든 뒤 **API 키 추가**로 키를 저장한다. 한 계정에 여러 키를 추가할 수 있고, 서로 다른 계정에서 같은 키 이름을 쓸 수 있다. **저장하고 사용**과 키 옆의 **사용**이 CLI 인증을 전환한다. 컴팩트·미니멀·엣지는 사용 중인 키와 잔액을 소속 계정 아래에 표시한다. [네 모드 화면](design/four-modes.png)
+일반 모드의 **계정 추가**는 로그인을 시작한다. 카드를 만든 뒤 **API 키 추가**로 키를 저장한다. 한 계정에 여러 키를 추가할 수 있고, 서로 다른 계정에서 같은 키 이름을 쓸 수 있다. **저장하고 사용**과 키 옆의 **사용**이 CLI 인증을 전환한다. 컴팩트·미니멀·엣지는 사용 중인 키와 잔액을 소속 계정 아래에 표시한다. [현재의 세 모드 화면](design/view-modes.png)
 
 기존 키 하나를 사용자가 지정한 실계정에 연결하고, 키 버전·현재 CLI 선택·Console 잔액 파일이 보존됐음을 확인했다. 계정 이름 변경, 삭제 후 재연결, 동일한 키 이름의 독립 전환, 소속 계정으로 범위를 좁힌 잔액 조회는 가상 계정으로 검사했다.
 
@@ -28,7 +73,7 @@ macOS 설치본과 로컬 빌드의 실행 파일 해시가 일치했고 앱 서
 
 ## API 크레딧 잔액 · 2026-11-20 로컬 빌드
 
-월 예산·사용률 막대·관리자 키 입력을 제거했다. 네 가지 위젯 모드가 Claude의 조직 선불 잔액 또는 Console 대시보드에서 가져온 조직 크레딧과 확인 시각을 표시한다. 개인 계정에도 적용된다. 실제 등록 키로 조직을 확인하고 사용자가 제공한 대시보드와 대조했다. 현재 구독 토큰의 Console 조회는 권한 거부였으며, 대시보드 확인값을 로컬에 저장한 뒤 다시 읽어 금액·통화·시각을 확인했다. OpenAI는 공식 결제 화면에서 확인한다. [사용법](API_CONNECTIONS.md) · [네 모드 예시](design/four-modes.png)
+월 예산·사용률 막대·관리자 키 입력을 제거했다. 네 가지 위젯 모드가 Claude의 조직 선불 잔액 또는 Console 대시보드에서 가져온 조직 크레딧과 확인 시각을 표시한다. 개인 계정에도 적용된다. 실제 등록 키로 조직을 확인하고 사용자가 제공한 대시보드와 대조했다. 현재 구독 토큰의 Console 조회는 권한 거부였으며, 대시보드 확인값을 로컬에 저장한 뒤 다시 읽어 금액·통화·시각을 확인했다. OpenAI는 공식 결제 화면에서 확인한다. [사용법](API_CONNECTIONS.md) · [현재의 세 모드 예시](design/view-modes.png)
 
 계정별 키를 도입하기 전 잔액 빌드에서 macOS Rust 246개, 프론트 단위 106개, Chromium 153개, macOS WebKit 118개와 배치 검사 8개가 통과했다. 당시 macOS 앱 번들과 ad-hoc 서명도 검증했다.
 

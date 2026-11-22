@@ -62,6 +62,30 @@
 
 - **비활성 패널은 WKWebView 마우스 이동(:hover·pointermove)을 받지 못한다** (WebKit 소스 확인 2026-10-07: `Source/WebKit/UIProcess/mac/WebViewImpl.mm` `trackingAreaOptions()`가 `NSTrackingActiveInKeyWindow` — 시스템 설정이 레거시 스크롤바(마우스 연결 등)일 때만 `ActiveAlways`). 위젯 패널은 `becomesKeyOnlyIfNeeded`라 입력칸을 누를 때만 키 윈도우가 되므로 Type1의 CSS :hover는 맥에서 사실상 오지 않는다. 그래서 Type1 호버 버튼(#103)은 러스트 커서 폴링(`set_hover_poll` → `hover-poll {idx,x,y}` → main.ts `applyPolledHover`가 `.hit-hover` + 합성 pointerenter/leave)으로 만든다 — Type2/3의 `card-hover`, Type4의 `edge-hover`와 같은 방식. 클릭(`acceptFirstMouse`)·키보드는 그대로 온다.
 
+## 보기 모드 (사용자 지시 2026-11-21~22)
+
+- 보기 모드는 **1 일반 / 2 미니멀 / 3 엣지** 셋이다. 2 컴팩트는 없앴다(#183) — 다시 제안하지 말 것. 이 문서와 코드 주석의 옛 이름은 Type1 = 일반, Type2(컴팩트) = 폐지, Type3 = 미니멀, Type4 = 엣지로 읽는다. 코드의 `compact*` 이름은 "축소 레이아웃"이라는 뜻으로 미니멀이 쓴다.
+- 엣지 손잡이 높이(#185): 패널이 길어 창을 더 올리거나 내릴 수 없을 때 ☰를 화면 끝 너머로 끌면 넘친 만큼 손잡이(`--edge-tab-y`, localStorage `switcher.edgetab`)가 옮겨진다. 위쪽 끝은 창 좌표로는 넘침을 알 수 없어 `pointer_position` 커맨드로 잰다.
+
+## 위젯 모드의 구독 ↔ API 전환 (#186, 실측 2026-11-22)
+
+- 규칙(사용자 지시): 한 번 = 그 계정(구독), 사용 중인 계정을 한 번 더 = 그 계정의 API 키, **다시 한 번 = 구독으로 복귀**. 엣지는 클릭, 미니멀은 더블클릭(러스트 감지)이 "한 번"이다. 토글은 되돌아오는 길까지가 한 기능이다 — 복귀를 빼먹거나 조건을 달지 말 것.
+- **API를 쓰는 중인 계정은 틀(`.account-with-api`) 전체가 복귀 대상**이다. 전환 직후 포인터 밑은 계정 줄이 아니라 API 칸으로 바뀐다. 계정 카드만 받으면 같은 자리를 다시 눌러도 돌아오지 않는다(실제로 사용자가 겪은 결함).
+- 판정은 누름 시각으로 하고 `event.detail`(클릭 횟수)은 쓰지 않는다. 기준은 `src/apiToggle.ts`(엣지 클릭)와 `lib.rs` `api_click_allowed`(미니멀 더블클릭) 두 곳에 같은 값(같은 동작 0.6초, 화면 반영 0.25초)으로 있다 — 바꿀 때는 둘 다. 막는 것은 유료(API) 쪽뿐이고 복귀는 막지 않는다. 휴지를 "전환이 끝난 시각"부터 재면 0.7초 박자의 누름이 삼켜진다 — 누름 시각부터 잰다.
+- 전환 뒤 화면 교체는 사용량 조회를 기다리는 스무스 렌더다. 전환 직후에 필요한 표식(`API ›`, 히트 영역)은 낙관적으로 바로 단다(`offerApiOptimistic`). 교체 렌더를 기다리게 하면 "한 번 더"가 먹지 않는 구간이 생긴다.
+- `.api-owner`는 키 등록 창의 소속 문단 클래스다(글자 크기·프라이버시 블러가 걸려 있다). 위젯 카드에는 `owns-api`를 쓴다.
+- API 상태 색은 테마별 `--api-rgb`(계정색·코덱스색·경고색과 겹치지 않게 고른 값)다. 호버에서도 이 색을 유지한다 — 누른 직후 포인터가 그대로 올라가 있으므로, 호버가 색을 바꾸면 전환이 안 된 것처럼 보인다.
+- **Claude Code는 API 선택·해제를 실행 중인 세션에도 바로 적용한다** (2.1.328 실측: 구독으로 돌던 세션이 선택 직후의 요청에서 `billing_error` "Credit balance is too low"). 그러므로 사용자의 실제 위젯에서 사용 중인 계정 카드를 시험 삼아 누르지 말 것 — 실행 중인 세션(이 작업 세션 포함)이 유료 키로 넘어간다. 실제 포인터 검증은 아래 격리 실행으로만 한다.
+
+## 격리 실행 검증 (macOS, 실측 2026-11-22)
+
+- 실제 앱의 포인터 동작은 가짜 홈에서 확인한다. `HOME`과 `CFFIXED_USER_HOME`을 임시 폴더로 주면 `Env::real()`과 `/usr/bin/security`가 그 안만 본다. 그 홈에 키체인을 새로 만든다: `security create-keychain -p "" <홈>/Library/Keychains/login.keychain-db` → `default-keychain -s` → `list-keychains -d user -s` → `unlock-keychain -p ""` → `set-keychain-settings` (전부 `HOME=<홈>`으로). 합성 프로필·합성 키만 넣고 `sandbox-exec -p '(version 1)(allow default)(deny network-outbound (remote ip))'`로 번들 실행 파일을 직접 띄운다. `SWITCHER_VIEW=edge|minimal|normal`, `SWITCHER_DIAG=1`.
+- 단일 인스턴스라 사용자의 실제 위젯을 먼저 종료하고, 끝나면 `open -a`로 다시 띄운다. 전후로 실제 `~/.claude/settings.json`·`~/.codex/auth.json`의 해시와 기본 키체인이 그대로인지 확인한다.
+- 화면이 잠겨 있으면 키체인 unlock이 실패하고 합성 클릭은 잠금 화면으로 간다 — 잠금이 풀린 뒤에만 할 수 있다.
+- 위젯의 실제 localStorage는 `~/Library/WebKit/com.youkamii.switcher/…`에 있다. `~/Library/WebKit/switcher/…`는 옛 개발 실행의 잔재다.
+- 이 맥(macOS 27.2 SDK)에서는 `clang` 링크가 실패한다(tapi `arm64e.x1`) — 보조 도구는 `swiftc`로 만든다. `screencapture -R`은 간헐적으로 실패하므로 전체를 찍고 `sips`로 자른다.
+- `scripts/test-workspace-ui.mjs --all-modes <폴더>`는 바로 다음 인자를 출력 폴더로 받는다. `--all-modes --output x`라고 쓰면 저장소에 `--output/` 폴더가 생긴다.
+
 ## 배포·서명 (사용자 결정 2026-10-02)
 
 - 코드 서명·공증은 하지 않는다 — 유료 계정(코드 서명 인증서, Apple Developer Program)을 쓰지 않기로 결정. 다시 제안하지 말 것. 첫 실행 경고는 README 설치 절의 NOTE(Windows "추가 정보 → 실행", macOS "그래도 열기" 또는 `xattr -dr com.apple.quarantine`)로 안내한다.
@@ -70,7 +94,7 @@
 ## 계정별 API 키
 
 - `api_connections.rs`: macOS Keychain / Windows 사용자 DPAPI에 키 저장. 메타데이터·런처·로그에 키 원문 금지.
-- API는 사용자가 **저장하고 사용/사용**을 누르면 일반 CLI 설정에 적용한다. Claude는 `apiKeyHelper`, Codex는 공식 공급자 설정 + 활성 `auth.json`(Unix 0600). 적용 전 OAuth·설정 백업, 구독 전환/해제/삭제 시 앱이 소유한 설정만 복원한다. API 선택은 TFSD를 해제하며 자동 유료 전환은 금지한다.
+- API는 사용자가 **저장하고 사용/사용**을 누르면 일반 CLI 설정에 적용한다. 위젯 모드에서 사용 중인 계정 카드를 한 번 더 누르는 것도 같은 명시적 선택이다(#186, 위 절). Claude는 `apiKeyHelper`, Codex는 공식 공급자 설정 + 활성 `auth.json`(Unix 0600). 적용 전 OAuth·설정 백업, 구독 전환/해제/삭제 시 앱이 소유한 설정만 복원한다. API 선택은 TFSD를 해제하며 자동 유료 전환은 금지한다.
 - Codex 구독·API 어댑터는 파일 저장소만 지원한다. `keyring`/`auto`/`ephemeral` 설정이면 전환·쓰기 차단.
 - 화면 회귀 검사: `npm run build && node scripts/test-workspace-ui.mjs`, 배치 검사: `node scripts/review-layout.mjs`. 가짜 데이터만 사용한다.
 - 일반 모드의 **계정 추가**는 로그인을 시작한다. 새 API 키는 저장된 계정 카드의 **API 키 추가**에서만 등록한다. 소속은 공급자와 프로필의 영구 ID로 기록하고 키 이름은 계정 안에서 구분한다. 기존 키는 사용자가 고른 계정에 연결한다. 이때 OS 보안 항목, 키 교체 버전, 잔액 기록과 활성 CLI 설정을 보존한다.
