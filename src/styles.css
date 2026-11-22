@@ -2401,7 +2401,9 @@ body.edge .compact-api-active { flex-direction: column; gap: 2px; padding: 4px 2
 .api-owner, .api-auto-note { color: var(--text); font-size: 12px; overflow-wrap: anywhere; margin-bottom: 10px; }
 /* 계정을 고르지 않은 등록(#187): 주인을 못 찾았을 때만 보이는 계정 선택, 찾는 동안의 안내, 넣은 계정 알림 */
 .api-form .api-account-pick { color: var(--warn); }
-.api-account-pick select { display: block; width: 100%; min-width: 0; margin-top: 6px; padding: 9px 10px; border: 1px solid rgb(var(--border-rgb)); border-radius: 7px; background: rgb(var(--panel-rgb)); color: rgb(var(--text-rgb)); font-family: inherit; font-size: 12px; }
+/* WKWebView는 select의 네이티브 모양(menulist·menulist-button)에서 안쪽 여백과 최소 높이를 제 값으로 덮어쓴다
+   (실측: 높이 20px). 모양을 끄고 화살표를 직접 그려 입력칸과 같은 높이로 맞춘다 — 두 엔진에서 같은 그림이 된다 */
+.api-account-pick select { -webkit-appearance: none; appearance: none; display: block; width: 100%; min-width: 0; height: 38px; margin-top: 6px; padding: 0 30px 0 11px; border: 1px solid rgb(var(--border-rgb)); border-radius: 7px; background-color: rgb(var(--panel-rgb)); background-image: linear-gradient(45deg, transparent 50%, rgb(var(--muted-rgb)) 50%), linear-gradient(135deg, rgb(var(--muted-rgb)) 50%, transparent 50%); background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%; background-size: 5px 5px; background-repeat: no-repeat; color: rgb(var(--text-rgb)); font-family: inherit; font-size: 12px; }
 .api-finding { font-size: 11px; line-height: 1.5; color: rgb(var(--muted-rgb)); }
 .api-placed { color: var(--accent); font-size: 12px; line-height: 1.7; margin-bottom: 14px; overflow-wrap: anywhere; }
 .api-save-actions { display: flex; gap: 8px; }

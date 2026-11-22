@@ -181,7 +181,10 @@ function openApiRegistration(hooks: Hooks, provider: string, account: Account | 
     if (placed) {
       const { account_id, account: profile, matched_by } = placed;
       const found = accounts.find(candidate => candidate.id === account_id);
-      where = text.placed.replace("{account}", found?.email ?? found?.name ?? profile) + (matched_by === "organization_name" ? ` ${text.placedByOrg}` : "");
+      const label = found?.email ?? found?.name ?? profile;
+      // 주인이 정해졌으니 맨 위 줄도 그 계정을 말한다 — 계정 카드에서 연 등록 창과 같은 모양
+      owner.textContent = `${providerTitle} · ${label}`; owner.className = "api-owner";
+      where = text.placed.replace("{account}", label) + (matched_by === "organization_name" ? ` ${text.placedByOrg}` : "");
     }
     if (where && (useNow || activationError)) host.append(paragraph(where, "api-placed"));
     const result = paragraph(activationError ? `${text.applyFailed} · ${activationError}` : useNow ? text.applied : where ?? text.linked, activationError ? "api-error" : useNow ? "api-applied" : where ? "api-saved api-placed" : "api-saved");

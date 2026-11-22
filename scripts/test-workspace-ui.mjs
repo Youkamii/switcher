@@ -423,6 +423,8 @@ function fixture(mode = "normal", preview = false) {
     record('key-alone-is-filed-under-the-account-it-belongs-to', autoCalls().length===1 && autoCalls()[0].args.provider==='claude' && !autoCalls()[0].args.accountId && autoCalls()[0].args.name==='' && autoCalls()[0].args.key==='[REDACTED]' && !calls.some(c=>c.cmd==='api_save') && !calls.some(c=>c.cmd==='api_activate') && stored()===before+1 && connections.get('claude/api')?.account_id==='claude-1');
     const placed = document.querySelector('.api-dialog .api-placed');
     record('result-names-the-account-and-how-it-was-found', placed?.textContent.includes('personal@example.test') && placed.textContent.includes('조직의 이름') && !document.querySelector('.api-dialog .api-form') && !document.querySelector('.api-dialog input'));
+    // Once the owner is known the top line names it, exactly like a dialog opened from that account's card.
+    record('result-header-names-the-owner-account', document.querySelector('.api-dialog .api-owner')?.textContent==='Claude · personal@example.test' && !document.querySelector('.api-dialog .api-auto-note'));
     document.body.classList.add('privacy');
     record('privacy-mode-blurs-the-account-in-the-result', getComputedStyle(placed).filter.includes('blur'));
     document.body.classList.remove('privacy');
@@ -440,6 +442,8 @@ function fixture(mode = "normal", preview = false) {
     record('unknown-owner-stores-nothing-and-asks-for-the-account', !pick.hidden && rect(select).height>0 && stored()===before && form.isConnected && pick.textContent.includes('계정을 골라') && form.querySelector('.api-error').textContent==='' && document.activeElement===select && [...select.options].map(o=>o.value).join()===',claude-1,claude-2' && [...select.options].slice(1).map(o=>o.textContent).join()==='personal@example.test,work@example.test' && select.required);
     record('the-question-keeps-the-typed-key-and-name', keyInput(form).value==='sk-dummy-test-key-123456' && nameInput(form).value==='team' && !keyInput(form).readOnly && !form.querySelector('.api-save').disabled && keyInput(form).type==='password');
     record('saving-waits-for-an-account-choice', !form.checkValidity() && autoCalls().length===2);
+    // WebKit draws a bare select as a small native button that ignores padding; the list must match the inputs.
+    record('account-list-is-as-tall-as-the-inputs', rect(select).height>=34 && Math.abs(rect(select).width-rect(keyInput(form)).width)<1.5 && Math.abs(rect(select).left-rect(keyInput(form)).left)<1.5);
     record('account-question-stays-inside-window', (()=>{ const r=rect(document.querySelector('.api-dialog')); return r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight && rect(select).right<=r.right; })());
     select.value='claude-2'; select.dispatchEvent(new Event('change',{bubbles:true}));
     form.requestSubmit(form.querySelector('.api-save'));
