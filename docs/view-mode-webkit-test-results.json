@@ -1043,11 +1043,31 @@
           "passed": true
         },
         {
-          "id": "setup-handle-mid-wall",
+          "id": "setup-handle-low-in-the-panel",
           "passed": true
         },
         {
-          "id": "panel-dropped-past-the-bottom-comes-back-and-the-handle-stays",
+          "id": "pressing-the-grip-without-dragging-changes-nothing",
+          "passed": true
+        },
+        {
+          "id": "panel-carried-to-the-top-brings-the-small-handle-to-the-top",
+          "passed": true
+        },
+        {
+          "id": "the-handle-sits-beside-the-grip",
+          "passed": true
+        },
+        {
+          "id": "panel-carried-to-the-bottom-leaves-the-handle-at-the-bottom",
+          "passed": true
+        },
+        {
+          "id": "pushing-the-grip-against-the-top-lifts-a-low-handle",
+          "passed": true
+        },
+        {
+          "id": "panel-dropped-mid-wall-hangs-from-the-handle",
           "passed": true
         },
         {
@@ -1055,11 +1075,11 @@
           "passed": true
         },
         {
-          "id": "handle-keeps-its-place-in-the-moved-panel",
+          "id": "handle-is-where-the-panel-was-dropped-on-the-new-wall",
           "passed": true
         },
         {
-          "id": "other-window-moves-do-not-throw-the-handle-to-the-top",
+          "id": "other-window-moves-return-to-the-users-place",
           "passed": true
         },
         {
@@ -1105,6 +1125,6 @@
       "height": 1100
     }
   ],
-  "passed": 247,
+  "passed": 252,
   "failed": 0
 }
