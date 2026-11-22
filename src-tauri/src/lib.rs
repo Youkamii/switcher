@@ -3280,6 +3280,14 @@ fn pointer_button_down() -> bool {
     return false;
 }
 
+/// 전역 커서 위치(물리 px, 창 좌표와 같은 화면 좌표계) — 엣지 손잡이 높이의 위쪽 넘침
+/// 판정용 (#185). 맥은 메뉴 막대 아래로 창을 못 올리므로 창 위치로는 넘침이 안 보이고,
+/// 커서가 ☰보다 얼마나 위에 있는지로 잰다.
+#[tauri::command]
+fn pointer_position(app: tauri::AppHandle) -> Option<(f64, f64)> {
+    app.cursor_position().ok().map(|p| (p.x, p.y))
+}
+
 /// Type4 벽 붙임의 호버 존 보고 (None = Type4 아님)
 #[tauri::command]
 fn set_edge_zone(zone: Option<EdgeZone>) {
@@ -3683,7 +3691,13 @@ pub fn run() {
                         };
                         let click_through = CLICK_THROUGH_MODE.load(Ordering::Relaxed);
                         let hover_poll = !click_through && HOVER_POLL.load(Ordering::Relaxed);
-                        if !hover_poll && poll_hover_idx != -1 {
+                        // 엣지(벽 붙임)도 펼친 판의 카드 호버를 hover-poll로 알린다 (#184) —
+                        // 그동안은 표시를 거두지 않는다
+                        let edge_active = EDGE_ZONE
+                            .lock()
+                            .map(|guard| guard.is_some())
+                            .unwrap_or(false);
+                        if !hover_poll && !edge_active && poll_hover_idx != -1 {
                             // 모드가 바뀌어 폴링이 꺼지면 남은 호버 표시를 거둔다
                             poll_hover_idx = -1;
                             let _ = handle.emit("hover-poll", serde_json::json!({ "idx": -1 }));
@@ -3731,7 +3745,13 @@ pub fn run() {
                             std::time::Instant::now(),
                         ) {
                             if std::env::var("SWITCHER_DIAG").is_ok() {
-                                eprintln!("[diag] edge hover: {state}");
+                                eprintln!(
+                                    "[diag] edge hover: {state} cursor=({:.0},{:.0}) zone={:?} down={}",
+                                    cursor.x,
+                                    cursor.y,
+                                    edge_zone.as_ref().map(|z| z.rect),
+                                    primary_button_down()
+                                );
                             }
                             let _ = handle.emit("edge-hover", state);
                         }
@@ -3740,6 +3760,20 @@ pub fn run() {
                             .map(|guard| guard.clone())
                             .unwrap_or_default();
                         let over = hit_region_at(&regions, cursor);
+
+                        // 엣지 펼침 판: 어느 카드 위인지 알린다 — 맥의 비활성 패널은 WKWebView
+                        // :hover를 못 받아 "클릭하면 전환" 단서가 없었다 (#184). 프론트가 누를 수
+                        // 있는 카드를 action 없는 영역으로 먼저 보고하므로 인덱스가 카드를 가리킨다.
+                        if edge_zone.is_some() {
+                            let over_idx = over.map(|i| i as i64).unwrap_or(-1);
+                            if over_idx != poll_hover_idx {
+                                poll_hover_idx = over_idx;
+                                let _ = handle.emit(
+                                    "hover-poll",
+                                    serde_json::json!({ "idx": over_idx, "x": cursor.x, "y": cursor.y }),
+                                );
+                            }
+                        }
 
                         // 마우스를 실제로 받는 곳은 action 없는 UI 영역뿐
                         let over_ui = over
@@ -3957,6 +3991,7 @@ pub fn run() {
             set_hover_poll,
             set_edge_zone,
             pointer_button_down,
+            pointer_position,
             set_window_shadow,
             memo_load,
             memo_save,

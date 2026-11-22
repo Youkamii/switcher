@@ -1400,8 +1400,10 @@ body.edge.edge-out #edge-film {
 /* 손잡이 — 벽에 맺힌 반캡슐 판. 안에 게이지 둘(#edge-gauge)이 얹힌다. 반타원이면
    위아래가 좁아져 게이지 끝이 실루엣 밖으로 삐져나온다(실측) — 반캡슐은 끝까지
    폭이 같다. 폭은 굳은 뒤 블러(8)의 2배 이상이어야 알파 문턱을 넉넉히 넘는다 */
+/* 손잡이 높이 --edge-tab-y: 기본 50%(창 세로 중앙), ☰ 드래그가 작업영역을 넘치면
+   main.ts가 창 위로부터의 px로 바꾼다 (#185). 게이지·판 변환 원점·덩어리가 같이 간다 */
 #edge-tab {
-  top: 50%;
+  top: var(--edge-tab-y, 50%);
   right: -8px;
   width: 36px;
   height: var(--edge-tab-height, 40px);
@@ -1421,7 +1423,7 @@ body.edge.edge-out #edge-film {
 #edge-gauge {
   display: none;
   position: fixed;
-  top: 50%;
+  top: var(--edge-tab-y, 50%);
   right: 3px;
   width: 22px;
   height: var(--edge-gauge-height, 0px);
@@ -1564,7 +1566,8 @@ body.edge.edge-out #edge-gauge {
   left: 6px;
   right: -24px;
   border-radius: 18px 0 0 18px;
-  transform-origin: right center;
+  /* 판은 손잡이 자리에서 자라고 그리로 줄어든다 — 판 상자는 창보다 12px 아래서 시작 (#185) */
+  transform-origin: right calc(var(--edge-tab-y, 50%) - 12px);
   transform: scale(0.06, 0.1);
 }
 
@@ -1585,7 +1588,8 @@ body.edge.edge-out #edge-gauge {
 .edge-blob:nth-child(2) {
   width: 62px;
   height: 58px;
-  top: calc(12px + (100% - 24px) * 0.24 - 29px);
+  /* 손잡이 중심에서 위로 26% — 기본 50%면 예전 24% 자리와 같다 (#185) */
+  top: calc(var(--edge-tab-y, 50%) - (100% - 24px) * 0.26 - 29px);
   --edge-lag: 40ms;
   --edge-lag-in: 60ms;
 }
@@ -1593,7 +1597,7 @@ body.edge.edge-out #edge-gauge {
 .edge-blob:nth-child(3) {
   width: 66px;
   height: 70px;
-  top: calc(50% - 35px);
+  top: calc(var(--edge-tab-y, 50%) - 35px);
   --edge-lag: 0ms;
   --edge-lag-in: 120ms;
 }
@@ -1601,7 +1605,7 @@ body.edge.edge-out #edge-gauge {
 .edge-blob:nth-child(4) {
   width: 64px;
   height: 62px;
-  top: calc(12px + (100% - 24px) * 0.74 - 31px);
+  top: calc(var(--edge-tab-y, 50%) + (100% - 24px) * 0.24 - 31px);
   --edge-lag: 80ms;
   --edge-lag-in: 0ms;
 }
@@ -2033,7 +2037,9 @@ body.edge .tfsd-watermark svg {
   cursor: pointer;
 }
 
-.edge-account.switchable:hover {
+/* .hit-hover: 러스트 커서 폴링이 붙이는 호버 — 맥의 비활성 패널은 :hover를 못 받는다 (#184) */
+.edge-account.switchable:hover,
+.edge-account.switchable.hit-hover {
   border-color: rgba(var(--accent-rgb), 0.6);
 }
 

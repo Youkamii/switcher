@@ -2070,6 +2070,9 @@ function commitEdgeGauge(card: HTMLElement) {
 const MON_KEYS = ["cpu", "mem", "dsk", "net"] as const;
 /// 마지막 SYSTEM 샘플의 막대 % 넷 — paintMonitor가 채운다
 let edgeGaugeSystem: number[] | null = null;
+/// 접힌 손잡이(#edge-tab)의 현재 높이(CSS px) — 게이지 줄 수에 따라 applyEdgeGauge가 갱신한다.
+/// 손잡이 높이 조절(#185)이 손잡이를 창 안에 가둘 때 읽는다.
+let edgeTabHeight = 40;
 function applyEdgeGauge() {
   document
     .querySelectorAll<HTMLElement>("#edge-gauge .edge-gauge-row")
@@ -2111,6 +2114,9 @@ function applyEdgeGauge() {
   if (style.getPropertyValue("--edge-gauge-height") !== height) {
     style.setProperty("--edge-gauge-height", height);
     style.setProperty("--edge-tab-height", `${geometry.tabHeight}px`);
+    // 손잡이 키가 바뀌면 저장된 높이(#185)를 새 키 기준으로 다시 창 안에 가둔다
+    edgeTabHeight = geometry.tabHeight;
+    applyEdgeTabY();
     // The native hover/click zone follows the rendered handle, including hidden WebViews.
     queueMicrotask(refreshHitRegionsAfterLayout);
   }
@@ -2699,8 +2705,15 @@ function reportHitRegions() {
   if (edgeRetracted) {
     pushVisible(edgeTabEl, null);
   } else if (edgeActive && !interactionPanelOpen) {
-    // 펼친 판은 창 전체가 마우스를 받는다 — Type4는 뒤 창으로 클릭을 통과시키지
-    // 않아도 된다(사용자 지시). 더블클릭 전환도 없으니 카드 영역을 보고하지 않는다.
+    // 누를 수 있는 카드를 action 없이 먼저 보고한다 — 러스트 hover-poll이 "어느 카드
+    // 위인가"를 알려 .hit-hover로 호버를 그린다. 맥의 비활성 패널은 :hover·툴팁을 못 받아
+    // "클릭하면 전환"이라는 단서가 없었다 (#184). action이 없으니 투과·더블클릭 경로엔
+    // 안 걸리고, hit_region_at은 action 없는 첫 영역을 고르므로 아래 창 전체 영역보다 앞선다.
+    document
+      .querySelectorAll<HTMLElement>(EDGE_CLICKABLE)
+      .forEach((el) => pushVisible(el, null));
+    // 펼친 판은 창 전체가 마우스를 받는다 — 엣지는 뒤 창으로 클릭을 통과시키지
+    // 않아도 된다(사용자 지시).
     regions.push({ rect: [0, 0, window.innerWidth, window.innerHeight], action: null });
     hitElements.push(app);
   } else if (locked || starPromptOpen) {
@@ -2757,11 +2770,59 @@ function reportHitRegions() {
 // 폴링(edge-hover)이 맡는다 — 투과 중인 웹뷰는 mouseenter를 못 받고, 비활성 웹뷰의
 // 타이머는 믿을 수 없다 (CLAUDE.md macOS 절).
 const edgeTabEl = document.getElementById("edge-tab") as HTMLDivElement;
+/// 펼친 엣지 판에서 짧은 클릭이 동작을 일으키는 카드 — 전환 후보(.switchable). 호버 표시
+/// (hover-poll)와 히트 영역 보고가 같은 목록을 쓴다.
+const EDGE_CLICKABLE = ".edge-account.switchable";
 let edgeActive = false;
 /// 패널이 벽에서 나와 있는가 (러스트 호버 신호가 갱신)
 let edgeOut = false;
 /// 붙은 벽 — 스냅할 때마다 창 위치에서 다시 고른다 (붙어 있으면 같은 벽이 나온다)
 let edgeSide: EdgeSide = "right";
+
+// ── 손잡이 높이 (#185) ──────────────────────────────────────────
+// 창은 펼친 내용 높이 그대로 작업영역 안에 머물고, 손잡이는 창 세로 중앙에 고정이라
+// 손잡이를 화면 위/아래 끝에 둘 수 없었다 (사용자 보고: 세로가 길면 원하는 위치로 못
+// 보낸다). ☰ 드래그가 작업영역을 넘친 만큼(clamp로 되돌아온 거리)을 손잡이 오프셋으로
+// 흡수한다 — "끝 너머로 끌면 손잡이가 벽을 타고 간다". 값은 창 위에서 손잡이 중심까지
+// CSS px(localStorage switcher.edgetab), 없으면 CSS 기본 50%.
+const EDGE_TAB_MARGIN = 4;
+let edgeTabY: number | null = (() => {
+  const stored = Number(localStorage.getItem("switcher.edgetab"));
+  return Number.isFinite(stored) && stored > 0 ? stored : null;
+})();
+
+/// 손잡이 중심이 머물 수 있는 범위 — 손잡이 전체가 창 안에 들어온다
+function edgeTabBounds(): { min: number; max: number } {
+  const min = edgeTabHeight / 2 + EDGE_TAB_MARGIN;
+  return { min, max: Math.max(min, window.innerHeight - edgeTabHeight / 2 - EDGE_TAB_MARGIN) };
+}
+
+/// 저장된 손잡이 높이를 현재 창·손잡이 크기 안으로 눌러 CSS 변수로 적용한다. 손잡이·게이지·
+/// 판 변환 원점·덩어리 자리(styles.css --edge-tab-y)가 함께 따라간다.
+function applyEdgeTabY() {
+  if (edgeTabY === null) {
+    document.documentElement.style.removeProperty("--edge-tab-y");
+    return;
+  }
+  const { min, max } = edgeTabBounds();
+  const y = Math.round(Math.min(max, Math.max(min, edgeTabY)));
+  document.documentElement.style.setProperty("--edge-tab-y", `${y}px`);
+}
+
+/// ☰ 드래그가 작업영역을 넘친 거리(CSS px, 아래가 양수)만큼 손잡이를 옮기고 저장한다
+function shiftEdgeTabY(deltaLogical: number) {
+  if (!edgeActive || Math.abs(deltaLogical) < 1) return;
+  const { min, max } = edgeTabBounds();
+  const current = edgeTabY ?? window.innerHeight / 2;
+  edgeTabY = Math.round(Math.min(max, Math.max(min, current + deltaLogical)));
+  localStorage.setItem("switcher.edgetab", String(edgeTabY));
+  applyEdgeTabY();
+  refreshHitRegionsAfterLayout();
+}
+// 창 높이가 바뀌면(계정 수·섹션 변화) 다시 가둔다 — 비활성 웹뷰 타이머가 아니라 resize 이벤트
+window.addEventListener("resize", () => {
+  if (edgeActive) applyEdgeTabY();
+});
 
 function applyEdgeMode(active: boolean) {
   const entering = active && !edgeActive;
@@ -2777,7 +2838,10 @@ function applyEdgeMode(active: boolean) {
   // 진입 직후에는 숨김 상태로 시작하되, 첫 프레임에 "들어가는" 연출이 재생되지 않게
   // 애니메이션을 잠시 끈다 — 첫 호버부터 연출이 붙는다. 벽에 붙이는 일은 뒤따르는
   // fitHeight()의 스냅이 맡는다.
-  if (entering) document.body.classList.add("edge-noanim");
+  if (entering) {
+    document.body.classList.add("edge-noanim");
+    applyEdgeTabY();
+  }
   document.body.classList.toggle("edge", active);
   document.body.classList.toggle("edge-out", active && edgeOut);
   document.body.classList.toggle("edge-left", edgeSide === "left");
@@ -2923,7 +2987,7 @@ shell.addEventListener("animationend", (event) => {
 /// 창을 벽에 붙인다. 매번 현재 위치에서 가까운 벽을 고르므로, ☰로 반대편에
 /// 끌어다 놓으면(이동이 멎은 뒤 syncCurrentMonitor가 부른다) 그쪽 벽으로 옮겨 붙고,
 /// 이미 붙어 있으면 같은 벽이 다시 나온다.
-async function snapToEdge() {
+async function snapToEdge(fromDrag = false) {
   if (!edgeActive || !currentWorkArea || monitorMoveTimer !== undefined) return;
   const [pos, size, innerPos, innerSize] = await Promise.all([
     appWindow.outerPosition(),
@@ -2946,6 +3010,24 @@ async function snapToEdge() {
   const target = edgeSnapPosition(rect, currentWorkArea, edgeSide, insets);
   if (target.x !== pos.x || target.y !== pos.y) {
     await appWindow.setPosition(new PhysicalPosition(target.x, target.y));
+  }
+  // 사용자가 놓은 자리가 작업영역을 넘쳤으면 그만큼 손잡이가 벽을 타고 간다 (#185).
+  // 프로그램이 옮긴 창(clamp 직후·크기 변경)은 이미 안에 있어 0이다.
+  if (fromDrag) {
+    const scale = currentScaleFactor || (await appWindow.scaleFactor().catch(() => 1));
+    let overshoot = pos.y - target.y; // 물리 px, 아래가 양수
+    if (overshoot === 0 && pos.y <= currentWorkArea.position.y + 1) {
+      // 위 벽: OS(맥 메뉴 막대)가 창을 먼저 막아 창 위치로는 넘침이 안 보인다 —
+      // 커서가 잡은 ☰보다 얼마나 위에 있는지로 잰다 (화면 맨 위에 닿았으면 끝까지)
+      const cursor = await invoke<[number, number] | null>("pointer_position").catch(() => null);
+      if (cursor) {
+        const handle = document.querySelector<HTMLElement>(".edge-handle")?.getBoundingClientRect();
+        const grabY = pos.y + (handle ? handle.top + handle.height / 2 : 25) * scale;
+        if (cursor[1] <= 1) overshoot = Number.NEGATIVE_INFINITY;
+        else if (cursor[1] < grabY) overshoot = cursor[1] - grabY;
+      }
+    }
+    if (overshoot !== 0) shiftEdgeTabY(overshoot / scale);
   }
 }
 
@@ -2992,17 +3074,23 @@ function applyPolledHover(el: HTMLElement | null, x: number, y: number) {
     el.dispatchEvent(new PointerEvent("pointerenter", { pointerType: "mouse", clientX: x, clientY: y }));
   }
 }
+/// 폴링 호버의 대상 — 엣지 펼침 판의 "창 전체" 영역(app)과 접힌 손잡이는 호버 대상이 아니다 (#184)
+function polledHoverTarget(idx: number): HTMLElement | null {
+  const el = idx >= 0 ? (hitElements[idx] ?? null) : null;
+  return el && el !== app && el !== edgeTabEl ? el : null;
+}
 void listen<{ idx: number; x?: number; y?: number }>("hover-poll", (event) => {
   const { idx, x = 0, y = 0 } = event.payload;
   polledHoverIdx = idx;
   polledHoverPos = { x, y };
-  applyPolledHover(idx >= 0 ? (hitElements[idx] ?? null) : null, x, y);
+  applyPolledHover(polledHoverTarget(idx), x, y);
 });
 /// 렌더 교체·재보고 뒤 같은 인덱스의 새 카드로 호버 표시를 옮긴다 (러스트는 인덱스가
 /// 바뀔 때만 보내므로 커서가 가만히 있으면 새 노드가 표시를 못 받는다)
 function syncPolledHover() {
-  if (polledHoverIdx < 0 || locked) return;
-  applyPolledHover(hitElements[polledHoverIdx] ?? null, polledHoverPos.x, polledHoverPos.y);
+  // 위젯 모드 중에는 엣지 펼침 판만 폴링 호버를 쓴다 (#184)
+  if (polledHoverIdx < 0 || (locked && !edgeActive)) return;
+  applyPolledHover(polledHoverTarget(polledHoverIdx), polledHoverPos.x, polledHoverPos.y);
 }
 
 // 데모(GIF)용 플래그 — 켜지면 전환 완료 안내를 띄우지 않고 반투명하게 시작한다
@@ -3118,14 +3206,17 @@ async function settleMonitorSync(token: number) {
   monitorMoveTimer = undefined;
   const forceSync = monitorMoveForce;
   monitorMoveForce = false;
-  void syncCurrentMonitor(forceSync);
+  // 버튼을 놓고 정착한 이동 — 작업영역을 넘친 드롭은 엣지 손잡이 높이로 흡수된다 (#185)
+  void syncCurrentMonitor(forceSync, true);
 }
 
-async function syncCurrentMonitor(force = false) {
+let currentScaleFactor = 0;
+async function syncCurrentMonitor(force = false, fromDrag = false) {
   const revision = ++monitorSyncRevision;
   try {
     const monitor = await currentMonitor();
     if (!monitor || revision !== monitorSyncRevision) return;
+    currentScaleFactor = monitor.scaleFactor;
     const area: PhysicalRect = {
       position: { x: monitor.workArea.position.x, y: monitor.workArea.position.y },
       size: { width: monitor.workArea.size.width, height: monitor.workArea.size.height },
@@ -3135,7 +3226,7 @@ async function syncCurrentMonitor(force = false) {
     currentWorkAreaHeight = logicalWorkAreaHeight(area, monitor.scaleFactor);
     // Type4: 이동이 멎은 뒤 새 작업영역 기준으로 가까운 벽에 붙는다 (같은 모니터
     // 안의 드래그는 아래 fitHeight가 돌지 않으므로 여기서 직접)
-    snapToEdge().catch(() => {
+    snapToEdge(fromDrag).catch(() => {
       // 이동 중 좌표 조회 실패는 다음 이동·리사이즈 이벤트가 다시 시도한다
     });
     if (force || key !== currentMonitorKey) {
