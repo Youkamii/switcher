@@ -166,6 +166,26 @@ struct EdgeZone {
 
 static EDGE_ZONE: Mutex<Option<EdgeZone>> = Mutex::new(None);
 
+/// 엣지 손잡이를 끄는 중인가 (#188). 프론트가 끌기를 시작할 때 켜고 놓을 때 끈다.
+/// 켜져 있는 동안 폴링은 창이 마우스를 계속 받게 둔다 — 손잡이는 커서를 한 박자 늦게 따라오고
+/// 커서는 가로로 창 밖까지 나가므로, 평소처럼 "UI 밖 = 투과"로 바꾸면 끄던 중에 창이 마우스를
+/// 놓는다.
+static EDGE_TAB_DRAG: AtomicBool = AtomicBool::new(false);
+
+/// 버튼이 이만큼(폴링 3번 = 75ms) 떨어져 있으면 끌기가 끝난 것이다. 웹뷰가 놓는 이벤트를
+/// 받지 못해도(창 밖에서 놓음·비활성 웹뷰) 창이 마우스를 잡은 채 남지 않게 러스트가 마무리한다.
+const EDGE_DRAG_RELEASE_TICKS: u32 = 3;
+
+/// 끄는 중 폴링 한 번: 버튼이 계속 떨어져 있으면 true(끝났다)를 돌려준다.
+fn edge_drag_released(button_down: bool, up_ticks: &mut u32) -> bool {
+    if button_down {
+        *up_ticks = 0;
+        return false;
+    }
+    *up_ticks += 1;
+    *up_ticks >= EDGE_DRAG_RELEASE_TICKS
+}
+
 /// 벽 붙임 패널을 접기 전 커서 이탈 유예 — 손잡이에서 패널로 옮겨 타는
 /// 순간(존이 손잡이→창 전체로 바뀌는 사이)과 가장자리에서의 미세한 떨림을 삼킨다.
 const EDGE_LEAVE_GRACE: std::time::Duration = std::time::Duration::from_millis(450);
@@ -181,6 +201,12 @@ struct EdgeHover {
 impl EdgeHover {
     const fn new() -> Self {
         EdgeHover { last_inside: None }
+    }
+
+    /// 손잡이를 끄는 동안(#188)은 커서가 존 안에 있는 것으로 둔다 — 끌던 손잡이를 놓은 자리에서
+    /// 판이 저절로 펼쳐지지 않고(진입 신호 없음), 커서가 떠난 뒤 다시 올 때 펼쳐진다.
+    fn hold_inside(&mut self, now: std::time::Instant) {
+        self.last_inside = Some(now);
     }
 
     /// 존이 없으면(Type4 아님) 조용히 초기화한다 — 다음 진입은 fresh start.
@@ -291,6 +317,60 @@ mod edge_hover_tests {
         assert!(hover.last_inside.is_none());
         // 다시 Type4로 들어오면 새로 진입 신호를 낸다
         assert_eq!(hover.update(Some(&zone(false)), on_tab, t0), Some(true));
+    }
+
+    /// #188 — 손잡이를 끌어 놓은 자리에서는 판이 저절로 펼쳐지지 않는다. 끄는 동안 폴링이
+    /// "안에 있다"로 붙들어 두므로 놓은 뒤에도 진입 신호가 없고, 커서가 떠났다 돌아와야 펼쳐진다.
+    #[test]
+    fn dropping_the_dragged_handle_does_not_reopen_the_panel() {
+        let t0 = Instant::now();
+        let on_tab = tauri::LogicalPosition::new(230.0, 120.0);
+        let outside = tauri::LogicalPosition::new(10.0, 10.0);
+        // 판이 펼쳐진 뒤 끌기 시작 — 끄는 동안은 update를 부르지 않고 hold_inside만 부른다
+        let mut hover = EdgeHover::new();
+        assert_eq!(hover.update(Some(&zone(false)), on_tab, t0), Some(true));
+        hover.hold_inside(t0 + Duration::from_secs(3));
+        assert_eq!(
+            hover.update(Some(&zone(false)), on_tab, t0 + Duration::from_millis(3025)),
+            None,
+            "놓은 자리(손잡이 위)에서는 다시 펼치지 않는다"
+        );
+        // 커서가 떠나면 유예 뒤 접힘 신호, 다시 오면 펼침 신호
+        assert_eq!(
+            hover.update(Some(&zone(false)), outside, t0 + Duration::from_millis(3100)),
+            None
+        );
+        assert_eq!(
+            hover.update(Some(&zone(false)), outside, t0 + Duration::from_millis(3600)),
+            Some(false)
+        );
+        assert_eq!(
+            hover.update(Some(&zone(false)), on_tab, t0 + Duration::from_millis(3700)),
+            Some(true)
+        );
+        // 진입 신호가 오기 전에(폴링 한 번 안에) 누르고 끌기 시작한 경우도 같다
+        let mut quick = EdgeHover::new();
+        quick.hold_inside(t0);
+        assert_eq!(
+            quick.update(Some(&zone(false)), on_tab, t0 + Duration::from_millis(25)),
+            None
+        );
+    }
+
+    /// #188 — 웹뷰가 놓는 이벤트를 받지 못해도 끌기는 끝난다: 버튼이 폴링 세 번 내리 떨어져
+    /// 있으면 러스트가 마무리한다. 한두 번의 튐으로는 끝내지 않는다.
+    #[test]
+    fn a_drag_ends_only_after_the_button_stays_up() {
+        let mut up = 0;
+        assert!(!edge_drag_released(true, &mut up));
+        assert!(!edge_drag_released(false, &mut up));
+        assert!(!edge_drag_released(false, &mut up));
+        // 다시 눌려 있으면 처음부터 센다
+        assert!(!edge_drag_released(true, &mut up));
+        assert_eq!(up, 0);
+        assert!(!edge_drag_released(false, &mut up));
+        assert!(!edge_drag_released(false, &mut up));
+        assert!(edge_drag_released(false, &mut up));
     }
 }
 
@@ -3427,9 +3507,22 @@ fn set_edge_zone(zone: Option<EdgeZone>) {
             None => eprintln!("[diag] edge zone: none"),
         }
     }
+    if zone.is_none() {
+        // 엣지를 떠나면 끌기도 끝이다
+        EDGE_TAB_DRAG.store(false, Ordering::Relaxed);
+    }
     if let Ok(mut guard) = EDGE_ZONE.lock() {
         *guard = zone;
     }
+}
+
+/// 엣지 손잡이 끌기의 시작·끝 (#188) — 위 EDGE_TAB_DRAG 주석 참조
+#[tauri::command]
+fn set_edge_drag(active: bool) {
+    if std::env::var("SWITCHER_DIAG").is_ok() {
+        eprintln!("[diag] edge drag: {active}");
+    }
+    EDGE_TAB_DRAG.store(active, Ordering::Relaxed);
 }
 
 /// Type1 호버 폴링 켜기/끄기 (#103). 맥에서만 의미가 있다 — 위 HOVER_POLL 주석 참조.
@@ -3813,11 +3906,35 @@ pub fn run() {
                     // 마지막으로 더블클릭 전환·API 적용을 시작한 시각 (#186, api_click_allowed)
                     let mut last_account_action: Option<std::time::Instant> = None;
                     let mut edge_hover = EdgeHover::new();
+                    // 엣지 손잡이를 끄는 중 버튼이 떨어져 있던 폴링 횟수 (#188)
+                    let mut edge_drag_up_ticks: u32 = 0;
                     loop {
                         std::thread::sleep(std::time::Duration::from_millis(25));
                         let Some(window) = handle.get_webview_window("main") else {
                             continue;
                         };
+                        if EDGE_TAB_DRAG.load(Ordering::Relaxed) {
+                            // 엣지 손잡이를 끄는 중: 창이 마우스를 계속 받는다. 호버·투과·더블클릭
+                            // 판정은 쉬고, 버튼이 놓였는지만 본다.
+                            if ignoring {
+                                let _ = window.set_ignore_cursor_events(false);
+                                ignoring = false;
+                            }
+                            edge_hover.hold_inside(std::time::Instant::now());
+                            let down = primary_button_down();
+                            prev_down = down;
+                            last_click = None;
+                            if edge_drag_released(down, &mut edge_drag_up_ticks) {
+                                EDGE_TAB_DRAG.store(false, Ordering::Relaxed);
+                                edge_drag_up_ticks = 0;
+                                if std::env::var("SWITCHER_DIAG").is_ok() {
+                                    eprintln!("[diag] edge drag: released (native)");
+                                }
+                                let _ = handle.emit("edge-drag-end", ());
+                            }
+                            continue;
+                        }
+                        edge_drag_up_ticks = 0;
                         let click_through = CLICK_THROUGH_MODE.load(Ordering::Relaxed);
                         let hover_poll = !click_through && HOVER_POLL.load(Ordering::Relaxed);
                         // 엣지(벽 붙임)도 펼친 판의 카드 호버를 hover-poll로 알린다 (#184) —
@@ -4159,6 +4276,7 @@ pub fn run() {
             set_click_through,
             set_hover_poll,
             set_edge_zone,
+            set_edge_drag,
             pointer_button_down,
             pointer_position,
             set_window_shadow,

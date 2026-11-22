@@ -31,6 +31,16 @@ function fixture(mode = "normal", preview = false) {
   let clockSkew = 0; let backendLatency = 0; let usageGate = null; let openUsage = null;
   // Key-only registration (#187): the account the fixture "finds" for a key when several are saved (null = unknown).
   let autoOwner = null;
+  // Handle drag (#188): a window that really moves. The window is the viewport (80x1100) on a wall that is
+  // 2100 tall (work area 40..2140), so there is room to travel. buttonHeld/cursorAt answer the native probes.
+  const restoreScene = preview === 'edge-restore';
+  const dragScene = preview === 'edge-drag' || restoreScene;
+  const win = {x:1320, y:500, h:1100}; let buttonHeld = false; let cursorAt = null;
+  // A widget that was left on the left wall, a quarter of the way down, with the handle 200px into the panel.
+  // The app always starts at the bottom right of the screen, so this is what a restart looks like.
+  if(restoreScene) { win.y = 1040; localStorage.setItem('switcher.edgeanchor','0.25000'); localStorage.setItem('switcher.edgetab','200'); localStorage.setItem('switcher.edgeside','left'); }
+  const findXY = v => { if(!v || typeof v!=='object') return null; if(typeof v.x==='number' && typeof v.y==='number') return {x:v.x,y:v.y};
+    for(const k of Object.keys(v)) { const hit=findXY(v[k]); if(hit) return hit; } return null; };
   // A native host drives test interactions even when WebKit throttles page timers.
   let tickId=0; const ticks=new Map();
   window.__uiTick=id=>{ticks.get(id)?.();ticks.delete(id);};
@@ -57,6 +67,17 @@ function fixture(mode = "normal", preview = false) {
       if(cmd === 'initial_view_mode') return mode;
       if(cmd === 'get_visibility') return visibility;
       if(cmd === 'get_section_order') return ['claude','codex','github','display','system'];
+      if(dragScene) {
+        if(cmd === 'pointer_button_down') return buttonHeld;
+        if(cmd === 'pointer_position') return cursorAt;
+        if(cmd === 'plugin:window|current_monitor') return {name:'fixture',position:{x:0,y:0},size:{width:1400,height:2200},workArea:{position:{x:0,y:40},size:{width:1400,height:2100}},scaleFactor:1};
+        if(cmd.endsWith('|outer_position') || cmd.endsWith('|inner_position')) return {x:win.x,y:win.y};
+        if(cmd.endsWith('|outer_size') || cmd.endsWith('|inner_size')) return {width:80,height:win.h};
+        // Like a real window, the move lands a moment after the call returns: a position read straight after
+        // still sees the old place (two placements running at once must not act on that stale reading).
+        if(cmd === 'plugin:window|set_position') { const to=findXY(args.value); if(to) delay().then(delay).then(()=>{ win.x=to.x; win.y=to.y; emit('tauri://move',{x:to.x,y:to.y}); }); return null; }
+        if(cmd === 'plugin:window|set_size') return null;
+      }
       if(cmd === 'demo_mode' || cmd === 'pointer_button_down') return false;
       if(cmd === 'clamshell_mode' || cmd === 'clamshell_cycle') return 0;
       if(cmd === 'tfsd_toggle') return false;
@@ -217,6 +238,147 @@ function fixture(mode = "normal", preview = false) {
     record('collapsed-api-row-keeps-the-usage-row-height', Math.abs(row().getBoundingClientRect().height-19)<0.5);
     const zone = calls.filter(c=>c.cmd==='set_edge_zone').at(-1)?.args.zone?.rect;
     record('collapsed-hover-zone-follows-the-handle', zone && Math.abs(zone[3]-(tab.height+8))<1.5);
+  }
+  // After a restart the handle is back on the wall and at the height where it was left (#188).
+  async function checkEdgeRestore() {
+    await ready('.edge-account');
+    await settle(()=>!document.querySelector('#edge-gauge .edge-gauge-row[data-provider="system"]')?.hidden);
+    const root = document.documentElement;
+    const tabY = () => parseFloat(getComputedStyle(root).getPropertyValue('--edge-tab-y'));
+    const edge = () => parseFloat(getComputedStyle(root).getPropertyValue('--edge-tab-height'))/2 + 4;
+    const kept = () => 40 + edge() + 0.25*(2100 - 2*edge());           // a quarter of the way down the wall
+    const state = () => JSON.stringify({x:win.x,y:win.y,tab:tabY(),kept:kept(),cls:document.body.className,side:localStorage.getItem('switcher.edgeside')});
+    const check = (id, passed) => record(passed ? id : id+' '+state(), passed);
+    let settled = false;
+    for(let i=0;i<400 && !settled;i++) { await delay(); settled = win.x===0 && Math.abs(win.y+tabY()-kept())<=1.5 && Math.abs(tabY()-200)<=1; }
+    for(let i=0;i<40;i++) await delay();                               // and it stays there
+    check('restart-returns-to-the-remembered-wall', win.x===0 && document.body.classList.contains('edge-left'));
+    check('restart-returns-the-handle-to-its-height', Math.abs(win.y+tabY()-kept())<=1.5);
+    check('restart-keeps-the-users-panel-arrangement', Math.abs(tabY()-200)<=1 && localStorage.getItem('switcher.edgetab')==='200');
+    check('restart-does-not-rewrite-what-the-user-chose', localStorage.getItem('switcher.edgeanchor')==='0.25000' && localStorage.getItem('switcher.edgeside')==='left');
+    const zone = calls.filter(c=>c.cmd==='set_edge_zone').at(-1)?.args.zone?.rect;
+    check('hover-zone-is-on-the-restored-handle', zone && zone[0]<=0 && Math.abs(zone[1]+zone[3]/2-tabY())<=2);
+  }
+  // The small handle is dragged up and down the wall, and its place is kept (#188).
+  async function checkEdgeDrag() {
+    await ready('.edge-account');
+    await settle(()=>document.querySelector('.edge-account.active .edge-col'));
+    for(let i=0;i<10;i++) await delay();
+    const wait = async test => { for(let i=0;i<500 && !test();i++) await delay(); return Boolean(test()); };
+    const root = document.documentElement;
+    const tabY = () => parseFloat(getComputedStyle(root).getPropertyValue('--edge-tab-y'));
+    // The handle grows when the SYSTEM row arrives, so its ranges are read when they are needed.
+    const tabH = () => parseFloat(getComputedStyle(root).getPropertyValue('--edge-tab-height'));
+    const min = () => tabH()/2 + 4;                                    // nearest the handle gets to a window end
+    const wallMin = () => 40 + min(), wallMax = () => 2140 - min();    // handle range on the wall (work area 40..2140)
+    await settle(()=>!document.querySelector('#edge-gauge .edge-gauge-row[data-provider="system"]')?.hidden);
+    const moves = () => calls.filter(c=>c.cmd==='plugin:window|set_position').length;
+    const flags = () => calls.filter(c=>c.cmd==='set_edge_drag').map(c=>c.args.active);
+    const accountCalls = () => calls.filter(c=>['switch_profile','api_activate','api_deactivate'].includes(c.cmd)).length;
+    const stored = key => localStorage.getItem('switcher.'+key);
+    const onScreen = () => win.y + tabY();                             // where the handle stands on screen
+    // A failed check carries the numbers it saw.
+    const state = () => JSON.stringify({y:win.y,x:win.x,h:win.h,tab:tabY(),tabH:tabH(),anchor:stored('edgeanchor'),edgetab:stored('edgetab'),moves:moves(),cls:document.body.className});
+    const check = (id, passed) => record(passed ? id : id+' '+state(), passed);
+    let pressScreenY = 0;
+    const fire = (type, x, y, screenY, buttons, target) => (target ?? document.elementFromPoint(x,y) ?? document.body).dispatchEvent(
+      new PointerEvent(type,{bubbles:true,cancelable:true,composed:true,pointerId:1,isPrimary:true,pointerType:'mouse',button:type==='pointermove'?-1:0,buttons,clientX:x,clientY:y,screenX:x,screenY}));
+    const press = (x, y, target) => { pressScreenY = win.y + y; buttonHeld = true; fire('pointerdown',x,y,pressScreenY,1,target); };
+    const dragTo = (x, y, dy) => fire('pointermove',x,y,pressScreenY+dy,1);
+    const release = (x, y, dy=0) => { buttonHeld = false; fire('pointerup',x,y,pressScreenY+dy,0);
+      return (document.elementFromPoint(x,y) ?? document.body).dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true,clientX:x,clientY:y})); };
+    const handleX = innerWidth - 10;
+
+    check('untouched-handle-sits-mid-window-on-the-right-wall', !document.body.classList.contains('edge-left') && Number.isNaN(tabY()) && stored('edgeanchor')===null && win.x===1320 && win.y===500);
+    // The pointer reaches the handle, the panel starts to come out, and the press lands before any content shows.
+    emit('edge-hover',true); await ready('body.edge-out');
+    const startY = innerHeight/2; const baseMoves = moves();
+    press(handleX,startY); await delay(); await delay();
+    dragTo(handleX,startY-3,-3); await delay();
+    check('a-press-that-barely-moves-is-not-a-drag', !document.body.classList.contains('edge-dragging') && document.body.classList.contains('edge-out') && flags().length===0);
+    dragTo(handleX,startY-40,-40); await delay(); await delay();
+    check('dragging-folds-the-panel-and-shows-the-handle', document.body.classList.contains('edge-dragging') && !document.body.classList.contains('edge-out') && flags().at(-1)===true);
+    check('handle-follows-the-pointer-inside-the-window', Math.abs(tabY()-(startY-40))<=1 && moves()===baseMoves && win.y===500);
+    const gauge = getComputedStyle(document.getElementById('edge-gauge'));
+    check('handle-and-gauge-do-not-animate-while-dragged', gauge.opacity==='1' && gauge.animationName==='none' && getComputedStyle(document.getElementById('edge-tab')).animationName==='none');
+    // Past the top of the window the window comes along; at the top of the wall both stop.
+    dragTo(handleX,10,-700); await wait(()=>Math.abs(win.y-(1050-700-min()))<=1);
+    check('window-follows-once-the-handle-reaches-its-end', Math.abs(win.y-(1050-700-min()))<=1 && Math.abs(tabY()-min())<=1 && Math.abs(onScreen()-(1050-700))<=1);
+    dragTo(handleX,10,-5000); await wait(()=>win.y===40);
+    check('handle-reaches-the-top-of-the-wall', win.y===40 && Math.abs(onScreen()-wallMin())<=1);
+    dragTo(handleX,900,5000); await wait(()=>win.y===1040);
+    check('handle-reaches-the-bottom-of-the-wall', win.y===1040 && Math.abs(onScreen()-wallMax())<=1);
+    // Back up a little: the handle moves inside the window again and the window stays.
+    const before = moves();
+    dragTo(handleX,500,450); await delay(); await delay();
+    check('coming-back-moves-the-handle-first', win.y===1040 && moves()===before && Math.abs(onScreen()-1500)<=1);
+    const calmBefore = accountCalls();
+    const clickReached = release(handleX,500,450); await delay(); await delay();
+    check('drop-ends-the-drag-and-keeps-the-panel-folded', !document.body.classList.contains('edge-dragging') && !document.body.classList.contains('edge-out') && flags().at(-1)===false && flags().filter(Boolean).length===1);
+    check('drop-saves-height-wall-and-offset', Math.abs(Number(stored('edgeanchor'))-(1500-wallMin())/(wallMax()-wallMin()))<0.001 && stored('edgetab')===String(Math.round(1500-1040)) && stored('edgeside')==='right');
+    check('drag-never-presses-the-card-under-the-handle', accountCalls()===calmBefore && clickReached===false);
+    const zone = calls.filter(c=>c.cmd==='set_edge_zone').at(-1)?.args.zone?.rect;
+    check('hover-zone-moves-with-the-handle', zone && Math.abs(zone[1]+zone[3]/2-tabY())<=2);
+    // The folded handle under the pointer opens on a plain press, without touching a card.
+    press(handleX,tabY()); await delay(); release(handleX,tabY()); await delay();
+    check('pressing-the-dropped-handle-opens-the-panel', document.body.classList.contains('edge-out') && accountCalls()===calmBefore);
+
+    // A press that starts before the content is visible is aimed at the handle, not at the invisible card.
+    const realNow = Date.now; let skew = 0; Date.now = () => realNow()+skew;
+    try {
+      emit('edge-hover',false); await wait(()=>!document.body.classList.contains('edge-out'));
+      skew += 5000; emit('edge-hover',true); await ready('body.edge-out'); await delay();
+      const other = document.querySelector('.edge-account.switchable[data-provider="claude"]');
+      const box = other.getBoundingClientRect(); const ox = box.left+box.width/2, oy = box.top+box.height/2;
+      press(ox,oy,other); await delay(); release(ox,oy); await delay(); await delay();
+      record('press-before-content-shows-does-not-switch-accounts', accountCalls()===calmBefore);
+      // Once the content is up, the same press is an ordinary click again.
+      skew += 900;
+      press(ox,oy,other); await delay(); release(ox,oy);
+      record('press-on-visible-card-still-switches', await wait(()=>calls.some(c=>c.cmd==='switch_profile' && c.args.name===other.dataset.name)));
+      skew += 5000;
+    } finally { Date.now = realNow; }
+    await ready('.edge-account'); for(let i=0;i<12;i++) await delay();
+
+    // A panel that changes height leaves the handle where it stands on screen.
+    emit('edge-hover',false); await wait(()=>!document.body.classList.contains('edge-out'));
+    emit('edge-hover',true); await ready('body.edge-out');
+    press(handleX,tabY()); await delay(); dragTo(handleX,900,5000); await wait(()=>win.y===1040 && Math.abs(onScreen()-wallMax())<=1); release(handleX,900,5000); await delay();
+    // The fixture changes the window height; a re-render makes the app fit and place the window again.
+    const refit = async() => { document.getElementById('refresh').click(); for(let i=0;i<8;i++) await delay(); };
+    win.h = 900; await refit(); await wait(()=>win.y===1240);
+    const arranged = stored('edgetab');
+    check('shorter-panel-keeps-the-handle-on-screen', win.y===1240 && Math.abs(onScreen()-wallMax())<=1);
+    // What the squeeze changed is only drawn: the user's own arrangement stays stored and comes back.
+    check('a-squeezed-panel-does-not-overwrite-the-users-arrangement', stored('edgetab')===arranged && Math.abs(Number(stored('edgeanchor'))-1)<0.001);
+    win.h = 1100; await refit(); await wait(()=>win.y===1040);
+    check('taller-panel-keeps-the-handle-on-screen', win.y===1040 && Math.abs(onScreen()-wallMax())<=1 && Math.abs(tabY()-Number(arranged))<=1);
+
+    // Moving the panel with its grip: the handle stays where the panel was dropped, and the wall is remembered.
+    emit('edge-hover',false); await wait(()=>!document.body.classList.contains('edge-out'));
+    emit('edge-hover',true); await ready('body.edge-out');
+    press(handleX,tabY()); await delay(); dragTo(handleX,500,-578); await delay(); release(handleX,500,-578); await delay();
+    const dropTab = tabY();                                            // handle now mid-wall, window still at the bottom
+    check('setup-handle-mid-wall', win.y===1040 && Math.abs(onScreen()-(wallMax()-578))<=1);
+    const grip = document.querySelector('.edge-handle');
+    buttonHeld = true; fire('pointerdown',20,20,win.y+20,1,grip);
+    win.y = 1300; emit('tauri://move',{x:1320,y:1300}); await delay(); buttonHeld = false;
+    await wait(()=>win.y===1040 && Math.abs(tabY()-(dropTab+260))<=1);
+    check('panel-dropped-past-the-bottom-comes-back-and-the-handle-stays', win.y===1040 && Math.abs(onScreen()-(1300+dropTab))<=1);
+    buttonHeld = true; fire('pointerdown',20,20,win.y+20,1,grip);
+    win.x = 100; win.y = 600; emit('tauri://move',{x:100,y:600}); await delay(); buttonHeld = false;
+    await wait(()=>win.x===0 && document.body.classList.contains('edge-left') && stored('edgeside')==='left');
+    check('grip-moves-the-panel-to-the-other-wall-and-remembers-it', win.x===0 && win.y===600 && document.body.classList.contains('edge-left') && stored('edgeside')==='left');
+    const leftAnchor = Number(stored('edgeanchor'));
+    check('handle-keeps-its-place-in-the-moved-panel', Math.abs(win.y+tabY()-(wallMin()+leftAnchor*(wallMax()-wallMin())))<=1.5 && Math.abs(win.y+tabY()-(600+dropTab+260))<=1.5);
+
+    // A window move nobody made with the grip never re-reads the pointer: the handle stays put.
+    const probes = calls.filter(c=>c.cmd==='pointer_position').length;
+    const kept = wallMin()+leftAnchor*(wallMax()-wallMin()); cursorAt = [40,0];
+    win.y = 40; emit('tauri://move',{x:0,y:40});
+    const settled = await wait(()=>Math.abs(win.y+tabY()-kept)<=1.5);
+    for(let i=0;i<20;i++) await delay();
+    check('other-window-moves-do-not-throw-the-handle-to-the-top', settled && Math.abs(win.y+tabY()-kept)<=1.5 && calls.filter(c=>c.cmd==='pointer_position').length===probes);
   }
   // One click = account, one more click on the account in use = its API key (#186).
   async function checkToggle() {
@@ -507,6 +669,16 @@ function fixture(mode = "normal", preview = false) {
         record('no-browser-errors-toggle-'+mode,errors.length===0);
         return;
       }
+      if(preview === 'edge-restore') {
+        await checkEdgeRestore();
+        record('no-browser-errors-edge-restore',errors.length===0);
+        return;
+      }
+      if(preview === 'edge-drag') {
+        await checkEdgeDrag();
+        record('no-browser-errors-edge-drag',errors.length===0);
+        return;
+      }
       if(preview === 'api-folded') {
         await checkFolded();
         record('no-browser-errors-api-folded',errors.length===0);
@@ -794,11 +966,15 @@ async function chromium(entry, width, screenshot, profile, boardHeight) {
       throw new Error('Preview images did not load');
     }
     let report;
-    for(let i=0;i<200;i++) {
+    for(let i=0;i<600;i++) {
       const value=await send('Runtime.evaluate',{expression:"document.querySelector('#ui-test-result')?.textContent",returnByValue:true});
       if(value.result.value){report=JSON.parse(value.result.value);break;}await sleep(50);
     }
-    if(!report) throw new Error('No UI result');
+    if(!report) {
+      // Say how far the scenario got: the checks recorded so far and any page errors.
+      const debug=await send('Runtime.evaluate',{expression:"JSON.stringify(window.__uiDebug ?? null)",returnByValue:true}).catch(()=>null);
+      throw new Error('No UI result: '+(debug?.result?.value ?? 'page gave no state'));
+    }
     if(screenshot){
       for(let i=0;i<40;i++) {
         const stats=await send('Runtime.evaluate',{expression:"[...document.querySelectorAll('.mon-val')].every(el=>el.textContent!=='--')",returnByValue:true});
@@ -836,6 +1012,14 @@ try {
     const compile=spawnSync('xcrun',['swiftc',path.join(root,'scripts/test-workspace-webkit.swift'),'-o',path.join(temp,'webkit')],{encoding:'utf8',timeout:60000});
     if(compile.status!==0) throw new Error(compile.stderr);
   }
+  // --only <mode>:<scenario> runs one scenario and prints its report (for working on a single flow).
+  const onlyAt=process.argv.indexOf('--only');
+  if(onlyAt>=0) {
+    const [mode,scene]=process.argv[onlyAt+1].split(':');
+    const report=await run(mode,scene==='true'?true:scene==='false'?false:scene,null);
+    console.log(JSON.stringify(report,null,2));process.exitCode=report.checks.every(c=>c.passed)?0:1;
+    throw Object.assign(new Error('only'),{only:true});
+  }
   const screenshotAt=process.argv.indexOf('--screenshot');
   const reports=[await run('normal',false,screenshotAt>=0?path.resolve(process.argv[screenshotAt+1]):null)];
   if(useWebKit || !allDir) {
@@ -872,7 +1056,9 @@ try {
   reports.push(await run('normal','auto-key',null));
   if(allDir && !useWebKit) reports.push(await run('normal','auto-key-ask',path.join(allDir,'api-key-only.png')));
   reports.push(await run('edge','api-folded',allDir && !useWebKit ? path.join(allDir,'mode-edge-api-folded.png') : null));
+  reports.push(await run('edge','edge-drag',null));
+  reports.push(await run('edge','edge-restore',null));
   const result={reports,passed:reports.reduce((n,r)=>n+r.checks.filter(c=>c.passed).length,0),failed:reports.reduce((n,r)=>n+r.checks.filter(c=>!c.passed).length,0)};
   if(outputAt>=0) fs.writeFileSync(process.argv[outputAt+1],JSON.stringify(result,null,2)+'\n');
   console.log(JSON.stringify(result,null,2));process.exitCode=result.failed?1:0;
-} finally { fs.rmSync(temp,{recursive:true,force:true,maxRetries:5,retryDelay:200}); }
+} catch(error) { if(!error?.only) throw error; } finally { fs.rmSync(temp,{recursive:true,force:true,maxRetries:5,retryDelay:200}); }

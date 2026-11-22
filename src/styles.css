@@ -1702,6 +1702,28 @@ body.edge.edge-noanim #edge-tab {
   animation: edge-drop-breathe 3.4s 1.05s ease-in-out infinite;
 }
 
+/* 손잡이를 끄는 중 (#188): 판은 연출 없이 접혀 있고, 손잡이·게이지는 커서를 그대로 따라온다 —
+   숨쉬기·받아내기 연출과 게이지의 늦은 등장(0.95s), 막이 걷히는 전이를 끈다. 위의 접힘·noanim
+   규칙과 명시도가 같아 이 자리에(뒤에) 있어야 이긴다 */
+body.edge.edge-dragging #edge-tab,
+body.edge.edge-dragging #edge-gauge {
+  animation: none;
+  transition: none;
+}
+
+body.edge.edge-dragging #edge-gauge {
+  opacity: 1;
+}
+
+body.edge.edge-dragging #edge-film {
+  transition: none;
+}
+
+body.edge.edge-dragging,
+body.edge.edge-dragging * {
+  cursor: grabbing;
+}
+
 @keyframes edge-drop-breathe {
   0%,
   100% {

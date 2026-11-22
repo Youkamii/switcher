@@ -31,6 +31,14 @@ import { accountApis, apiIsBusy, apiText, compactApiBalance, existingKeys, provi
 import { cardClickAction, pickAccountKey, rememberKey, rememberedKey, type KeyRef, type LastChange } from "./apiToggle";
 import { icon, iconButton, setButtonIcon } from "./uiIcons";
 import { edgeGaugeLayout } from "./edgeGaugeLayout";
+import {
+  EDGE_TAB_MARGIN,
+  edgeAnchorAt,
+  edgeAnchorFraction,
+  edgePlacement,
+  edgeTabRange,
+  type EdgeWork,
+} from "./edgeAnchor";
 
 type ProfileInfo = {
   name: string;
@@ -2153,6 +2161,8 @@ function applyEdgeGauge() {
     // 손잡이 키가 바뀌면 저장된 높이(#185)를 새 키 기준으로 다시 창 안에 가둔다
     edgeTabHeight = geometry.tabHeight;
     applyEdgeTabY();
+    // 벽 끝에 둔 손잡이는 키가 달라져도 끝에 붙어 있게 자리를 다시 잡는다 (#188)
+    if (edgeActive && edgeAnchor !== null) void snapToEdge().catch(() => {});
     // The native hover/click zone follows the rendered handle, including hidden WebViews.
     queueMicrotask(refreshHitRegionsAfterLayout);
   }
@@ -2989,45 +2999,84 @@ let edgeOut = false;
 /// 붙은 벽 — 스냅할 때마다 창 위치에서 다시 고른다 (붙어 있으면 같은 벽이 나온다)
 let edgeSide: EdgeSide = "right";
 
-// ── 손잡이 높이 (#185) ──────────────────────────────────────────
-// 창은 펼친 내용 높이 그대로 작업영역 안에 머물고, 손잡이는 창 세로 중앙에 고정이라
-// 손잡이를 화면 위/아래 끝에 둘 수 없었다 (사용자 보고: 세로가 길면 원하는 위치로 못
-// 보낸다). ☰ 드래그가 작업영역을 넘친 만큼(clamp로 되돌아온 거리)을 손잡이 오프셋으로
-// 흡수한다 — "끝 너머로 끌면 손잡이가 벽을 타고 간다". 값은 창 위에서 손잡이 중심까지
-// CSS px(localStorage switcher.edgetab), 없으면 CSS 기본 50%.
-const EDGE_TAB_MARGIN = 4;
+// ── 손잡이 자리 (#185, #188) ──────────────────────────────────────
+// 지키는 것은 손잡이가 벽에서 서 있는 높이다 (edgeAnchor: 0 = 맨 위, 1 = 맨 아래,
+// localStorage switcher.edgeanchor). 창은 그 손잡이를 담은 채 작업영역 안에서 필요한 만큼만
+// 움직인다 — 계산은 edgeAnchor.ts. 손잡이를 옮기는 길은 둘이다: 접힌(작은) 손잡이를 누른 채
+// 위아래로 끌기(아래 "손잡이 끌기"), 펼친 판의 ☰로 판을 옮기기(놓인 자리에 손잡이가 남는다).
+// 앱은 늘 화면 오른쪽 아래에서 뜨므로(lib.rs position_bottom_right) 엣지에 들어올 때마다
+// 저장된 높이와 벽으로 되돌린다 — 저장하지 않던 때는 위젯을 다시 띄울 때마다 손잡이가 아래로
+// 돌아갔다(사용자 보고: 위치 조정이 또 안 된다). 한 번도 옮긴 적이 없으면(null) 창이 놓인 곳의
+// 세로 중앙이다. edgeTabY는 사용자가 정한 "판 안에서의 손잡이 자리"(창 위에서 손잡이 중심까지,
+// CSS px, switcher.edgetab) — 판이 손잡이의 어느 쪽으로 열리는지를 정한다. 창은 늘 이 관계가
+// 되는 자리를 먼저 고르므로 다시 띄워도 같은 모양이고, 판이 커져 화면 끝에 눌렸다가 줄어들면
+// 제자리로 돌아온다.
 let edgeTabY: number | null = (() => {
   const stored = Number(localStorage.getItem("switcher.edgetab"));
   return Number.isFinite(stored) && stored > 0 ? stored : null;
 })();
+/// 지금 그려진 손잡이 자리 (창 위에서 CSS px). 판 높이나 화면 끝에 눌리면 edgeTabY와 달라진다 —
+/// 저장하지 않는다. null이면 edgeTabY를 그대로 그린다.
+let edgeTabShown: number | null = null;
+let edgeAnchor: number | null = (() => {
+  const raw = localStorage.getItem("switcher.edgeanchor");
+  const stored = raw === null || raw === "" ? Number.NaN : Number(raw);
+  return Number.isFinite(stored) ? Math.min(1, Math.max(0, stored)) : null;
+})();
+/// 지난번에 붙어 있던 벽 (switcher.edgeside)
+function storedEdgeSide(): EdgeSide | null {
+  const stored = localStorage.getItem("switcher.edgeside");
+  return stored === "left" || stored === "right" ? stored : null;
+}
+/// 엣지에 들어온 뒤 첫 스냅은 창이 놓인 쪽이 아니라 지난번 벽으로 간다
+let edgeRestoreSide = false;
 
 /// 손잡이 중심이 머물 수 있는 범위 — 손잡이 전체가 창 안에 들어온다
 function edgeTabBounds(): { min: number; max: number } {
-  const min = edgeTabHeight / 2 + EDGE_TAB_MARGIN;
-  return { min, max: Math.max(min, window.innerHeight - edgeTabHeight / 2 - EDGE_TAB_MARGIN) };
+  return edgeTabRange(window.innerHeight, edgeTabHeight);
 }
 
-/// 저장된 손잡이 높이를 현재 창·손잡이 크기 안으로 눌러 CSS 변수로 적용한다. 손잡이·게이지·
+/// 지금 그려진 손잡이 중심 (창 위에서 CSS px)
+function edgeTabCenter(height = window.innerHeight): number {
+  const { min, max } = edgeTabRange(height, edgeTabHeight);
+  const y = edgeTabShown ?? edgeTabY;
+  return y === null ? height / 2 : Math.min(max, Math.max(min, y));
+}
+
+/// 손잡이 자리를 현재 창·손잡이 크기 안으로 눌러 CSS 변수로 적용한다. 손잡이·게이지·
 /// 판 변환 원점·덩어리 자리(styles.css --edge-tab-y)가 함께 따라간다.
 function applyEdgeTabY() {
-  if (edgeTabY === null) {
+  const want = edgeTabShown ?? edgeTabY;
+  if (want === null) {
     document.documentElement.style.removeProperty("--edge-tab-y");
     return;
   }
   const { min, max } = edgeTabBounds();
-  const y = Math.round(Math.min(max, Math.max(min, edgeTabY)));
+  const y = Math.round(Math.min(max, Math.max(min, want)));
   document.documentElement.style.setProperty("--edge-tab-y", `${y}px`);
 }
 
-/// ☰ 드래그가 작업영역을 넘친 거리(CSS px, 아래가 양수)만큼 손잡이를 옮기고 저장한다
-function shiftEdgeTabY(deltaLogical: number) {
-  if (!edgeActive || Math.abs(deltaLogical) < 1) return;
-  const { min, max } = edgeTabBounds();
-  const current = edgeTabY ?? window.innerHeight / 2;
-  edgeTabY = Math.round(Math.min(max, Math.max(min, current + deltaLogical)));
-  localStorage.setItem("switcher.edgetab", String(edgeTabY));
+/// 손잡이가 벽에서 서 있는 높이를 정하고 저장한다 — 사용자가 옮겼을 때만 부른다 (끌기·☰ 드롭)
+function storeEdgeAnchor(anchor: number, work: EdgeWork) {
+  edgeAnchor = edgeAnchorFraction(anchor, work, edgeTabHeight);
+  localStorage.setItem("switcher.edgeanchor", edgeAnchor.toFixed(5));
+}
+
+/// 창 안의 손잡이 자리(CSS px)를 그린다. 창이 움직인 만큼 반대로 옮겨 화면에서의 제자리를
+/// 지키는 데 쓴다 — 그때 손잡이는 화면에서 움직이지 않는다. 저장하지 않는다.
+function showEdgeTab(y: number) {
+  const next = Math.round(y);
+  if (edgeTabShown === next) return;
+  edgeTabShown = next;
   applyEdgeTabY();
   refreshHitRegionsAfterLayout();
+}
+
+/// 지금 그려진 자리를 "판 안에서의 손잡이 자리"로 저장한다 — 사용자가 옮겼을 때만 (끌기·☰ 드롭)
+function storeEdgeTabY() {
+  if (edgeTabShown === null) return;
+  edgeTabY = edgeTabShown;
+  localStorage.setItem("switcher.edgetab", String(edgeTabY));
 }
 // 창 높이가 바뀌면(계정 수·섹션 변화) 다시 가둔다 — 비활성 웹뷰 타이머가 아니라 resize 이벤트
 window.addEventListener("resize", () => {
@@ -3044,6 +3093,10 @@ function applyEdgeMode(active: boolean) {
     edgePending = null;
     window.clearTimeout(edgeAnimTimer);
     endEdgeHold();
+    finishEdgeTabDrag();
+    edgeGripPressed = false;
+    edgeGripDrop = false;
+    edgeRestoreSide = false;
   }
   // 진입 직후에는 숨김 상태로 시작하되, 첫 프레임에 "들어가는" 연출이 재생되지 않게
   // 애니메이션을 잠시 끈다 — 첫 호버부터 연출이 붙는다. 벽에 붙이는 일은 뒤따르는
@@ -3051,6 +3104,12 @@ function applyEdgeMode(active: boolean) {
   if (entering) {
     document.body.classList.add("edge-noanim");
     applyEdgeTabY();
+    // 지난번 벽으로 돌아간다 — 다른 모드에서 창을 어디에 두었든 엣지의 자리는 따로 기억한다
+    const side = storedEdgeSide();
+    if (side) {
+      edgeSide = side;
+      edgeRestoreSide = true;
+    }
   }
   document.body.classList.toggle("edge", active);
   document.body.classList.toggle("edge-out", active && edgeOut);
@@ -3118,6 +3177,7 @@ function setEdgeOut(out: boolean) {
   edgeOut = out;
   edgeAnimating = out ? "rise" : "sink";
   edgeAnimStartedAt = Date.now();
+  if (out) edgeShownAt = edgeAnimStartedAt;
   window.clearTimeout(edgeAnimTimer);
   edgeAnimTimer = window.setTimeout(edgeAnimationDone, EDGE_ANIM_MAX_MS);
   if (!out) endEdgeHold();
@@ -3137,6 +3197,293 @@ function edgeAnimationDone() {
   edgePending = null;
   if (pending !== null && pending !== edgeOut) setEdgeOut(pending);
 }
+
+// ── 손잡이 끌기 (#188) ────────────────────────────────────────────
+// 접힌(작은) 손잡이를 누른 채 위아래로 끌면 손잡이가 벽을 타고 따라온다 (사용자 지시: 작은
+// 상태에서도 위아래로 조정할 수 있게). 커서가 손잡이에 닿으면 판이 펼쳐지므로 누르는 순간에는
+// 판이 나오는 중이거나 이미 나와 있다 — 그래서 "손잡이가 있던 자리에서 시작한 세로 끌기"로
+// 알아본다. 끌기가 시작되면 판을 연출 없이 접어 손잡이를 보이고, 놓을 때까지 손잡이만 움직인다.
+// 손잡이는 창 안에서 먼저 움직이고(CSS만 바뀐다) 창 끝에 닿으면 창이 따라온다 — 창과 손잡이를
+// 한꺼번에 옮기면 둘이 화면에 반영되는 시점이 달라 손잡이가 떨린다.
+/// 손잡이에서 벽 안쪽으로 보이는 폭 (styles.css #edge-tab: 36px 중 8px는 벽 너머)
+const EDGE_TAB_REACH = 28;
+/// 끌기로 보는 세로 이동(CSS px) — 손잡이를 겨냥한 누름 / 펼친 판의 내용 위에서 시작한 누름.
+/// 내용 위에서는 누르다 손이 밀린 클릭을 끌기로 읽지 않게 넉넉히 둔다.
+const EDGE_TAB_DRAG_SLOP = 4;
+const EDGE_TAB_DRAG_SLOP_OPEN = 12;
+/// 판이 나오기 시작한 뒤 내용이 보이기까지 (styles.css edge-content-in의 지연 0.7s). 그 전의
+/// 누름은 보이지 않는 카드를 겨냥한 것일 수 없다 — 손잡이를 겨냥한 누름이다.
+const EDGE_CONTENT_DELAY_MS = 700;
+/// 놓은 뒤 이 시간 안에 온 click만 그 누름의 것으로 본다 (키보드·스크립트 click과 구분)
+const EDGE_CLICK_AFTER_UP_MS = 500;
+/// 판이 마지막으로 나오기 시작한 시각
+let edgeShownAt = 0;
+/// 이번 누름이 내용이 보이기 전에 시작됐는가 — 그렇다면 놓을 때의 click은 어느 조작의 것도 아니다
+let edgePressEarly = false;
+/// 이번 누름이 손잡이 끌기가 됐는가 — 놓을 때의 click을 삼킨다
+let edgeSuppressClick = false;
+let edgePointerUpAt = 0;
+/// ☰를 눌렀는가 — 그 뒤 정착하는 창 이동이 사용자의 판 옮기기다 (settleMonitorSync가 거둔다)
+let edgeGripPressed = false;
+/// ☰로 옮긴 판이 정착했다 — 다음 스냅이 놓인 자리를 새 손잡이 자리로 받는다 (placeOnEdge가 거둔다).
+/// 정착 판정과 같은 순간에 세우므로, 그 사이에 다른 길로 온 스냅이 옛 자리로 창을 되돌리지 못한다.
+let edgeGripDrop = false;
+
+type EdgeTabDrag = {
+  pointerId: number;
+  startY: number;
+  lastY: number;
+  slop: number;
+  /// 판정 거리를 넘겨 끌기가 됐는가
+  active: boolean;
+  /// 누를 때 읽은 창·작업영역(논리 px). 끌기가 먼저 시작되면 도착한 뒤 따라잡는다
+  geo: { scale: number; work: EdgeWork; height: number; insetTop: number; x: number; startAnchor: number } | null;
+  /// 지금까지 보낸 창 위치(내용 영역 위, 논리 px)와 손잡이가 선 자리(화면 좌표)
+  top: number;
+  anchor: number;
+};
+let edgeTabDrag: EdgeTabDrag | null = null;
+/// 끄는 동안의 창 이동 — 한 번에 하나씩, 밀린 것은 마지막 목표만 보낸다
+const edgeWindowMove = { x: 0, want: null as number | null, sent: null as number | null, busy: false };
+/// 러스트에 끄는 중임을 알린다(커서가 손잡이를 벗어나도 창이 마우스를 놓지 않게) — 켜고 끄는 순서를 지킨다
+let edgeDragHoldQueue: Promise<unknown> = Promise.resolve();
+function setEdgeDragHold(active: boolean) {
+  edgeDragHoldQueue = edgeDragHoldQueue.then(() => invoke("set_edge_drag", { active }).catch(() => {}));
+}
+
+/// 접힌 손잡이가 차지하는 자리인가 (창 좌표). 펼쳐지는 중의 변형(부풀기)과 무관하게 계산한다
+function inEdgeTabZone(x: number, y: number): boolean {
+  const half = edgeTabHeight / 2 + EDGE_TAB_MARGIN;
+  if (Math.abs(y - edgeTabCenter()) > half) return false;
+  const reach = EDGE_TAB_REACH + EDGE_TAB_MARGIN;
+  return edgeSide === "left" ? x <= reach : x >= window.innerWidth - reach;
+}
+
+/// 창의 내용 영역(손잡이가 그려지는 곳)과 그 영역이 머물 수 있는 세로 구간 — 논리 px.
+/// 바깥 크기에 보이지 않는 여백이 있으면(Windows 프레임) 그만큼은 작업영역에서 뺀다.
+function edgeFrame(
+  pos: { y: number },
+  size: { height: number },
+  innerPos: { y: number },
+  innerSize: { height: number },
+  area: PhysicalRect,
+  scale: number,
+) {
+  const insetTop = Math.max(0, innerPos.y - pos.y);
+  const insetBottom = Math.max(0, pos.y + size.height - (innerPos.y + innerSize.height));
+  const work: EdgeWork = {
+    top: (area.position.y + insetTop) / scale,
+    height: Math.max(0, area.size.height - insetTop - insetBottom) / scale,
+  };
+  return { insetTop, top: innerPos.y / scale, height: innerSize.height / scale, work };
+}
+
+/// 누를 때 창과 작업영역을 읽어 둔다 — 끌기 판정 거리를 넘기 전에 대개 도착한다
+async function loadEdgeTabDragGeometry(drag: EdgeTabDrag) {
+  try {
+    const [pos, size, innerPos, innerSize] = await Promise.all([
+      appWindow.outerPosition(),
+      appWindow.outerSize(),
+      appWindow.innerPosition(),
+      appWindow.innerSize(),
+    ]);
+    const scale = currentScaleFactor || (await appWindow.scaleFactor().catch(() => 1));
+    if (edgeTabDrag !== drag || !currentWorkArea) return;
+    const frame = edgeFrame(pos, size, innerPos, innerSize, currentWorkArea, scale);
+    const startAnchor = frame.top + edgeTabCenter(frame.height);
+    drag.geo = { scale, work: frame.work, height: frame.height, insetTop: frame.insetTop, x: pos.x, startAnchor };
+    drag.top = frame.top;
+    drag.anchor = startAnchor;
+    edgeWindowMove.x = pos.x;
+    edgeWindowMove.sent = pos.y;
+    edgeWindowMove.want = null;
+    if (drag.active) pumpEdgeTabDrag(drag);
+  } catch {
+    // 창 좌표를 못 읽으면 이번 끌기는 손잡이를 옮기지 않는다 (판만 접힌다)
+  }
+}
+
+function beginEdgeTabDrag(drag: EdgeTabDrag) {
+  drag.active = true;
+  edgeSuppressClick = true;
+  endEdgeHold();
+  try {
+    document.body.setPointerCapture(drag.pointerId);
+  } catch {
+    // 이미 놓았다 — 버튼 상태(pointermove)와 러스트의 마무리가 끝을 알려 준다
+  }
+  setEdgeDragHold(true);
+  // 판을 연출 없이 바로 접는다 — 손잡이가 보여야 어디로 가는지 보면서 끌 수 있다
+  window.clearTimeout(edgeAnimTimer);
+  edgeAnimTimer = undefined;
+  edgeAnimating = null;
+  edgePending = null;
+  edgeOut = false;
+  document.body.classList.add("edge-noanim", "edge-dragging");
+  document.body.classList.remove("edge-out");
+  gooBlur("goo-down");
+  refreshHitRegionsAfterLayout();
+}
+
+/// 커서가 간 만큼 손잡이를 옮긴다. 손잡이 자리는 CSS로 바로, 창은 따라와야 할 때만 옮긴다
+function pumpEdgeTabDrag(drag: EdgeTabDrag) {
+  const geo = drag.geo;
+  if (!geo) return;
+  const placed = edgePlacement({
+    anchor: geo.startAnchor + (drag.lastY - drag.startY),
+    height: geo.height,
+    tabHeight: edgeTabHeight,
+    work: geo.work,
+    prevTop: drag.top,
+  });
+  // 창은 물리 px 정수 자리에 놓인다 — 손잡이까지의 거리는 그 자리에서 다시 잰다
+  const innerY = Math.round(placed.top * geo.scale);
+  drag.top = innerY / geo.scale;
+  drag.anchor = placed.anchor;
+  edgeTabShown = Math.round(placed.anchor - drag.top);
+  applyEdgeTabY();
+  moveEdgeWindow(innerY - geo.insetTop);
+}
+
+function moveEdgeWindow(y: number) {
+  edgeWindowMove.want = y;
+  if (edgeWindowMove.busy) return;
+  edgeWindowMove.busy = true;
+  void (async () => {
+    try {
+      while (edgeWindowMove.want !== null && edgeWindowMove.want !== edgeWindowMove.sent) {
+        const next = edgeWindowMove.want;
+        edgeWindowMove.sent = next;
+        await appWindow.setPosition(new PhysicalPosition(edgeWindowMove.x, next));
+      }
+    } catch {
+      // 이동 실패는 다음 목표가 다시 시도한다
+    } finally {
+      edgeWindowMove.busy = false;
+    }
+  })();
+}
+
+/// 끌기를 끝내고 손잡이 자리를 저장한다. 누르기만 한 경우에는 아무것도 바꾸지 않는다.
+function finishEdgeTabDrag() {
+  const drag = edgeTabDrag;
+  if (!drag) return;
+  edgeTabDrag = null;
+  if (!drag.active) return;
+  try {
+    document.body.releasePointerCapture(drag.pointerId);
+  } catch {
+    // 이미 풀렸다
+  }
+  document.body.classList.remove("edge-dragging");
+  setEdgeDragHold(false);
+  if (drag.geo) {
+    storeEdgeAnchor(drag.anchor, drag.geo.work);
+    storeEdgeTabY();
+    localStorage.setItem("switcher.edgeside", edgeSide);
+  }
+  // 손잡이가 옮겨졌다 — 호버 존·히트 영역을 새 자리로
+  refreshHitRegionsAfterLayout();
+}
+
+window.addEventListener(
+  "pointerdown",
+  (event) => {
+    edgeSuppressClick = false;
+    edgePressEarly = false;
+    if (!edgeActive || event.button !== 0 || !event.isPrimary) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (target?.closest(".edge-handle")) {
+      // ☰: 창을 옮기는 것은 네이티브 드래그다. 창이 움직이지 않아도(이미 화면 끝) 놓은 뒤
+      // 한 번은 자리를 다시 잡게 정착 판정을 걸어 둔다.
+      edgeGripPressed = true;
+      scheduleMonitorSync();
+      return;
+    }
+    // 내용이 보이기 전의 누름은 손잡이를 겨냥한 것이다 — 그 자리에 있는 보이지 않는 카드의 것이 아니다
+    edgePressEarly = !edgeOut || Date.now() - edgeShownAt < EDGE_CONTENT_DELAY_MS;
+    // 놓는 이벤트 없이 남은 옛 누름은 새 누름이 덮어쓴다 — 끄는 중일 때만 그대로 둔다
+    if (edgeTabDrag?.active) return;
+    edgeTabDrag = null;
+    if (loginOpen || !inEdgeTabZone(event.clientX, event.clientY)) return;
+    // 밝기 슬라이더는 세로로 끄는 조작이다 — 보이는 슬라이더에서 시작한 끌기는 슬라이더의 것
+    if (!edgePressEarly && target?.closest("input")) return;
+    const drag: EdgeTabDrag = {
+      pointerId: event.pointerId,
+      startY: event.screenY,
+      lastY: event.screenY,
+      slop: edgePressEarly ? EDGE_TAB_DRAG_SLOP : EDGE_TAB_DRAG_SLOP_OPEN,
+      active: false,
+      geo: null,
+      top: 0,
+      anchor: 0,
+    };
+    edgeTabDrag = drag;
+    void loadEdgeTabDragGeometry(drag);
+  },
+  true,
+);
+window.addEventListener(
+  "pointermove",
+  (event) => {
+    const drag = edgeTabDrag;
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    // 놓는 이벤트를 놓쳤으면(창 밖에서 놓음) 버튼 상태로 끝을 안다
+    if ((event.buttons & 1) === 0) {
+      finishEdgeTabDrag();
+      return;
+    }
+    drag.lastY = event.screenY;
+    if (!drag.active) {
+      if (Math.abs(drag.lastY - drag.startY) < drag.slop) return;
+      beginEdgeTabDrag(drag);
+    }
+    event.preventDefault();
+    pumpEdgeTabDrag(drag);
+  },
+  true,
+);
+for (const type of ["pointerup", "pointercancel"] as const) {
+  window.addEventListener(
+    type,
+    (event) => {
+      edgePointerUpAt = Date.now();
+      const drag = edgeTabDrag;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      const dragged = drag.active;
+      finishEdgeTabDrag();
+      // 끌어 놓은 직후에는 커서가 손잡이 위에 있어도 접힌 채로 둔다(놓인 자리가 보이게).
+      // 그 접힌 손잡이를 끌지 않고 눌렀다 놓으면 판을 편다.
+      if (!dragged && type === "pointerup" && !edgeOut && !loginOpen) setEdgeOut(true);
+    },
+    true,
+  );
+}
+// 끌기가 된 누름·내용이 보이기 전에 시작한 누름이 남긴 click은 어느 조작에도 닿지 않는다 —
+// 손잡이를 잡으려던 누름이 그 자리의 카드를 눌러 계정(또는 유료 API 키)으로 넘기면 안 된다.
+window.addEventListener(
+  "click",
+  (event) => {
+    const fromPress = Date.now() - edgePointerUpAt < EDGE_CLICK_AFTER_UP_MS;
+    const swallow = edgeActive && fromPress && (edgeSuppressClick || edgePressEarly);
+    edgeSuppressClick = false;
+    edgePressEarly = false;
+    if (!swallow) return;
+    event.stopPropagation();
+    event.preventDefault();
+  },
+  true,
+);
+// 손잡이 자리에서 시작한 누름이 링크·그림의 HTML 드래그가 되면 포인터 이벤트가 끊긴다 — 막는다
+window.addEventListener(
+  "dragstart",
+  (event) => {
+    if (edgeActive && edgeTabDrag) event.preventDefault();
+  },
+  true,
+);
+// 러스트의 마무리: 버튼은 놓였는데 웹뷰가 놓는 이벤트를 받지 못했을 때 (창 밖·비활성 웹뷰)
+void listen("edge-drag-end", () => finishEdgeTabDrag());
 
 // 꾹 누르면(0.25s) 숫자 자리에 초기화까지 남은 시간이 나온다 — 놓으면 돌아온다
 // (사용자 지시: Type4는 더블클릭 대신 길게 누르기). ☰·모드 버튼 위는 제외.
@@ -3212,50 +3559,117 @@ shell.addEventListener("animationend", (event) => {
   if (event.animationName.startsWith("edge-content-in")) edgeAnimationDone();
 });
 
-/// 창을 벽에 붙인다. 매번 현재 위치에서 가까운 벽을 고르므로, ☰로 반대편에
-/// 끌어다 놓으면(이동이 멎은 뒤 syncCurrentMonitor가 부른다) 그쪽 벽으로 옮겨 붙고,
-/// 이미 붙어 있으면 같은 벽이 다시 나온다.
-async function snapToEdge(fromDrag = false) {
-  if (!edgeActive || !currentWorkArea || monitorMoveTimer !== undefined) return;
+/// 창을 벽에 붙이고 손잡이를 제자리에 세운다. 가로는 현재 위치에서 가까운 벽을 고르므로,
+/// ☰로 반대편에 끌어다 놓으면(이동이 멎은 뒤 syncCurrentMonitor가 부른다) 그쪽 벽으로 옮겨 붙고,
+/// 이미 붙어 있으면 같은 벽이 다시 나온다. 세로는 손잡이 자리(edgeAnchor)가 기준이다 — 창은 그
+/// 손잡이를 담고 작업영역 안에 들어가는 가장 가까운 자리로만 움직인다 (#188). 그래서 판 높이가
+/// 바뀌어 창이 밀려도 손잡이는 화면에서 그대로다.
+/// 사용자가 ☰로 판을 옮겨 놓은 직후(edgeGripDrop)에는 놓인 자리가 새 손잡이 자리가 된다.
+///
+/// 한 번에 하나만 돈다 — 크기 맞춤·모니터 확인·손잡이 키 변화가 거의 동시에 스냅을 부른다.
+/// 겹친 요청은 지금 것이 끝난 뒤 한 번 더 돈다.
+let edgeSnapRun: Promise<void> | null = null;
+let edgeSnapAgain = false;
+function snapToEdge(): Promise<void> {
+  if (edgeSnapRun) {
+    edgeSnapAgain = true;
+    return edgeSnapRun;
+  }
+  const run = (async () => {
+    try {
+      do {
+        edgeSnapAgain = false;
+        await placeOnEdge();
+      } while (edgeSnapAgain);
+    } finally {
+      edgeSnapAgain = false;
+      edgeSnapRun = null;
+    }
+  })();
+  edgeSnapRun = run;
+  return run;
+}
+
+/// 창 이동은 호출이 끝난 뒤에야 화면에 반영된다 — 바로 다시 읽은 창 위치는 옮기기 전 값일 수 있다.
+/// 그래서 여기서 정하는 자리는 방금 읽은 위치에 기대지 않는다: 세로는 저장된 손잡이 자리에서,
+/// 가로는 지난번 벽이 실제로 확인될 때까지 그 벽에서 나온다 (격리 실행 실측: 저장된 왼쪽 벽으로
+/// 옮긴 직후의 다음 스냅이 옮기기 전 위치를 읽고 오른쪽 벽으로 되돌렸다). 읽은 위치를 그대로 믿는
+/// 것은 사용자가 ☰로 놓은 직후뿐이다 — 끄는 동안에는 프로그램이 창을 옮기지 않는다.
+async function placeOnEdge() {
+  const busy = () =>
+    !edgeActive || !currentWorkArea || monitorMoveTimer !== undefined || edgeTabDrag?.active === true || edgeWindowMove.busy;
+  if (busy()) return;
   const [pos, size, innerPos, innerSize] = await Promise.all([
     appWindow.outerPosition(),
     appWindow.outerSize(),
     appWindow.innerPosition(),
     appWindow.innerSize(),
   ]);
+  // 좌표를 읽는 사이 손잡이 끌기가 시작됐으면 끌기가 창을 맡는다
+  if (busy() || !currentWorkArea) return;
   const rect = { x: pos.x, y: pos.y, width: size.width, height: size.height };
   // 바깥 크기에 포함된 그림자 여백(윈도우 실측 좌우 8px)은 벽 너머로 내보낸다
   const insets = {
     left: innerPos.x - pos.x,
     right: pos.x + size.width - (innerPos.x + innerSize.width),
   };
-  const side = pickEdgeSide(rect, currentWorkArea);
+  // 이 스냅이 사용자의 ☰ 드롭을 받는가 — 정착 판정이 세운 표시를 여기서 거둔다
+  const fromGrip = edgeGripDrop;
+  edgeGripDrop = false;
+  // 사용자가 벽을 골랐으면 지난번 벽으로 되돌리지 않는다
+  if (fromGrip) edgeRestoreSide = false;
+  // 엣지에 들어온 직후에는 지난번 벽 — 앱은 늘 오른쪽 아래에서 뜨고, 다른 모드에서는 창이 어디든 있다
+  const side = edgeRestoreSide ? edgeSide : pickEdgeSide(rect, currentWorkArea);
   if (side !== edgeSide) {
     edgeSide = side;
     document.body.classList.toggle("edge-left", side === "left");
     refreshHitRegionsAfterLayout();
   }
   const target = edgeSnapPosition(rect, currentWorkArea, edgeSide, insets);
-  if (target.x !== pos.x || target.y !== pos.y) {
-    await appWindow.setPosition(new PhysicalPosition(target.x, target.y));
-  }
-  // 사용자가 놓은 자리가 작업영역을 넘쳤으면 그만큼 손잡이가 벽을 타고 간다 (#185).
-  // 프로그램이 옮긴 창(clamp 직후·크기 변경)은 이미 안에 있어 0이다.
-  if (fromDrag) {
-    const scale = currentScaleFactor || (await appWindow.scaleFactor().catch(() => 1));
-    let overshoot = pos.y - target.y; // 물리 px, 아래가 양수
-    if (overshoot === 0 && pos.y <= currentWorkArea.position.y + 1) {
+  // 창이 그 벽에 와 있는 것을 본 뒤에야 복원을 마친다 — 옮기라고 한 것만으로는 아직 모른다
+  if (edgeRestoreSide && target.x === pos.x) edgeRestoreSide = false;
+  const scale = currentScaleFactor || (await appWindow.scaleFactor().catch(() => 1));
+  const frame = edgeFrame(pos, size, innerPos, innerSize, currentWorkArea, scale);
+  if (fromGrip) {
+    // 손잡이는 놓인 판 안의 제자리에 남는다. 판을 작업영역 밖에 놓았으면 아래 배치가 창만 안으로
+    // 들이므로, 넘친 만큼 손잡이가 벽을 타고 간 셈이 된다 (#185).
+    let anchor = frame.top + edgeTabCenter(frame.height);
+    if (pos.y <= currentWorkArea.position.y + 1) {
       // 위 벽: OS(맥 메뉴 막대)가 창을 먼저 막아 창 위치로는 넘침이 안 보인다 —
       // 커서가 잡은 ☰보다 얼마나 위에 있는지로 잰다 (화면 맨 위에 닿았으면 끝까지)
       const cursor = await invoke<[number, number] | null>("pointer_position").catch(() => null);
       if (cursor) {
         const handle = document.querySelector<HTMLElement>(".edge-handle")?.getBoundingClientRect();
-        const grabY = pos.y + (handle ? handle.top + handle.height / 2 : 25) * scale;
-        if (cursor[1] <= 1) overshoot = Number.NEGATIVE_INFINITY;
-        else if (cursor[1] < grabY) overshoot = cursor[1] - grabY;
+        const grabY = innerPos.y + (handle ? handle.top + handle.height / 2 : 25) * scale;
+        if (cursor[1] <= 1) anchor = Number.NEGATIVE_INFINITY;
+        else if (cursor[1] < grabY) anchor += (cursor[1] - grabY) / scale;
       }
     }
-    if (overshoot !== 0) shiftEdgeTabY(overshoot / scale);
+    storeEdgeAnchor(anchor, frame.work);
+    localStorage.setItem("switcher.edgeside", edgeSide);
+  }
+  // 여기부터 창을 옮길 때까지는 기다림이 없다 — 그 사이에 손잡이 끌기가 끼어들지 못한다
+  if (busy()) return;
+  if (edgeAnchor !== null) {
+    const anchor = edgeAnchorAt(edgeAnchor, frame.work, edgeTabHeight);
+    const placed = edgePlacement({
+      anchor,
+      height: frame.height,
+      tabHeight: edgeTabHeight,
+      work: frame.work,
+      // 방금 놓은 판은 놓인 자리에서, 그 밖에는 사용자가 정한 "판 안에서의 손잡이 자리"가 되는
+      // 창 위치에서 출발한다 — 다시 띄운 직후(창이 화면 오른쪽 아래)에도, 판 높이가 여러 번
+      // 바뀌어도 같은 자리가 나온다
+      prevTop: fromGrip || edgeTabY === null ? frame.top : anchor - edgeTabY,
+    });
+    // 창은 물리 px 정수 자리에 놓인다 — 손잡이까지의 거리는 그 자리에서 다시 잰다
+    const innerY = Math.round(placed.top * scale);
+    target.y = innerY - frame.insetTop;
+    showEdgeTab(placed.anchor - innerY / scale);
+    if (fromGrip) storeEdgeTabY();
+  }
+  if (target.x !== pos.x || target.y !== pos.y) {
+    await appWindow.setPosition(new PhysicalPosition(target.x, target.y));
   }
 }
 
@@ -3452,12 +3866,18 @@ async function settleMonitorSync(token: number) {
   monitorMoveTimer = undefined;
   const forceSync = monitorMoveForce;
   monitorMoveForce = false;
-  // 버튼을 놓고 정착한 이동 — 작업영역을 넘친 드롭은 엣지 손잡이 높이로 흡수된다 (#185)
-  void syncCurrentMonitor(forceSync, true);
+  // ☰를 잡고 옮긴 이동만 사용자의 판 옮기기다 — 놓인 자리가 새 손잡이 자리가 되고, 작업영역을
+  // 넘친 드롭은 손잡이 높이로 흡수된다 (#185). 그 밖의 이동(크기 맞춤·손잡이 끌기·OS)은 저장된
+  // 자리를 기준으로 다시 놓는다 — 커서 위치로 넘침을 재는 위쪽 판정이 엉뚱한 이동에 걸리지 않는다.
+  if (edgeGripPressed) {
+    edgeGripPressed = false;
+    edgeGripDrop = edgeActive;
+  }
+  void syncCurrentMonitor(forceSync);
 }
 
 let currentScaleFactor = 0;
-async function syncCurrentMonitor(force = false, fromDrag = false) {
+async function syncCurrentMonitor(force = false) {
   const revision = ++monitorSyncRevision;
   try {
     const monitor = await currentMonitor();
@@ -3472,7 +3892,7 @@ async function syncCurrentMonitor(force = false, fromDrag = false) {
     currentWorkAreaHeight = logicalWorkAreaHeight(area, monitor.scaleFactor);
     // Type4: 이동이 멎은 뒤 새 작업영역 기준으로 가까운 벽에 붙는다 (같은 모니터
     // 안의 드래그는 아래 fitHeight가 돌지 않으므로 여기서 직접)
-    snapToEdge(fromDrag).catch(() => {
+    snapToEdge().catch(() => {
       // 이동 중 좌표 조회 실패는 다음 이동·리사이즈 이벤트가 다시 시도한다
     });
     if (force || key !== currentMonitorKey) {
