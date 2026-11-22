@@ -90,7 +90,6 @@ function audit() {
   document.getElementById("clambtn").hidden = false;
   for (const [mode, width, classes] of [
     ["normal", 360, "dock-open"],
-    ["compact", 240, "locked dock-open"],
     ["minimal", 120, "minimal locked dock-open"],
   ]) {
     document.body.className = classes;

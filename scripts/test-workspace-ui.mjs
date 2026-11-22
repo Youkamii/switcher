@@ -123,7 +123,7 @@ function fixture(mode = "normal", preview = false) {
   };
   const saveAndUse = form => form.requestSubmit(form.querySelector('.api-save-use'));
   async function checkEmptyAccounts() {
-    const body = {normal:'body:not(.locked)', compact:'body.locked:not(.minimal):not(.edge)', minimal:'body.minimal', edge:'body.edge'}[mode];
+    const body = {normal:'body:not(.locked)', minimal:'body.minimal', edge:'body.edge'}[mode];
     const systemSelector = body+' #app section[data-key="system"]';
     await ready(systemSelector);
     if(mode === 'edge') {
@@ -480,7 +480,7 @@ async function chromium(entry, width, screenshot, profile, boardHeight) {
   }
 }
 async function run(mode, preview, screenshot) {
-  const width={normal:420,compact:280,minimal:120,edge:80}[mode];
+  const width={normal:420,minimal:120,edge:80}[mode];
   let html=fs.readFileSync(path.join(root,'dist/index.html'),'utf8').replaceAll('"/assets/','"'+(useWebKit?'./assets/':pathToFileURL(path.join(root,'dist/assets/')).href));
   html=html.replace('<head>','<head><script>('+fixture.toString()+')('+JSON.stringify(mode)+','+JSON.stringify(preview)+');</script>');
   const entry=path.join(temp,mode+'.html');fs.writeFileSync(entry,html);
@@ -500,29 +500,29 @@ try {
   const screenshotAt=process.argv.indexOf('--screenshot');
   const reports=[await run('normal',false,screenshotAt>=0?path.resolve(process.argv[screenshotAt+1]):null)];
   if(useWebKit || !allDir) {
-    for(const mode of ['compact','minimal','edge']) reports.push(await run(mode,true,null));
+    for(const mode of ['minimal','edge']) reports.push(await run(mode,true,null));
   }
   if(allDir && !useWebKit) {
     fs.mkdirSync(allDir,{recursive:true});
-    for(const mode of ['normal','compact','minimal','edge']) reports.push(await run(mode,true,path.join(allDir,`mode-${mode}.png`)));
+    for(const mode of ['normal','minimal','edge']) reports.push(await run(mode,true,path.join(allDir,`mode-${mode}.png`)));
     const registration=await run('normal','registration',path.join(allDir,'api-registration.png'));
     const result=await run('normal','result',path.join(allDir,'api-result.png'));
     const noAI=await run('minimal','no-ai',path.join(allDir,'mode-no-ai.png'));
     fs.writeFileSync(path.join(allDir,'api-preview-layout.json'),JSON.stringify({registration:registration.dialog,result:result.dialog},null,2)+'\n');
-    const labels={normal:['01 일반','계정 · API 키 · 전체 도구'],compact:['02 컴팩트','계정과 사용량 요약'],minimal:['03 미니멀','사용량만 작게'],edge:['04 엣지','벽 붙임 · 펼친 상태']};
+    const labels={normal:['01 일반','계정 · API 키 · 전체 도구'],minimal:['02 미니멀','사용량만 작게'],edge:['03 엣지','벽 붙임 · 펼친 상태']};
     const figures=reports.slice(1).map(r=>`<figure style="width:${r.width}px"><figcaption><b>${labels[r.mode][0]}</b><span>${labels[r.mode][1]}</span></figcaption><div style="height:${Math.ceil(r.height)}px"><img src="mode-${r.mode}.png" style="width:${r.width}px"></div></figure>`).join('');
-    const board=`<!doctype html><html lang="ko"><meta charset="utf-8"><title>switcher · 네 가지 모드</title><style>*{box-sizing:border-box}body{margin:0;background:#e8ecec;color:#182024;font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:32px 38px}header{display:flex;align-items:baseline;gap:16px;margin-bottom:28px}h1{font-size:26px;letter-spacing:-1px;margin:0}header span{font-size:12px;color:#566568}.views{display:flex;align-items:flex-start;gap:30px}figure{margin:0;flex:none}figcaption{height:56px}b{font-size:15px;display:block}figcaption span{font-size:10px;color:#566568;display:block;margin-top:6px;white-space:nowrap}figure div{overflow:hidden;border-radius:12px;box-shadow:0 12px 32px #17212221}img{display:block}</style><header><h1>switcher</h1><span>실제 프론트 화면 · 예시 계정 · 4개 모드 유지</span></header><div class="views">${figures}</div></html>`;
-    const boardPath=path.join(allDir,'four-modes.html');fs.writeFileSync(boardPath,board);
+    const board=`<!doctype html><html lang="ko"><meta charset="utf-8"><title>switcher · 세 가지 모드</title><style>*{box-sizing:border-box}body{margin:0;background:#e8ecec;color:#182024;font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:32px 38px}header{display:flex;align-items:baseline;gap:16px;margin-bottom:28px}h1{font-size:26px;letter-spacing:-1px;margin:0}header span{font-size:12px;color:#566568}.views{display:flex;align-items:flex-start;gap:30px}figure{margin:0;flex:none}figcaption{height:56px}b{font-size:15px;display:block}figcaption span{font-size:10px;color:#566568;display:block;margin-top:6px;white-space:nowrap}figure div{overflow:hidden;border-radius:12px;box-shadow:0 12px 32px #17212221}img{display:block}</style><header><h1>switcher</h1><span>실제 프론트 화면 · 예시 계정 · 3개 모드</span></header><div class="views">${figures}</div></html>`;
+    const boardPath=path.join(allDir,'view-modes.html');fs.writeFileSync(boardPath,board);
     const height=Math.ceil(Math.max(...reports.slice(1).map(r=>r.height))+170);
-    await chromium(boardPath,1100,path.join(allDir,'four-modes.png'),path.join(temp,'board'),height);
+    await chromium(boardPath,1100,path.join(allDir,'view-modes.png'),path.join(temp,'board'),height);
     const apiFigure=(label,file,rect)=>`<section class="api-step"><h3>${label}</h3><div class="crop" style="width:${rect.width}px;height:${rect.height}px"><img src="${file}" style="width:420px;transform:translate(${-rect.x}px,${-rect.y}px)"></div></section>`;
-    const complete=`<!doctype html><html lang="ko"><meta charset="utf-8"><title>switcher · 전체 개선 화면</title><style>*{box-sizing:border-box}body{margin:0;background:#e8ecec;color:#182024;font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:32px 38px}header{margin-bottom:30px}h1{font-size:27px;letter-spacing:-1px;margin:0 0 7px}header p{font-size:12px;color:#566568;margin:0}.layout{display:flex;align-items:flex-start;gap:36px}.views{display:flex;align-items:flex-start;gap:24px}figure{margin:0;flex:none}figcaption{height:56px}figcaption b{font-size:15px;display:block}figcaption span{font-size:10px;color:#566568;display:block;margin-top:6px;white-space:nowrap}figure>div,.crop{overflow:hidden;border-radius:12px;box-shadow:0 12px 32px #17212221}img{display:block}.api-column{width:380px;flex:none;border-left:1px solid #cad4d4;padding-left:0}.api-step h3{font-size:13px;margin:0 0 12px}.api-step+.api-step{margin-top:24px}.note{font-size:11px;line-height:1.7;color:#566568;margin-top:20px}.extra{position:absolute;top:770px;left:482px;width:280px;display:flex;align-items:flex-start;gap:16px}.extra img{border-radius:10px;box-shadow:0 8px 24px #17212221}.extra p{font-size:11px;line-height:1.8;color:#566568;margin:6px 0}.extra strong{display:block;color:#182024;font-size:12px;margin-bottom:5px}</style><header><h1>switcher · 전체 개선 화면</h1><p>예시 계정으로 검증한 실제 프론트 · 네 가지 모드 유지 · API 키 등록부터 버튼 전환까지</p></header><div class="layout"><div class="views">${figures}</div><aside class="api-column">${apiFigure('API 01 · 키 등록', 'api-registration.png',registration.dialog)}${apiFigure('API 02 · 저장 후 바로 사용', 'api-result.png',result.dialog)}<p class="note">연결 확인·사용량은 검증용 예시 데이터입니다.<br>실제 키를 등록하면 해당 연결의 결과를 표시합니다.</p></aside></div><div class="extra"><img src="mode-no-ai.png" width="120"><p><strong>AI를 모두 숨겼을 때</strong>SYSTEM과 도구만 남습니다.<br>숨긴 계정의 빈 영역도 사라집니다.<br><br>계정 조작은 같은 위치에:<br>다시 연결 · 이름 변경 · 삭제</p></div></html>`;
+    const complete=`<!doctype html><html lang="ko"><meta charset="utf-8"><title>switcher · 전체 개선 화면</title><style>*{box-sizing:border-box}body{margin:0;background:#e8ecec;color:#182024;font-family:-apple-system,BlinkMacSystemFont,sans-serif;padding:32px 38px}header{margin-bottom:30px}h1{font-size:27px;letter-spacing:-1px;margin:0 0 7px}header p{font-size:12px;color:#566568;margin:0}.layout{display:flex;align-items:flex-start;gap:36px}.views{display:flex;align-items:flex-start;gap:24px}figure{margin:0;flex:none}figcaption{height:56px}figcaption b{font-size:15px;display:block}figcaption span{font-size:10px;color:#566568;display:block;margin-top:6px;white-space:nowrap}figure>div,.crop{overflow:hidden;border-radius:12px;box-shadow:0 12px 32px #17212221}img{display:block}.api-column{width:380px;flex:none;border-left:1px solid #cad4d4;padding-left:0}.api-step h3{font-size:13px;margin:0 0 12px}.api-step+.api-step{margin-top:24px}.note{font-size:11px;line-height:1.7;color:#566568;margin-top:20px}.extra{position:absolute;top:770px;left:482px;width:280px;display:flex;align-items:flex-start;gap:16px}.extra img{border-radius:10px;box-shadow:0 8px 24px #17212221}.extra p{font-size:11px;line-height:1.8;color:#566568;margin:6px 0}.extra strong{display:block;color:#182024;font-size:12px;margin-bottom:5px}</style><header><h1>switcher · 전체 개선 화면</h1><p>예시 계정으로 검증한 실제 프론트 · 세 가지 모드 · API 키 등록부터 버튼 전환까지</p></header><div class="layout"><div class="views">${figures}</div><aside class="api-column">${apiFigure('API 01 · 키 등록', 'api-registration.png',registration.dialog)}${apiFigure('API 02 · 저장 후 바로 사용', 'api-result.png',result.dialog)}<p class="note">연결 확인·사용량은 검증용 예시 데이터입니다.<br>실제 키를 등록하면 해당 연결의 결과를 표시합니다.</p></aside></div><div class="extra"><img src="mode-no-ai.png" width="120"><p><strong>AI를 모두 숨겼을 때</strong>SYSTEM과 도구만 남습니다.<br>숨긴 계정의 빈 영역도 사라집니다.<br><br>계정 조작은 같은 위치에:<br>다시 연결 · 이름 변경 · 삭제</p></div></html>`;
     const completePath=path.join(allDir,'complete-preview.html');fs.writeFileSync(completePath,complete);
     await chromium(completePath,1490,path.join(allDir,'complete-preview.png'),path.join(temp,'complete-board'),1200);
     reports.push(registration,result,noAI);
 
   }
-  for(const mode of ['normal','compact','minimal','edge']) reports.push(await run(mode,'empty-accounts',null));
+  for(const mode of ['normal','minimal','edge']) reports.push(await run(mode,'empty-accounts',null));
   const result={reports,passed:reports.reduce((n,r)=>n+r.checks.filter(c=>c.passed).length,0),failed:reports.reduce((n,r)=>n+r.checks.filter(c=>!c.passed).length,0)};
   if(outputAt>=0) fs.writeFileSync(process.argv[outputAt+1],JSON.stringify(result,null,2)+'\n');
   console.log(JSON.stringify(result,null,2));process.exitCode=result.failed?1:0;

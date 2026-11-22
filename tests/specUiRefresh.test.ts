@@ -8,16 +8,15 @@ const i18nSource = readFileSync(new URL("../src/i18n.ts", import.meta.url), "utf
 
 /// #102 — 활성 계정 dot. 글자·테두리가 --fg-alpha로 사라지는 골조 투명도에서도
 /// 사용량 바와 같은 --bar-alpha로 남아야 한다.
-test("status dot is attached to Type1 and Type2 card heads only", () => {
+test("status dot is attached to full-mode card heads only", () => {
   const dots = mainSource.match(/head\.append\(statusDot\(profile\.active, provider\), email\);/g) ?? [];
-  assert.equal(dots.length, 2, "profileCard and compactCard both prepend the dot to the email");
+  assert.equal(dots.length, 1, "only profileCard prepends the dot to the email (the compact mode is gone, #183)");
   assert.match(mainSource, /head\.append\(statusDot\(acc\.active\), name\);/, "GitHub cards get the same dot");
-  // Type3(minimal)는 머리를 만들지 않는다 — compactCard의 머리가 !minimal 블록 안에서 닫히기 전에
-  // dot이 붙어야 한다 (블록 닫힘 "\n  }\n"을 넘지 않는 tempered 패턴)
+  // 미니멀 카드(compactCard)는 머리를 만들지 않는다 — dot도 없다 (왼쪽 스트라이프가 프로바이더를 말한다)
   const compact = mainSource.match(/function compactCard\([\s\S]*?\n}\n/)?.[0];
   assert.ok(compact, "compactCard must exist");
-  assert.match(compact, /if \(!minimal\) \{(?:(?!\n  \}\n)[\s\S])*?statusDot\(profile\.active, provider\)/);
-  // Type4(edgeAccount)에는 붙지 않는다 — 이름 앞 ::before 표식이 그 역할
+  assert.doesNotMatch(compact, /statusDot\(|card-head/);
+  // 엣지(edgeAccount)에는 붙지 않는다 — 이름 앞 ::before 표식이 그 역할
   const edge = mainSource.match(/function edgeAccount\([\s\S]*?\n}\n/)?.[0];
   assert.ok(edge, "edgeAccount must exist");
   assert.doesNotMatch(edge, /statusDot\(/);
@@ -43,13 +42,14 @@ test("privacy blur targets the name only, so the dot stays sharp", () => {
   assert.doesNotMatch(cssSource, /body\.privacy[^{]*\.status-dot/);
 });
 
-/// #104 — 프로바이더 픽셀 아이콘. Type1 섹션 제목(계정 유무 모두)과 Type2 컴팩트
-/// 머리글 앞에 붙고, 색은 Type3 스트라이프와 같은 테마 변수를 쓴다.
-test("provider pixel icon is prepended to Type1 titles and Type2 compact heads", () => {
+/// #104 — 프로바이더 픽셀 아이콘. 일반 모드 섹션 제목(계정 유무 모두) 앞에 붙고, 색은
+/// 미니멀 스트라이프와 같은 테마 변수를 쓴다. 컴팩트 머리글은 모드와 함께 폐지됐다 (#183).
+test("provider pixel icon is prepended to full-mode section titles only", () => {
   const prepends = mainSource.match(/heading\.prepend\(providerIcon\(provider(?:\.id)?\)\);/g) ?? [];
   assert.equal(prepends.length, 2, "renderProvider and the empty-state section both get the icon");
-  assert.match(mainSource, /head\.append\(providerIcon\(provider\), name\);/, "compact head gets the icon");
-  // SYSTEM 제목(.mon-title)과 Type4에는 붙지 않는다
+  assert.doesNotMatch(mainSource, /compact-head/, "compact section heads are gone with the mode");
+  assert.doesNotMatch(cssSource, /compact-head/);
+  // SYSTEM 제목(.mon-title)과 엣지에는 붙지 않는다
   assert.doesNotMatch(mainSource, /mon-title[\s\S]{0,400}providerIcon\(/);
   const edge = mainSource.match(/async function renderProviderEdge\([\s\S]*?\n}\n/)?.[0];
   assert.ok(edge, "renderProviderEdge must exist");
@@ -75,10 +75,6 @@ test("provider icon is one path per icon, coloured by theme variables, sized to 
   assert.match(icon, /opacity: var\(--fg-alpha\);/, "fades with the title text");
   assert.match(cssSource, /\.prov-icon\.prov-claude \{[^}]*fill: rgb\(var\(--accent-rgb\)\);/);
   assert.match(cssSource, /\.prov-icon\.prov-codex \{[^}]*fill: rgb\(var\(--accent-alt-rgb\)\);/);
-  const compactIcon = cssSource.match(/\.compact-head \.prov-icon \{[^}]*\}/)?.[0];
-  assert.ok(compactIcon, "compact icon rule must exist");
-  assert.match(compactIcon, /width: 8px;/);
-  assert.match(compactIcon, /height: 8px;/);
 });
 
 // #179 supersedes the hover-only interaction. Geometry is exercised in review-layout.mjs.

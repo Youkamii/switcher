@@ -208,16 +208,6 @@ body.locked #memobtn {
   opacity: var(--bar-alpha);
 }
 
-/* 컴팩트(Type2)는 전체 밀도에 맞춰 살짝 조인다 */
-#app.compact .mon-row {
-  margin: 4px 0;
-}
-
-#app.compact .mon-val {
-  font-size: 10px;
-  min-width: 70px;
-}
-
 /* 미니멀(120px): 제목 줄 없이 카드만 쌓이는 독트린에 맞춰 SYSTEM도 제목을
    떼고, 좁은 폭에 맞게 전부 조인다. 값이 정수·무단위로 짧아져 값 칸도 좁힌다 */
 #app.minimal .mon-title {
@@ -619,13 +609,6 @@ button.link:hover {
   fill: rgb(var(--accent-alt-rgb));
 }
 
-/* 컴팩트 머리글(11px 글자)은 8px(=1px/칸) — 글줄 안에 들어간다 */
-.compact-head .prov-icon {
-  width: 8px;
-  height: 8px;
-  margin: 0;
-}
-
 .card {
   background: var(--panel);
   /* 카드 테두리도 글자와 함께 옅어진다 — 바만 남기기 위해 (#42 후속) */
@@ -662,11 +645,6 @@ button.link:hover {
 .card.active .status-dot {
   background: rgba(74, 222, 128, var(--bar-alpha));
   box-shadow: 0 0 5px rgba(74, 222, 128, calc(0.55 * var(--bar-alpha)));
-}
-
-.compact-card .status-dot {
-  width: 5px;
-  height: 5px;
 }
 
 .card-name {
@@ -743,34 +721,11 @@ button.link:hover {
   font-size: 11px;
 }
 
-/* 컴팩트 모드 — 활성 계정의 프로바이더·구독 레벨·사용량 요약만 */
-.compact-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 6px 0 3px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 1px;
-  color: var(--muted);
-}
-
-#app.compact > section:first-child .compact-head {
-  margin-top: 0;
-}
-
+/* 위젯(미니멀) 카드 — 라벨·막대·%만. .compact-*는 축소 레이아웃의 이름이다
+   (이메일·구독을 보이던 컴팩트 모드는 폐지, #183). 미니멀 전용 조임은 아래 #app.minimal */
 .compact-card {
   padding: 5px 8px;
   margin-bottom: 5px;
-}
-
-.compact-card .card-head {
-  margin-bottom: 2px;
-  gap: 6px;
-}
-
-.compact-card .card-name {
-  font-size: 11px;
 }
 
 .compact-row {
@@ -820,24 +775,9 @@ button.link:hover {
   font-weight: 700;
 }
 
-/* 컴팩트 카드가 이전 수치를 보여줄 때 — 줄을 흐리고 머리에 나이가 붙는다 */
+/* 이전 수치를 보여줄 때 — 줄을 흐린다 (나이는 카드 툴팁) */
 .compact-card.stale .compact-row {
   opacity: 0.55;
-}
-
-.c-stale {
-  color: var(--muted);
-  font-size: 9px;
-  flex: none;
-}
-
-.c-reset {
-  text-align: right;
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  /* 일::시 표기의 콜론들이 붙어 보이게 살짝 좁힌다 */
-  letter-spacing: -0.5px;
 }
 
 /* 미니멀(Type 3) — 섹션 제목·이메일·플랜·리셋 전부 없이 한 글자 라벨과
@@ -1218,10 +1158,6 @@ body.minimal .dock-tray button {
   width: 92px;
   height: 92px;
 }
-.compact-card .tfsd-watermark svg {
-  width: 54px;
-  height: 54px;
-}
 
 /* 접이식 섹션 토글 (DISPLAY·GITHUB) — 가로를 채우는 버튼, 누르면 아래로 열린다 */
 .section-toggle {
@@ -1249,11 +1185,6 @@ body.minimal .dock-tray button {
   opacity: 0.7;
   letter-spacing: 0;
 }
-.compact-toggle {
-  padding: 4px 8px;
-  font-size: 11px;
-}
-
 /* 접이식 섹션의 안내문 — .hint는 locked에서 숨겨지므로 별도 클래스 (red-review) */
 .section-note {
   margin: 4px 2px;
@@ -2373,7 +2304,7 @@ button:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus
 .workspace-heading h1 { font-size: 19px; letter-spacing: -.6px; font-weight: 650; }
 .api-register { display: flex; align-items: center; gap: 6px; border: 1px solid rgba(var(--accent-rgb),.35); background: rgba(var(--accent-rgb),.07); color: var(--accent); padding: 7px 10px; border-radius: 7px; font-size: 11px; }
 .api-register .ui-icon { width: 14px; height: 14px; }
-.mode-tabs { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 3px; padding: 3px; border-radius: 8px; background: var(--panel); border: 1px solid rgba(var(--border-rgb),.6); }
+.mode-tabs { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 3px; padding: 3px; border-radius: 8px; background: var(--panel); border: 1px solid rgba(var(--border-rgb),.6); }
 .mode-tabs button { min-width: 0; padding: 6px 2px; border: 0; background: transparent; font-size: 11px; color: var(--muted); }
 .mode-tabs button[aria-current="page"] { background: var(--panel-2); color: var(--text); box-shadow: 0 1px 3px #0003; }
 #app:not(.locked) .section-title { font-size: 10px; letter-spacing: 1.2px; margin: 14px 0 8px; min-height: 24px; }

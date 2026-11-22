@@ -775,7 +775,8 @@ fn login_session_for_request(request_id: String) -> Result<Option<String>, Strin
     login::session_for_request(&request_id)
 }
 
-/// 데모·스크린샷용: SWITCHER_VIEW=normal|compact|minimal|edge 로 초기 보기 모드를 강제한다
+/// 데모·스크린샷용: SWITCHER_VIEW=normal|minimal|edge 로 초기 보기 모드를 강제한다
+/// (폐지된 compact·locked는 프론트가 minimal로 옮긴다, #183)
 #[tauri::command]
 fn initial_view_mode() -> Option<String> {
     std::env::var("SWITCHER_VIEW").ok()

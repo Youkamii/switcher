@@ -392,7 +392,7 @@ function retryLabel(usage: Usage): string | null {
   return t("usageRetry", { n: Math.max(1, Math.ceil(secs / 60)) });
 }
 
-/// 컴팩트용 나이 축약 ("3h 전", "45m 전") — 컴팩트의 축약 표기 관례를 따른다
+/// 나이 축약 ("3h 전", "45m 전") — 위젯 모드의 좁은 자리·툴팁용
 function compactStaleAge(secs: number | null | undefined): string {
   if (secs == null) return "";
   if (secs < 3600) return t("agoMin", { n: Math.max(1, Math.floor(secs / 60)) });
@@ -1447,13 +1447,7 @@ function collapseSectionsInPlace() {
   expanded.display = false;
   document.querySelectorAll<HTMLElement>("section[data-collapsible]").forEach((el) => {
     const key = el.dataset.collapsible as CollapsibleKey;
-    el.replaceChildren(
-      collapsibleHeader(
-        key === "github" ? "GITHUB" : "DISPLAY",
-        key,
-        viewMode === "compact",
-      ),
-    );
+    el.replaceChildren(collapsibleHeader(key === "github" ? "GITHUB" : "DISPLAY", key));
     // 새로 만든 머리글에 드래그 시작을 다시 붙인다 — 안 하면 다음 전체
     // 재렌더까지 이 섹션만 드래그가 안 된다 (red-review)
     if (viewMode === "normal") attachHeaderDrag(el, key);
@@ -1471,13 +1465,9 @@ document.addEventListener("click", (event) => {
 
 /// 접이식 섹션 토글 — 가로를 채우는 버튼(왼쪽 제목, 오른쪽 ▸/▾). 누르면 아래로 열린다.
 /// 텍스트 제목은 오른쪽이 텅 비어 어정쩡했다 (사용자 피드백)
-function collapsibleHeader(
-  title: string,
-  key: CollapsibleKey,
-  compact: boolean,
-): HTMLElement {
+function collapsibleHeader(title: string, key: CollapsibleKey): HTMLElement {
   const button = document.createElement("button");
-  button.className = "section-toggle collapsible" + (compact ? " compact-toggle" : "");
+  button.className = "section-toggle collapsible";
   const label = document.createElement("span");
   label.textContent = title;
   const chev = document.createElement("span");
@@ -1543,11 +1533,11 @@ async function loadVisibility() {
   document.getElementById("tfsdbtn")?.classList.toggle("pinned", visibility.tfsd);
 }
 
-/// GITHUB 계정 카드 — 사용량 없음: 이름·활성 표시·전환뿐. 컴팩트는 전환 버튼 생략.
+/// GITHUB 계정 카드 (일반 모드 전용) — 사용량 없음: 이름·활성 표시·전환뿐.
 /// 토큰은 위젯이 만지지 않는다 (gh가 keyring에 관리, 전환은 gh auth switch 대행)
-function githubCard(acc: GithubAccount, compact = false): HTMLElement {
+function githubCard(acc: GithubAccount): HTMLElement {
   const card = document.createElement("div");
-  card.className = (compact ? "card compact-card" : "card") + (acc.active ? " active" : "");
+  card.className = "card" + (acc.active ? " active" : "");
   const head = document.createElement("div");
   head.className = "card-head";
   const name = document.createElement("span");
@@ -1561,32 +1551,30 @@ function githubCard(acc: GithubAccount, compact = false): HTMLElement {
     card.classList.add("switchable");
     card.dataset.provider = "github";
     card.dataset.name = acc.login;
-    if (!compact) {
-      // 일반 모드의 전환 버튼은 고정된 자리에 표시한다.
-      card.tabIndex = 0;
-      const actions = document.createElement("div");
-      actions.className = "card-actions";
-      const switchBtn = document.createElement("button");
-      switchBtn.className = "primary";
-      switchBtn.textContent = t("switchBtn");
-      switchBtn.addEventListener("click", async () => {
-          if (loginOpen) {
-          toast(t("loginBusy"), true);
-          return;
-        }
-        switchBtn.disabled = true;
-        try {
-          await invoke("github_switch", { name: acc.login });
-          markActiveOptimistic(card);
-          await render();
-        } catch (error) {
-          toast(String(error), true);
-          switchBtn.disabled = false;
-        }
-      });
-      actions.appendChild(switchBtn);
-      card.appendChild(actions);
-    }
+    // 일반 모드의 전환 버튼은 고정된 자리에 표시한다.
+    card.tabIndex = 0;
+    const actions = document.createElement("div");
+    actions.className = "card-actions";
+    const switchBtn = document.createElement("button");
+    switchBtn.className = "primary";
+    switchBtn.textContent = t("switchBtn");
+    switchBtn.addEventListener("click", async () => {
+      if (loginOpen) {
+        toast(t("loginBusy"), true);
+        return;
+      }
+      switchBtn.disabled = true;
+      try {
+        await invoke("github_switch", { name: acc.login });
+        markActiveOptimistic(card);
+        await render();
+      } catch (error) {
+        toast(String(error), true);
+        switchBtn.disabled = false;
+      }
+    });
+    actions.appendChild(switchBtn);
+    card.appendChild(actions);
   }
   return card;
 }
@@ -1594,7 +1582,7 @@ function githubCard(acc: GithubAccount, compact = false): HTMLElement {
 async function renderGithub(target: DocumentFragment) {
   const section = document.createElement("section");
   section.dataset.collapsible = "github";
-  section.appendChild(collapsibleHeader("GITHUB", "github", false));
+  section.appendChild(collapsibleHeader("GITHUB", "github"));
   if (!expanded.github) {
     target.appendChild(section);
     return;
@@ -1732,7 +1720,7 @@ const BRIGHTNESS_MIN = IS_MAC ? 1 : 0;
 /// 모든 모니터를 카드 하나에 모니터당 한 줄(번호·슬라이더·%)로 — 모니터마다
 /// 카드·이름 헤더를 두던 이전 구조는 세로 여백이 과했다. 전체 이름은 번호 툴팁에.
 /// Type 2/3(클릭 투과)에서도 조작된다 — reportHitRegions가 줄을 히트 영역으로 보고.
-/// 밝기 명령 전송기 (Type1/컴팩트·Type4 공용). 밝기 명령은 모니터마다 수십~수백 ms라
+/// 밝기 명령 전송기 (일반·엣지 공용). 밝기 명령은 모니터마다 수십~수백 ms라
 /// 드래그 중엔 표시만 갱신하고 손을 잠깐 멈추면(250ms) 마지막 값 하나만 보낸다.
 /// flush(change)는 손을 떼는 사용자 동작이라 타이머가 죽은 비활성 웹뷰(맥)에서도 마지막
 /// 값이 반드시 전송된다 (#178). 전송은 한 번에 하나만 — 방향키 연타처럼 change가 초당
@@ -1775,10 +1763,10 @@ function brightnessSender(monitor: DisplayInfo, slider: HTMLInputElement) {
   };
 }
 
-async function renderDisplays(target: DocumentFragment, compact: boolean) {
+async function renderDisplays(target: DocumentFragment) {
   const section = document.createElement("section");
   section.dataset.collapsible = "display";
-  section.appendChild(collapsibleHeader("DISPLAY", "display", compact));
+  section.appendChild(collapsibleHeader("DISPLAY", "display"));
   if (!expanded.display) {
     target.appendChild(section);
     return;
@@ -1793,7 +1781,7 @@ async function renderDisplays(target: DocumentFragment, compact: boolean) {
       section.appendChild(note);
     } else {
       const card = document.createElement("div");
-      card.className = compact ? "card compact-card" : "card";
+      card.className = "card";
       for (const monitor of monitors) {
         const row = document.createElement("div");
         row.className = "display-row";
@@ -1900,46 +1888,7 @@ async function renderDisplaysEdge(target: DocumentFragment) {
   target.appendChild(section);
 }
 
-/// 컴팩트의 GITHUB — 이름·활성·더블클릭 전환만, 계정이 없으면 섹션 생략
-async function renderGithubCompact(target: DocumentFragment) {
-  const section = document.createElement("section");
-  section.dataset.collapsible = "github";
-  section.appendChild(collapsibleHeader("GITHUB", "github", true));
-  if (!expanded.github) {
-    target.appendChild(section);
-    return;
-  }
-  try {
-    const snap = await invoke<GithubSnapshot>("github_list");
-    if (!snap.gh_found || snap.accounts.length === 0) {
-      const hint = document.createElement("p");
-      hint.className = "section-note";
-      hint.textContent = snap.gh_found ? t("ghNoAccounts") : t("ghNotFound");
-      section.appendChild(hint);
-    } else {
-      for (const acc of snap.accounts) section.appendChild(githubCard(acc, true));
-    }
-  } catch {
-    // 컴팩트는 표시 전용 — 조용히 넘긴다
-  }
-  target.appendChild(section);
-}
-
-/// 컴팩트용 라벨 축약: "5 Hours"→5h, "Weekly"→wk, "Daily"→1d, Fable→fb, 그 외 모델→앞 2글자
-function compactLabel(win: UsageWindow): string {
-  const label = win.label;
-  if (label === "5 Hours") return "5h";
-  if (label === "Weekly") return "wk";
-  if (label === "Daily") return "1d";
-  if (label === "Fable") return "fb";
-  const hours = label.match(/^(\d+) Hours?$/);
-  if (hours) return `${hours[1]}h`;
-  const days = label.match(/^(\d+) Days?$/);
-  if (days) return `${days[1]}d`;
-  return label.slice(0, 2).toLowerCase();
-}
-
-/// 컴팩트용 리셋 시간 — 콜론 개수가 단위 급을 나타낸다:
+/// 짧은 리셋 시간 (엣지 모드의 남은 시간 툴팁) — 콜론 개수가 단위 급을 나타낸다:
 /// 24시간 이상이면 일::시(5::17), 그 밑이면 시:분(2:21)
 function compactReset(resetsAt: string | null): string {
   if (!resetsAt) return "";
@@ -1982,13 +1931,13 @@ function minimalLabel(win: UsageWindow): string {
   return label.charAt(0).toUpperCase();
 }
 
-/// 컴팩트 카드 하나 — 이메일·구독 배지·사용량 요약. Type 1과 같은 카드 규칙
-/// (.card/.active/.switchable)을 쓰므로 활성 색·채도·더블클릭 전환이 그대로 동작한다.
-/// minimal(Type 3)이면 머리(이메일·플랜·나이)와 리셋 시각을 빼고 라벨+바만 남긴다.
+/// 미니멀 카드 하나 — 프로바이더 스트라이프 + 라벨·막대·%만 (머리·리셋 시각 없음).
+/// 일반 모드와 같은 카드 규칙(.card/.active/.switchable)을 쓰므로 활성 색·채도·
+/// 더블클릭 전환이 그대로 동작한다. 이메일·구독을 보이던 컴팩트 모드는 2026-11-21
+/// 폐지됐다 (사용자 지시 #183) — 함수·클래스 이름의 "compact"는 축소 레이아웃을 뜻한다.
 function compactCard(
   provider: ProviderId,
   profile: ProfileInfo,
-  minimal: boolean,
   pending: Promise<unknown>[],
   forceRetry: boolean,
 ): HTMLElement {
@@ -2002,28 +1951,6 @@ function compactCard(
     card.dataset.name = profile.name;
   }
 
-  const head = document.createElement("div");
-  if (!minimal) {
-    head.className = "card-head";
-    const email = document.createElement("span");
-    email.className = "card-name";
-    email.textContent = profile.email ?? profile.name;
-    email.title = t("profileNameTooltip", { name: profile.name });
-    head.append(statusDot(profile.active, provider), email);
-    if (profile.plan) {
-      const plan = document.createElement("span");
-      plan.className = "badge plan";
-      plan.textContent = profile.plan;
-      if (profile.plan_tier) {
-        const tier = document.createElement("span");
-        tier.className = `tier tier-${profile.plan_tier}`;
-        tier.textContent = String(profile.plan_tier);
-        plan.appendChild(tier);
-      }
-      head.appendChild(plan);
-    }
-    card.appendChild(head);
-  }
   if (profile.active && visibility.tfsd) {
     card.appendChild(tfsdWatermark());
     card.title = t("tfsdTooltip");
@@ -2039,7 +1966,7 @@ function compactCard(
         forceRetry,
       );
       const retry = retryLabel(usage);
-      if (usage.issue) showUsageIssue(card, usage.issue, minimal);
+      if (usage.issue) showUsageIssue(card, usage.issue, true);
       if (usage.windows.length === 0) {
         // 이전 수치조차 없는 백오프 대기 — 남은 시간만 한 줄 (#122)
         if (retry) {
@@ -2052,17 +1979,9 @@ function compactCard(
         return;
       }
       if (usage.stale) {
-        // 컴팩트에서도 이전 수치임을 숨기지 않는다 — 줄을 흐리고 머리에 나이를 붙인다
-        // (미니멀은 붙일 머리가 없으니 줄 흐림만 남는다)
+        // 이전 수치임을 숨기지 않는다 — 줄을 흐리고(붙일 머리가 없다) 나이는 툴팁에 남긴다
         card.classList.add("stale");
-        if (!minimal) {
-          const age = document.createElement("span");
-          age.className = "c-stale";
-          age.textContent = [compactStaleAge(usage.stale_age_secs), retry]
-            .filter(Boolean)
-            .join(" · ");
-          head.appendChild(age);
-        }
+        card.title = [card.title, compactStaleAge(usage.stale_age_secs)].filter(Boolean).join(" · ");
         if (retry) card.title = [card.title, retry].filter(Boolean).join(" · ");
       }
       for (const win of usage.windows) {
@@ -2070,7 +1989,7 @@ function compactCard(
         row.className = "compact-row";
         const label = document.createElement("span");
         label.className = "c-label";
-        label.textContent = minimal ? minimalLabel(win) : compactLabel(win);
+        label.textContent = minimalLabel(win);
         label.title = win.label;
         const bar = document.createElement("div");
         bar.className = "bar";
@@ -2092,17 +2011,10 @@ function compactCard(
         used.textContent = String(Math.min(100, Math.max(0, Math.round(win.percent))));
         wrap.appendChild(used);
         row.append(label, wrap);
-        if (!minimal) {
-          const reset = document.createElement("span");
-          reset.className = "c-reset";
-          reset.textContent = compactReset(win.resets_at);
-          reset.title = t("resetTooltip");
-          row.appendChild(reset);
-        }
         card.appendChild(row);
       }
     } catch (error) {
-      showUsageIssue(card, String(error), minimal);
+      showUsageIssue(card, String(error), true);
     } finally {
       // 즉시 모드에서는 카드 골격을 먼저 붙인다. 사용량이 나중에 늘린 실제 높이를
       // 다시 맞추되, 이미 폐기된 렌더 버퍼는 창 크기에 영향을 주지 않게 한다.
@@ -2124,7 +2036,7 @@ function edgeBar(): HTMLElement {
   handle.title = t("dragHandle");
   const mode = document.createElement("button");
   mode.className = "edge-ui edge-mode";
-  mode.textContent = currentLang() === "ko" ? "4 엣지" : "4 Edge";
+  mode.textContent = viewModeName("edge");
   mode.title = t("typeTooltip");
   mode.addEventListener("click", () => lockBtn.click());
   bar.append(handle, mode);
@@ -2423,7 +2335,7 @@ async function edgeSwitch(card: HTMLElement) {
   }
 }
 
-/// 컴팩트(Type 2)·미니멀(Type 3) 렌더 — 모든 계정이 나오고 더블클릭 전환도 된다
+/// 위젯 모드(미니멀·엣지) 공용 — 계정 카드를 쌓고, 사용 중인 API 키를 소속 계정 아래에 묶는다
 function appendWidgetAccounts(section: HTMLElement, provider: ProviderId, snap: Snapshot, force: boolean, makeCard: (profile: ProfileInfo) => HTMLElement) {
   const name = snap.api_active;
   const owner = name && snap.profiles.find(profile => profile.id === snap.api_active_account_id);
@@ -2451,11 +2363,11 @@ function appendWidgetAccounts(section: HTMLElement, provider: ProviderId, snap: 
   }
 }
 
+/// 미니멀 렌더 — 모든 계정이 나오고 더블클릭 전환도 된다. 섹션 제목(CLAUDE/CODEX)은
+/// 없고 카드만 쌓인다 (#41 후속) — 프로바이더는 왼쪽 색 스트라이프가 말한다.
 async function renderProviderCompact(
   provider: ProviderId,
-  title: string,
   target: DocumentFragment,
-  minimal: boolean,
   pending: Promise<unknown>[],
   forceRetry: boolean,
 ) {
@@ -2464,22 +2376,12 @@ async function renderProviderCompact(
     if (snap.profiles.length === 0 && !snap.api_active) return;
 
     const section = document.createElement("section");
-    // 미니멀은 섹션 제목(CLAUDE/CODEX)도 없다 — 카드만 쌓인다 (#41 후속)
-    if (!minimal) {
-      const head = document.createElement("div");
-      head.className = "compact-head";
-      const name = document.createElement("span");
-      name.textContent = title;
-      head.append(providerIcon(provider), name);
-      section.appendChild(head);
-    }
-
     // 카드 골격은 즉시 붙이고 사용량만 뒤에서 병렬로 채운다. 모드 전환이 네트워크
     // 조회를 기다리며 멎지 않게 하면서, 일반 새로고침은 pending을 기다려 한 번에 바뀐다.
-    appendWidgetAccounts(section, provider, snap, forceRetry, profile => compactCard(provider, profile, minimal, pending, forceRetry));
+    appendWidgetAccounts(section, provider, snap, forceRetry, profile => compactCard(provider, profile, pending, forceRetry));
     target.appendChild(section);
   } catch {
-    // 목록 실패도 조용히 — 컴팩트는 표시 전용
+    // 목록 실패도 조용히 — 위젯 모드는 표시 전용
   }
 }
 
@@ -2542,10 +2444,9 @@ async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
         const modes = document.createElement("nav");
         modes.className = "mode-tabs";
         modes.setAttribute("aria-label", t("typeTooltip"));
-        const labels = currentLang() === "ko" ? ["일반", "컴팩트", "미니멀", "엣지"] : ["Full", "Compact", "Minimal", "Edge"];
-        VIEW_CYCLE.forEach((value, index) => {
+        VIEW_CYCLE.forEach((value) => {
           const button = document.createElement("button");
-          button.textContent = `${index + 1} ${labels[index]}`;
+          button.textContent = viewModeName(value);
           button.setAttribute("aria-current", value === mode ? "page" : "false");
           button.addEventListener("click", () => selectViewMode(value));
           modes.append(button);
@@ -2556,8 +2457,8 @@ async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
       const pending: Promise<unknown>[] = [];
       // Type4(벽 붙임)는 타이틀바·독을 감추고 손잡이·모드 버튼을 본문 맨 위에 둔다
       if (mode === "edge") buffer.appendChild(edgeBar());
-      // 섹션은 사용자가 정한 순서(sectionOrder)대로 그린다 — Type1에서 머리글
-      // 드래그로 바꾸고, 컴팩트에도 같은 순서가 적용된다.
+      // 섹션은 사용자가 정한 순서(sectionOrder)대로 그린다 — 일반 모드에서 머리글
+      // 드래그로 바꾸고, 미니멀에도 같은 순서가 적용된다.
       // 미니멀은 사용량 전용(#41)이라 GITHUB·DISPLAY는 그리지 않는다 —
       // 단 SYSTEM은 예외로 함께 나온다 (사용자 요청: PC 상태는 미니멀에서도).
       // Type4는 순서를 고정한다: 사용량(프로바이더는 sectionOrder 순) → SYSTEM →
@@ -2583,29 +2484,18 @@ async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
             const title = PROVIDERS.find((p) => p.id === key)!.title;
             if (mode === "edge") {
               await renderProviderEdge(key, title, frag, pending, thisForceRetry);
-            } else if (mode !== "normal") {
-              await renderProviderCompact(
-                key,
-                title,
-                frag,
-                mode === "minimal",
-                pending,
-                thisForceRetry,
-              );
+            } else if (mode === "minimal") {
+              await renderProviderCompact(key, frag, pending, thisForceRetry);
             } else {
               await renderProvider(key, title, frag, pending, thisForceRetry);
             }
           } else if (key === "github") {
             if (!visibility.github || mode === "minimal") return;
-            if (mode === "compact") {
-              await renderGithubCompact(frag);
-            } else {
-              await renderGithub(frag);
-            }
+            await renderGithub(frag);
           } else if (key === "display") {
             if (!visibility.display || mode === "minimal") return;
             if (mode === "edge") await renderDisplaysEdge(frag);
-            else await renderDisplays(frag, mode === "compact");
+            else await renderDisplays(frag);
           } else if (key === "system") {
             if (mode === "edge") renderMonitorEdge(frag);
             else renderMonitor(frag);
@@ -2633,7 +2523,7 @@ async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
         // 스무스 새로고침: 기존 화면을 그대로 둔 채 사용량까지 받아진 뒤 교체한다.
         // 일반 모드의 사용량 채움에는 10초 상한 — 조회 하나가 매달려도 여기서 안
         // 굳고, 상한에 걸쳐 교체돼도 남은 조회는 같은 카드(동일 노드)를 이어서
-        // 채운다. 컴팩트 사용량도 같은 pending 경로를 써서 캐시 적중 여부와 무관하다.
+        // 채운다. 미니멀 사용량도 같은 pending 경로를 써서 캐시 적중 여부와 무관하다.
         await Promise.race([
           Promise.allSettled(pending),
           new Promise<void>((resolve) => window.setTimeout(resolve, 10_000)),
@@ -2702,22 +2592,37 @@ function userIsBusy(): boolean {
 
 const appWindow = getCurrentWindow();
 
-// 보기 모드 4단계 사이클: 일반 → 컴팩트(활성 계정 요약) → 미니멀(사용량만) →
-// 벽 붙임(Type4, #151: 좌/우 벽에 액체 손잡이(현재 계정 게이지)로 맺혀 있다가 호버
-// 시 부풀어 세로 막대 패널이 된다) → 일반.
+// 보기 모드 3단계 사이클: 1 일반 → 2 미니멀(사용량만) → 3 엣지(벽 붙임, #151: 좌/우 벽에
+// 액체 손잡이(현재 계정 게이지)로 맺혀 있다가 호버 시 부풀어 세로 막대 패널이 된다) → 일반.
+// 이메일·구독을 보이던 컴팩트(옛 2번)는 2026-11-21 폐지됐다 (사용자 지시 #183) — 옛 주석·
+// 이슈의 "Type3"는 지금의 2 미니멀, "Type4"는 3 엣지다.
 // 위젯 모드(일반 제외) 공통: 조작 숨김, 클릭 투과, ☰ 핸들로만 이동. (항상-위는 창 기본 설정)
-const VIEW_CYCLE = ["normal", "compact", "minimal", "edge"] as const;
+const VIEW_CYCLE = ["normal", "minimal", "edge"] as const;
 type ViewMode = (typeof VIEW_CYCLE)[number];
 function isViewMode(value: unknown): value is ViewMode {
   return (VIEW_CYCLE as readonly unknown[]).includes(value);
 }
+/// 폐지된 모드의 저장값·환경변수 이름을 미니멀로 옮긴다 — "locked"(옛 위젯 풀형, #41)와
+/// "compact"(옛 2번 컴팩트, #183)
+function migrateViewMode(value: unknown): unknown {
+  return value === "locked" || value === "compact" ? "minimal" : value;
+}
+/// 번호가 붙은 모드 이름 — 타이틀바 버튼·일반 모드의 모드 탭·엣지 판의 모드 버튼이 같이 쓴다.
+/// 번호는 순환 순서에서 뽑아 순서가 바뀌어도 어긋나지 않는다.
+function viewModeName(mode: ViewMode): string {
+  const names: Record<ViewMode, [string, string]> = {
+    normal: ["일반", "Full"],
+    minimal: ["미니멀", "Minimal"],
+    edge: ["엣지", "Edge"],
+  };
+  return `${VIEW_CYCLE.indexOf(mode) + 1} ${names[mode][currentLang() === "ko" ? 0 : 1]}`;
+}
 const lockBtn = document.getElementById("pin") as HTMLButtonElement;
 let viewMode: ViewMode = (() => {
-  const stored = localStorage.getItem("switcher.viewmode");
+  const stored = migrateViewMode(localStorage.getItem("switcher.viewmode"));
   if (isViewMode(stored) && stored !== "normal") return stored;
-  // Type2(위젯 풀형)는 폐지됐다(#41) — 예전 locked 저장값은 컴팩트로 이관
-  if (stored === "locked") return "compact";
-  return localStorage.getItem("switcher.locked") === "1" ? "compact" : "normal";
+  // 더 옛 버전의 고정 플래그(switcher.locked)도 같은 축소 모드로 본다
+  return localStorage.getItem("switcher.locked") === "1" ? "minimal" : "normal";
 })();
 // 파생: 위젯형(조작 숨김·투과) 여부
 let locked = viewMode !== "normal";
@@ -2727,7 +2632,8 @@ function applyViewMode() {
   const nativeLocked = viewMode !== "normal";
   locked = displayMode !== "normal";
   app.classList.toggle("locked", locked);
-  // 컴팩트·미니멀은 같은 축소 레이아웃을 공유하고, 미니멀이 위에 더 덜어낸다
+  // .compact는 위젯 모드 공통 축소 레이아웃의 CSS 이름이다 (옛 컴팩트 모드에서 왔다).
+  // 미니멀·엣지가 그대로 쓰고, .minimal이 그 위에서 더 덜어낸다
   app.classList.toggle("compact", locked);
   app.classList.toggle("minimal", displayMode === "minimal");
   // 타이틀바도 위젯 모드로 (이름·새로고침·슬라이더 숨김, 남은 버튼은 호버 시에만 또렷)
@@ -2735,8 +2641,7 @@ function applyViewMode() {
   document.body.classList.toggle("minimal", displayMode === "minimal");
   applyEdgeMode(displayMode === "edge");
   lockBtn.classList.toggle("pinned", locked);
-  const modeNames = currentLang() === "ko" ? ["1 일반", "2 컴팩트", "3 미니멀", "4 엣지"] : ["1 Full", "2 Compact", "3 Minimal", "4 Edge"];
-  lockBtn.textContent = modeNames[VIEW_CYCLE.indexOf(displayMode)];
+  lockBtn.textContent = viewModeName(displayMode);
   // 위젯 모드에서는 ☰ 핸들을 잡아야만 창이 움직인다 — 타이틀바 전체 드래그를 끈다
   if (locked || starPromptOpen) {
     titlebarEl.removeAttribute("data-tauri-drag-region");
@@ -3295,17 +3200,15 @@ async function fitWindowToContent() {
       // 배율이 소수인 화면에서 round가 1px을 깎아 하단을 자르지 않게 올림한다.
       // 논리→물리 변환의 최근접 반올림까지 버티도록 콘텐츠보다 1px 여유를 둔다.
       const target = Math.ceil(Math.max(80, Math.min(total + 1, max)));
-      // 컴팩트 모드는 창 자체도 좁게, 미니멀은 더 좁게 (150→120, 사용자 지시 —
-      // 타이틀바 버튼은 한 줄을 포기하고 다음 줄로 흐른다)
+      // 미니멀은 창 자체도 좁게 (150→120, 사용자 지시 — 타이틀바 버튼은 한 줄을
+      // 포기하고 다음 줄로 흐른다), 엣지는 80
       const width = loginOpen || starPromptOpen
         ? 420
         : viewMode === "edge"
           ? 80
           : viewMode === "minimal"
             ? 120
-            : viewMode === "compact"
-              ? 280
-              : 420;
+            : 420;
       // 크기 조절 기준은 "오른쪽 상단" — 목표 폭이 실제로 바뀌는 전환에서만
       // 우측 가장자리를 고정한다. (바깥 크기에는 그림자가 포함되므로 실측 폭과
       // 목표 폭을 비교하면 매번 어긋나 창이 조금씩 밀리는 버그가 있었다)
@@ -3412,7 +3315,7 @@ void syncCurrentMonitor(true);
 // 데모·스크린샷용 초기 모드 강제 (SWITCHER_VIEW 환경변수) —
 // 진행 중인 첫 렌더가 있으면 render()가 큐잉해 단일 모드로 다시 그린다
 void invoke<string | null>("initial_view_mode").then((mode) => {
-  if (mode === "locked") mode = "compact"; // Type2 폐지(#41) — 옛 이름 이관
+  mode = migrateViewMode(mode) as string | null; // 폐지된 모드명 이관
   if (isViewMode(mode)) {
     viewMode = mode;
     applyViewMode();
@@ -3880,8 +3783,7 @@ function moveSection(from: SectionKey, to: SectionKey, before: boolean) {
 /// 머리글에 드래그 시작을 붙인다 — 접기(collapseSectionsInPlace)가 머리글을
 /// 새로 만들 때도 다시 불러야 한다 (red-review: 접힌 뒤 드래그 시작 불가)
 function attachHeaderDrag(section: HTMLElement, key: SectionKey) {
-  // .compact-head는 안 찾는다 — 호출부가 전부 normal 모드 게이트라 컴팩트
-  // 머리글에는 닿을 일이 없다 (리뷰 #53: 죽은 셀렉터 정리)
+  // 호출부가 전부 normal 모드 게이트라 일반 모드 머리글(.section-title·.section-toggle)만 본다
   const header = section.querySelector<HTMLElement>(".section-title, .section-toggle");
   if (!header) return;
   header.draggable = true;
