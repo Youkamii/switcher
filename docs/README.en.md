@@ -227,7 +227,7 @@ Conversation history, memory and project settings are separate from credentials 
 
 ### Move to another PC
 
-**Move to another PC**, at the bottom of normal mode, moves your subscription logins and API keys to another PC. It also works between macOS and Windows. Settings and notes are not moved.
+**Move to another PC**, at the bottom of normal mode, moves your subscription logins and API keys (with the remaining credit you checked) to another PC. It also works between macOS and Windows. Settings and notes are not moved.
 
 1. On the source PC, choose **Export**, set a password (8+ characters) and press **Create**.
 2. Press **Copy** and send the text through a messenger or a note, or press **Save as file** and move `switcher-transfer-date-time.swx` from Downloads. Both carry the same contents.

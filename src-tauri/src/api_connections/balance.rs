@@ -435,6 +435,7 @@ async fn read_with(
 mod console_profile;
 mod console_reading;
 pub use console_reading::{import, ConsoleReading};
+pub(super) use console_reading::{export_reading, import_reading, TransferReading};
 
 #[cfg(test)]
 mod tests;

@@ -886,8 +886,11 @@ pub async fn check(env: &Env, provider: &str, name: &str) -> Result<Connection, 
 // ── 다른 PC로 옮기기 (#189) ────────────────────────────────────────
 // 키 원문은 OS 보안 저장소(키체인·DPAPI)에 있고 그 PC 밖에서는 풀리지 않는다. 옮길 때는 여기서
 // 꺼내 transfer.rs가 비밀번호로 잠근 묶음에 담고, 받는 PC에서 그 PC의 보안 저장소에 다시 넣는다.
-// 옮기는 것은 키와 "어느 계정의 무슨 이름 키인가"뿐이다 — 확인 상태·잔액 기록·런처는 PC마다
-// 다시 만들어진다. Debug를 달지 말 것 — 키 원문이 있다.
+// 옮기는 것은 키와 그 키의 카드에 보이는 것이다: 어느 계정의 무슨 이름 키인가, Console에서 확인해 둔
+// 남은 금액, 「연결 확인됨」. 받는 PC의 카드가 보내는 PC와 같아야 한다 — 처음에 "잔액 기록과 확인 상태는
+// PC마다 다시 만들어진다"고 넘겨짚어 뺐다가 받는 PC에서 남은 금액이 안 나왔다(남은 금액은 사용자가
+// 대시보드를 붙여넣어 만든 값이라 저절로 다시 생기지 않는다). 런처(run.*·key.*)만 PC마다 다시 만든다.
+// Debug를 달지 말 것 — 키 원문이 있다.
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct TransferKey {
@@ -897,6 +900,12 @@ pub(crate) struct TransferKey {
     /// 사용자가 보는 키 이름 (계정 안에서 구분된다). 저장 이름은 PC마다 다를 수 있다.
     name: String,
     key: String,
+    /// Console에서 확인해 둔 조직 크레딧 — 받는 PC에서도 남은 금액이 보이게 함께 옮긴다
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credit: Option<balance::TransferReading>,
+    /// 보내는 PC에서 이 키의 연결을 확인한 시각(「연결 확인됨」일 때만). 같은 키이므로 그 확인이 그대로 통한다.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checked_at: Option<u64>,
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
@@ -923,15 +932,32 @@ pub(crate) fn export_keys_with(env: &Env, secrets: &impl Secrets) -> Result<Vec<
             // 키를 못 읽은 연결을 조용히 빼면 "전부 옮겼다"가 거짓이 된다 — 내보내기를 멈춘다
             let key = String::from_utf8(secrets.get(&service(provider, &connection.name))?)
                 .map_err(|_| "저장된 API 키 형식 오류")?;
+            let dir = root(env).join(provider.dir_name()).join(&connection.name);
             out.push(TransferKey {
                 provider: provider.dir_name().into(),
                 name: connection.display_name().to_owned(),
+                credit: balance::export_reading(&dir, &connection.revision),
+                checked_at: connection.checked_at.filter(|_| connection.check_state == CheckState::Ready),
                 account_id: connection.account_id,
                 key,
             });
         }
     }
     Ok(out)
+}
+
+/// 방금 놓은 키에 보내는 PC의 「연결 확인됨」을 옮겨 적는다. 호출자가 LOCK을 쥐고 있어야 한다.
+fn carry_check(env: &Env, provider: Provider, mut stored: Connection, checked_at: Option<u64>) -> Result<Connection, String> {
+    // 묶음은 바깥 입력이다 — 터무니없는 시각(0, 먼 미래)은 옮기지 않는다
+    let Some(at) = checked_at.filter(|at| *at > 0 && *at <= crate::accounts::now() + 86_400) else {
+        return Ok(stored);
+    };
+    let (_, dir) = checked(env, provider.dir_name(), &stored.name)?;
+    stored.checked_at = Some(at);
+    stored.check_state = CheckState::Ready;
+    let bytes = serde_json::to_vec(&stored).map_err(|_| "API 확인 상태 저장 실패")?;
+    atomic_write(&dir.join("connection.json"), &bytes)?;
+    Ok(stored)
 }
 
 pub(crate) fn import_keys(env: &Env, keys: &[TransferKey]) -> Result<KeyImport, String> {
@@ -943,6 +969,9 @@ pub(crate) fn import_keys(env: &Env, keys: &[TransferKey]) -> Result<KeyImport, 
 /// 사용 중이던 키는 덮어쓴 뒤 같은 자리에서 다시 적용한다 — 화면의 「키 교체 → 저장하고 사용」과
 /// 같은 길이다(Codex는 활성 auth.json에 키 사본이 있어, 다시 적용하지 않으면 옛 키로 계속 돈다).
 /// 호출자가 MUTATION_LOCK을 쥐고 있어야 한다.
+///
+/// 새로 놓은 키(추가·덮어쓰기)에는 보내는 PC의 「연결 확인됨」도 옮겨 적는다 — 같은 키이므로 그 확인이
+/// 그대로 통한다. 받는 PC에 이미 같은 키가 있었으면 그 PC의 확인 상태를 둔다.
 pub(crate) fn import_keys_with(
     env: &Env,
     secrets: &impl Secrets,
@@ -969,26 +998,29 @@ pub(crate) fn import_keys_with(
         let same = connections
             .iter()
             .find(|c| c.account_id == item.account_id && c.display_name() == display);
-        if let Some(existing) = same {
+        // 키가 놓인 연결 — 남은 금액 기록을 여기(이 연결의 revision)에 묶는다
+        let landed = if let Some(existing) = same {
             let id = service(provider, &existing.name);
             if secrets.get(&id).is_ok_and(|stored| stored == item.key.as_bytes()) {
                 result.unchanged += 1;
-                continue;
+                existing.clone()
+            } else {
+                let was_active = activation::is_active(env, provider, existing).unwrap_or(false);
+                let stored = store_key(
+                    env,
+                    secrets,
+                    provider,
+                    &existing.name,
+                    &item.key,
+                    existing.account_id.as_deref(),
+                    existing.label.clone(),
+                )?;
+                if was_active && activation::activate_locked(env, secrets, provider, &existing.name).is_err() {
+                    result.reapply_failed.push(display);
+                }
+                result.replaced += 1;
+                carry_check(env, provider, stored, item.checked_at)?
             }
-            let was_active = activation::is_active(env, provider, existing).unwrap_or(false);
-            store_key(
-                env,
-                secrets,
-                provider,
-                &existing.name,
-                &item.key,
-                existing.account_id.as_deref(),
-                existing.label.clone(),
-            )?;
-            if was_active && activation::activate_locked(env, secrets, provider, &existing.name).is_err() {
-                result.reapply_failed.push(display);
-            }
-            result.replaced += 1;
         } else {
             let mut storage = display.clone();
             for suffix in 2.. {
@@ -998,8 +1030,14 @@ pub(crate) fn import_keys_with(
                 storage = format!("{}-{suffix}", &display[..display.len().min(20)]);
             }
             let label = (storage != display).then(|| display.clone());
-            store_key(env, secrets, provider, &storage, &item.key, item.account_id.as_deref(), label)?;
+            let stored = store_key(env, secrets, provider, &storage, &item.key, item.account_id.as_deref(), label)?;
             result.added += 1;
+            carry_check(env, provider, stored, item.checked_at)?
+        };
+        if let Some(reading) = &item.credit {
+            let dir = root(env).join(provider.dir_name()).join(&landed.name);
+            // 금액 기록을 못 써도 키는 들어갔다 — 그때는 받는 PC에서 대시보드를 다시 가져오면 된다
+            let _ = balance::import_reading(&dir, &landed.revision, reading);
         }
     }
     Ok(result)
@@ -1025,7 +1063,100 @@ pub(crate) mod tests {
         }
     }
     fn transfer_key(provider: &str, account: Option<&str>, name: &str, key: &str) -> TransferKey {
-        TransferKey { provider: provider.into(), account_id: account.map(str::to_owned), name: name.into(), key: key.into() }
+        TransferKey { provider: provider.into(), account_id: account.map(str::to_owned), name: name.into(), key: key.into(), credit: None, checked_at: None }
+    }
+    /// 연결 폴더에 저장된 Console 확인값 — (조직 ID, 묶인 revision, 금액, 확인 시각)
+    fn saved_reading(env: &Env, storage: &str) -> Option<(String, String, i64, u64)> {
+        let bytes = fs::read(root(env).join("claude").join(storage).join("console-credit.json")).ok()?;
+        let saved: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        Some((
+            saved["organization_id"].as_str()?.to_owned(),
+            saved["revision"].as_str()?.to_owned(),
+            saved["credit"]["amount_minor"].as_i64()?,
+            saved["credit"]["checked_at"].as_u64()?,
+        ))
+    }
+    pub(crate) fn write_reading(env: &Env, storage: &str, org: &str, revision: &str, amount_minor: i64, checked_at: u64) {
+        fs::write(
+            root(env).join("claude").join(storage).join("console-credit.json"),
+            format!(r#"{{"organization_id":"{org}","revision":"{revision}","credit":{{"amount_minor":{amount_minor},"currency":"USD","checked_at":{checked_at}}}}}"#),
+        )
+        .unwrap();
+    }
+
+    /// #189 — "남은 api 사용량 왜 안나와": Console에서 확인해 둔 남은 금액도 키와 함께 온다
+    #[test]
+    fn the_remaining_credit_reading_travels_with_its_key() {
+        const ORG: &str = "11111111-2222-4333-8444-555555555555";
+        let from = crate::accounts::test_support::test_env("api-transfer-reading-from");
+        let from_secrets = Memory::default();
+        add_account(&from, Provider::Claude, "one", "acct-1");
+        let sent = save_for_account(&from, &from_secrets, "claude", "acct-1", "work", "sk-fixture-a-reading-000001", false).unwrap();
+        // 보내는 PC의 카드: 「연결 확인됨」, 남은 금액은 Console에서 확인해 둔 값
+        let sent = land_check(&from, Provider::Claude, &sent, CheckState::Ready).unwrap();
+        write_reading(&from, &sent.name, ORG, &sent.revision, 12_345, 1_795_000_000);
+        // 묶음에 실리는 모양으로 한 번 왕복한다
+        let export = |env: &Env, secrets: &Memory| -> Vec<TransferKey> {
+            serde_json::from_slice(&serde_json::to_vec(&export_keys_with(env, secrets).unwrap()).unwrap()).unwrap()
+        };
+        let incoming = export(&from, &from_secrets);
+        assert!(incoming[0].credit.is_some());
+
+        // 받는 PC에 키가 없다: 키와 금액이 함께 들어오고, 금액은 받는 쪽 연결에 묶인다
+        let to = crate::accounts::test_support::test_env("api-transfer-reading-to");
+        let to_secrets = Memory::default();
+        add_account(&to, Provider::Claude, "one", "acct-1");
+        import_keys_with(&to, &to_secrets, &incoming).unwrap();
+        let landed = stored_connections(&to, Provider::Claude).unwrap().remove(0);
+        assert_ne!(landed.revision, sent.revision, "each PC has its own revision for the key");
+        // 카드가 보내는 PC와 같다: 「연결 확인됨」(확인한 시각도 그대로)
+        assert_eq!((landed.check_state, landed.checked_at), (CheckState::Ready, sent.checked_at));
+        assert_eq!(saved_reading(&to, &landed.name), Some((ORG.into(), landed.revision.clone(), 12_345, 1_795_000_000)));
+        // 받는 PC에서 다시 내보내도 같은 금액이 나온다 — 화면이 읽는 길(지금 키에 묶인 값)로 통한다
+        assert_eq!(export(&to, &to_secrets)[0].credit, incoming[0].credit);
+
+        // 같은 키가 이미 있을 때: 받는 PC가 더 최근에 확인했으면 그대로, 더 옛 값이면 받은 것으로
+        write_reading(&to, &landed.name, ORG, &landed.revision, 999, 1_795_999_999);
+        let again = import_keys_with(&to, &to_secrets, &incoming).unwrap();
+        assert_eq!((again.added, again.replaced, again.unchanged), (0, 0, 1));
+        assert_eq!(saved_reading(&to, &landed.name).unwrap().2, 999);
+        write_reading(&to, &landed.name, ORG, &landed.revision, 999, 1_794_000_000);
+        import_keys_with(&to, &to_secrets, &incoming).unwrap();
+        assert_eq!(saved_reading(&to, &landed.name).unwrap().2, 12_345);
+
+        // 받는 PC의 키가 달라서 덮어쓸 때: 새 키(새 revision)에 받은 금액이 묶인다
+        let other = crate::accounts::test_support::test_env("api-transfer-reading-other");
+        let other_secrets = Memory::default();
+        add_account(&other, Provider::Claude, "one", "acct-1");
+        let old = save_for_account(&other, &other_secrets, "claude", "acct-1", "work", "sk-fixture-b-old-key-0000001", false).unwrap();
+        write_reading(&other, &old.name, ORG, &old.revision, 777, 1_795_999_999);
+        let replaced = import_keys_with(&other, &other_secrets, &incoming).unwrap();
+        assert_eq!(replaced.replaced, 1);
+        let now = stored_connections(&other, Provider::Claude).unwrap().remove(0);
+        assert_eq!(saved_reading(&other, &now.name), Some((ORG.into(), now.revision.clone(), 12_345, 1_795_000_000)));
+        assert_eq!((now.check_state, now.checked_at), (CheckState::Ready, sent.checked_at));
+        // 보내는 PC에서 확인 전이던 키는 받는 PC에서도 확인 전이다
+        let unchecked = [transfer_key("claude", Some("acct-1"), "fresh", "sk-fixture-a-unchecked-00001")];
+        import_keys_with(&other, &other_secrets, &unchecked).unwrap();
+        let fresh_key = stored_connections(&other, Provider::Claude).unwrap().into_iter().find(|c| c.display_name() == "fresh").unwrap();
+        assert_eq!((fresh_key.check_state, fresh_key.checked_at), (CheckState::Unchecked, None));
+
+        // 옛 키에 묶인 값은 내보내지 않는다
+        write_reading(&from, &sent.name, ORG, "an-older-key", 12_345, 1_795_000_000);
+        assert!(export(&from, &from_secrets)[0].credit.is_none());
+        // 모양이 맞지 않는 값(조직 ID가 UUID가 아님, 통화가 다름)은 쓰지 않는다 — 키는 들어간다
+        let crafted: Vec<TransferKey> = serde_json::from_value(serde_json::json!([
+            {"provider": "claude", "account_id": "acct-1", "name": "one", "key": "sk-fixture-crafted-reading-01",
+             "credit": {"organization_id": "../../outside", "credit": {"amount_minor": 1, "currency": "USD", "checked_at": 1}}},
+            {"provider": "claude", "account_id": "acct-1", "name": "two", "key": "sk-fixture-crafted-reading-02",
+             "credit": {"organization_id": ORG, "credit": {"amount_minor": 1, "currency": "KRW", "checked_at": 1}}}
+        ]))
+        .unwrap();
+        let fresh = crate::accounts::test_support::test_env("api-transfer-reading-crafted");
+        add_account(&fresh, Provider::Claude, "one", "acct-1");
+        let result = import_keys_with(&fresh, &Memory::default(), &crafted).unwrap();
+        assert_eq!(result.added, 2);
+        assert!(saved_reading(&fresh, "one").is_none() && saved_reading(&fresh, "two").is_none());
     }
     fn secret_of(secrets: &Memory, provider: Provider, storage: &str) -> String {
         String::from_utf8(secrets.get(&service(provider, storage)).unwrap()).unwrap()

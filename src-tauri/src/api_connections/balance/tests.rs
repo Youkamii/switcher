@@ -680,3 +680,47 @@ async fn single_accounts_and_codex_keys_are_placed_without_asking_the_provider()
     assert!(matches!(asked, AutoSave::NeedsAccount));
     assert_eq!(stored_connections(&env, Provider::Codex).unwrap().len(), 1);
 }
+
+/// #189 — "남은 api 사용량 왜 안나와": 다른 PC에서 옮겨 온 키는 받는 PC의 화면이 잔액을 읽는
+/// 바로 그 길에서도 남은 금액을 보여 줘야 한다. v2.2.0은 키만 옮겨서 이 자리가 비어 있었다.
+#[tokio::test]
+async fn a_transferred_key_shows_its_remaining_credit_on_the_receiving_pc() {
+    // 보내는 PC: 키를 등록하고, Console 대시보드에서 남은 금액을 가져와 둔 상태
+    let (from, from_secrets) = fixture("transfer-credit-from", None);
+    let (url, server) = serve(vec![Reply::organization()], |_| {});
+    let initial = read_with(&from, "claude", "work", false, &from_secrets, &url)
+        .await
+        .unwrap();
+    let on_sender = console_reading::import_with(
+        &from,
+        "work",
+        ConsoleReading {
+            organization: "Fixture Studio".into(),
+            amount_minor: 6742,
+            import_ref: initial.import_ref.unwrap(),
+        },
+        &from_secrets,
+        &url,
+    )
+    .await
+    .unwrap()
+    .console_credit
+    .unwrap();
+    server.join().unwrap();
+    let keys = crate::api_connections::export_keys_with(&from, &from_secrets).unwrap();
+
+    // 받는 PC: 아무것도 없는 상태에서 키를 받는다
+    let to = test_env("transfer-credit-to");
+    let to_secrets = Memory::default();
+    crate::api_connections::import_keys_with(&to, &to_secrets, &keys).unwrap();
+    // 화면이 잔액을 읽는 길: 키로 조직을 확인한 뒤, 이 PC에 저장된 확인값을 내놓는다
+    let (url, server) = serve(vec![Reply::organization()], |_| {});
+    let shown = read_with(&to, "claude", "work", false, &to_secrets, &url)
+        .await
+        .unwrap();
+    server.join().unwrap();
+    assert_eq!(shown.organization.as_deref(), Some("Fixture Studio"));
+    // 금액과 확인한 시각이 보내는 PC와 같다 (받는 PC에서 새로 확인한 것처럼 꾸미지 않는다)
+    assert_eq!(shown.console_credit, Some(on_sender));
+    assert!(shown.credit.is_none() && shown.console_credit.unwrap().amount_minor == 6742);
+}

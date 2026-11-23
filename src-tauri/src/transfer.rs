@@ -19,8 +19,13 @@
 //! - 받은 것에 없는 계정·키는 그대로 둔다. 지우는 것은 없다.
 //!
 //! **옮기지 않는 것**: 설정·화면 설정·메모(사용자 결정 — 두 PC를 다른 용도로 쓰면 받는 쪽 것이
-//! 날아간다. 처음 판에 내가 묻지 않고 넣었다가 뺐다. 다시 넣지 말 것), 잔액 기록, 사용량 캐시,
-//! 런처, `.bak`·손상 사본.
+//! 날아간다. 처음 판에 내가 묻지 않고 넣었다가 뺐다. 다시 넣지 말 것), 사용량 캐시, 런처,
+//! `.bak`·손상 사본.
+//!
+//! **API 키에 딸린 남은 금액(Console에서 확인해 둔 조직 크레딧)은 키와 함께 옮긴다.** 메모를 빼라는
+//! 지적을 받고 범위를 줄이다가 이것까지 "PC마다 다시 만들어진다"고 넘겨짚어 뺐고, 받는 PC에서
+//! 금액이 안 나왔다("남은 api 사용량 왜 안나와"). 뺄 때는 그것이 정말 저절로 다시 생기는지 코드에서
+//! 확인할 것 — 이 값은 사용자가 대시보드를 붙여넣어 만든 것이다 (api_connections.rs, console_reading.rs).
 //!
 //! 로그인 토큰과 API 키 원문이 들어가므로 통째로 잠근다:
 //! - 열쇠는 사용자의 비밀번호에서 만든다 (Argon2id — 일부러 느리고 메모리를 많이 써서
@@ -705,7 +710,7 @@ pub fn candidates(env: &Env) -> Vec<Candidate> {
 mod tests {
     use super::*;
     use crate::accounts::test_support::test_env;
-    use crate::api_connections::tests::{add_account, save_fixture, use_fixture, Memory};
+    use crate::api_connections::tests::{add_account, save_fixture, use_fixture, write_reading, Memory};
 
     /// 검사에서 "만든 시각"으로 쓰는 값
     const T0: u64 = 1_795_400_000;
@@ -761,9 +766,19 @@ mod tests {
         fs::write(alpha.join("credentials.json.bak"), b"old-generation").unwrap();
         fs::write(alpha.join("plan.json"), br#"{"tier":20}"#).unwrap();
         save_fixture(&env, &secrets, "claude", "acct-alpha", "work", "sk-fake-transfer-key-000001");
+        // 이 키의 남은 금액을 Console에서 확인해 둔 상태
+        write_reading(&env, "work", READING_ORG, &key_revision(&env, "work"), 4_321, 1_795_000_000);
         fs::write(env.store.join("settings.json"), br#"{"accent_theme":"violet","tfsd":true}"#).unwrap();
         fs::write(env.store.join("memo.json"), br#"{"active":0,"tabs":["memo-from-a"]}"#).unwrap();
         (env, secrets)
+    }
+
+    const READING_ORG: &str = "11111111-2222-4333-8444-555555555555";
+    fn connection_file(env: &Env, storage: &str, file: &str) -> Value {
+        serde_json::from_slice(&fs::read(env.store.join("api-connections/claude").join(storage).join(file)).unwrap()).unwrap()
+    }
+    fn key_revision(env: &Env, storage: &str) -> String {
+        connection_file(env, storage, "connection.json")["revision"].as_str().unwrap().to_owned()
     }
 
     fn bundle_of(env: &Env, secrets: &Memory) -> Bundle {
@@ -899,6 +914,12 @@ mod tests {
         assert_eq!(listed[0].account_id.as_deref(), Some("acct-alpha"));
         assert!(!listed[0].active);
         assert_eq!(api_connections::export_keys_with(&to, &to_secrets).unwrap().len(), 1);
+        // 그 키의 남은 금액(Console에서 확인해 둔 값)도 함께 와서, 받는 쪽 키에 묶인다
+        let reading = connection_file(&to, "work", "console-credit.json");
+        assert_eq!(reading["credit"]["amount_minor"], 4_321);
+        assert_eq!(reading["credit"]["checked_at"], 1_795_000_000_u64);
+        assert_eq!(reading["organization_id"], READING_ORG);
+        assert_eq!(reading["revision"].as_str().unwrap(), key_revision(&to, "work"));
         // 설정·메모는 생기지 않는다. 받는 PC에 로그인된 CLI가 없으면 로그인 자리도 그대로 비어 있다.
         assert!(!to.store.join("settings.json").exists() && !to.store.join("memo.json").exists());
         assert!(!to.home.join(".claude/.credentials.json").exists() && !to.codex_home.join("auth.json").exists());
