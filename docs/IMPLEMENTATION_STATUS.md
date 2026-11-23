@@ -1,6 +1,6 @@
 # 개선 적용 현황
 
-작업 브랜치는 `feat/connection-workspace`다. 2026-11-20 로컬 빌드에 계정별 API 키와 Claude 조직 잔액을 반영했다. 2026-11-22에는 그 위의 `feat/api-token-click`에서 보기 모드를 셋으로 줄이고 위젯 모드의 구독 ↔ API 전환을 넣었다(바로 아래 절). 공개 앱·npm 패키지는 2026-11-17에 게시한 `v2.1.2`이며, 이 버전에는 Codex 공유 서버 자동 갱신이 포함돼 있다.
+작업 브랜치는 `feat/connection-workspace`다. 2026-11-20 로컬 빌드에 계정별 API 키와 Claude 조직 잔액을 반영했다. 2026-11-22에는 그 위의 `feat/api-token-click`에서 보기 모드를 셋으로 줄이고 위젯 모드의 구독 ↔ API 전환을 넣었다(바로 아래 절). 공개 앱·npm 패키지는 2026-11-23에 `feat/api-token-click`에서 게시한 `v2.2.0`이다. 계정별 API 키, 위젯 모드의 구독 ↔ API 전환, 엣지 손잡이 옮기기, 다른 PC로 옮기기가 여기에 들어 있다(아래 「v2.2.0 배포」).
 
 [전체 화면 한 장](design/complete-preview.png) · [원본 크기 보기](design/complete-preview.html) · [API 등록·사용법](API_CONNECTIONS.md)
 
@@ -85,7 +85,7 @@ macOS 설치본과 로컬 빌드의 실행 파일 해시가 일치했고 앱 서
 | 토큰 갱신과 실행 중 Codex | 비활성 계정 갱신, 활성 토큰 보호, 갱신 거부 시 재로그인 안내를 검사했다. 설치한 Codex의 관리되는 공유 서버는 진행 중인 작업이 끝난 뒤 두 번째 테스트 계정으로 전환했고, 같은 대화가 복원됐다. 단독 프로세스는 다음 실행에서 선택한 계정을 읽었다. |
 | Claude 잔액 | 실제 등록 키로 조회했을 때 해당 조직의 Console 로그인 필요 상태가 반환됐다. 이 상태에서는 앱에 마지막으로 확인한 조직 크레딧과 확인 시각이 표시된다. 자동 조회 성공·실패와 통화 표시, 타 계정 데이터 혼입 방지는 테스트 응답으로 검사했다. OpenAI 잔액은 결제 화면에서 확인한다. |
 | 등록 중 창 이동 | 두 화면 엔진에서 등록·교체·완료 창 제목이 네이티브 드래그를 호출하고 입력값이 보존됐다. 화면 제어 도구가 설치본의 macOS 패널을 선택하는 단계에서 실패해, 마우스 드래그 전후의 실제 창 좌표는 검증하지 못했다. |
-| Windows | 공개 v2.1.2의 네이티브 검증 기록은 아래에 있다. 이번 계정별 키 변경의 Windows 네이티브 실행 결과는 아직 없다. |
+| Windows | v2.2.0의 Windows CI(네이티브 자격증명 흐름·설치 CLI 인증·실행 중 Codex·포터블 빌드 포함)는 통과했다(아래 「v2.2.0 배포」). 실제 Windows PC에서 위젯을 눌러 본 결과는 아직 없다 — 엣지의 ☰ 끌기와 다른 PC로 옮기기가 대상이다. |
 
 계정 갱신용 로컬 테스트 서버의 소켓 읽기가 간헐적으로 실패해, 연결을 수락한 뒤 블로킹 모드로 전환하도록 고쳤다. 해당 검사를 다섯 번 연속 통과했다.
 
@@ -103,6 +103,15 @@ macOS 설치본과 로컬 빌드의 실행 파일 해시가 일치했고 앱 서
 - 로컬 Codex 0.167.0·0.169.0, 가짜 OAuth 두 계정과 로컬 HTTP 응답으로 **진행 중 작업을 기다림 → B 인증 반영 → 기존 thread ID와 대화 내용 복원 → managed OAuth 유지**를 검사했다. 추가로 격리 PTY의 실제 Codex 0.169.0 TUI와 로컬 HTTPS 서버를 사용해 **터미널 프로세스 재실행 없이 자동 재연결 → 같은 대화에서 후속 입력 → 이전 답변이 후속 요청의 문맥에 포함**되는 것까지 통과했다. 실제 계정·모델 API는 사용하지 않았다. 일반 `-c` 옵션을 주입하는 로컬 래퍼는 단독 실행으로 전환되므로 이 자동 갱신 범위에서 제외됨도 확인했다.
 - 로컬 검증: Rust 전체 243 통과·19 ignored, 빌드된 macOS 앱의 headless helper를 사용한 설치 Codex 통합 검사 통과, TypeScript/Vite 및 프론트 단위 104 통과, Chromium 네 모드 139·WebKit 106·배치 8 통과.
 - [Windows CI](https://github.com/Youkamii/switcher/actions/runs/44033190107)는 `8bfbce0`에서 성공했다. 프론트 단위 104, Chromium UI 76, Rust 291(17 ignored), 설치 CLI 인증·기존 세션 캐시 검사, 포터블 EXE 빌드·npm 버전 인식이 통과했다. 별도 일반 사용자로 **빌드된 EXE의 headless helper + Codex 0.167.0**을 실행해 작업 중 대기, 새 계정 반영, 같은 thread ID·대화 복원, managed OAuth 유지도 통과했다. Windows 소켓의 전체 경로를 일반 파일처럼 여는 확인을 상위 폴더 기준 확인으로 수정하고 실제 AF_UNIX 소켓 회귀 검사를 추가했다. Windows TUI 화면의 실제 조작은 이 검사 범위에 포함되지 않는다.
+
+## v2.2.0 배포 (2026-11-23)
+
+- 태그 `v2.2.0` / 코드 `e1c2b3c`로 [Windows·macOS 릴리스](https://github.com/Youkamii/switcher/actions/runs/45097238884)와 [npm 게시](https://github.com/Youkamii/switcher/actions/runs/45098152089)가 성공했다. 같은 커밋의 [Windows CI](https://github.com/Youkamii/switcher/actions/runs/45095830060)는 프론트 단위 검사, Windows Chromium 화면 검사, Rust 검사(네이티브 자격증명 흐름 포함), 설치 CLI 인증, 실행 중 Codex 세션·공유 서버 갱신, 포터블 EXE 빌드, npm 런처 인식까지 전부 통과했다. 직전 커밋의 실패([45095421978](https://github.com/Youkamii/switcher/actions/runs/45095421978))는 검사 도구가 Windows에서 Chromium이 쥐고 있는 포트 파일을 읽다 `EBUSY`로 죽은 것이고, 포트 줄이 읽힐 때까지 다시 읽게 고쳤다.
+- 업데이트 manifest는 두 운영체제 모두 `v2.2.0` 자산을 가리킨다. 공개 레지스트리에서 `switcher-widget@2.2.0`, `latest=2.2.0`, 태그와 같은 `gitHead`, provenance 존재를 확인했다.
+- macOS 다운로드 앱의 버전 `2.2.0`, arm64 형식, ad-hoc 서명 무결성을 확인했다. Windows ZIP은 x64 PE와 버전 표식 `2.2.0`을 확인했다(EXE 리소스 버전은 보지 않았다).
+- 로컬 검사(이 맥): 프론트 단위 131, Rust 277(23 ignored), Chromium 화면 334, WKWebView 화면 280, 배치 7.
+- **확인하지 못한 것**: 다른 PC로 옮기기를 실제 앱에서 눌러 본 것(복사 버튼·붙여넣기·파일 고르기)과 macOS ↔ Windows 실기기 왕복, 엣지에서 ☰를 잡고 가로로 끌려 오는 모습의 실제 포인터 확인, 접힌 손잡이를 직접 눌러 끄는 길, 실제 Windows PC에서의 엣지 끌기. 화면이 잠겨 있어 격리 실행에서도 포인터를 쓸 수 없었다.
+- 기존 앱은 **트레이 우클릭 → 업데이트 확인**으로 바로 갱신하고 다시 뜬다. 그냥 두면 켤 때 받아 두고 그다음 실행부터 적용된다.
 
 ## v2.1.2 배포 (2026-11-17)
 
