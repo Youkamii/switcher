@@ -1,5 +1,6 @@
-// 다른 PC로 옮기기 (#189) — 계정·API 키·메모·설정을 비밀번호로 잠근 파일 하나로 내보내고 가져온다.
+// 다른 PC로 옮기기 (#189) — 구독 계정 로그인과 API 키를 비밀번호로 잠근 파일 하나로 내보내고 가져온다.
 // 잠그기·풀기와 저장은 전부 러스트(transfer.rs)가 한다. 화면은 비밀번호와 파일만 건넨다.
+// 받는 쪽은 전부 덮어쓴다(사용자 결정). 설정·화면 설정·메모는 옮기지 않는다 — 다시 넣지 말 것.
 // 비밀번호를 변수에 오래 들고 있지 말 것 — 입력칸은 창이 닫힐 때 dialog()가 비운다.
 import { invoke } from "@tauri-apps/api/core";
 import { currentLang } from "./i18n";
@@ -8,29 +9,31 @@ import { apiIsBusy, dialog, type Hooks } from "./apiConnections";
 const messages = {
   ko: {
     open: "다른 PC로 옮기기", title: "다른 PC로 옮기기", exportTab: "내보내기", importTab: "가져오기",
-    exportHelp: "계정 로그인 정보, API 키, 메모, 설정을 파일 하나에 잠가 담습니다. 비밀번호를 모르면 열 수 없습니다.",
+    exportHelp: "구독 계정 로그인과 API 키를 파일 하나에 잠가 담습니다. 비밀번호를 모르면 열 수 없습니다. 설정과 메모는 담지 않습니다.",
     password: "비밀번호 (8자 이상)", again: "비밀번호 한 번 더", mismatch: "두 비밀번호가 다릅니다", make: "파일 만들기", making: "잠그는 중…",
     made: "다운로드 폴더에 만들었습니다", counts: "계정 {a}개 · API 키 {k}개", reveal: "폴더에서 보기",
     forget: "비밀번호를 잊으면 이 파일은 열 수 없습니다. 파일은 옮긴 뒤 지우세요.",
-    importHelp: "다른 PC에서 만든 파일과 그때 정한 비밀번호를 넣으세요. 지금 로그인된 CLI 상태는 바뀌지 않습니다.",
+    importHelp: "다른 PC에서 만든 파일과 그때 정한 비밀번호를 넣으세요. 같은 계정의 로그인과 같은 이름의 API 키는 파일 것으로 덮어씁니다(사용 중인 키 포함). 파일에 없는 것은 그대로 둡니다.",
+    shared: "같은 구독 로그인을 두 PC에서 함께 쓰면 한쪽이 다시 로그인해야 할 수 있습니다.",
     file: "파일", pick: "다른 파일 고르기", none: "다운로드·바탕화면에서 옮기기 파일(.swx)을 찾지 못했습니다. 파일을 고르세요.",
     filePassword: "파일의 비밀번호", bring: "가져오기", bringing: "푸는 중…", noFile: "파일을 고르세요",
-    done: "가져왔습니다", added: "계정 {a}개 추가 · {r}개 갱신", keys: "API 키 {a}개 추가 · {r}개 갱신",
-    skipped: "넣지 않은 계정(같은 이름이 다른 계정의 것이거나 이미 다른 이름으로 있음): {n}",
-    rejected: "형식이 맞지 않아 넣지 않은 항목 {n}개", view: "보기 설정은 위젯을 다시 띄우면 적용됩니다.", close: "닫기",
+    done: "가져왔습니다", added: "계정 {a}개 추가 · {r}개 덮어씀", live: "지금 로그인된 계정 {n}개는 로그인도 바꿨습니다.",
+    keys: "API 키 {a}개 추가 · {r}개 덮어씀", same: " · {n}개는 이미 같음",
+    rejected: "형식이 맞지 않아 넣지 않은 항목 {n}개", close: "닫기",
   },
   en: {
     open: "Move to another PC", title: "Move to another PC", exportTab: "Export", importTab: "Import",
-    exportHelp: "Locks your account logins, API keys, notes and settings into one file. It cannot be opened without the password.",
+    exportHelp: "Locks your subscription logins and API keys into one file. It cannot be opened without the password. Settings and notes are not included.",
     password: "Password (8+ characters)", again: "Password again", mismatch: "The passwords do not match", make: "Create file", making: "Locking…",
     made: "Created in your Downloads folder", counts: "{a} accounts · {k} API keys", reveal: "Show in folder",
     forget: "If you forget the password, the file cannot be opened. Delete the file after moving it.",
-    importHelp: "Choose the file made on the other PC and enter its password. The CLI login on this PC is not changed.",
+    importHelp: "Choose the file made on the other PC and enter its password. Logins of the same account and API keys with the same name are overwritten with the file's (including a key in use). Anything not in the file is kept.",
+    shared: "Using the same subscription login on two PCs may require signing in again on one of them.",
     file: "File", pick: "Choose another file", none: "No transfer file (.swx) found in Downloads or Desktop. Choose a file.",
     filePassword: "File password", bring: "Import", bringing: "Unlocking…", noFile: "Choose a file",
-    done: "Imported", added: "{a} accounts added · {r} updated", keys: "{a} API keys added · {r} updated",
-    skipped: "Accounts not imported (the name belongs to another account, or the account exists under another name): {n}",
-    rejected: "{n} malformed items were not imported", view: "View settings apply the next time the widget starts.", close: "Close",
+    done: "Imported", added: "{a} accounts added · {r} overwritten", live: "{n} of them are logged in here now; that login was replaced too.",
+    keys: "{a} API keys added · {r} overwritten", same: " · {n} already the same",
+    rejected: "{n} malformed items were not imported", close: "Close",
   },
 };
 const text = () => (currentLang() === "ko" ? messages.ko : messages.en);
@@ -39,22 +42,11 @@ const fill = (template: string, values: Record<string, string | number>) =>
 
 type ExportResult = { path: string; accounts: number; api_keys: number };
 type ImportResult = {
-  accounts_added: number; accounts_replaced: number; accounts_skipped: string[];
-  api_keys_added: number; api_keys_replaced: number; rejected: number; ui: Record<string, string>;
+  accounts_added: number; accounts_replaced: number; live_replaced: number;
+  api_keys_added: number; api_keys_replaced: number; api_keys_unchanged: number;
+  rejected: number; problems: string[];
 };
 type Candidate = { path: string; name: string; modified: number };
-
-/// 함께 옮기는 화면 설정 — 이 목록의 키만 내보내고, 받을 때도 이 목록의 키만 쓴다
-const UI_KEYS = ["switcher.viewmode", "switcher.order", "switcher.alpha", "switcher.privacy", "switcher.tools", "switcher.locked", "switcher.edgeanchor", "switcher.edgeside", "switcher.edgetab"];
-
-function collectUi(): Record<string, string> {
-  const ui: Record<string, string> = {};
-  for (const key of UI_KEYS) {
-    const value = localStorage.getItem(key);
-    if (value !== null && value.length <= 4096) ui[key] = value;
-  }
-  return ui;
-}
 
 function passwordInput(name: string): HTMLInputElement {
   const input = document.createElement("input");
@@ -108,7 +100,7 @@ export function openTransfer(hooks: Hooks) {
     const password = first.value;
     busy(exportForm, make, true, t.making);
     try {
-      const done = await invoke<ExportResult>("transfer_export", { password, ui: collectUi() });
+      const done = await invoke<ExportResult>("transfer_export", { password });
       first.value = ""; second.value = "";
       const name = done.path.split(/[\\/]/).pop() ?? done.path;
       const reveal = document.createElement("button"); reveal.type = "button"; reveal.className = "transfer-reveal"; reveal.textContent = t.reveal;
@@ -129,7 +121,7 @@ export function openTransfer(hooks: Hooks) {
   const importError = line("", "api-error"); importError.setAttribute("role", "alert");
   const bring = document.createElement("button"); bring.type = "submit"; bring.className = "primary"; bring.textContent = t.bring;
   const importResult = document.createElement("div"); importResult.className = "transfer-result"; importResult.setAttribute("role", "status");
-  importForm.append(line(t.importHelp), foundLabel, none, pickLabel, labelled(t.filePassword, filePassword), importError, bring, importResult);
+  importForm.append(line(t.importHelp), line(t.shared), foundLabel, none, pickLabel, labelled(t.filePassword, filePassword), importError, bring, importResult);
   const loadCandidates = async () => {
     const list = await invoke<Candidate[]>("transfer_candidates").catch(() => [] as Candidate[]);
     found.replaceChildren(...list.map(item => new Option(item.name, item.path)));
@@ -149,19 +141,14 @@ export function openTransfer(hooks: Hooks) {
       const data = chosen ? await fileBase64(chosen) : null;
       const done = await invoke<ImportResult>("transfer_import", { password, path, data });
       filePassword.value = "";
-      // 화면 설정은 우리가 아는 키만, 다음 실행부터 — 지금 화면을 뒤집지 않는다
-      for (const key of UI_KEYS) {
-        const value = done.ui[key];
-        if (typeof value === "string" && value.length <= 4096) { try { localStorage.setItem(key, value); } catch { /* 저장소가 막혀 있어도 계정·키는 들어왔다 */ } }
-      }
       importResult.append(
         line(t.done, "transfer-done"),
         line(fill(t.added, { a: done.accounts_added, r: done.accounts_replaced })),
-        line(fill(t.keys, { a: done.api_keys_added, r: done.api_keys_replaced })),
       );
-      if (done.accounts_skipped.length) importResult.append(line(fill(t.skipped, { n: done.accounts_skipped.join(", ") }), "transfer-warn"));
+      if (done.live_replaced) importResult.append(line(fill(t.live, { n: done.live_replaced })));
+      importResult.append(line(fill(t.keys, { a: done.api_keys_added, r: done.api_keys_replaced }) + (done.api_keys_unchanged ? fill(t.same, { n: done.api_keys_unchanged }) : "")));
+      for (const problem of done.problems) importResult.append(line(problem, "transfer-warn"));
       if (done.rejected) importResult.append(line(fill(t.rejected, { n: done.rejected }), "transfer-warn"));
-      importResult.append(line(t.view));
     } catch (error) { importError.textContent = String(error); }
     finally { busy(importForm, bring, false, t.bring); hooks.fit(); }
   };

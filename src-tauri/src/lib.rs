@@ -856,16 +856,13 @@ async fn clamshell_cycle(app: tauri::AppHandle) -> Result<i8, String> {
     .map_err(|e| format!("클램셸 전환 실패: {e}"))?
 }
 
-/// 다른 PC로 옮기기 (#189) — 계정·API 키·메모·설정을 비밀번호로 잠근 파일 하나로 내보낸다.
+/// 다른 PC로 옮기기 (#189) — 구독 계정 로그인과 API 키를 비밀번호로 잠근 파일 하나로 내보낸다.
 /// 열쇠 만들기가 일부러 느리므로 블로킹 스레드에서 돈다.
 #[tauri::command]
-async fn transfer_export(
-    password: String,
-    ui: std::collections::BTreeMap<String, String>,
-) -> Result<transfer::ExportResult, String> {
+async fn transfer_export(password: String) -> Result<transfer::ExportResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut password = password;
-        let result = transfer::export(&Env::real()?, &password, ui);
+        let result = transfer::export(&Env::real()?, &password);
         zeroize::Zeroize::zeroize(&mut password);
         result
     })

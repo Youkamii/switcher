@@ -875,22 +875,29 @@ pub async fn check(env: &Env, provider: &str, name: &str) -> Result<Connection, 
 // ── 다른 PC로 옮기기 (#189) ────────────────────────────────────────
 // 키 원문은 OS 보안 저장소(키체인·DPAPI)에 있고 그 PC 밖에서는 풀리지 않는다. 옮길 때는 여기서
 // 꺼내 transfer.rs가 비밀번호로 잠근 묶음에 담고, 받는 PC에서 그 PC의 보안 저장소에 다시 넣는다.
-// 런처(run.*·key.*)는 PC마다 다시 만들어지는 것이라 옮기지 않는다. Debug를 달지 말 것 — 키 원문이 있다.
+// 옮기는 것은 키와 "어느 계정의 무슨 이름 키인가"뿐이다 — 확인 상태·잔액 기록·런처는 PC마다
+// 다시 만들어진다. Debug를 달지 말 것 — 키 원문이 있다.
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct TransferKey {
-    connection: Connection,
-    key: String,
+    provider: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    credit: Option<serde_json::Value>,
+    account_id: Option<String>,
+    /// 사용자가 보는 키 이름 (계정 안에서 구분된다). 저장 이름은 PC마다 다를 수 있다.
+    name: String,
+    key: String,
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]
 pub(crate) struct KeyImport {
     pub added: usize,
     pub replaced: usize,
+    /// 받는 PC에 이미 같은 키가 들어 있어 손대지 않은 수
+    pub unchanged: usize,
     /// 형식이 맞지 않아 넣지 않은 항목 수
     pub rejected: usize,
+    /// 덮어썼지만 "사용 중" 상태를 새 키로 다시 맞추지 못한 키 이름
+    pub reapply_failed: Vec<String>,
 }
 
 pub(crate) fn export_keys(env: &Env) -> Result<Vec<TransferKey>, String> {
@@ -901,16 +908,16 @@ pub(crate) fn export_keys_with(env: &Env, secrets: &impl Secrets) -> Result<Vec<
     let _guard = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
     let mut out = Vec::new();
     for provider in [Provider::Claude, Provider::Codex] {
-        for mut connection in stored_connections(env, provider)? {
-            let id = service(provider, &connection.name);
+        for connection in stored_connections(env, provider)? {
             // 키를 못 읽은 연결을 조용히 빼면 "전부 옮겼다"가 거짓이 된다 — 내보내기를 멈춘다
-            let key = String::from_utf8(secrets.get(&id)?).map_err(|_| "저장된 API 키 형식 오류")?;
-            let dir = root(env).join(provider.dir_name()).join(&connection.name);
-            let credit = fs::read(dir.join("console-credit.json"))
-                .ok()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok());
-            connection.active = false;
-            out.push(TransferKey { connection, key, credit });
+            let key = String::from_utf8(secrets.get(&service(provider, &connection.name))?)
+                .map_err(|_| "저장된 API 키 형식 오류")?;
+            out.push(TransferKey {
+                provider: provider.dir_name().into(),
+                name: connection.display_name().to_owned(),
+                account_id: connection.account_id,
+                key,
+            });
         }
     }
     Ok(out)
@@ -920,7 +927,11 @@ pub(crate) fn import_keys(env: &Env, keys: &[TransferKey]) -> Result<KeyImport, 
     import_keys_with(env, &OsSecrets(env), keys)
 }
 
-/// 호출자가 MUTATION_LOCK을 쥐고 있어야 한다. 같은 저장 이름의 연결은 교체한다.
+/// 사용자 결정(2026-11-23): 전부 덮어쓴다 — 지금 사용 중인 키도. "같은 키"는 같은 계정의 같은 이름이다.
+/// 저장 이름만 같은 다른 계정의 키(기본 이름 `api`끼리 흔히 겹친다)는 건드리지 않고 새 자리에 넣는다.
+/// 사용 중이던 키는 덮어쓴 뒤 같은 자리에서 다시 적용한다 — 화면의 「키 교체 → 저장하고 사용」과
+/// 같은 길이다(Codex는 활성 auth.json에 키 사본이 있어, 다시 적용하지 않으면 옛 키로 계속 돈다).
+/// 호출자가 MUTATION_LOCK을 쥐고 있어야 한다.
 pub(crate) fn import_keys_with(
     env: &Env,
     secrets: &impl Secrets,
@@ -930,38 +941,53 @@ pub(crate) fn import_keys_with(
     let mut result = KeyImport::default();
     for item in keys {
         // 묶음은 바깥에서 온 입력이다 — 이름은 경로가 되므로 저장할 때와 같은 규칙으로 거른다
-        let Ok((provider, dir)) = checked(env, &item.connection.provider, &item.connection.name) else {
+        let Ok(provider) = Provider::parse(&item.provider) else {
             result.rejected += 1;
             continue;
         };
-        if !valid_key(&item.key) {
+        let account_ok = item
+            .account_id
+            .as_deref()
+            .is_none_or(|id| !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control));
+        if validate_name(&item.name).is_err() || !valid_key(&item.key) || !account_ok {
             result.rejected += 1;
             continue;
         }
-        let existed = dir.join("connection.json").is_file();
-        fs::create_dir_all(&dir).map_err(|_| "API 연결 폴더 생성 실패")?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
-                .map_err(|_| "API 폴더 권한 설정 실패")?;
-        }
-        let mut connection = item.connection.clone();
-        connection.provider = provider.dir_name().into();
-        connection.name = connection.name.to_ascii_lowercase();
-        connection.active = false;
-        // 비밀을 먼저 넣는다 — 메타데이터만 있고 키가 없는 연결을 남기지 않는다
-        secrets.put(&service(provider, &connection.name), item.key.as_bytes())?;
-        let data = serde_json::to_vec(&connection).map_err(|_| "API 메타데이터 생성 실패")?;
-        atomic_write(&dir.join("connection.json"), &data)?;
-        if let Some(credit) = &item.credit {
-            if let Ok(bytes) = serde_json::to_vec(credit) {
-                let _ = atomic_write(&dir.join("console-credit.json"), &bytes);
+        let display = item.name.to_ascii_lowercase();
+        let connections = stored_connections(env, provider)?;
+        let same = connections
+            .iter()
+            .find(|c| c.account_id == item.account_id && c.display_name() == display);
+        if let Some(existing) = same {
+            let id = service(provider, &existing.name);
+            if secrets.get(&id).is_ok_and(|stored| stored == item.key.as_bytes()) {
+                result.unchanged += 1;
+                continue;
             }
-        }
-        if existed {
+            let was_active = activation::is_active(env, provider, existing).unwrap_or(false);
+            store_key(
+                env,
+                secrets,
+                provider,
+                &existing.name,
+                &item.key,
+                existing.account_id.as_deref(),
+                existing.label.clone(),
+            )?;
+            if was_active && activation::activate_locked(env, secrets, provider, &existing.name).is_err() {
+                result.reapply_failed.push(display);
+            }
             result.replaced += 1;
         } else {
+            let mut storage = display.clone();
+            for suffix in 2.. {
+                if !connections.iter().any(|c| c.name == storage) {
+                    break;
+                }
+                storage = format!("{}-{suffix}", &display[..display.len().min(20)]);
+            }
+            let label = (storage != display).then(|| display.clone());
+            store_key(env, secrets, provider, &storage, &item.key, item.account_id.as_deref(), label)?;
             result.added += 1;
         }
     }
@@ -987,6 +1013,90 @@ pub(crate) mod tests {
             Ok(())
         }
     }
+    fn transfer_key(provider: &str, account: Option<&str>, name: &str, key: &str) -> TransferKey {
+        TransferKey { provider: provider.into(), account_id: account.map(str::to_owned), name: name.into(), key: key.into() }
+    }
+    fn secret_of(secrets: &Memory, provider: Provider, storage: &str) -> String {
+        String::from_utf8(secrets.get(&service(provider, storage)).unwrap()).unwrap()
+    }
+
+    /// #189 — 덮어쓰는 것은 같은 계정의 같은 이름 키뿐이다. 이름만 같은 다른 계정의 키는 남는다.
+    #[test]
+    fn an_imported_key_overwrites_only_the_same_account_and_name() {
+        let env = crate::accounts::test_support::test_env("api-transfer-identity");
+        let secrets = Memory::default();
+        add_account(&env, Provider::Claude, "one", "acct-1");
+        add_account(&env, Provider::Claude, "two", "acct-2");
+        // 받는 PC: 두 계정이 저마다 기본 이름 `api` 키를 갖고 있다 (저장 이름은 api, api-2)
+        save_for_account(&env, &secrets, "claude", "acct-1", "api", "sk-fixture-b-acct1-000001", false).unwrap();
+        save_for_account(&env, &secrets, "claude", "acct-2", "api", "sk-fixture-b-acct2-000001", false).unwrap();
+        let incoming = [
+            transfer_key("claude", Some("acct-2"), "api", "sk-fixture-a-acct2-000002"),
+            transfer_key("claude", Some("acct-3"), "api", "sk-fixture-a-acct3-000003"),
+            transfer_key("claude", Some("acct-1"), "api", "sk-fixture-b-acct1-000001"),
+            transfer_key("claude", Some("acct-1"), "../up", "sk-fixture-a-crafted-00001"),
+            transfer_key("claude", Some("acct-1"), "bad", "not-a-key"),
+            transfer_key("nobody", None, "api", "sk-fixture-a-crafted-00002"),
+        ];
+        let result = import_keys_with(&env, &secrets, &incoming).unwrap();
+        assert_eq!((result.added, result.replaced, result.unchanged, result.rejected), (1, 1, 1, 3));
+        assert!(result.reapply_failed.is_empty());
+        let stored = stored_connections(&env, Provider::Claude).unwrap();
+        let slot = |account: &str| stored.iter().find(|c| c.account_id.as_deref() == Some(account)).unwrap();
+        // acct-1의 키는 그대로(같은 키), acct-2의 키만 바뀌고, acct-3의 키는 새 자리에 들어간다
+        assert_eq!(secret_of(&secrets, Provider::Claude, &slot("acct-1").name), "sk-fixture-b-acct1-000001");
+        assert_eq!(secret_of(&secrets, Provider::Claude, &slot("acct-2").name), "sk-fixture-a-acct2-000002");
+        assert_eq!(secret_of(&secrets, Provider::Claude, &slot("acct-3").name), "sk-fixture-a-acct3-000003");
+        assert_eq!(slot("acct-3").display_name(), "api");
+        assert_eq!(stored.len(), 3);
+        // 같은 묶음을 한 번 더 넣어도 늘지 않는다
+        let again = import_keys_with(&env, &secrets, &incoming).unwrap();
+        assert_eq!((again.added, again.replaced, again.unchanged), (0, 0, 3));
+        assert_eq!(stored_connections(&env, Provider::Claude).unwrap().len(), 3);
+        // 내보내면 사용자가 보는 이름과 계정으로 나온다
+        let exported = export_keys_with(&env, &secrets).unwrap();
+        assert!(exported.iter().all(|k| k.name == "api") && exported.len() == 3);
+    }
+
+    /// #189, 사용자 결정 "그냥 다 덮어써" — 사용 중인 키도 덮어쓰고, 새 키로 계속 사용 중이어야 한다.
+    #[test]
+    fn overwriting_a_key_in_use_keeps_it_in_use_with_the_new_key() {
+        for provider in [Provider::Claude, Provider::Codex] {
+            let env = crate::accounts::test_support::test_env(&format!("api-transfer-active-{}", provider.dir_name()));
+            let secrets = Memory::default();
+            // 받는 PC에 로그인된 구독 계정 하나 — API를 켜면 이 로그인이 복원 지점으로 보관된다
+            let oauth = match provider {
+                Provider::Claude => serde_json::json!({"claudeAiOauth":{"accessToken":"fixture-access","refreshToken":"fixture-refresh","expiresAt":9999999999999_i64}}),
+                Provider::Codex => serde_json::json!({"tokens":{"access_token":"fixture-access","refresh_token":"fixture-refresh","account_id":"acct-1"}}),
+            };
+            crate::accounts::write_live_cred(&env, provider, &serde_json::to_vec(&oauth).unwrap()).unwrap();
+            if provider == Provider::Claude {
+                atomic_write(&env.home.join(".claude.json"), br#"{"oauthAccount":{"accountUuid":"acct-1","emailAddress":"fixture@example.test"}}"#).unwrap();
+            }
+            add_account(&env, provider, "one", "acct-1");
+            let name = provider.dir_name();
+            save_for_account(&env, &secrets, name, "acct-1", "work", "sk-fixture-b-in-use-000001", false).unwrap();
+            activation::activate_locked(&env, &secrets, provider, "work").unwrap();
+            assert!(active_connection(&env, provider).is_some());
+            let incoming = [transfer_key(name, Some("acct-1"), "work", "sk-fixture-a-new-key-000002")];
+            let result = import_keys_with(&env, &secrets, &incoming).unwrap();
+            assert_eq!((result.added, result.replaced), (0, 1));
+            assert!(result.reapply_failed.is_empty());
+            assert_eq!(secret_of(&secrets, provider, "work"), "sk-fixture-a-new-key-000002");
+            assert_eq!(active_connection(&env, provider).map(|c| c.name), Some("work".into()), "{name} must stay in use");
+            if provider == Provider::Codex {
+                // Codex는 활성 auth.json에 키 사본을 둔다 — 그것도 새 키여야 한다
+                let live = fs::read_to_string(env.live_credential_path(Provider::Codex)).unwrap();
+                assert!(live.contains("sk-fixture-a-new-key-000002") && !live.contains("sk-fixture-b-in-use-000001"));
+            }
+            // 사용을 해제하면 구독 로그인으로 돌아온다 — 덮어쓰기가 복원 지점을 망가뜨리지 않았다
+            deactivate_for_oauth_locked(&env, provider).unwrap();
+            assert!(active_connection(&env, provider).is_none());
+            let restored = fs::read_to_string(env.live_credential_path(provider)).unwrap();
+            assert!(restored.contains("fixture-refresh"), "{name} subscription login must come back");
+        }
+    }
+
     /// 다른 모듈의 검사용 — 계정에 붙은 키 하나를 저장한다
     pub(crate) fn save_fixture(env: &Env, secrets: &Memory, provider: &str, account_id: &str, name: &str, key: &str) {
         save_for_account(env, secrets, provider, account_id, name, key, false).unwrap();

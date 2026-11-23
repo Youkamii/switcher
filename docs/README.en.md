@@ -227,16 +227,18 @@ Conversation history, memory and project settings are separate from credentials 
 
 ### Move to another PC
 
-**Move to another PC**, at the bottom of normal mode, exports your account logins, API keys, notes and settings into one file and imports it on another PC. It also works between macOS and Windows.
+**Move to another PC**, at the bottom of normal mode, exports your subscription logins and API keys into one file and imports it on another PC. It also works between macOS and Windows. Settings and notes are not moved.
 
 1. On the source PC, choose **Export** and set a password (8+ characters). `switcher-transfer-date-time.swx` appears in Downloads.
 2. Move the file to the other PC (the widget finds it in Downloads or on the Desktop).
 3. On the other PC, choose **Import**, pick the file and enter the same password.
 
+The receiving PC is **overwritten with the file's contents**: an account that already exists gets the file's login (including the account currently logged in), and an API key with the same account and name is replaced even while in use. Accounts and keys that are not in the file are kept.
+
 The whole file is locked: the key is derived from the password with Argon2id and the contents are sealed with XChaCha20-Poly1305. A wrong password or a single changed byte imports nothing. A forgotten password cannot be recovered; export again.
 
 > [!NOTE]
-> The CLI login on the receiving PC is not changed. A profile whose name belongs to a different account is not overwritten. Using the same subscription login on two PCs may require signing in again on one of them when the other refreshes its login. Delete the file after moving it.
+> A subscription login is invalidated each time it is refreshed. If two PCs share the same login, the one that refreshes first keeps it and the other may have to sign in again. API keys are not affected. Delete the file after moving it.
 
 <details>
 <summary><strong>File locations</strong></summary>

@@ -73,7 +73,7 @@ function fixture(mode = "normal", preview = false) {
       if(cmd === 'transfer_export') return {path:'/Users/fixture/Downloads/switcher-transfer-20261123-101500.swx', accounts:3, api_keys:2};
       if(cmd === 'transfer_candidates') return transferFiles;
       if(cmd === 'transfer_reveal') return null;
-      if(cmd === 'transfer_import') { if(args.password !== 'right-password') throw '비밀번호가 다르거나 파일이 손상됐습니다'; return {accounts_added:2, accounts_replaced:1, accounts_skipped:['delta'], api_keys_added:1, api_keys_replaced:0, rejected:0, settings:true, memo:true, ui:{'switcher.viewmode':'edge','evil.key':'x'}, source_os:'windows'}; }
+      if(cmd === 'transfer_import') { if(args.password !== 'right-password') throw '비밀번호가 다르거나 파일이 손상됐습니다'; return {accounts_added:2, accounts_replaced:1, live_replaced:1, api_keys_added:1, api_keys_replaced:2, api_keys_unchanged:1, rejected:0, problems:["API 키 'work': 덮어썼지만 사용 중 상태를 새 키로 맞추지 못했습니다 — 사용을 다시 눌러 주세요"], source_os:'windows'}; }
       if(cmd === 'get_section_order') return ['claude','codex','github','display','system'];
       if(dragScene) {
         if(cmd === 'pointer_button_down') return buttonHeld;
@@ -615,12 +615,12 @@ function fixture(mode = "normal", preview = false) {
     exportForm.requestSubmit();
     for(let i=0;i<4;i++) await delay();
     record('mismatched-passwords-make-no-file', sent('transfer_export').length===0 && exportForm.querySelector('.api-error').textContent==='두 비밀번호가 다릅니다');
-    localStorage.setItem('switcher.order','["codex","claude"]'); localStorage.setItem('unrelated.key','keep-out');
+    const storedBefore = JSON.stringify(Object.entries(localStorage).sort());
     second.value='password-one';
     exportForm.requestSubmit();
     await ready('.transfer-export .transfer-done');
     const exported = sent('transfer_export')[0];
-    record('export-sends-the-password-once-with-only-our-view-settings', sent('transfer_export').length===1 && exported.args.passwordLength===12 && exported.args.ui['switcher.order']==='["codex","claude"]' && !('unrelated.key' in exported.args.ui) && Object.keys(exported.args.ui).every(k=>k.startsWith('switcher.')));
+    record('export-sends-only-the-password', sent('transfer_export').length===1 && exported.args.passwordLength===12 && Object.keys(exported.args).sort().join()==='password,passwordLength' && exportForm.textContent.includes('설정과 메모는 담지 않습니다'));
     const result = exportForm.querySelector('.transfer-result');
     record('export-result-names-the-file-and-what-it-holds', result.textContent.includes('switcher-transfer-20261123-101500.swx') && result.textContent.includes('계정 3개') && result.textContent.includes('API 키 2개') && !result.textContent.includes('/Users/fixture') && first.value==='' && second.value==='' && inWindow(result.querySelector('.transfer-reveal')));
     result.querySelector('.transfer-reveal').click();
@@ -634,13 +634,14 @@ function fixture(mode = "normal", preview = false) {
     filePassword.value='wrong-password';
     importForm.requestSubmit();
     await settle(()=>importForm.querySelector('.api-error').textContent!=='');
-    record('a-wrong-password-is-reported-and-imports-nothing', importForm.querySelector('.api-error').textContent.includes('비밀번호가 다르거나') && !importForm.querySelector('.transfer-done') && localStorage.getItem('switcher.viewmode')!=='edge');
+    record('a-wrong-password-is-reported-and-imports-nothing', importForm.querySelector('.api-error').textContent.includes('비밀번호가 다르거나') && !importForm.querySelector('.transfer-done') && JSON.stringify(Object.entries(localStorage).sort())===storedBefore);
     filePassword.value='right-password';
     importForm.requestSubmit();
     await ready('.transfer-import .transfer-done');
     const imported = importForm.querySelector('.transfer-result').textContent;
-    record('import-result-says-what-arrived-and-what-was-left-out', imported.includes('계정 2개 추가 · 1개 갱신') && imported.includes('API 키 1개 추가') && imported.includes('delta') && filePassword.value==='' && sent('transfer_import')[1].args.path.endsWith('.swx') && sent('transfer_import')[1].args.data===null);
-    record('only-known-view-settings-are-restored', localStorage.getItem('switcher.viewmode')==='edge' && localStorage.getItem('evil.key')===null);
+    record('import-result-says-what-arrived-and-what-was-overwritten', imported.includes('계정 2개 추가 · 1개 덮어씀') && imported.includes('지금 로그인된 계정 1개는 로그인도 바꿨습니다') && imported.includes('API 키 1개 추가 · 2개 덮어씀 · 1개는 이미 같음') && imported.includes("API 키 'work'") && filePassword.value==='' && sent('transfer_import')[1].args.path.endsWith('.swx') && sent('transfer_import')[1].args.data===null);
+    record('import-says-up-front-that-it-overwrites', importForm.textContent.includes('파일 것으로 덮어씁니다') && importForm.textContent.includes('파일에 없는 것은 그대로') && importForm.textContent.includes('다시 로그인해야 할 수 있습니다'));
+    record('settings-on-this-pc-are-not-touched', JSON.stringify(Object.entries(localStorage).sort())===storedBefore);
     record('transfer-dialog-fits-the-window', inWindow(dialog) && document.documentElement.scrollWidth<=innerWidth);
     transferFiles = [];
     dialog.querySelectorAll('.transfer-tabs button')[0].click(); dialog.querySelectorAll('.transfer-tabs button')[1].click();
