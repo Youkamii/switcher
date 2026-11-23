@@ -31,6 +31,7 @@ function fixture(mode = "normal", preview = false) {
   let clockSkew = 0; let backendLatency = 0; let usageGate = null; let openUsage = null;
   // Key-only registration (#187): the account the fixture "finds" for a key when several are saved (null = unknown).
   let autoOwner = null;
+  const transferText = 'SWX2.1200.' + 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0'.repeat(34).slice(0,1200);
   let transferFiles = [{path:'/Users/fixture/Downloads/switcher-transfer-20261123-101500.swx', name:'switcher-transfer-20261123-101500.swx', modified:1795400000}];
   // Handle drag (#188): a window that really moves. The window is the viewport (80x1100) on a wall that is
   // 2100 tall (work area 40..2140), so there is room to travel. buttonHeld/cursorAt answer the native probes.
@@ -70,10 +71,11 @@ function fixture(mode = "normal", preview = false) {
       if(cmd === 'get_github_star_prompt_choice') return 'dismissed';
       if(cmd === 'initial_view_mode') return mode;
       if(cmd === 'get_visibility') return visibility;
-      if(cmd === 'transfer_export') return {path:'/Users/fixture/Downloads/switcher-transfer-20261123-101500.swx', accounts:3, api_keys:2};
+      if(cmd === 'transfer_export') return {text:transferText, chars:transferText.length, accounts:3, api_keys:2, expires_at:Math.floor(Date.now()/1000)+600};
+      if(cmd === 'transfer_save') return {path:'/Users/fixture/Downloads/switcher-transfer-20261123-101500.swx', name:'switcher-transfer-20261123-101500.swx'};
       if(cmd === 'transfer_candidates') return transferFiles;
       if(cmd === 'transfer_reveal') return null;
-      if(cmd === 'transfer_import') { if(args.password !== 'right-password') throw '비밀번호가 다르거나 파일이 손상됐습니다'; return {accounts_added:2, accounts_replaced:1, live_replaced:1, api_keys_added:1, api_keys_replaced:2, api_keys_unchanged:1, rejected:0, problems:["API 키 'work': 덮어썼지만 사용 중 상태를 새 키로 맞추지 못했습니다 — 사용을 다시 눌러 주세요"], source_os:'windows'}; }
+      if(cmd === 'transfer_import') { if(args.password !== 'right-password') throw '비밀번호가 다르거나 내용이 손상됐습니다'; return {accounts_added:2, accounts_replaced:1, live_replaced:1, api_keys_added:1, api_keys_replaced:2, api_keys_unchanged:1, rejected:0, problems:["API 키 'work': 덮어썼지만 사용 중 상태를 새 키로 맞추지 못했습니다 — 사용을 다시 눌러 주세요"], source_os:'windows'}; }
       if(cmd === 'get_section_order') return ['claude','codex','github','display','system'];
       if(dragScene) {
         if(cmd === 'pointer_button_down') return buttonHeld;
@@ -598,55 +600,107 @@ function fixture(mode = "normal", preview = false) {
   }
   // Key-only registration (#187): the provider header takes a key without an account and the app files it
   // under the account it belongs to; it asks only when it cannot tell.
-  // Move to another PC (#189): one locked file out, the same file and password back in.
+  // Move to another PC (#189): locked text that is copied and pasted, or the same text as a file. Valid for 10 minutes.
   async function checkTransfer() {
     await ready('.profile-card');
     for(let i=0;i<4;i++) await delay();
     const open = document.querySelector('.transfer-row .transfer-open');
     const inWindow = el => { const r=el.getBoundingClientRect(); return r.width>0 && r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight; };
+    const stored = () => JSON.stringify(Object.entries(localStorage).sort());
+    const storedBefore = stored();
     record('normal-mode-offers-moving-to-another-pc', open?.textContent==='다른 PC로 옮기기' && open.getBoundingClientRect().width>0);
     open.click();
     const dialog = await ready('.api-dialog.transfer-dialog');
     const exportForm = dialog.querySelector('.transfer-export'), importForm = dialog.querySelector('.transfer-import');
     const [first, second] = exportForm.querySelectorAll('input[type="password"]');
     record('opens-on-export-with-two-password-fields', !exportForm.hidden && importForm.hidden && first && second && first.minLength===8 && inWindow(dialog) && inWindow(exportForm.querySelector('button.primary')));
+    record('export-says-what-is-included-and-the-ten-minute-limit', exportForm.textContent.includes('구독 계정 로그인과 API 키') && exportForm.textContent.includes('10분 안에만') && exportForm.textContent.includes('설정과 메모는 담지 않습니다'));
     const sent = cmd => calls.filter(c=>c.cmd===cmd);
     first.value='password-one'; second.value='password-two';
     exportForm.requestSubmit();
     for(let i=0;i<4;i++) await delay();
-    record('mismatched-passwords-make-no-file', sent('transfer_export').length===0 && exportForm.querySelector('.api-error').textContent==='두 비밀번호가 다릅니다');
-    const storedBefore = JSON.stringify(Object.entries(localStorage).sort());
+    record('mismatched-passwords-make-nothing', sent('transfer_export').length===0 && exportForm.querySelector('.api-error').textContent==='두 비밀번호가 다릅니다');
     second.value='password-one';
     exportForm.requestSubmit();
     await ready('.transfer-export .transfer-done');
     const exported = sent('transfer_export')[0];
-    record('export-sends-only-the-password', sent('transfer_export').length===1 && exported.args.passwordLength===12 && Object.keys(exported.args).sort().join()==='password,passwordLength' && exportForm.textContent.includes('설정과 메모는 담지 않습니다'));
+    record('export-sends-only-the-password', sent('transfer_export').length===1 && exported.args.passwordLength===12 && Object.keys(exported.args).sort().join()==='password,passwordLength');
     const result = exportForm.querySelector('.transfer-result');
-    record('export-result-names-the-file-and-what-it-holds', result.textContent.includes('switcher-transfer-20261123-101500.swx') && result.textContent.includes('계정 3개') && result.textContent.includes('API 키 2개') && !result.textContent.includes('/Users/fixture') && first.value==='' && second.value==='' && inWindow(result.querySelector('.transfer-reveal')));
-    result.querySelector('.transfer-reveal').click();
+    const box = result.querySelector('textarea.transfer-text');
+    const copy = result.querySelector('.transfer-copy'), save = result.querySelector('.transfer-save');
+    record('result-shows-what-it-holds-its-length-and-when-it-expires', result.textContent.includes('계정 3개 · API 키 2개 · 글 1,210자') && /\d{1,2}:\d{2}까지, 10분 동안만 가져올 수 있습니다/.test(result.querySelector('.transfer-until').textContent) && first.value==='' && second.value==='');
+    record('both-ways-out-are-offered-side-by-side', copy.textContent==='복사' && save.textContent==='파일로 저장' && inWindow(copy) && inWindow(save) && Math.abs(copy.getBoundingClientRect().top-save.getBoundingClientRect().top)<=1 && copy.getBoundingClientRect().right<=save.getBoundingClientRect().left);
+    record('the-text-is-shown-read-only-inside-its-box', box.readOnly && box.value===transferText && inWindow(box) && box.scrollWidth<=box.clientWidth+1 && getComputedStyle(box).userSelect!=='none');
+    // Copy: the clipboard gets the whole text.
+    let copied=null; const nativeClipboard=Object.getOwnPropertyDescriptor(Navigator.prototype,'clipboard');
+    Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{ copied=value; }}});
+    copy.click();
+    await settle(()=>result.querySelector('.transfer-note').textContent!=='');
+    record('copy-puts-the-whole-text-on-the-clipboard', copied===transferText && result.querySelector('.transfer-note').textContent.includes('복사했습니다') && !result.querySelector('.transfer-note').classList.contains('transfer-warn'));
+    // A webview that refuses clipboard access: the box is selected and copied the old way.
+    let oldWay=null; const nativeExec=document.execCommand;
+    Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async()=>{ throw new Error('denied'); }}});
+    document.execCommand = command => { oldWay={command, all:document.activeElement===box && box.selectionStart===0 && box.selectionEnd===box.value.length}; return true; };
+    result.querySelector('.transfer-note').textContent='';
+    copy.click();
+    await settle(()=>result.querySelector('.transfer-note').textContent!=='');
+    record('copy-falls-back-to-selecting-the-box', oldWay?.command==='copy' && oldWay.all && result.querySelector('.transfer-note').textContent.includes('복사했습니다'));
+    document.execCommand = () => false;
+    result.querySelector('.transfer-note').textContent='';
+    copy.click();
+    await settle(()=>result.querySelector('.transfer-note').textContent!=='');
+    record('a-failed-copy-says-so-and-points-at-the-text', result.querySelector('.transfer-note').textContent.includes('복사하지 못했습니다') && result.querySelector('.transfer-note').classList.contains('transfer-warn'));
+    document.execCommand = nativeExec;
+    if(nativeClipboard) delete navigator.clipboard;
+    // File: the same text is saved to Downloads.
+    save.click();
+    await ready('.transfer-export .transfer-reveal');
+    const note = result.querySelector('.transfer-note');
+    record('the-same-text-is-saved-as-a-file', sent('transfer_save').length===1 && sent('transfer_save')[0].args.text===transferText && note.textContent.includes('다운로드 폴더에 저장했습니다') && note.textContent.includes('switcher-transfer-20261123-101500.swx') && !note.textContent.includes('/Users/fixture') && !note.classList.contains('transfer-warn') && inWindow(note.querySelector('.transfer-reveal')));
+    note.querySelector('.transfer-reveal').click();
     await delay();
     record('the-file-can-be-shown-in-its-folder', sent('transfer_reveal').length===1 && sent('transfer_reveal')[0].args.path.endsWith('.swx'));
-    // Import: the file found in Downloads is offered; a wrong password changes nothing on screen but the error.
-    dialog.querySelectorAll('.transfer-tabs button')[1].click();
-    await settle(()=>importForm.querySelector('select').options.length===1);
+    record('export-result-fits-the-window', inWindow(dialog) && document.documentElement.scrollWidth<=innerWidth && dialog.scrollWidth<=dialog.clientWidth+1);
+
+    // Import: paste box first, then files. Nothing found and nothing pasted is refused before any call.
+    const tabsButtons = dialog.querySelectorAll('.transfer-tabs button');
+    const realFiles = transferFiles; transferFiles = [];
+    tabsButtons[1].click();
+    for(let i=0;i<6;i++) await delay();
+    const paste = importForm.querySelector('textarea.transfer-paste'), picker = importForm.querySelector('input[type="file"]');
+    const foundLabel = importForm.querySelector('select').closest('label');
     const filePassword = importForm.querySelector('input[type="password"]');
-    record('import-offers-the-file-it-found', exportForm.hidden && !importForm.hidden && importForm.querySelector('select').value==='/Users/fixture/Downloads/switcher-transfer-20261123-101500.swx' && importForm.querySelector('input[type="file"]').accept==='.swx' && inWindow(importForm.querySelector('button.primary')));
+    record('import-offers-paste-first-and-a-file-as-well', exportForm.hidden && !importForm.hidden && paste && document.activeElement===paste && paste.placeholder.includes('붙여넣으세요') && picker.accept==='.swx' && foundLabel.hidden && paste.getBoundingClientRect().top<picker.getBoundingClientRect().top && inWindow(importForm.querySelector('button.primary')));
+    record('import-says-up-front-that-it-overwrites', importForm.textContent.includes('받은 것으로 덮어씁니다') && importForm.textContent.includes('받은 것에 없는 계정과 키는 그대로') && importForm.textContent.includes('다시 로그인해야 할 수 있습니다'));
+    filePassword.value='right-password';
+    importForm.requestSubmit();
+    for(let i=0;i<4;i++) await delay();
+    record('nothing-to-import-is-refused', sent('transfer_import').length===0 && importForm.querySelector('.api-error').textContent==='복사한 글을 붙여넣거나 파일을 고르세요');
+    // A pasted text with a wrong password: reported, nothing arrives.
+    paste.value='  '+transferText+'\n';
     filePassword.value='wrong-password';
     importForm.requestSubmit();
-    await settle(()=>importForm.querySelector('.api-error').textContent!=='');
-    record('a-wrong-password-is-reported-and-imports-nothing', importForm.querySelector('.api-error').textContent.includes('비밀번호가 다르거나') && !importForm.querySelector('.transfer-done') && JSON.stringify(Object.entries(localStorage).sort())===storedBefore);
+    await settle(()=>importForm.querySelector('.api-error').textContent.includes('비밀번호'));
+    record('a-wrong-password-is-reported-and-imports-nothing', importForm.querySelector('.api-error').textContent.includes('비밀번호가 다르거나') && !importForm.querySelector('.transfer-done') && paste.value.trim()===transferText);
     filePassword.value='right-password';
     importForm.requestSubmit();
     await ready('.transfer-import .transfer-done');
+    const pastedCall = sent('transfer_import')[1];
     const imported = importForm.querySelector('.transfer-result').textContent;
-    record('import-result-says-what-arrived-and-what-was-overwritten', imported.includes('계정 2개 추가 · 1개 덮어씀') && imported.includes('지금 로그인된 계정 1개는 로그인도 바꿨습니다') && imported.includes('API 키 1개 추가 · 2개 덮어씀 · 1개는 이미 같음') && imported.includes("API 키 'work'") && filePassword.value==='' && sent('transfer_import')[1].args.path.endsWith('.swx') && sent('transfer_import')[1].args.data===null);
-    record('import-says-up-front-that-it-overwrites', importForm.textContent.includes('파일 것으로 덮어씁니다') && importForm.textContent.includes('파일에 없는 것은 그대로') && importForm.textContent.includes('다시 로그인해야 할 수 있습니다'));
-    record('settings-on-this-pc-are-not-touched', JSON.stringify(Object.entries(localStorage).sort())===storedBefore);
-    record('transfer-dialog-fits-the-window', inWindow(dialog) && document.documentElement.scrollWidth<=innerWidth);
-    transferFiles = [];
-    dialog.querySelectorAll('.transfer-tabs button')[0].click(); dialog.querySelectorAll('.transfer-tabs button')[1].click();
-    await settle(()=>!importForm.querySelector('select').closest('label') || importForm.querySelector('select').closest('label').hidden);
-    record('no-file-found-asks-to-choose-one', importForm.querySelector('select').closest('label').hidden && [...importForm.querySelectorAll('p')].some(p=>!p.hidden && p.textContent.includes('찾지 못했습니다')));
+    record('the-pasted-text-is-what-gets-imported', pastedCall.args.text===transferText && pastedCall.args.path===null && filePassword.value==='' && paste.value==='');
+    record('import-result-says-what-arrived-and-what-was-overwritten', imported.includes('계정 2개 추가 · 1개 덮어씀') && imported.includes('지금 로그인된 계정 1개는 로그인도 바꿨습니다') && imported.includes('API 키 1개 추가 · 2개 덮어씀 · 1개는 이미 같음') && imported.includes("API 키 'work'"));
+    // A file found in Downloads is used when nothing is pasted.
+    transferFiles = realFiles;
+    tabsButtons[0].click(); tabsButtons[1].click();
+    await settle(()=>importForm.querySelector('select').options.length===1 && !foundLabel.hidden);
+    filePassword.value='right-password';
+    importForm.requestSubmit();
+    await settle(()=>sent('transfer_import').length===3);
+    await ready('.transfer-import .transfer-done');
+    const fileCall = sent('transfer_import')[2];
+    record('a-found-file-is-imported-when-nothing-is-pasted', fileCall.args.text===null && fileCall.args.path==='/Users/fixture/Downloads/switcher-transfer-20261123-101500.swx' && inWindow(foundLabel));
+    record('settings-on-this-pc-are-not-touched', stored()===storedBefore);
+    record('import-fits-the-window', inWindow(dialog) && document.documentElement.scrollWidth<=innerWidth && dialog.scrollWidth<=dialog.clientWidth+1);
     dialog.querySelector('.api-close').click();
     await settle(()=>!document.querySelector('.api-dialog'));
     record('closing-leaves-no-dialog-behind', !document.querySelector('.api-dialog'));
@@ -761,9 +815,12 @@ function fixture(mode = "normal", preview = false) {
         if(preview === 'transfer-shot') {
           await ready('.profile-card');
           document.querySelector('.transfer-row .transfer-open').click();
-          await ready('.api-dialog.transfer-dialog');
+          const form = (await ready('.api-dialog.transfer-dialog')).querySelector('.transfer-export');
+          form.querySelectorAll('input[type="password"]').forEach(input=>{ input.value='password-one'; });
+          form.requestSubmit();
+          await ready('.transfer-export .transfer-done');
           for(let i=0;i<4;i++) await delay();
-          record('transfer-dialog-opens', errors.length===0);
+          record('transfer-dialog-shows-the-result', errors.length===0);
           return;
         }
         await checkTransfer();

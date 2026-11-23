@@ -2364,12 +2364,20 @@ button:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus
 .transfer-dialog form[hidden] { display: none; }
 .transfer-dialog select { display: block; width: 100%; min-width: 0; margin-top: 6px; padding: 9px 11px; border: 1px solid rgb(var(--border-rgb)); border-radius: 7px; background: rgb(var(--panel-rgb)); color: rgb(var(--text-rgb)); font-family: inherit; font-size: 12px; }
 .transfer-dialog .transfer-picker { padding: 7px 8px; font-size: 11px; }
-.transfer-result:empty { display: none; }
-.transfer-result { display: flex; flex-direction: column; gap: 4px; padding-top: 10px; border-top: 1px solid rgb(var(--border-rgb)); }
+.transfer-result:empty, .transfer-note:empty { display: none; }
+.transfer-result { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid rgb(var(--border-rgb)); }
 .transfer-result .transfer-done { color: rgb(var(--text-rgb)); font-size: 12px; font-weight: 600; }
+.transfer-result .transfer-until { color: rgb(var(--text-rgb)); }
 .transfer-result .transfer-file { font-family: ui-monospace, monospace; user-select: text; }
-.transfer-result .transfer-warn { color: var(--warn); }
-.transfer-reveal { align-self: flex-start; margin-top: 4px; padding: 6px 10px; border: 1px solid rgb(var(--border-rgb)); border-radius: 7px; background: transparent; color: rgb(var(--text-rgb)); font-size: 11px; }
+.transfer-dialog .transfer-warn { color: var(--warn); }
+.transfer-actions { display: flex; gap: 8px; }
+.transfer-actions > button { flex: 1; width: auto; min-height: 34px; }
+.transfer-save, .transfer-reveal { border: 1px solid rgb(var(--border-rgb)); border-radius: 7px; background: transparent; color: rgb(var(--text-rgb)); font-size: 12px; }
+.transfer-reveal { margin-left: 4px; padding: 3px 8px; font-size: 11px; }
+/* 잠긴 글 — 길고 띄어쓰기가 없다. 글 상자 안에서 꺾이게 하고, 직접 선택해 복사할 수 있게 둔다 */
+.transfer-dialog textarea { display: block; width: 100%; min-width: 0; margin-top: 6px; padding: 8px 10px; border: 1px solid rgb(var(--border-rgb)); border-radius: 7px; background: rgb(var(--panel-rgb)); color: rgb(var(--text-rgb)); font-family: ui-monospace, monospace; font-size: 10px; line-height: 1.45; resize: none; word-break: break-all; user-select: text; }
+.transfer-dialog textarea::placeholder { color: #73808b; font-family: inherit; font-size: 11px; }
+.transfer-dialog .transfer-text { margin-top: 0; color: rgb(var(--muted-rgb)); }
 /* .add-api-key: 제목 줄의 「API 키 추가」(#187) — 「계정 추가」와 같은 모양으로 그 앞에 선다 */
 .add-account, .add-api-key { display: inline-flex; align-items: center; gap: 3px; padding: 4px 0 4px 6px; border: 0; background: transparent; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .add-account:hover, .add-api-key:hover { color: var(--accent); }

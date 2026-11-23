@@ -227,18 +227,23 @@ Conversation history, memory and project settings are separate from credentials 
 
 ### Move to another PC
 
-**Move to another PC**, at the bottom of normal mode, exports your subscription logins and API keys into one file and imports it on another PC. It also works between macOS and Windows. Settings and notes are not moved.
+**Move to another PC**, at the bottom of normal mode, moves your subscription logins and API keys to another PC. It also works between macOS and Windows. Settings and notes are not moved.
 
-1. On the source PC, choose **Export** and set a password (8+ characters). `switcher-transfer-date-time.swx` appears in Downloads.
-2. Move the file to the other PC (the widget finds it in Downloads or on the Desktop).
-3. On the other PC, choose **Import**, pick the file and enter the same password.
+1. On the source PC, choose **Export**, set a password (8+ characters) and press **Create**.
+2. Press **Copy** and send the text through a messenger or a note, or press **Save as file** and move `switcher-transfer-date-time.swx` from Downloads. Both carry the same contents.
+3. On the other PC, choose **Import**, paste the copied text or pick the file (the widget finds it in Downloads or on the Desktop), and enter the same password.
 
-The receiving PC is **overwritten with the file's contents**: an account that already exists gets the file's login (including the account currently logged in), and an API key with the same account and name is replaced even while in use. Accounts and keys that are not in the file are kept.
+**It can be imported only within 10 minutes of being created.** After that, create it again on the source PC.
 
-The whole file is locked: the key is derived from the password with Argon2id and the contents are sealed with XChaCha20-Poly1305. A wrong password or a single changed byte imports nothing. A forgotten password cannot be recovered; export again.
+The receiving PC is **overwritten with what you bring**: an account that already exists gets the new login (including the account currently logged in), and an API key with the same account and name is replaced even while in use. Accounts and keys that are not in it are kept.
+
+Everything is locked: the key is derived from the password with Argon2id and the contents are sealed with XChaCha20-Poly1305. A wrong password or a single changed character imports nothing. A forgotten password cannot be recovered; create it again.
 
 > [!NOTE]
-> A subscription login is invalidated each time it is refreshed. If two PCs share the same login, the one that refreshes first keeps it and the other may have to sign in again. API keys are not affected. Delete the file after moving it.
+> - The 10-minute limit is checked by the widget against the receiving PC's clock. The creation time is bound to the locked contents and cannot be edited. Because no server is involved, it cannot stop someone who also knows the password from turning their own clock back. Without the password it cannot be opened at any time.
+> - The copied text is several thousand characters, depending on the number of accounts. Some messengers cut long text; the widget tells you when a pasted text was cut. Move the file instead in that case.
+> - A subscription login is invalidated each time it is refreshed. If two PCs share the same login, the one that refreshes first keeps it and the other may have to sign in again. API keys are not affected.
+> - If you saved a file, delete it after moving it.
 
 <details>
 <summary><strong>File locations</strong></summary>

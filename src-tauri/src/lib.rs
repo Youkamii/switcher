@@ -856,7 +856,8 @@ async fn clamshell_cycle(app: tauri::AppHandle) -> Result<i8, String> {
     .map_err(|e| format!("클램셸 전환 실패: {e}"))?
 }
 
-/// 다른 PC로 옮기기 (#189) — 구독 계정 로그인과 API 키를 비밀번호로 잠근 파일 하나로 내보낸다.
+/// 다른 PC로 옮기기 (#189) — 구독 계정 로그인과 API 키를 비밀번호로 잠근 글로 만든다.
+/// 복사해 붙여넣거나 파일로 옮기고, 만든 지 10분 안에만 가져올 수 있다 (transfer.rs).
 /// 열쇠 만들기가 일부러 느리므로 블로킹 스레드에서 돈다.
 #[tauri::command]
 async fn transfer_export(password: String) -> Result<transfer::ExportResult, String> {
@@ -870,25 +871,22 @@ async fn transfer_export(password: String) -> Result<transfer::ExportResult, Str
     .map_err(|_| "내보내기 작업 실패")?
 }
 
-/// 옮기기 파일을 푼다. `path`(찾아 둔 파일)나 `data`(화면이 읽은 파일 내용, base64) 중 하나.
+/// 만들어 둔 글을 다운로드 폴더에 파일로도 남긴다 — 내용은 같은 글이다
+#[tauri::command]
+fn transfer_save(text: String) -> Result<transfer::SavedFile, String> {
+    transfer::save_file(&Env::real()?, &text)
+}
+
+/// 옮기기 글을 푼다. `text`(붙여넣은 글이나 화면이 읽은 파일 내용)나 `path`(찾아 둔 파일) 중 하나.
 #[tauri::command]
 async fn transfer_import(
     password: String,
+    text: Option<String>,
     path: Option<String>,
-    data: Option<String>,
 ) -> Result<transfer::ImportResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        use base64::Engine;
         let mut password = password;
-        let bytes = match data {
-            Some(data) => Some(
-                base64::engine::general_purpose::STANDARD
-                    .decode(data)
-                    .map_err(|_| "파일을 읽지 못했습니다")?,
-            ),
-            None => None,
-        };
-        let result = transfer::import(&Env::real()?, &password, path.as_deref(), bytes);
+        let result = transfer::import(&Env::real()?, &password, text.as_deref(), path.as_deref());
         zeroize::Zeroize::zeroize(&mut password);
         result
     })
@@ -896,22 +894,23 @@ async fn transfer_import(
     .map_err(|_| "가져오기 작업 실패")?
 }
 
-/// 방금 만든(또는 찾아 둔) 옮기기 파일을 파일 관리자에서 보여 준다 — 우리가 찾은 파일만
+/// 지금 가져올 수 있는 옮기기 파일 (다운로드·바탕화면·홈, 만든 지 10분 안의 것)
+#[tauri::command]
+fn transfer_candidates() -> Vec<transfer::Candidate> {
+    Env::real().map(|env| transfer::candidates(&env)).unwrap_or_default()
+}
+
+/// 옮기기 파일을 파일 관리자에서 보여 준다 — 우리가 다루는 자리의 파일만
 #[tauri::command]
 fn transfer_reveal(path: String, app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
     let env = Env::real()?;
-    if !transfer::candidates(&env).iter().any(|found| found.path == path) {
+    if !transfer::is_transfer_location(&env, std::path::Path::new(&path)) {
         return Err("파일을 찾을 수 없습니다".into());
     }
     app.opener()
         .reveal_item_in_dir(&path)
         .map_err(|_| "폴더를 열지 못했습니다".into())
-}
-
-#[tauri::command]
-fn transfer_candidates() -> Vec<transfer::Candidate> {
-    Env::real().map(|env| transfer::candidates(&env)).unwrap_or_default()
 }
 
 #[tauri::command]
@@ -4545,6 +4544,7 @@ pub fn run() {
             arm_grip_drop,
             take_grip_drop,
             transfer_export,
+            transfer_save,
             transfer_import,
             transfer_candidates,
             transfer_reveal,

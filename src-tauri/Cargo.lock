@@ -3797,6 +3797,7 @@ dependencies = [
  "fs2",
  "getrandom 0.2.17",
  "libc",
+ "miniz_oxide",
  "mslnk",
  "objc2",
  "objc2-app-kit",

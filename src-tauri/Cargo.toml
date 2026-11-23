@@ -40,6 +40,8 @@ argon2 = "0.5"
 chacha20poly1305 = "0.10"
 getrandom = "0.2"
 zeroize = "1"
+# 옮기기 묶음을 잠그기 전에 줄인다 — 복사해 옮기는 글이 짧아진다 (이미 다른 크레이트가 쓰는 판)
+miniz_oxide = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # sync: 토큰 재발급 직렬화(REFRESH_LOCK), time: TFSD 감시 루프의 주기 슬립,
 # rt: 토큰 회전 응답 착지·티어 동기화를 호출자와 분리해 띄우는 Handle::spawn (#176·#177)
