@@ -191,6 +191,29 @@ struct PointerPress {
 static GRIP_ARMED: AtomicBool = AtomicBool::new(false);
 static GRIP_DROP: Mutex<Option<PointerPress>> = Mutex::new(None);
 
+/// ☰를 쥐고 있는 동안 창이 다닐 수 있는 자리 (#188, 사용자 지시 2026-11-23: "벽에 붙인 상태에서
+/// 끌면, 마우스 위치에서 움직이게"). 전부 물리 px, 창 바깥 틀 기준. 네이티브 창 드래그는 쓰지
+/// 않는다 — 그건 판을 벽 밖으로 밀어 넣거나 벽에서 떼어 낸다. 폴링이 커서를 보고 창을 직접 옮긴다:
+/// 가로는 두 벽 중 커서에 가까운 쪽에 붙이고, 세로만 마우스를 따라간다.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GripRail {
+    x_left: f64,
+    x_right: f64,
+    y_min: f64,
+    y_max: f64,
+    mid_x: f64,
+}
+static GRIP_RAIL: Mutex<Option<GripRail>> = Mutex::new(None);
+
+/// 쥔 자리(grab = 누를 때 커서 y − 창 y)를 지킨 채 커서를 따라간 창 자리. 벽 밖으로는 나가지 않는다.
+fn grip_rail_position(rail: &GripRail, cursor: (f64, f64), grab: f64) -> (i32, i32, bool) {
+    let left = cursor.0 < rail.mid_x;
+    let x = if left { rail.x_left } else { rail.x_right };
+    let y = (cursor.1 - grab).clamp(rail.y_min, rail.y_max.max(rail.y_min));
+    (x.round() as i32, y.round() as i32, left)
+}
+
 /// 누름 추적기 — 폴링이 25ms마다 버튼 상태와 커서를 넣는다.
 struct PressTracker {
     down_at: Option<(f64, f64)>,
@@ -407,6 +430,19 @@ mod edge_hover_tests {
 
     /// #188 — ☰를 잡았던 누름의 누른 자리와 놓은 자리. 놓은 자리는 버튼을 쥔 채 마지막으로 본
     /// 커서다 — 놓은 뒤에는 커서가 곧 다른 데로 가므로 그 값은 쓰지 않는다.
+    #[test]
+    fn a_held_grip_slides_along_the_wall_at_the_mouse_height() {
+        let rail = GripRail { x_left: 0.0, x_right: 3680.0, y_min: 76.0, y_max: 1354.0, mid_x: 1920.0 };
+        // 세로는 마우스를 따라가고(쥔 자리 유지), 가로는 마우스가 벽 쪽으로 더 가도 벽에 그대로다
+        assert_eq!(grip_rail_position(&rail, (3716.0, 1000.0), 48.0), (3680, 952, false));
+        assert_eq!(grip_rail_position(&rail, (3839.0, 1200.0), 48.0), (3680, 1152, false));
+        // 화면 끝을 넘겨도 판은 작업영역 안에 남는다
+        assert_eq!(grip_rail_position(&rail, (3716.0, 2400.0), 48.0), (3680, 1354, false));
+        assert_eq!(grip_rail_position(&rail, (3716.0, 0.0), 48.0), (3680, 76, false));
+        // 화면 가운데를 넘기면 반대쪽 벽
+        assert_eq!(grip_rail_position(&rail, (500.0, 600.0), 48.0), (0, 552, true));
+    }
+
     #[test]
     fn a_press_reports_where_it_started_and_where_it_was_let_go() {
         let mut presses = PressTracker::new();
@@ -3593,7 +3629,20 @@ fn arm_grip_drop() {
     if let Ok(mut guard) = GRIP_DROP.lock() {
         *guard = None;
     }
+    if let Ok(mut guard) = GRIP_RAIL.lock() {
+        *guard = None;
+    }
     GRIP_ARMED.store(true, Ordering::Relaxed);
+}
+
+/// ☰를 쥔 동안 창이 다닐 자리 — 프론트가 창·작업영역을 읽은 뒤 알려 준다 (위 GRIP_RAIL 주석)
+#[tauri::command]
+fn set_grip_rail(rail: GripRail) {
+    if GRIP_ARMED.load(Ordering::Relaxed) {
+        if let Ok(mut guard) = GRIP_RAIL.lock() {
+            *guard = Some(rail);
+        }
+    }
 }
 
 /// ☰를 잡았던 누름의 기록을 가져간다 — 없으면(아직 쥐고 있거나, 걸기 전에 놓았으면) None
@@ -3995,8 +4044,13 @@ pub fn run() {
                     // 엣지 손잡이를 끄는 중 버튼이 떨어져 있던 폴링 횟수 (#188)
                     let mut edge_drag_up_ticks: u32 = 0;
                     let mut presses = PressTracker::new();
+                    // ☰를 쥔 채 창을 옮기는 중 (#188): 쥔 자리, 마지막으로 놓은 창 자리, 붙은 벽
+                    let mut grip_grab: Option<f64> = None;
+                    let mut grip_last: Option<(i32, i32)> = None;
+                    let mut grip_left: Option<bool> = None;
                     loop {
-                        std::thread::sleep(std::time::Duration::from_millis(25));
+                        // 창을 옮기는 동안은 촘촘히 돈다 — 25ms로는 판이 마우스 뒤에서 끊겨 따라온다
+                        std::thread::sleep(std::time::Duration::from_millis(if grip_grab.is_some() { 8 } else { 25 }));
                         let Some(window) = handle.get_webview_window("main") else {
                             continue;
                         };
@@ -4025,6 +4079,49 @@ pub fn run() {
                                 }
                             }
                         }
+                        // ☰를 쥐고 있는 동안: 판을 벽에 붙인 채 마우스 높이로 옮긴다
+                        let rail = if GRIP_ARMED.load(Ordering::Relaxed) && primary_button_down() {
+                            GRIP_RAIL.lock().ok().and_then(|guard| *guard)
+                        } else {
+                            None
+                        };
+                        if let (Some(rail), Some(cursor)) = (rail, global_cursor_pos()) {
+                            let scale = if cfg!(target_os = "macos") {
+                                window.scale_factor().unwrap_or(1.0)
+                            } else {
+                                1.0
+                            };
+                            let cursor = (cursor.0 * scale, cursor.1 * scale);
+                            // 쥔 자리는 처음 한 번만 잰다 — 옮긴 직후 읽은 창 위치는 옛 값일 수 있다
+                            let grab = match grip_grab {
+                                Some(grab) => Some(grab),
+                                None => window.outer_position().ok().map(|at| cursor.1 - at.y as f64),
+                            };
+                            if let Some(grab) = grab {
+                                grip_grab = Some(grab);
+                                let (x, y, left) = grip_rail_position(&rail, cursor, grab);
+                                if grip_last != Some((x, y)) {
+                                    let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+                                    grip_last = Some((x, y));
+                                }
+                                if grip_left != Some(left) {
+                                    grip_left = Some(left);
+                                    let _ = handle.emit("edge-grip-side", if left { "left" } else { "right" });
+                                }
+                            }
+                            // 쥔 동안 판은 펼쳐져 있고 마우스를 받는다 — 커서가 창을 앞질러도 접히지 않는다
+                            if ignoring {
+                                let _ = window.set_ignore_cursor_events(false);
+                                ignoring = false;
+                            }
+                            edge_hover.hold_inside(std::time::Instant::now());
+                            prev_down = true;
+                            last_click = None;
+                            continue;
+                        }
+                        grip_grab = None;
+                        grip_last = None;
+                        grip_left = None;
                         if EDGE_TAB_DRAG.load(Ordering::Relaxed) {
                             // 엣지 손잡이를 끄는 중: 창이 마우스를 계속 받는다. 호버·투과·더블클릭
                             // 판정은 쉬고, 버튼이 놓였는지만 본다.
@@ -4391,6 +4488,7 @@ pub fn run() {
             set_edge_drag,
             arm_grip_drop,
             take_grip_drop,
+            set_grip_rail,
             pointer_button_down,
             set_window_shadow,
             memo_load,

@@ -22,7 +22,15 @@ test("a panel moved with the grip leaves the small handle where the mouse let go
   const press = mainSource.match(/if \(target\?\.closest\("\.edge-handle"\)\) \{[\s\S]*?return;\s*\}/)?.[0] ?? "";
   assert.match(press, /edgeGripPressed = true;/);
   assert.match(press, /void invoke\("arm_grip_drop"\)/);
-  assert.match(press, /if \(edgeGripPressed\) edgeGripStart = \{ x: at\.x, y: at\.y \};/);
+  assert.match(press, /if \(!edgeGripPressed\) return;\s*edgeGripStart = \{ x: at\.x, y: at\.y \};/);
+  // 사용자 지시(2026-11-23): 벽에 붙인 채로 마우스 높이를 따라 움직인다. 네이티브 창 드래그는 판을
+  // 벽 밖으로 밀어 넣으므로 쓰지 않는다 — 러스트가 두 벽의 가로 자리와 세로 범위 안에서 창을 옮긴다
+  assert.doesNotMatch(fn("edgeBar"), /data-tauri-drag-region/);
+  assert.match(press, /invoke\("set_grip_rail", \{\s*rail: \{\s*xLeft: edgeSnapPosition\(rect, area, "left", insets\)\.x,\s*xRight: edgeSnapPosition\(rect, area, "right", insets\)\.x,\s*yMin,\s*yMax: [^\n]*\n\s*midX: /);
+  assert.match(libSource, /fn grip_rail_position\(rail: &GripRail, cursor: \(f64, f64\), grab: f64\) -> \(i32, i32, bool\)/);
+  assert.match(libSource, /let rail = if GRIP_ARMED\.load\(Ordering::Relaxed\) && primary_button_down\(\) \{/);
+  assert.match(libSource, /\n\s+set_grip_rail,\n/, "the command must be registered");
+  assert.match(mainSource, /listen<string>\("edge-grip-side"/);
   assert.match(press, /scheduleMonitorSync\(\);/);
   const snap = fn("placeOnEdge");
   // 정착 판정이 세운 표시를 스냅이 거둔다 — 그 사이에 다른 길로 온 스냅이 옛 자리로 되돌리지 못한다

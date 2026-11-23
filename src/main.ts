@@ -2065,7 +2065,8 @@ function edgeBar(): HTMLElement {
   const handle = document.createElement("span");
   handle.className = "edge-ui edge-handle";
   handle.textContent = "☰";
-  handle.setAttribute("data-tauri-drag-region", "");
+  // 네이티브 창 드래그를 쓰지 않는다 (#188) — 판이 벽 밖으로 밀려 들어가거나 벽에서 떨어진다.
+  // 쥐고 있는 동안 러스트가 판을 벽에 붙인 채 마우스 높이로 옮긴다 (set_grip_rail).
   handle.title = t("dragHandle");
   const mode = document.createElement("button");
   mode.className = "edge-ui edge-mode";
@@ -3413,10 +3414,28 @@ window.addEventListener(
       edgeGripClientY = event.clientY;
       // 네이티브 드래그 동안 웹뷰는 포인터를 못 본다 — 끌었는지는 러스트의 커서 기록과 창 위치로 안다
       void invoke("arm_grip_drop").catch(() => {});
-      void appWindow
-        .outerPosition()
-        .then((at) => {
-          if (edgeGripPressed) edgeGripStart = { x: at.x, y: at.y };
+      void Promise.all([appWindow.outerPosition(), appWindow.outerSize(), appWindow.innerPosition(), appWindow.innerSize()])
+        .then(([at, size, innerAt, innerSize]) => {
+          if (!edgeGripPressed) return;
+          edgeGripStart = { x: at.x, y: at.y };
+          const area = currentWorkArea;
+          if (!area) return;
+          // 쥐고 있는 동안 판이 다닐 자리: 두 벽의 가로 자리와 작업영역 안의 세로 범위
+          const rect = { x: at.x, y: at.y, width: size.width, height: size.height };
+          const insets = {
+            left: innerAt.x - at.x,
+            right: at.x + size.width - (innerAt.x + innerSize.width),
+          };
+          const yMin = area.position.y;
+          void invoke("set_grip_rail", {
+            rail: {
+              xLeft: edgeSnapPosition(rect, area, "left", insets).x,
+              xRight: edgeSnapPosition(rect, area, "right", insets).x,
+              yMin,
+              yMax: Math.max(yMin, area.position.y + area.size.height - size.height),
+              midX: area.position.x + area.size.width / 2,
+            },
+          }).catch(() => {});
         })
         .catch(() => {});
       scheduleMonitorSync();
@@ -3507,6 +3526,15 @@ window.addEventListener(
   true,
 );
 // 러스트의 마무리: 버튼은 놓였는데 웹뷰가 놓는 이벤트를 받지 못했을 때 (창 밖·비활성 웹뷰)
+// ☰를 쥔 채 화면 가운데를 넘기면 러스트가 판을 반대쪽 벽에 붙인다 — 모양(둥근 쪽·손잡이 쪽)을 맞춘다
+void listen<string>("edge-grip-side", (event) => {
+  if (!edgeActive || !edgeGripPressed) return;
+  const side = event.payload === "left" ? "left" : "right";
+  if (side === edgeSide) return;
+  edgeSide = side;
+  document.body.classList.toggle("edge-left", side === "left");
+  refreshHitRegionsAfterLayout();
+});
 void listen("edge-drag-end", () => finishEdgeTabDrag());
 
 // 꾹 누르면(0.25s) 숫자 자리에 초기화까지 남은 시간이 나온다 — 놓으면 돌아온다
