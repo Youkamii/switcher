@@ -69,7 +69,7 @@ fn valid_key(key: &str) -> bool {
         && key.bytes().all(|b| b.is_ascii_graphic())
 }
 
-trait Secrets {
+pub(crate) trait Secrets {
     fn put(&self, id: &str, key: &[u8]) -> Result<(), String>;
     fn get(&self, id: &str) -> Result<Vec<u8>, String>;
     fn remove(&self, id: &str) -> Result<(), String>;
@@ -872,12 +872,108 @@ pub async fn check(env: &Env, provider: &str, name: &str) -> Result<Connection, 
     }
 }
 
+// ── 다른 PC로 옮기기 (#189) ────────────────────────────────────────
+// 키 원문은 OS 보안 저장소(키체인·DPAPI)에 있고 그 PC 밖에서는 풀리지 않는다. 옮길 때는 여기서
+// 꺼내 transfer.rs가 비밀번호로 잠근 묶음에 담고, 받는 PC에서 그 PC의 보안 저장소에 다시 넣는다.
+// 런처(run.*·key.*)는 PC마다 다시 만들어지는 것이라 옮기지 않는다. Debug를 달지 말 것 — 키 원문이 있다.
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct TransferKey {
+    connection: Connection,
+    key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    credit: Option<serde_json::Value>,
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+pub(crate) struct KeyImport {
+    pub added: usize,
+    pub replaced: usize,
+    /// 형식이 맞지 않아 넣지 않은 항목 수
+    pub rejected: usize,
+}
+
+pub(crate) fn export_keys(env: &Env) -> Result<Vec<TransferKey>, String> {
+    export_keys_with(env, &OsSecrets(env))
+}
+
+pub(crate) fn export_keys_with(env: &Env, secrets: &impl Secrets) -> Result<Vec<TransferKey>, String> {
+    let _guard = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
+    let mut out = Vec::new();
+    for provider in [Provider::Claude, Provider::Codex] {
+        for mut connection in stored_connections(env, provider)? {
+            let id = service(provider, &connection.name);
+            // 키를 못 읽은 연결을 조용히 빼면 "전부 옮겼다"가 거짓이 된다 — 내보내기를 멈춘다
+            let key = String::from_utf8(secrets.get(&id)?).map_err(|_| "저장된 API 키 형식 오류")?;
+            let dir = root(env).join(provider.dir_name()).join(&connection.name);
+            let credit = fs::read(dir.join("console-credit.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+            connection.active = false;
+            out.push(TransferKey { connection, key, credit });
+        }
+    }
+    Ok(out)
+}
+
+pub(crate) fn import_keys(env: &Env, keys: &[TransferKey]) -> Result<KeyImport, String> {
+    import_keys_with(env, &OsSecrets(env), keys)
+}
+
+/// 호출자가 MUTATION_LOCK을 쥐고 있어야 한다. 같은 저장 이름의 연결은 교체한다.
+pub(crate) fn import_keys_with(
+    env: &Env,
+    secrets: &impl Secrets,
+    keys: &[TransferKey],
+) -> Result<KeyImport, String> {
+    let _guard = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
+    let mut result = KeyImport::default();
+    for item in keys {
+        // 묶음은 바깥에서 온 입력이다 — 이름은 경로가 되므로 저장할 때와 같은 규칙으로 거른다
+        let Ok((provider, dir)) = checked(env, &item.connection.provider, &item.connection.name) else {
+            result.rejected += 1;
+            continue;
+        };
+        if !valid_key(&item.key) {
+            result.rejected += 1;
+            continue;
+        }
+        let existed = dir.join("connection.json").is_file();
+        fs::create_dir_all(&dir).map_err(|_| "API 연결 폴더 생성 실패")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))
+                .map_err(|_| "API 폴더 권한 설정 실패")?;
+        }
+        let mut connection = item.connection.clone();
+        connection.provider = provider.dir_name().into();
+        connection.name = connection.name.to_ascii_lowercase();
+        connection.active = false;
+        // 비밀을 먼저 넣는다 — 메타데이터만 있고 키가 없는 연결을 남기지 않는다
+        secrets.put(&service(provider, &connection.name), item.key.as_bytes())?;
+        let data = serde_json::to_vec(&connection).map_err(|_| "API 메타데이터 생성 실패")?;
+        atomic_write(&dir.join("connection.json"), &data)?;
+        if let Some(credit) = &item.credit {
+            if let Ok(bytes) = serde_json::to_vec(credit) {
+                let _ = atomic_write(&dir.join("console-credit.json"), &bytes);
+            }
+        }
+        if existed {
+            result.replaced += 1;
+        } else {
+            result.added += 1;
+        }
+    }
+    Ok(result)
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::{cell::RefCell, collections::HashMap};
     #[derive(Default)]
-    pub(super) struct Memory(RefCell<HashMap<String, Vec<u8>>>);
+    pub(crate) struct Memory(RefCell<HashMap<String, Vec<u8>>>);
     impl Secrets for Memory {
         fn put(&self, id: &str, key: &[u8]) -> Result<(), String> {
             self.0.borrow_mut().insert(id.into(), key.into());
@@ -891,7 +987,11 @@ mod tests {
             Ok(())
         }
     }
-    pub(super) fn add_account(env: &Env, provider: Provider, name: &str, id: &str) {
+    /// 다른 모듈의 검사용 — 계정에 붙은 키 하나를 저장한다
+    pub(crate) fn save_fixture(env: &Env, secrets: &Memory, provider: &str, account_id: &str, name: &str, key: &str) {
+        save_for_account(env, secrets, provider, account_id, name, key, false).unwrap();
+    }
+    pub(crate) fn add_account(env: &Env, provider: Provider, name: &str, id: &str) {
         crate::accounts::write_profile_parts(
             env,
             provider,

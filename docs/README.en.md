@@ -225,6 +225,19 @@ The switch order is fixed on purpose: **① back up the active credentials into 
 
 Conversation history, memory and project settings are separate from credentials and survive a switch. A Claude Code or Codex session that is already running may keep the credentials it loaded at start, so open a new terminal after switching to be sure.
 
+### Move to another PC
+
+**Move to another PC**, at the bottom of normal mode, exports your account logins, API keys, notes and settings into one file and imports it on another PC. It also works between macOS and Windows.
+
+1. On the source PC, choose **Export** and set a password (8+ characters). `switcher-transfer-date-time.swx` appears in Downloads.
+2. Move the file to the other PC (the widget finds it in Downloads or on the Desktop).
+3. On the other PC, choose **Import**, pick the file and enter the same password.
+
+The whole file is locked: the key is derived from the password with Argon2id and the contents are sealed with XChaCha20-Poly1305. A wrong password or a single changed byte imports nothing. A forgotten password cannot be recovered; export again.
+
+> [!NOTE]
+> The CLI login on the receiving PC is not changed. A profile whose name belongs to a different account is not overwritten. Using the same subscription login on two PCs may require signing in again on one of them when the other refreshes its login. Delete the file after moving it.
+
 <details>
 <summary><strong>File locations</strong></summary>
 <br />

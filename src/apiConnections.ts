@@ -40,7 +40,7 @@ type Account = { id: string; name: string; email: string | null };
 type AutoSave =
   | { status: "saved"; connection: Connection; account_id: string; account: string; matched_by: "chosen" | "only_account" | "organization_name" }
   | { status: "needs_account" };
-type Hooks = { changed: () => Promise<void>; fit: () => void; toast: (message: string, error?: boolean) => void };
+export type Hooks = { changed: () => Promise<void>; fit: () => void; toast: (message: string, error?: boolean) => void };
 function paragraph(content: string, className = "help") {
   const p = document.createElement("p"); p.className = className; p.textContent = content; return p;
 }
@@ -48,7 +48,7 @@ function stateLabel(connection: Connection) {
   const text = apiText(), state = connection.check_state ?? "unchecked";
   return state === "ready" ? text.checked : state === "unchecked" ? text.saved : text[state];
 }
-function dialog(hooks: Hooks, title: string, canClose = () => true) {
+export function dialog(hooks: Hooks, title: string, canClose = () => true) {
   document.querySelector<HTMLDialogElement>(".api-dialog")?.dispatchEvent(new Event("api-dismiss"));
   const previousFocus = document.activeElement;
   const host = document.createElement("dialog"); host.className = "api-dialog";

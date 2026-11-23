@@ -27,6 +27,7 @@ import {
   type GithubStarPromptChoice,
 } from "./firstRunStar";
 import { applyAccentTheme, themeCssColor } from "./theme";
+import { transferRow } from "./transfer";
 import { accountApis, apiIsBusy, apiText, compactApiBalance, existingKeys, providerApiAdd, type Connection } from "./apiConnections";
 import { cardClickAction, pickAccountKey, rememberKey, rememberedKey, type KeyRef, type LastChange } from "./apiToggle";
 import { icon, iconButton, setButtonIcon } from "./uiIcons";
@@ -2736,6 +2737,10 @@ async function render(opts?: { immediate?: boolean; forceRetry?: boolean }) {
           enableSectionDrag(added, key, mode);
         }
         buffer.appendChild(frag);
+      }
+      // 다른 PC로 옮기기 (#189) — 입력 창이 필요하므로 일반 모드에만 둔다
+      if (mode === "normal" && !starPromptOpen) {
+        buffer.appendChild(transferRow({ changed: () => render({ immediate: true }), fit: fitHeight, toast }));
       }
       if (!thisImmediate && app.childElementCount > 0 && !renderQueued) {
         // 스무스 새로고침: 기존 화면을 그대로 둔 채 사용량까지 받아진 뒤 교체한다.

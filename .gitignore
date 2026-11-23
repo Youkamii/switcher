@@ -28,6 +28,8 @@ meta.json
 profiles/
 *.token
 *.dpapi
+# 다른 PC로 옮기기 파일 (#189) — 잠겨 있어도 토큰·키 묶음이다
+*.swx
 api-connections/
 console-credit.json
 api-workspaces/

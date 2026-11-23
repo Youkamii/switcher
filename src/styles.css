@@ -2354,6 +2354,22 @@ button:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus
 .mode-tabs button[aria-current="page"] { background: var(--panel-2); color: var(--text); box-shadow: 0 1px 3px #0003; }
 #app:not(.locked) .section-title { font-size: 10px; letter-spacing: 1.2px; margin: 14px 0 8px; min-height: 24px; }
 #app:not(.locked) .section-title .add-row { display: inline-flex; gap: 8px; margin: 0 0 0 auto; padding: 0; }
+/* 다른 PC로 옮기기 (#189) — 일반 모드 맨 아래의 한 줄과 그 창 */
+.transfer-row { display: flex; justify-content: flex-end; padding: 2px 2px 0; }
+.transfer-open { padding: 4px 0 4px 6px; border: 0; background: transparent; color: var(--muted); font-size: 10px; white-space: nowrap; }
+.transfer-open:hover { color: var(--accent); }
+.transfer-tabs { display: flex; gap: 6px; margin-bottom: 12px; }
+.transfer-tabs > button { flex: 1; min-height: 32px; border: 1px solid rgb(var(--border-rgb)); border-radius: 7px; background: transparent; color: rgb(var(--muted-rgb)); font-size: 12px; }
+.transfer-tabs > button[aria-selected="true"] { border-color: var(--accent); color: rgb(var(--text-rgb)); }
+.transfer-dialog form[hidden] { display: none; }
+.transfer-dialog select { display: block; width: 100%; min-width: 0; margin-top: 6px; padding: 9px 11px; border: 1px solid rgb(var(--border-rgb)); border-radius: 7px; background: rgb(var(--panel-rgb)); color: rgb(var(--text-rgb)); font-family: inherit; font-size: 12px; }
+.transfer-dialog .transfer-picker { padding: 7px 8px; font-size: 11px; }
+.transfer-result:empty { display: none; }
+.transfer-result { display: flex; flex-direction: column; gap: 4px; padding-top: 10px; border-top: 1px solid rgb(var(--border-rgb)); }
+.transfer-result .transfer-done { color: rgb(var(--text-rgb)); font-size: 12px; font-weight: 600; }
+.transfer-result .transfer-file { font-family: ui-monospace, monospace; user-select: text; }
+.transfer-result .transfer-warn { color: var(--warn); }
+.transfer-reveal { align-self: flex-start; margin-top: 4px; padding: 6px 10px; border: 1px solid rgb(var(--border-rgb)); border-radius: 7px; background: transparent; color: rgb(var(--text-rgb)); font-size: 11px; }
 /* .add-api-key: 제목 줄의 「API 키 추가」(#187) — 「계정 추가」와 같은 모양으로 그 앞에 선다 */
 .add-account, .add-api-key { display: inline-flex; align-items: center; gap: 3px; padding: 4px 0 4px 6px; border: 0; background: transparent; color: var(--muted); font-size: 10px; white-space: nowrap; }
 .add-account:hover, .add-api-key:hover { color: var(--accent); }

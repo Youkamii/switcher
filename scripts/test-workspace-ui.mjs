@@ -31,6 +31,7 @@ function fixture(mode = "normal", preview = false) {
   let clockSkew = 0; let backendLatency = 0; let usageGate = null; let openUsage = null;
   // Key-only registration (#187): the account the fixture "finds" for a key when several are saved (null = unknown).
   let autoOwner = null;
+  let transferFiles = [{path:'/Users/fixture/Downloads/switcher-transfer-20261123-101500.swx', name:'switcher-transfer-20261123-101500.swx', modified:1795400000}];
   // Handle drag (#188): a window that really moves. The window is the viewport (80x1100) on a wall that is
   // 2100 tall (work area 40..2140), so there is room to travel. buttonHeld/cursorAt answer the native probes.
   const restoreScene = preview === 'edge-restore';
@@ -60,7 +61,8 @@ function fixture(mode = "normal", preview = false) {
     transformCallback(fn) { callbacks.set(seq,fn); return seq++; },
     unregisterCallback(id) { callbacks.delete(id); },
     async invoke(cmd, args={}) {
-      calls.push({cmd, args: cmd === 'api_save' ? {provider:args.provider,accountId:args.accountId,name:args.name,key:'[REDACTED]',replace:args.replace}
+      if(cmd === 'transfer_export' || cmd === 'transfer_import') { calls.push({cmd, args:{...args, password:'[REDACTED]', passwordLength:(args.password ?? '').length}}); }
+      else calls.push({cmd, args: cmd === 'api_save' ? {provider:args.provider,accountId:args.accountId,name:args.name,key:'[REDACTED]',replace:args.replace}
         : cmd === 'api_save_auto' ? {provider:args.provider,accountId:args.accountId,name:args.name,key:'[REDACTED]'} : args});
       if(cmd === 'plugin:event|listen') { const ids = events.get(args.event) ?? []; ids.push(args.handler); events.set(args.event,ids); return seq++; }
       if(cmd === 'get_language') return 'ko';
@@ -68,6 +70,10 @@ function fixture(mode = "normal", preview = false) {
       if(cmd === 'get_github_star_prompt_choice') return 'dismissed';
       if(cmd === 'initial_view_mode') return mode;
       if(cmd === 'get_visibility') return visibility;
+      if(cmd === 'transfer_export') return {path:'/Users/fixture/Downloads/switcher-transfer-20261123-101500.swx', accounts:3, api_keys:2};
+      if(cmd === 'transfer_candidates') return transferFiles;
+      if(cmd === 'transfer_reveal') return null;
+      if(cmd === 'transfer_import') { if(args.password !== 'right-password') throw '비밀번호가 다르거나 파일이 손상됐습니다'; return {accounts_added:2, accounts_replaced:1, accounts_skipped:['delta'], api_keys_added:1, api_keys_replaced:0, rejected:0, settings:true, memo:true, ui:{'switcher.viewmode':'edge','evil.key':'x'}, source_os:'windows'}; }
       if(cmd === 'get_section_order') return ['claude','codex','github','display','system'];
       if(dragScene) {
         if(cmd === 'pointer_button_down') return buttonHeld;
@@ -592,6 +598,58 @@ function fixture(mode = "normal", preview = false) {
   }
   // Key-only registration (#187): the provider header takes a key without an account and the app files it
   // under the account it belongs to; it asks only when it cannot tell.
+  // Move to another PC (#189): one locked file out, the same file and password back in.
+  async function checkTransfer() {
+    await ready('.profile-card');
+    for(let i=0;i<4;i++) await delay();
+    const open = document.querySelector('.transfer-row .transfer-open');
+    const inWindow = el => { const r=el.getBoundingClientRect(); return r.width>0 && r.left>=0 && r.right<=innerWidth && r.top>=0 && r.bottom<=innerHeight; };
+    record('normal-mode-offers-moving-to-another-pc', open?.textContent==='다른 PC로 옮기기' && open.getBoundingClientRect().width>0);
+    open.click();
+    const dialog = await ready('.api-dialog.transfer-dialog');
+    const exportForm = dialog.querySelector('.transfer-export'), importForm = dialog.querySelector('.transfer-import');
+    const [first, second] = exportForm.querySelectorAll('input[type="password"]');
+    record('opens-on-export-with-two-password-fields', !exportForm.hidden && importForm.hidden && first && second && first.minLength===8 && inWindow(dialog) && inWindow(exportForm.querySelector('button.primary')));
+    const sent = cmd => calls.filter(c=>c.cmd===cmd);
+    first.value='password-one'; second.value='password-two';
+    exportForm.requestSubmit();
+    for(let i=0;i<4;i++) await delay();
+    record('mismatched-passwords-make-no-file', sent('transfer_export').length===0 && exportForm.querySelector('.api-error').textContent==='두 비밀번호가 다릅니다');
+    localStorage.setItem('switcher.order','["codex","claude"]'); localStorage.setItem('unrelated.key','keep-out');
+    second.value='password-one';
+    exportForm.requestSubmit();
+    await ready('.transfer-export .transfer-done');
+    const exported = sent('transfer_export')[0];
+    record('export-sends-the-password-once-with-only-our-view-settings', sent('transfer_export').length===1 && exported.args.passwordLength===12 && exported.args.ui['switcher.order']==='["codex","claude"]' && !('unrelated.key' in exported.args.ui) && Object.keys(exported.args.ui).every(k=>k.startsWith('switcher.')));
+    const result = exportForm.querySelector('.transfer-result');
+    record('export-result-names-the-file-and-what-it-holds', result.textContent.includes('switcher-transfer-20261123-101500.swx') && result.textContent.includes('계정 3개') && result.textContent.includes('API 키 2개') && !result.textContent.includes('/Users/fixture') && first.value==='' && second.value==='' && inWindow(result.querySelector('.transfer-reveal')));
+    result.querySelector('.transfer-reveal').click();
+    await delay();
+    record('the-file-can-be-shown-in-its-folder', sent('transfer_reveal').length===1 && sent('transfer_reveal')[0].args.path.endsWith('.swx'));
+    // Import: the file found in Downloads is offered; a wrong password changes nothing on screen but the error.
+    dialog.querySelectorAll('.transfer-tabs button')[1].click();
+    await settle(()=>importForm.querySelector('select').options.length===1);
+    const filePassword = importForm.querySelector('input[type="password"]');
+    record('import-offers-the-file-it-found', exportForm.hidden && !importForm.hidden && importForm.querySelector('select').value==='/Users/fixture/Downloads/switcher-transfer-20261123-101500.swx' && importForm.querySelector('input[type="file"]').accept==='.swx' && inWindow(importForm.querySelector('button.primary')));
+    filePassword.value='wrong-password';
+    importForm.requestSubmit();
+    await settle(()=>importForm.querySelector('.api-error').textContent!=='');
+    record('a-wrong-password-is-reported-and-imports-nothing', importForm.querySelector('.api-error').textContent.includes('비밀번호가 다르거나') && !importForm.querySelector('.transfer-done') && localStorage.getItem('switcher.viewmode')!=='edge');
+    filePassword.value='right-password';
+    importForm.requestSubmit();
+    await ready('.transfer-import .transfer-done');
+    const imported = importForm.querySelector('.transfer-result').textContent;
+    record('import-result-says-what-arrived-and-what-was-left-out', imported.includes('계정 2개 추가 · 1개 갱신') && imported.includes('API 키 1개 추가') && imported.includes('delta') && filePassword.value==='' && sent('transfer_import')[1].args.path.endsWith('.swx') && sent('transfer_import')[1].args.data===null);
+    record('only-known-view-settings-are-restored', localStorage.getItem('switcher.viewmode')==='edge' && localStorage.getItem('evil.key')===null);
+    record('transfer-dialog-fits-the-window', inWindow(dialog) && document.documentElement.scrollWidth<=innerWidth);
+    transferFiles = [];
+    dialog.querySelectorAll('.transfer-tabs button')[0].click(); dialog.querySelectorAll('.transfer-tabs button')[1].click();
+    await settle(()=>!importForm.querySelector('select').closest('label') || importForm.querySelector('select').closest('label').hidden);
+    record('no-file-found-asks-to-choose-one', importForm.querySelector('select').closest('label').hidden && [...importForm.querySelectorAll('p')].some(p=>!p.hidden && p.textContent.includes('찾지 못했습니다')));
+    dialog.querySelector('.api-close').click();
+    await settle(()=>!document.querySelector('.api-dialog'));
+    record('closing-leaves-no-dialog-behind', !document.querySelector('.api-dialog'));
+  }
   async function checkAutoKey() {
     await ready('.profile-card');
     for(let i=0;i<4;i++) await delay();
@@ -696,6 +754,19 @@ function fixture(mode = "normal", preview = false) {
         await settle(()=>!pick.hidden);
         for(let i=0;i<4;i++) await delay();
         record('key-only-dialog-shows-the-account-question', !pick.hidden && errors.length===0);
+        return;
+      }
+      if(preview === 'transfer' || preview === 'transfer-shot') {
+        if(preview === 'transfer-shot') {
+          await ready('.profile-card');
+          document.querySelector('.transfer-row .transfer-open').click();
+          await ready('.api-dialog.transfer-dialog');
+          for(let i=0;i<4;i++) await delay();
+          record('transfer-dialog-opens', errors.length===0);
+          return;
+        }
+        await checkTransfer();
+        record('no-browser-errors-transfer-'+mode,errors.length===0);
         return;
       }
       if(preview === 'auto-key') {
@@ -1093,6 +1164,8 @@ try {
   for(const mode of ['normal','minimal','edge']) reports.push(await run(mode,'empty-accounts',null));
   for(const mode of ['minimal','edge']) reports.push(await run(mode,'toggle',null));
   reports.push(await run('normal','auto-key',null));
+  reports.push(await run('normal','transfer',null));
+  if(allDir && !useWebKit) reports.push(await run('normal','transfer-shot',path.join(allDir,'transfer.png')));
   if(allDir && !useWebKit) reports.push(await run('normal','auto-key-ask',path.join(allDir,'api-key-only.png')));
   reports.push(await run('edge','api-folded',allDir && !useWebKit ? path.join(allDir,'mode-edge-api-folded.png') : null));
   reports.push(await run('edge','edge-drag',null));
