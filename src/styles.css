@@ -1411,7 +1411,8 @@ body.edge.edge-out #edge-film {
   /* 직선 구간 116−15×2 = 86 = 게이지 높이 → 막대 모서리가 호에 안 걸린다.
      96px에서는 세 영역이 붙어 보여 세로를 늘리고 간격을 벌렸다 (사용자 지시) */
   border-radius: 15px 0 0 15px;
-  transform-origin: right center;
+  /* 판 끝에 붙은 손잡이는 창 끝 쪽에서 부푼다 — 가운데서 부풀면 창 밖으로 나가 잘린다 (edgeTabOrigin) */
+  transform-origin: right var(--edge-tab-origin, center);
   animation: edge-drop-breathe 3.4s ease-in-out infinite;
 }
 
@@ -1433,7 +1434,7 @@ body.edge.edge-out #edge-film {
   /* 영역 사이 숨: 클로드↔코덱스 6px, SYSTEM 앞은 구분선 포함 16px (아래 규칙) */
   gap: 6px;
   pointer-events: none;
-  transform-origin: right center;
+  transform-origin: right var(--edge-gauge-origin, center);
   /* 손잡이가 받아내며 출렁인 뒤(0.95s) 사용량이 다시 뜬다. 숨쉬기는 손잡이와 같은
      박자 — 따로 놀면 테두리가 요동친다 (review) */
   transition: opacity 0.25s 0.95s;
@@ -1605,8 +1606,9 @@ body.edge.edge-out #edge-gauge {
 .edge-blob:nth-child(2) {
   width: 62px;
   height: 58px;
-  /* 손잡이 중심에서 위로 26% — 기본 50%면 예전 24% 자리와 같다 (#185) */
-  top: calc(var(--edge-tab-y, 50%) - (100% - 24px) * 0.26 - 29px);
+  /* 손잡이 중심에서 위로 26% — 기본 50%면 예전 24% 자리와 같다 (#185). 손잡이가 판 끝에 붙어
+     위쪽 자리가 창 밖이면 main.ts가 --edge-blob-up을 손잡이 아래 먼 자리로 준다 (edgeBlobCenters) */
+  top: calc(var(--edge-blob-up, calc(var(--edge-tab-y, 50%) - (100% - 24px) * 0.26)) - 29px);
   --edge-lag: 40ms;
   --edge-lag-in: 60ms;
 }
@@ -1622,9 +1624,20 @@ body.edge.edge-out #edge-gauge {
 .edge-blob:nth-child(4) {
   width: 64px;
   height: 62px;
-  top: calc(var(--edge-tab-y, 50%) + (100% - 24px) * 0.24 - 31px);
+  top: calc(var(--edge-blob-down, calc(var(--edge-tab-y, 50%) + (100% - 24px) * 0.24)) - 31px);
   --edge-lag: 80ms;
   --edge-lag-in: 0ms;
+}
+
+/* 위 덩어리를 손잡이 아래 먼 자리로 옮겼으면 순서도 맞춘다 — 가까운 것부터 번지고, 먼 것부터 들어간다 */
+body.edge-blobs-below .edge-blob:nth-child(2) {
+  --edge-lag: 80ms;
+  --edge-lag-in: 0ms;
+}
+
+body.edge-blobs-below .edge-blob:nth-child(4) {
+  --edge-lag: 40ms;
+  --edge-lag-in: 60ms;
 }
 
 /* 나오기: 손잡이가 부풀고 → 덩어리 셋이 번지고(0~360ms) → 판이 0.2s 뒤 따라와

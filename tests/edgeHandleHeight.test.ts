@@ -178,9 +178,15 @@ test("handle, gauge, panel origin and blobs all follow --edge-tab-y (default 50%
   }
   const body = cssSource.match(/#edge-body \{[^}]*\}/)?.[0] ?? "";
   assert.match(body, /transform-origin: right calc\(var\(--edge-tab-y, 50%\) - 12px\);/);
-  assert.match(cssSource, /\.edge-blob:nth-child\(2\) \{[^}]*top: calc\(var\(--edge-tab-y, 50%\) - \(100% - 24px\) \* 0\.26 - 29px\);/);
+  // 위·아래 덩어리는 main.ts가 주는 자리(--edge-blob-up/down)를 먼저 쓰고, 없으면 예전 식 그대로다
+  assert.match(cssSource, /\.edge-blob:nth-child\(2\) \{[^}]*top: calc\(var\(--edge-blob-up, calc\(var\(--edge-tab-y, 50%\) - \(100% - 24px\) \* 0\.26\)\) - 29px\);/);
   assert.match(cssSource, /\.edge-blob:nth-child\(3\) \{[^}]*top: calc\(var\(--edge-tab-y, 50%\) - 35px\);/);
-  assert.match(cssSource, /\.edge-blob:nth-child\(4\) \{[^}]*top: calc\(var\(--edge-tab-y, 50%\) \+ \(100% - 24px\) \* 0\.24 - 31px\);/);
+  assert.match(cssSource, /\.edge-blob:nth-child\(4\) \{[^}]*top: calc\(var\(--edge-blob-down, calc\(var\(--edge-tab-y, 50%\) \+ \(100% - 24px\) \* 0\.24\)\) - 31px\);/);
+  // 손잡이 자리를 줄 때 덩어리 자리도 함께 준다 (edgeAnchor.ts edgeBlobCenters)
+  const apply = mainSource.match(/function applyEdgeTabY\(\)[\s\S]*?\n\}/)?.[0] ?? "";
+  assert.match(apply, /const blobs = edgeBlobCenters\(y, window\.innerHeight\);/);
+  assert.match(apply, /root\.setProperty\("--edge-blob-up"/);
+  assert.match(apply, /root\.removeProperty\("--edge-blob-up"\);/);
   // 숫자 확인: 기본 50%일 때 덩어리 위·아래의 윗변이 옛 식(24%·74%)과 같다
   for (const H of [317, 600, 901]) {
     assert.ok(Math.abs(12 + (H - 24) * 0.24 - 29 - (H / 2 - (H - 24) * 0.26 - 29)) < 1e-9);

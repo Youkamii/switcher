@@ -74,3 +74,63 @@ export function edgePlacement(input: {
   const tabY = clamp(anchor - top, tab.min, tab.max);
   return { top, tabY, anchor: top + tabY };
 }
+
+/** 판 위아래 여백 — 판(#edge-body)은 창보다 12px 안쪽에서 시작하고 끝난다 (styles.css) */
+const EDGE_BODY_INSET = 12;
+/** 위·아래 덩어리의 반높이 (styles.css .edge-blob:nth-child(2)·(4)의 height / 2) + 부풀 때 여유 */
+const BLOB_UP_HALF = 29 + 2;
+const BLOB_DOWN_HALF = 31 + 2;
+
+export type EdgeBlobs = {
+  /** 위 덩어리 중심 (창 위에서 CSS px) */
+  up: number;
+  /** 아래 덩어리 중심 */
+  down: number;
+  /** 위 덩어리를 손잡이 아래, 아래 덩어리보다 먼 자리로 옮겼는가 — 그때는 나오고 들어가는 순서도 바꾼다 */
+  flipped: boolean;
+};
+
+/**
+ * 액체 연출에서 손잡이 위아래로 번지는 두 덩어리의 자리 (#185 연출, 2026-11-23 사용자 보고:
+ * "애니메이션 이상해졌잖아"). 손잡이 위로 판 높이의 26%, 아래로 24% — 손잡이가 가운데면 예전 그대로다.
+ * 손잡이가 판 끝에 붙어 있으면(☰로 옮기면 손잡이는 판 맨 위에 선다) 한쪽 덩어리가 창 밖으로 나가
+ * 잘리고 액체가 한쪽으로 쏠린 모양이 됐다. 모자란 쪽 덩어리는 반대쪽 더 먼 자리로 옮긴다 —
+ * 판이 손잡이에서 아래(또는 위)로 쏟아지듯 셋이 고르게 번진다.
+ */
+export function edgeBlobCenters(tabY: number, height: number): EdgeBlobs {
+  const reach = Math.max(0, height - EDGE_BODY_INSET * 2);
+  const above = reach * 0.26;
+  const below = reach * 0.24;
+  const top = EDGE_BODY_INSET;
+  const bottom = height - EDGE_BODY_INSET;
+  let up = tabY - above;
+  let down = tabY + below;
+  const upFits = up - BLOB_UP_HALF >= top;
+  const downFits = down + BLOB_DOWN_HALF <= bottom;
+  let flipped = false;
+  if (!upFits && downFits) {
+    up = tabY + below + above;
+    flipped = true;
+  } else if (upFits && !downFits) {
+    down = tabY - above - below;
+  }
+  const keep = (y: number, half: number) => clamp(y, top + half, Math.max(top + half, bottom - half));
+  return { up: keep(up, BLOB_UP_HALF), down: keep(down, BLOB_DOWN_HALF), flipped };
+}
+
+/** 손잡이가 부풀 때의 가장 큰 세로 배율 (styles.css edge-drop-swell 22%의 scale(2.2, 1.6)) */
+const TAB_SWELL_Y = 1.6;
+
+/**
+ * 손잡이가 부풀고 출렁일 때의 기준점 — 손잡이 위에서 px. 가운데에서 부풀면 판 끝에 붙은 손잡이
+ * (창 위·아래 끝에서 4px)는 창 밖으로 부풀어 평평하게 잘렸다(2026-11-23 "애니메이션 이상해졌잖아").
+ * 부푼 손잡이가 창 안에 남는 만큼만 기준점을 창 끝 쪽으로 옮긴다. 자리가 넉넉하면 가운데 그대로다.
+ */
+export function edgeTabOrigin(tabY: number, tabHeight: number, height: number): number {
+  const top = tabY - tabHeight / 2;
+  const grow = TAB_SWELL_Y - 1;
+  const highest = top / grow;
+  const lowest = (top + tabHeight * TAB_SWELL_Y - height) / grow;
+  if (lowest > highest) return tabHeight / 2;
+  return clamp(tabHeight / 2, lowest, highest);
+}

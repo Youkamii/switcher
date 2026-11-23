@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   EDGE_TAB_MARGIN,
+  edgeBlobCenters,
+  edgeTabOrigin,
   edgeAnchorAt,
   edgeAnchorFraction,
   edgeAnchorRange,
@@ -124,4 +126,45 @@ test("the stored height is a share of the wall, so it survives a different scree
   assert.equal(edgeAnchorAt(-3, work, tabHeight), wall.min);
   // 손잡이가 벽 전체를 차지해 움직일 곳이 없으면 가운데로 본다
   assert.equal(edgeAnchorFraction(50, { top: 0, height: 100 }, 116), 0.5);
+});
+
+// 액체 덩어리 (2026-11-23 "애니메이션 이상해졌잖아"): 손잡이가 판 끝에 붙어도 셋이 창 안에서 번진다
+const BLOB_H = 654;
+const blobsInside = (b: { up: number; down: number }, h = BLOB_H) =>
+  b.up - 31 >= 12 && b.up + 31 <= h - 12 && b.down - 33 >= 12 && b.down + 33 <= h - 12;
+
+test("blobs keep the old symmetric spread when the handle is in the middle", () => {
+  const b = edgeBlobCenters(BLOB_H / 2, BLOB_H);
+  assert.equal(b.flipped, false);
+  assert.ok(Math.abs(b.up - (BLOB_H / 2 - 630 * 0.26)) < 1e-9);
+  assert.ok(Math.abs(b.down - (BLOB_H / 2 + 630 * 0.24)) < 1e-9);
+});
+
+test("the upper blob moves below when the handle sits at the top of the panel (every grip drop)", () => {
+  const b = edgeBlobCenters(58.5, BLOB_H);
+  assert.equal(b.flipped, true);
+  assert.ok(blobsInside(b));
+  assert.ok(58.5 < b.down && b.down < b.up);
+});
+
+test("the lower blob moves above when the handle sits at the bottom", () => {
+  const b = edgeBlobCenters(BLOB_H - 58.5, BLOB_H);
+  assert.equal(b.flipped, false);
+  assert.ok(blobsInside(b));
+  assert.ok(b.down < b.up && b.up < BLOB_H - 58.5);
+});
+
+test("blobs stay inside a short panel", () => {
+  for (const y of [58.5, 100, 150]) assert.ok(blobsInside(edgeBlobCenters(y, 210), 210), String(y));
+});
+
+test("the handle swells from its middle when there is room, and from the window end when it sits there", () => {
+  assert.equal(edgeTabOrigin(BLOB_H / 2, 109, BLOB_H), 54.5);
+  for (const y of [58.5, BLOB_H - 58.5]) {
+    const o = edgeTabOrigin(y, 109, BLOB_H);
+    const top = y - 54.5;
+    // 가장 크게 부푼(1.6배) 손잡이도 창 안에 남는다
+    assert.ok(top + o * (1 - 1.6) >= -1e-9, `top ${y}`);
+    assert.ok(top + o * (1 - 1.6) + 109 * 1.6 <= BLOB_H + 1e-9, `bottom ${y}`);
+  }
 });

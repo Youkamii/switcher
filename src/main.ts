@@ -36,7 +36,9 @@ import {
   EDGE_TAB_MARGIN,
   edgeAnchorAt,
   edgeAnchorFraction,
+  edgeBlobCenters,
   edgePlacement,
+  edgeTabOrigin,
   edgeTabRange,
   type EdgeWork,
 } from "./edgeAnchor";
@@ -3053,13 +3055,31 @@ function edgeTabCenter(height = window.innerHeight): number {
 /// 판 변환 원점·덩어리 자리(styles.css --edge-tab-y)가 함께 따라간다.
 function applyEdgeTabY() {
   const want = edgeTabShown ?? edgeTabY;
+  const root = document.documentElement.style;
   if (want === null) {
-    document.documentElement.style.removeProperty("--edge-tab-y");
+    root.removeProperty("--edge-tab-y");
+    root.removeProperty("--edge-blob-up");
+    root.removeProperty("--edge-blob-down");
+    root.removeProperty("--edge-tab-origin");
+    root.removeProperty("--edge-gauge-origin");
+    document.body.classList.remove("edge-blobs-below");
     return;
   }
   const { min, max } = edgeTabBounds();
   const y = Math.round(Math.min(max, Math.max(min, want)));
-  document.documentElement.style.setProperty("--edge-tab-y", `${y}px`);
+  root.setProperty("--edge-tab-y", `${y}px`);
+  // 액체 덩어리도 손잡이를 따라가되, 판 끝에 붙은 손잡이라도 셋이 창 안에서 고르게 번지게 (edgeAnchor.ts)
+  const blobs = edgeBlobCenters(y, window.innerHeight);
+  root.setProperty("--edge-blob-up", `${Math.round(blobs.up)}px`);
+  root.setProperty("--edge-blob-down", `${Math.round(blobs.down)}px`);
+  document.body.classList.toggle("edge-blobs-below", blobs.flipped);
+  // 손잡이가 부푸는 기준점 — 창 끝에 붙은 손잡이가 창 밖으로 부풀어 잘리지 않게. 게이지는 같은 점을 쓴다
+  const origin = Math.round(edgeTabOrigin(y, edgeTabHeight, window.innerHeight) * 10) / 10;
+  root.setProperty("--edge-tab-origin", `${origin}px`);
+  root.setProperty(
+    "--edge-gauge-origin",
+    `calc(${origin}px - (var(--edge-tab-height, 40px) - var(--edge-gauge-height, 0px)) / 2)`,
+  );
 }
 
 /// 손잡이가 벽에서 서 있는 높이를 정하고 저장한다 — 사용자가 옮겼을 때만 부른다 (끌기·☰ 드롭)
