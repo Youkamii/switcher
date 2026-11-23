@@ -414,7 +414,15 @@ async fn read_with(
         credit,
         issue,
         organization,
-        console_credit: org.and_then(|id| console_reading::load(&dir, id, &revision)),
+        // 조직을 지금 확인했으면 그 조직의 확인값만 보여 준다. 확인하지 못했으면(네트워크·일시 오류)
+        // 이 키에 묶인 확인값을 그대로 보여 준다 — 예전에는 그때 금액이 통째로 사라져, 다른 PC로
+        // 옮긴 키에서 "조직 크레딧이 안 뜬다"고 보였다(#189, Windows 사용자 보고). 키 자체가 거절되면
+        // 보여 주지 않는다.
+        console_credit: match org {
+            Some(id) => console_reading::load(&dir, id, &revision),
+            None if issue != Some(Issue::KeyRejected) => console_reading::load_for_key(&dir, &revision),
+            None => None,
+        },
         import_ref,
     };
     let _lock = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;

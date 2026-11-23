@@ -24,6 +24,15 @@ pub(super) fn load(dir: &Path, org: Uuid, revision: &str) -> Option<Credit> {
         .then_some(saved.credit)
 }
 
+/// 키의 조직을 지금 확인하지 못했을 때(네트워크·일시 오류) 보여 줄 확인값 — 이 키(revision)에 묶인 것만.
+/// 이 값은 같은 키로 조직을 확인한 뒤에 만들어졌고(대시보드 붙여넣기·다른 PC에서 옮겨 옴), 키가 바뀌면
+/// revision이 달라져 따라오지 않는다. 화면은 확인 시각과 함께 "Console 확인"으로 보여 준다.
+pub(super) fn load_for_key(dir: &Path, revision: &str) -> Option<Credit> {
+    let saved = saved_in(dir)?;
+    (saved.revision == revision && Uuid::try_parse(&saved.organization_id).is_ok() && usable(&saved.credit))
+        .then_some(saved.credit)
+}
+
 // ── 다른 PC로 옮기기 (#189) ────────────────────────────────────────
 // 이 확인값은 사용자가 Console 대시보드를 붙여넣어 만든 것이다. 저절로 다시 생기지 않는다 — 키만
 // 옮기면 받는 PC에서는 남은 금액 자리가 비어 나온다(실제로 그렇게 배포했다가 지적받았다:

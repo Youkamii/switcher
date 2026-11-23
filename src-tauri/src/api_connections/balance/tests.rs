@@ -724,3 +724,93 @@ async fn a_transferred_key_shows_its_remaining_credit_on_the_receiving_pc() {
     assert_eq!(shown.console_credit, Some(on_sender));
     assert!(shown.credit.is_none() && shown.console_credit.unwrap().amount_minor == 6742);
 }
+
+/// #189 — 키의 조직을 지금 확인하지 못해도(네트워크·일시 오류) 이 키에 묶인 Console 확인값은 보인다.
+/// 키가 거절되거나, 확인한 조직이 다르면 보이지 않는다.
+#[tokio::test]
+async fn a_saved_reading_stays_visible_when_the_organization_cannot_be_checked_now() {
+    let (env, secrets) = fixture("console-credit-offline", None);
+    let (_, dir) = checked(&env, "claude", "work").unwrap();
+    let revision = read_connection(&dir, Provider::Claude, "work").unwrap().revision;
+    let reading = |org: &str, revision: &str| {
+        fs::write(
+            dir.join("console-credit.json"),
+            json!({"organization_id": org, "revision": revision, "credit": {"amount_minor": 6742, "currency": "USD", "checked_at": 1_795_000_000}}).to_string(),
+        )
+        .unwrap();
+        forget(&dir);
+    };
+    reading(ORG, &revision);
+    // 서버에 닿지 못함: 조직은 모르지만 이 키의 확인값을 보여 준다
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let closed = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let offline = read_with(&env, "claude", "work", true, &secrets, &closed).await.unwrap();
+    assert_eq!(offline.issue, Some(Issue::Unavailable));
+    assert_eq!(offline.console_credit.map(|c| c.amount_minor), Some(6742));
+    // 서버가 일시 오류: 마찬가지
+    forget(&dir);
+    let (url, server) = serve(vec![Reply::new("/v1/organizations/me", 503, json!({}))], |_| {});
+    let busy = read_with(&env, "claude", "work", true, &secrets, &url).await.unwrap();
+    server.join().unwrap();
+    assert_eq!(busy.console_credit.map(|c| c.amount_minor), Some(6742));
+    // 키가 거절됨: 보이지 않는다
+    forget(&dir);
+    let (url, server) = serve(
+        vec![
+            Reply::new("/v1/organizations/me", 401, json!({})),
+            Reply::new("/v1/models?limit=1", 401, json!({})),
+        ],
+        |_| {},
+    );
+    let rejected = read_with(&env, "claude", "work", true, &secrets, &url).await.unwrap();
+    server.join().unwrap();
+    assert_eq!(rejected.issue, Some(Issue::KeyRejected));
+    assert!(rejected.console_credit.is_none());
+    // 옛 키에 묶인 확인값은 서버에 닿지 못해도 보이지 않는다
+    reading(ORG, "an-older-key");
+    let stale = read_with(&env, "claude", "work", true, &secrets, &closed).await.unwrap();
+    assert!(stale.console_credit.is_none());
+    // 조직을 확인했는데 확인값의 조직과 다르면 보이지 않는다 (예전 그대로)
+    reading(OTHER, &revision);
+    let (url, server) = serve(vec![Reply::organization()], |_| {});
+    let other = read_with(&env, "claude", "work", true, &secrets, &url).await.unwrap();
+    server.join().unwrap();
+    assert!(other.console_credit.is_none());
+}
+
+/// #189 — Windows 실제 보안 저장소(DPAPI)로 보내는 PC → 받는 PC를 거친 키도 남은 금액이 보인다.
+/// 사용자가 "윈도우 최신에선 남은 조직 크레딧 양이 안 떠"라고 보고한 길을 Windows에서 그대로 밟는다.
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_a_key_moved_through_the_os_store_shows_its_remaining_credit() {
+    let from = test_env("win-transfer-credit-from");
+    save_with(&from, &OsSecrets(&from), "claude", "work", KEY).unwrap();
+    let (_, from_dir) = checked(&from, "claude", "work").unwrap();
+    let revision = read_connection(&from_dir, Provider::Claude, "work").unwrap().revision;
+    fs::write(
+        from_dir.join("console-credit.json"),
+        json!({"organization_id": ORG, "revision": revision, "credit": {"amount_minor": 6742, "currency": "USD", "checked_at": 1_795_000_000}}).to_string(),
+    )
+    .unwrap();
+    let keys: Vec<crate::api_connections::TransferKey> = serde_json::from_slice(
+        &serde_json::to_vec(&crate::api_connections::export_keys_with(&from, &OsSecrets(&from)).unwrap()).unwrap(),
+    )
+    .unwrap();
+    let to = test_env("win-transfer-credit-to");
+    crate::api_connections::import_keys_with(&to, &OsSecrets(&to), &keys).unwrap();
+    let (url, server) = serve(vec![Reply::organization()], |_| {});
+    let shown = read_with(&to, "claude", "work", false, &OsSecrets(&to), &url).await.unwrap();
+    server.join().unwrap();
+    assert_eq!(shown.console_credit.map(|c| (c.amount_minor, c.checked_at)), Some((6742, 1_795_000_000)));
+    // 받은 PC에서 서버에 닿지 못해도 보인다
+    let (_, to_dir) = checked(&to, "claude", "work").unwrap();
+    forget(&to_dir);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let closed = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let offline = read_with(&to, "claude", "work", true, &OsSecrets(&to), &closed).await.unwrap();
+    assert_eq!(offline.console_credit.map(|c| c.amount_minor), Some(6742));
+    let _ = fs::remove_dir_all(&from.home);
+    let _ = fs::remove_dir_all(&to.home);
+}
