@@ -2066,7 +2066,7 @@ function edgeBar(): HTMLElement {
   handle.className = "edge-ui edge-handle";
   handle.textContent = "☰";
   // 네이티브 창 드래그를 쓰지 않는다 (#188) — 판이 벽 밖으로 밀려 들어가거나 벽에서 떨어진다.
-  // 쥐고 있는 동안 러스트가 판을 벽에 붙인 채 마우스 높이로 옮긴다 (set_grip_rail).
+  // 쥐고 있는 동안 러스트가 판을 마우스에 끌려 다니게 옮긴다 — 두 벽 사이에서만 (set_grip_rail).
   handle.title = t("dragHandle");
   const mode = document.createElement("button");
   mode.className = "edge-ui edge-mode";
@@ -3433,7 +3433,6 @@ window.addEventListener(
               xRight: edgeSnapPosition(rect, area, "right", insets).x,
               yMin,
               yMax: Math.max(yMin, area.position.y + area.size.height - size.height),
-              midX: area.position.x + area.size.width / 2,
             },
           }).catch(() => {});
         })
@@ -3526,15 +3525,6 @@ window.addEventListener(
   true,
 );
 // 러스트의 마무리: 버튼은 놓였는데 웹뷰가 놓는 이벤트를 받지 못했을 때 (창 밖·비활성 웹뷰)
-// ☰를 쥔 채 화면 가운데를 넘기면 러스트가 판을 반대쪽 벽에 붙인다 — 모양(둥근 쪽·손잡이 쪽)을 맞춘다
-void listen<string>("edge-grip-side", (event) => {
-  if (!edgeActive || !edgeGripPressed) return;
-  const side = event.payload === "left" ? "left" : "right";
-  if (side === edgeSide) return;
-  edgeSide = side;
-  document.body.classList.toggle("edge-left", side === "left");
-  refreshHitRegionsAfterLayout();
-});
 void listen("edge-drag-end", () => finishEdgeTabDrag());
 
 // 꾹 누르면(0.25s) 숫자 자리에 초기화까지 남은 시간이 나온다 — 놓으면 돌아온다
