@@ -177,6 +177,28 @@ pub(super) fn protected_oauth_id(env: &Env, provider: Provider) -> Option<String
         .flatten()?
         .original_oauth_id
 }
+/// 다른 PC에서 옮겨 온 로그인으로 복원 지점을 바꾼다 (#189). Codex는 API를 쓰는 동안 그 계정의 구독
+/// 로그인이 활성 자리(`auth.json`)가 아니라 여기에 보관돼 있다. 바꾸지 않으면 API 사용을 해제할 때
+/// 옛 로그인이 돌아오고, 다음 전환의 백업이 그것으로 방금 받은 로그인을 덮는다.
+/// Claude는 API를 쓰는 동안에도 구독 로그인이 활성 자리에 그대로 있어 해당이 없다.
+pub(super) fn replace_protected_oauth(
+    env: &Env,
+    provider: Provider,
+    account_id: &str,
+    cred: &[u8],
+) -> Result<bool, String> {
+    if provider != Provider::Codex {
+        return Ok(false);
+    }
+    let Some(record) = read_selection(env, provider)? else {
+        return Ok(false);
+    };
+    if !record.original_auth_present || record.original_oauth_id.as_deref() != Some(account_id) {
+        return Ok(false);
+    }
+    atomic_write(&directory(env, provider).join("auth.before.json"), cred)?;
+    Ok(true)
+}
 pub(super) fn is_active(
     env: &Env,
     provider: Provider,

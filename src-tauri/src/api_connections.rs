@@ -694,6 +694,17 @@ pub(crate) fn active_connection(env: &Env, provider: Provider) -> Option<Connect
 pub(crate) fn protected_oauth_id(env: &Env, provider: Provider) -> Option<String> {
     activation::protected_oauth_id(env, provider)
 }
+/// (#189) API를 쓰는 동안 따로 보관해 둔 구독 로그인이 이 계정의 것이면 옮겨 온 로그인으로 바꾼다.
+/// 바꿨으면 true. 호출자가 MUTATION_LOCK을 쥐고 있어야 한다.
+pub(crate) fn replace_protected_oauth(
+    env: &Env,
+    provider: Provider,
+    account_id: &str,
+    cred: &[u8],
+) -> Result<bool, String> {
+    let _guard = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
+    activation::replace_protected_oauth(env, provider, account_id, cred)
+}
 fn sh_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
@@ -1097,6 +1108,10 @@ pub(crate) mod tests {
         }
     }
 
+    /// 다른 모듈의 검사용 — 저장해 둔 키를 사용 중으로 만든다
+    pub(crate) fn use_fixture(env: &Env, secrets: &Memory, provider: Provider, name: &str) {
+        activation::activate_locked(env, secrets, provider, name).unwrap();
+    }
     /// 다른 모듈의 검사용 — 계정에 붙은 키 하나를 저장한다
     pub(crate) fn save_fixture(env: &Env, secrets: &Memory, provider: &str, account_id: &str, name: &str, key: &str) {
         save_for_account(env, secrets, provider, account_id, name, key, false).unwrap();

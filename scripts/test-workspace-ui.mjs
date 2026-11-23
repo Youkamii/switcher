@@ -1107,13 +1107,21 @@ async function chromium(entry, width, screenshot, profile, boardHeight) {
   try {
     const portFile=path.join(profile,'DevToolsActivePort');
     // Fresh hosted Windows runners can take longer than five seconds to launch
-    // Chromium. Wait for its actual readiness signal before opening the port file.
-    for(let i=0;i<400 && !fs.existsSync(portFile);i++) {
+    // Chromium. Wait for its actual readiness signal: the port line in this file.
+    // The file can exist while Chromium still holds it open (Windows reports EBUSY)
+    // or before the port is written, so keep reading until the line is there.
+    let port=NaN;
+    for(let i=0;i<400 && !Number.isInteger(port);i++) {
       if(child.exitCode !== null) throw new Error('Chromium exited before readiness: '+child.exitCode);
-      await sleep(50);
+      try {
+        const first=fs.readFileSync(portFile,'utf8').split('\n')[0].trim();
+        if(/^\d+$/.test(first)) port=Number(first);
+      } catch(error) {
+        if(!['ENOENT','EBUSY','EPERM','EACCES'].includes(error.code)) throw error;
+      }
+      if(!Number.isInteger(port)) await sleep(50);
     }
-    if(!fs.existsSync(portFile)) throw new Error('Chromium did not become ready within 20 seconds');
-    const port=Number(fs.readFileSync(portFile,'utf8').split('\n')[0]);
+    if(!Number.isInteger(port)) throw new Error('Chromium did not become ready within 20 seconds');
     const pages=await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
     socket=new WebSocket(pages.find(page=>page.type==='page').webSocketDebuggerUrl);
     await new Promise((resolve,reject)=>{socket.onopen=resolve;socket.onerror=reject;});

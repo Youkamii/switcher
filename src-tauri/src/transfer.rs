@@ -545,6 +545,10 @@ fn import_profile(env: &Env, incoming: &IncomingProfile, wanted: &str) -> Result
     if updates_live {
         accounts::write_live_cred(env, provider, &incoming.credential)?;
     }
+    // API 키를 쓰는 동안에는 그 계정의 구독 로그인이 활성 자리가 아니라 복원 지점에 보관돼 있다(Codex).
+    // 그것도 바꾼다 — 아니면 API 사용을 해제할 때 옛 로그인이 돌아와 방금 받은 로그인을 덮는다.
+    let updates_held = !updates_live
+        && api_connections::replace_protected_oauth(env, provider, &incoming.ident.id, &incoming.credential)?;
     accounts::write_profile_parts(
         env,
         provider,
@@ -562,7 +566,7 @@ fn import_profile(env: &Env, incoming: &IncomingProfile, wanted: &str) -> Result
     }
     // 새 로그인을 받은 계정은 이전 "다시 로그인 필요" 판정을 물려받지 않는다 — 재로그인과 같다 (#122)
     crate::usage::clear_profile_backoff(env, provider, &name);
-    Ok((replaced, updates_live))
+    Ok((replaced, updates_live || updates_held))
 }
 
 fn apply(
@@ -701,7 +705,7 @@ pub fn candidates(env: &Env) -> Vec<Candidate> {
 mod tests {
     use super::*;
     use crate::accounts::test_support::test_env;
-    use crate::api_connections::tests::{add_account, save_fixture, Memory};
+    use crate::api_connections::tests::{add_account, save_fixture, use_fixture, Memory};
 
     /// 검사에서 "만든 시각"으로 쓰는 값
     const T0: u64 = 1_795_400_000;
@@ -960,6 +964,30 @@ mod tests {
         assert_eq!(claude_json["oauthAccount"]["accountUuid"], "acct-alpha");
         assert!(live_cred(&to, Provider::Codex).contains("fake-refresh-b-other"));
         assert!(profile_cred(&to, Provider::Codex, "delta").contains("fake-refresh-a-delta"));
+    }
+
+    /// 받는 PC가 Codex를 API 키로 쓰는 중이면 그 계정의 구독 로그인은 따로 보관돼 있다 — 그것도 바꾼다
+    #[test]
+    fn a_login_held_aside_while_an_api_key_is_in_use_is_replaced_too() {
+        let (from, from_secrets) = source("transfer-held-from");
+        let to = test_env("transfer-held-to");
+        let to_secrets = Memory::default();
+        account(&to, Provider::Codex, "delta", "acct-delta", "b-old");
+        log_in(&to, Provider::Codex, "acct-delta", "b-old");
+        save_fixture(&to, &to_secrets, "codex", "acct-delta", "work", "sk-fake-b-codex-work-key-01");
+        use_fixture(&to, &to_secrets, Provider::Codex, "work");
+        assert!(live_cred(&to, Provider::Codex).contains("sk-fake-b-codex-work-key-01"));
+        let result = bring(&to, &to_secrets, bundle_of(&from, &from_secrets));
+        assert_eq!((result.accounts_added, result.accounts_replaced, result.live_replaced), (1, 1, 1));
+        assert!(result.problems.is_empty());
+        // API는 계속 사용 중이고 활성 자리의 키는 그대로다. 프로필은 받은 로그인이다.
+        assert!(live_cred(&to, Provider::Codex).contains("sk-fake-b-codex-work-key-01"));
+        assert!(api_connections::active_connection(&to, Provider::Codex).is_some());
+        assert!(profile_cred(&to, Provider::Codex, "delta").contains("fake-refresh-a-delta"));
+        // 사용을 해제하면 받은 로그인이 돌아온다 — 옛 로그인이 아니다
+        api_connections::deactivate_for_oauth_locked(&to, Provider::Codex).unwrap();
+        let live = live_cred(&to, Provider::Codex);
+        assert!(live.contains("fake-refresh-a-delta") && !live.contains("fake-refresh-b-old"), "the old login must not come back");
     }
 
     /// 보내는 PC에서 지금 로그인된 계정은 프로필 사본이 아니라 활성 로그인을 담는다 —
