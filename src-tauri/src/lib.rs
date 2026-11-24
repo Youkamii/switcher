@@ -203,8 +203,41 @@ struct GripRail {
     x_right: f64,
     y_min: f64,
     y_max: f64,
+    /// 이 자리를 잰 화면의 작업영역 (x, y, 너비, 높이). 마우스가 다른 화면으로 넘어가면 그 화면의
+    /// 작업영역에 같은 여백으로 다시 놓는다 (`grip_rail_on`). 없으면 한 화면 안에서만 다닌다.
+    #[serde(default)]
+    area: Option<(f64, f64, f64, f64)>,
 }
 static GRIP_RAIL: Mutex<Option<GripRail>> = Mutex::new(None);
+
+/// 화면 하나: 전체 영역과 작업영역, 각각 (x, y, 너비, 높이) 물리 px.
+type ScreenAreas = ((f64, f64, f64, f64), (f64, f64, f64, f64));
+
+/// 마우스가 올라가 있는 화면에 맞춘 자리 (#190). ☰를 쥔 채 옆 화면으로 넘어가면 판도 따라 넘어가야
+/// 한다 — 누를 때의 화면에만 묶어 두면 화면 경계가 벽이 되어 다른 화면으로 옮길 수 없다. 벽·위아래
+/// 여백은 누를 때 잰 것을 그대로 옮긴다. 마우스가 어느 화면에도 없으면(화면 사이 틈) 받은 자리 그대로.
+fn grip_rail_on(rail: &GripRail, screens: &[ScreenAreas], cursor: (f64, f64)) -> GripRail {
+    let Some(home) = rail.area else {
+        return *rail;
+    };
+    let inside = |r: &(f64, f64, f64, f64)| {
+        cursor.0 >= r.0 && cursor.0 < r.0 + r.2 && cursor.1 >= r.1 && cursor.1 < r.1 + r.3
+    };
+    let Some((_, work)) = screens.iter().find(|(full, _)| inside(full)) else {
+        return *rail;
+    };
+    if *work == home {
+        return *rail;
+    }
+    let y_min = work.1 + (rail.y_min - home.1);
+    GripRail {
+        x_left: work.0 + (rail.x_left - home.0),
+        x_right: work.0 + work.2 + (rail.x_right - (home.0 + home.2)),
+        y_min,
+        y_max: (work.1 + work.3 + (rail.y_max - (home.1 + home.3))).max(y_min),
+        area: Some(*work),
+    }
+}
 
 /// 쥔 자리(grab = 누를 때 커서 − 창 위치)를 지킨 채 커서를 따라간 창 자리. 벽 밖으로는 나가지 않는다.
 fn grip_rail_position(rail: &GripRail, cursor: (f64, f64), grab: (f64, f64)) -> (i32, i32) {
@@ -429,9 +462,32 @@ mod edge_hover_tests {
 
     /// #188 — ☰를 잡았던 누름의 누른 자리와 놓은 자리. 놓은 자리는 버튼을 쥔 채 마지막으로 본
     /// 커서다 — 놓은 뒤에는 커서가 곧 다른 데로 가므로 그 값은 쓰지 않는다.
+    /// #190 — ☰를 쥔 채 옆 화면으로 넘어가면 판도 넘어간다. 화면 경계는 벽이 아니다.
+    #[test]
+    fn a_held_grip_crosses_to_the_screen_under_the_mouse() {
+        // 왼쪽 화면 1920×1080(작업표시줄 40), 오른쪽 화면 2560×1440(작업표시줄 48). 판 160×600.
+        let left = ((0.0, 0.0, 1920.0, 1080.0), (0.0, 0.0, 1920.0, 1040.0));
+        let right = ((1920.0, 0.0, 2560.0, 1440.0), (1920.0, 0.0, 2560.0, 1392.0));
+        let screens = [left, right];
+        let rail = GripRail { x_left: 0.0, x_right: 1760.0, y_min: 0.0, y_max: 440.0, area: Some(left.1) };
+        let grab = (20.0, 10.0);
+        // 같은 화면 안에서는 그대로다
+        assert_eq!(grip_rail_on(&rail, &screens, (900.0, 500.0)), rail);
+        // 오른쪽 화면으로 넘어가면 그 화면의 두 벽 사이, 그 화면의 높이 안에서 다닌다
+        let over = grip_rail_on(&rail, &screens, (2500.0, 1300.0));
+        assert_eq!((over.x_left, over.x_right, over.y_min, over.y_max), (1920.0, 4320.0, 0.0, 792.0));
+        assert_eq!(grip_rail_position(&over, (2500.0, 700.0), grab), (2480, 690));
+        // 넘어간 화면의 벽 안으로도 들어가지 않는다
+        assert_eq!(grip_rail_position(&over, (4479.0, 700.0), grab), (4320, 690));
+        // 화면 사이 틈이나 화면 밖이면 받은 자리 그대로, 작업영역을 모르면 한 화면 안에서만
+        assert_eq!(grip_rail_on(&rail, &screens, (-50.0, 500.0)), rail);
+        let blind = GripRail { area: None, ..rail };
+        assert_eq!(grip_rail_on(&blind, &screens, (2500.0, 700.0)), blind);
+    }
+
     #[test]
     fn a_held_grip_follows_the_mouse_but_never_goes_into_a_wall() {
-        let rail = GripRail { x_left: 0.0, x_right: 3680.0, y_min: 76.0, y_max: 1354.0 };
+        let rail = GripRail { x_left: 0.0, x_right: 3680.0, y_min: 76.0, y_max: 1354.0, area: None };
         let grab = (36.0, 48.0);
         // 벽에서 떼면 마우스에 끌려 온다 — 가로도 세로도
         assert_eq!(grip_rail_position(&rail, (3000.0, 1000.0), grab), (2964, 952));
@@ -4159,6 +4215,29 @@ pub fn run() {
                             };
                             if let Some(grab) = grab {
                                 grip_grab = Some(grab);
+                                // 마우스가 옆 화면으로 넘어갔으면 그 화면의 벽·작업영역을 쓴다 (#190)
+                                let screens: Vec<ScreenAreas> = window
+                                    .available_monitors()
+                                    .map(|monitors| {
+                                        monitors
+                                            .iter()
+                                            .map(|m| {
+                                                let (p, z) = (m.position(), m.size());
+                                                let w = m.work_area();
+                                                (
+                                                    (p.x as f64, p.y as f64, z.width as f64, z.height as f64),
+                                                    (
+                                                        w.position.x as f64,
+                                                        w.position.y as f64,
+                                                        w.size.width as f64,
+                                                        w.size.height as f64,
+                                                    ),
+                                                )
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                let rail = grip_rail_on(&rail, &screens, cursor);
                                 let (x, y) = grip_rail_position(&rail, cursor, grab);
                                 if grip_last != Some((x, y)) {
                                     let _ = window.set_position(tauri::PhysicalPosition::new(x, y));

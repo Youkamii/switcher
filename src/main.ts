@@ -3458,6 +3458,8 @@ window.addEventListener(
               xRight: edgeSnapPosition(rect, area, "right", insets).x,
               yMin,
               yMax: Math.max(yMin, area.position.y + area.size.height - size.height),
+              // 쥔 채 옆 화면으로 넘어가면 러스트가 그 화면의 작업영역에 다시 놓는다 (#190)
+              area: [area.position.x, area.position.y, area.size.width, area.size.height],
             },
           }).catch(() => {});
         })
