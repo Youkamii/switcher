@@ -51,7 +51,7 @@
           "passed": true
         },
         {
-          "id": "key-registration-is-offered-per-account-and-per-provider",
+          "id": "no-api-key-ui",
           "passed": true
         },
         {
@@ -87,243 +87,11 @@
           "passed": true
         },
         {
-          "id": "header-buttons-add-accounts-and-keys",
+          "id": "header-buttons-add-accounts",
           "passed": true
         },
         {
           "id": "no-empty-api-space",
-          "passed": true
-        },
-        {
-          "id": "secret-input-masked",
-          "passed": true
-        },
-        {
-          "id": "registration-title-starts-native-window-drag",
-          "passed": true
-        },
-        {
-          "id": "original-titlebar-drags-through-modal-backdrop",
-          "passed": true
-        },
-        {
-          "id": "form-controls-and-right-click-do-not-drag",
-          "passed": true
-        },
-        {
-          "id": "window-move-preserves-registration-inputs",
-          "passed": true
-        },
-        {
-          "id": "api-dialog-stays-inside-window",
-          "passed": true
-        },
-        {
-          "id": "key-registration-names-exact-owner",
-          "passed": true
-        },
-        {
-          "id": "key-issuance-page-uses-selected-provider",
-          "passed": true
-        },
-        {
-          "id": "refresh-preserves-api-form",
-          "passed": true
-        },
-        {
-          "id": "view-change-protects-api-input",
-          "passed": true
-        },
-        {
-          "id": "register-sent-once-to-correct-parent",
-          "passed": true
-        },
-        {
-          "id": "secret-cleared-after-save",
-          "passed": true
-        },
-        {
-          "id": "registration-automatically-checks-connection",
-          "passed": true
-        },
-        {
-          "id": "registration-applies-api-without-command-copy",
-          "passed": true
-        },
-        {
-          "id": "api-activation-never-sends-key-back-through-ui",
-          "passed": true
-        },
-        {
-          "id": "saved-result-remains-draggable",
-          "passed": true
-        },
-        {
-          "id": "registered-api-immediately-visible",
-          "passed": true
-        },
-        {
-          "id": "child-key-only-in-own-account",
-          "passed": true
-        },
-        {
-          "id": "parent-offers-subscription-while-child-api-is-active",
-          "passed": true
-        },
-        {
-          "id": "account-key-list-can-collapse",
-          "passed": true
-        },
-        {
-          "id": "verification-persists-after-render",
-          "passed": true
-        },
-        {
-          "id": "api-card-shows-organization-prepaid-balance",
-          "passed": true
-        },
-        {
-          "id": "registration-and-card-no-longer-offer-budget-controls",
-          "passed": true
-        },
-        {
-          "id": "billing-org-visible-without-disclosing-it-in-a-tooltip",
-          "passed": true
-        },
-        {
-          "id": "missing-billing-login-clears-old-value",
-          "passed": true
-        },
-        {
-          "id": "missing-login-opens-provider-billing",
-          "passed": true
-        },
-        {
-          "id": "denied-balance-is-never-zero",
-          "passed": true
-        },
-        {
-          "id": "wrong-organization-dashboard-rejected",
-          "passed": true
-        },
-        {
-          "id": "dashboard-credit-import-labeled-and-dated",
-          "passed": true
-        },
-        {
-          "id": "clipboard-and-key-list-stay-out-of-native-command",
-          "passed": true
-        },
-        {
-          "id": "confirmed-zero-is-visible",
-          "passed": true
-        },
-        {
-          "id": "yen-credit-uses-zero-decimal-currency",
-          "passed": true
-        },
-        {
-          "id": "toolbar-refresh-requests-current-balance",
-          "passed": true
-        },
-        {
-          "id": "explicit-api-check",
-          "passed": true
-        },
-        {
-          "id": "selected-api-shows-active-state",
-          "passed": true
-        },
-        {
-          "id": "api-can-restore-previous-cli-settings",
-          "passed": true
-        },
-        {
-          "id": "saved-api-uses-one-click-without-terminal-command",
-          "passed": true
-        },
-        {
-          "id": "replacement-never-reveals-stored-key",
-          "passed": true
-        },
-        {
-          "id": "key-replacement-can-drag-with-input-preserved",
-          "passed": true
-        },
-        {
-          "id": "replacement-is-explicit",
-          "passed": true
-        },
-        {
-          "id": "duplicate-does-not-silently-replace-key",
-          "passed": true
-        },
-        {
-          "id": "secret-cleared-on-save-error",
-          "passed": true
-        },
-        {
-          "id": "activation-failure-keeps-saved-key-and-offers-retry",
-          "passed": true
-        },
-        {
-          "id": "activation-retry-uses-saved-key",
-          "passed": true
-        },
-        {
-          "id": "slow-network-check-does-not-trap-dialog",
-          "passed": true
-        },
-        {
-          "id": "failed-check-persists-after-dialog-close",
-          "passed": true
-        },
-        {
-          "id": "openai-credit-opens-billing-without-inventing-amounts",
-          "passed": true
-        },
-        {
-          "id": "delete-needs-second-click",
-          "passed": true
-        },
-        {
-          "id": "delete-disarms-on-window-blur",
-          "passed": true
-        },
-        {
-          "id": "delete-disarms-on-leave",
-          "passed": true
-        },
-        {
-          "id": "delete-expiry-works-without-timer",
-          "passed": true
-        },
-        {
-          "id": "delete-removes-api-row",
-          "passed": true
-        },
-        {
-          "id": "api-never-switches-oauth",
-          "passed": true
-        },
-        {
-          "id": "save-without-use-keeps-current-selection",
-          "passed": true
-        },
-        {
-          "id": "two-accounts-can-display-the-same-key-name",
-          "passed": true
-        },
-        {
-          "id": "use-targets-stored-key-of-the-clicked-account",
-          "passed": true
-        },
-        {
-          "id": "legacy-key-awaits-user-picked-account",
-          "passed": true
-        },
-        {
-          "id": "legacy-key-links-to-chosen-account-without-switching",
           "passed": true
         },
         {
@@ -335,14 +103,6 @@
           "passed": true
         },
         {
-          "id": "blocked-account-store-preserves-existing-key-recovery",
-          "passed": true
-        },
-        {
-          "id": "api-selection-removes-subscription-session-note",
-          "passed": true
-        },
-        {
           "id": "no-browser-errors",
           "passed": true
         }
@@ -350,7 +110,7 @@
       "errors": [],
       "mode": "normal",
       "width": 420,
-      "height": 990
+      "height": 865
     },
     {
       "checks": [
@@ -383,31 +143,7 @@
           "passed": true
         },
         {
-          "id": "selected-api-visible-minimal",
-          "passed": true
-        },
-        {
-          "id": "selected-api-belongs-to-second-claude-account-minimal",
-          "passed": true
-        },
-        {
-          "id": "selected-api-inside-window-minimal",
-          "passed": true
-        },
-        {
-          "id": "actual-credit-in-all-modes-minimal",
-          "passed": true
-        },
-        {
-          "id": "copied-credit-shows-source-and-time-minimal",
-          "passed": true
-        },
-        {
-          "id": "balance-link-native-hit-does-not-switch-subscription-minimal",
-          "passed": true
-        },
-        {
-          "id": "balance-link-opens-own-billing-minimal",
+          "id": "no-api-key-ui-minimal",
           "passed": true
         },
         {
@@ -418,7 +154,7 @@
       "errors": [],
       "mode": "minimal",
       "width": 120,
-      "height": 357
+      "height": 289
     },
     {
       "checks": [
@@ -451,31 +187,7 @@
           "passed": true
         },
         {
-          "id": "selected-api-visible-edge",
-          "passed": true
-        },
-        {
-          "id": "selected-api-belongs-to-second-claude-account-edge",
-          "passed": true
-        },
-        {
-          "id": "selected-api-inside-window-edge",
-          "passed": true
-        },
-        {
-          "id": "actual-credit-in-all-modes-edge",
-          "passed": true
-        },
-        {
-          "id": "copied-credit-shows-source-and-time-edge",
-          "passed": true
-        },
-        {
-          "id": "balance-link-native-hit-does-not-switch-subscription-edge",
-          "passed": true
-        },
-        {
-          "id": "balance-link-opens-own-billing-edge",
+          "id": "no-api-key-ui-edge",
           "passed": true
         },
         {
@@ -486,7 +198,7 @@
       "errors": [],
       "mode": "edge",
       "width": 80,
-      "height": 660
+      "height": 571
     },
     {
       "checks": [
@@ -510,7 +222,7 @@
       "errors": [],
       "mode": "normal",
       "width": 420,
-      "height": 542
+      "height": 569
     },
     {
       "checks": [
@@ -587,382 +299,170 @@
     {
       "checks": [
         {
-          "id": "account-in-use-with-key-offers-api-next-minimal",
+          "id": "no-api-marks-or-calls-in-widget-mode-minimal",
           "passed": true
         },
         {
-          "id": "api-next-names-the-key-and-separate-billing-minimal",
+          "id": "minimal-account-in-use-reports-no-switch-region",
           "passed": true
         },
         {
-          "id": "api-next-stays-inside-the-card-minimal",
+          "id": "minimal-other-account-reports-a-plain-switch",
           "passed": true
         },
         {
-          "id": "other-accounts-and-keyless-providers-have-no-api-next-minimal",
+          "id": "native-switch-moves-the-active-mark",
           "passed": true
         },
         {
-          "id": "api-next-uses-the-api-colour-not-the-account-colour-minimal",
-          "passed": true
-        },
-        {
-          "id": "minimal-card-in-use-reports-its-key-for-native-double-click",
-          "passed": true
-        },
-        {
-          "id": "minimal-other-account-still-reports-a-plain-switch",
-          "passed": true
-        },
-        {
-          "id": "native-api-failure-is-shown-on-the-card",
-          "passed": true
-        },
-        {
-          "id": "native-api-result-marks-the-card-at-once",
-          "passed": true
-        },
-        {
-          "id": "api-state-frames-the-owner-account-minimal",
-          "passed": true
-        },
-        {
-          "id": "api-state-uses-its-own-colour-minimal",
-          "passed": true
-        },
-        {
-          "id": "api-state-names-the-key-minimal",
-          "passed": true
-        },
-        {
-          "id": "hover-keeps-the-api-colour-minimal",
-          "passed": true
-        },
-        {
-          "id": "api-state-stays-inside-window-minimal",
-          "passed": true
-        },
-        {
-          "id": "minimal-api-frame-switches-back-from-account-row",
-          "passed": true
-        },
-        {
-          "id": "minimal-api-frame-switches-back-from-api-block",
-          "passed": true
-        },
-        {
-          "id": "minimal-billing-link-stays-a-plain-control",
-          "passed": true
-        },
-        {
-          "id": "owner-card-keeps-its-own-type-and-spacing-minimal",
-          "passed": true
-        },
-        {
-          "id": "native-switch-back-offers-the-key-before-usage-reloads",
-          "passed": true
-        },
-        {
-          "id": "native-switch-back-restores-the-subscription-card",
-          "passed": true
-        },
-        {
-          "id": "native-switch-to-keyless-account-offers-no-api",
-          "passed": true
-        },
-        {
-          "id": "no-browser-errors-toggle-minimal",
+          "id": "no-browser-errors-switch-minimal",
           "passed": true
         }
       ],
       "errors": [],
       "mode": "minimal",
       "width": 120,
-      "height": 304
+      "height": 289
     },
     {
       "checks": [
         {
-          "id": "account-in-use-with-key-offers-api-next-edge",
+          "id": "no-api-marks-or-calls-in-widget-mode-edge",
           "passed": true
         },
         {
-          "id": "api-next-names-the-key-and-separate-billing-edge",
+          "id": "press-on-the-account-in-use-does-nothing",
           "passed": true
         },
         {
-          "id": "api-next-stays-inside-the-card-edge",
+          "id": "edge-other-account-is-a-hover-target-before-the-whole-panel",
           "passed": true
         },
         {
-          "id": "other-accounts-and-keyless-providers-have-no-api-next-edge",
+          "id": "press-on-another-account-switches-to-it",
           "passed": true
         },
         {
-          "id": "api-next-uses-the-api-colour-not-the-account-colour-edge",
+          "id": "press-on-the-first-account-switches-back",
           "passed": true
         },
         {
-          "id": "edge-card-in-use-is-a-hover-target-before-the-whole-panel",
-          "passed": true
-        },
-        {
-          "id": "one-more-press-selects-the-accounts-own-key",
-          "passed": true
-        },
-        {
-          "id": "api-state-shows-at-once-on-card-and-collapsed-handle",
-          "passed": true
-        },
-        {
-          "id": "tail-of-the-same-gesture-does-not-undo-the-api-selection",
-          "passed": true
-        },
-        {
-          "id": "api-state-frames-the-owner-account-edge",
-          "passed": true
-        },
-        {
-          "id": "api-state-uses-its-own-colour-edge",
-          "passed": true
-        },
-        {
-          "id": "api-state-names-the-key-edge",
-          "passed": true
-        },
-        {
-          "id": "hover-keeps-the-api-colour-edge",
-          "passed": true
-        },
-        {
-          "id": "api-state-stays-inside-window-edge",
-          "passed": true
-        },
-        {
-          "id": "collapsed-handle-shows-api-instead-of-usage-bars",
-          "passed": true
-        },
-        {
-          "id": "collapsed-handle-keeps-other-provider-usage",
-          "passed": true
-        },
-        {
-          "id": "api-frame-is-one-hover-and-press-target",
-          "passed": true
-        },
-        {
-          "id": "owner-card-keeps-its-own-type-and-spacing-edge",
-          "passed": true
-        },
-        {
-          "id": "press-on-the-api-block-returns-to-the-subscription",
-          "passed": true
-        },
-        {
-          "id": "returning-to-subscription-restores-usage-handle",
-          "passed": true
-        },
-        {
-          "id": "api-waits-out-the-previous-account-change",
-          "passed": true
-        },
-        {
-          "id": "api-selectable-again-after-the-pause",
-          "passed": true
-        },
-        {
-          "id": "every-press-keeps-toggling-account-and-api",
-          "passed": true
-        },
-        {
-          "id": "one-more-press-is-offered-before-usage-reloads",
-          "passed": true
-        },
-        {
-          "id": "optimistic-api-mark-is-a-hover-target",
-          "passed": true
-        },
-        {
-          "id": "returned-frame-already-looks-like-the-account-in-use",
-          "passed": true
-        },
-        {
-          "id": "optimistic-api-mark-names-the-key-once",
-          "passed": true
-        },
-        {
-          "id": "press-right-after-the-change-shows-is-not-an-api-decision",
-          "passed": true
-        },
-        {
-          "id": "steady-beat-reaches-the-api-while-usage-is-loading",
-          "passed": true
-        },
-        {
-          "id": "steady-beat-comes-back-while-usage-is-loading",
-          "passed": true
-        },
-        {
-          "id": "steady-beat-keeps-toggling-without-waiting-for-usage",
-          "passed": true
-        },
-        {
-          "id": "held-usage-settles-into-the-real-api-state",
-          "passed": true
-        },
-        {
-          "id": "billing-link-inside-the-frame-opens-billing-without-toggling",
-          "passed": true
-        },
-        {
-          "id": "press-on-another-account-leaves-api-for-that-account",
-          "passed": true
-        },
-        {
-          "id": "failed-api-selection-keeps-subscription-and-shows-reason",
-          "passed": true
-        },
-        {
-          "id": "no-browser-errors-toggle-edge",
+          "id": "no-browser-errors-switch-edge",
           "passed": true
         }
       ],
       "errors": [],
       "mode": "edge",
       "width": 80,
-      "height": 613
+      "height": 580
     },
     {
       "checks": [
         {
-          "id": "provider-title-offers-key-add-beside-account-add",
+          "id": "normal-mode-offers-moving-to-another-pc",
           "passed": true
         },
         {
-          "id": "title-row-buttons-fit-without-overlap",
+          "id": "opens-on-export-with-two-password-fields",
           "passed": true
         },
         {
-          "id": "account-cards-keep-their-own-key-add",
+          "id": "export-says-what-is-included-and-the-ten-minute-limit",
           "passed": true
         },
         {
-          "id": "key-only-dialog-asks-for-no-account",
+          "id": "mismatched-passwords-make-nothing",
           "passed": true
         },
         {
-          "id": "key-only-dialog-stays-inside-window",
+          "id": "export-sends-only-the-password",
           "passed": true
         },
         {
-          "id": "key-alone-is-filed-under-the-account-it-belongs-to",
+          "id": "result-shows-what-it-holds-its-length-and-when-it-expires",
           "passed": true
         },
         {
-          "id": "result-names-the-account-and-how-it-was-found",
+          "id": "both-ways-out-are-offered-side-by-side",
           "passed": true
         },
         {
-          "id": "result-header-names-the-owner-account",
+          "id": "the-text-is-shown-read-only-inside-its-box",
           "passed": true
         },
         {
-          "id": "privacy-mode-blurs-the-account-in-the-result",
+          "id": "copy-puts-the-whole-text-on-the-clipboard",
           "passed": true
         },
         {
-          "id": "new-key-appears-under-that-account-only",
+          "id": "copy-falls-back-to-selecting-the-box",
           "passed": true
         },
         {
-          "id": "unknown-owner-stores-nothing-and-asks-for-the-account",
+          "id": "a-failed-copy-says-so-and-points-at-the-text",
           "passed": true
         },
         {
-          "id": "the-question-keeps-the-typed-key-and-name",
+          "id": "the-same-text-is-saved-as-a-file",
           "passed": true
         },
         {
-          "id": "saving-waits-for-an-account-choice",
+          "id": "the-file-can-be-shown-in-its-folder",
           "passed": true
         },
         {
-          "id": "account-list-is-as-tall-as-the-inputs",
+          "id": "export-result-fits-the-window",
           "passed": true
         },
         {
-          "id": "account-question-stays-inside-window",
+          "id": "import-offers-paste-first-and-a-file-as-well",
           "passed": true
         },
         {
-          "id": "chosen-account-receives-the-key",
+          "id": "import-says-up-front-that-it-overwrites",
           "passed": true
         },
         {
-          "id": "chosen-key-appears-under-the-chosen-account",
+          "id": "nothing-to-import-is-refused",
           "passed": true
         },
         {
-          "id": "single-account-dialog-is-the-same-key-only-form",
+          "id": "a-wrong-password-is-reported-and-imports-nothing",
           "passed": true
         },
         {
-          "id": "lone-account-takes-the-key-and-can-use-it-at-once",
+          "id": "the-pasted-text-is-what-gets-imported",
           "passed": true
         },
         {
-          "id": "refused-save-says-why-and-clears-the-key",
+          "id": "import-result-says-what-arrived-and-what-was-overwritten",
           "passed": true
         },
         {
-          "id": "key-text-never-reaches-the-page-or-the-call-log",
+          "id": "a-found-file-is-imported-when-nothing-is-pasted",
           "passed": true
         },
         {
-          "id": "no-browser-errors-auto-key-normal",
+          "id": "settings-on-this-pc-are-not-touched",
+          "passed": true
+        },
+        {
+          "id": "import-fits-the-window",
+          "passed": true
+        },
+        {
+          "id": "closing-leaves-no-dialog-behind",
+          "passed": true
+        },
+        {
+          "id": "no-browser-errors-transfer-normal",
           "passed": true
         }
       ],
       "errors": [],
       "mode": "normal",
       "width": 420,
-      "height": 990
-    },
-    {
-      "checks": [
-        {
-          "id": "collapsed-handle-stays-collapsed",
-          "passed": true
-        },
-        {
-          "id": "collapsed-api-mark-is-visible",
-          "passed": true
-        },
-        {
-          "id": "collapsed-api-mark-fits-the-gauge-column",
-          "passed": true
-        },
-        {
-          "id": "collapsed-api-mark-fits-inside-the-handle",
-          "passed": true
-        },
-        {
-          "id": "collapsed-api-row-keeps-the-usage-row-height",
-          "passed": true
-        },
-        {
-          "id": "collapsed-hover-zone-follows-the-handle",
-          "passed": true
-        },
-        {
-          "id": "no-browser-errors-api-folded",
-          "passed": true
-        }
-      ],
-      "errors": [],
-      "mode": "edge",
-      "width": 80,
-      "height": 620
+      "height": 865
     },
     {
       "checks": [
@@ -1067,7 +567,15 @@
           "passed": true
         },
         {
-          "id": "panel-dropped-mid-wall-hangs-from-the-handle",
+          "id": "folded-handle-top-is-where-the-mouse-let-go",
+          "passed": true
+        },
+        {
+          "id": "handle-top-at-the-mouse-low-on-the-wall",
+          "passed": true
+        },
+        {
+          "id": "and-back-up-from-the-low-place",
           "passed": true
         },
         {
@@ -1075,7 +583,11 @@
           "passed": true
         },
         {
-          "id": "handle-is-where-the-panel-was-dropped-on-the-new-wall",
+          "id": "handle-top-is-at-the-mouse-on-the-new-wall",
+          "passed": true
+        },
+        {
+          "id": "foreign-pointer-record-is-ignored",
           "passed": true
         },
         {
@@ -1125,6 +637,6 @@
       "height": 1100
     }
   ],
-  "passed": 252,
+  "passed": 132,
   "failed": 0
 }

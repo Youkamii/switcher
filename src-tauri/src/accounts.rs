@@ -324,9 +324,6 @@ pub struct Snapshot {
     pub live: Option<LiveIdentity>,
     /// 현재 로그인 계정이 어느 프로필에도 저장되어 있지 않으면 false
     pub live_saved: bool,
-    pub api_active: Option<String>,
-    pub api_active_account_id: Option<String>,
-    pub api_active_label: Option<String>,
 }
 
 #[derive(Serialize, Debug)]
@@ -1449,8 +1446,7 @@ pub fn list(env: &Env, provider: Provider) -> Result<Snapshot, String> {
     env.check_codex_store(provider)?;
     // 표시용 목록은 신원 읽기가 일시적으로 실패해도 화면 전체를 깨뜨리지 않는다
     // (전환·저장 경로는 여전히 엄격하게 실패한다)
-    let api_active = crate::api_connections::active_connection(env, provider);
-    let live = if api_active.is_some() { None } else { live_identity(env, provider).unwrap_or(None) };
+    let live = live_identity(env, provider).unwrap_or(None);
     let live_id = live.as_ref().map(|l| l.id.clone());
     let mut profiles = Vec::new();
     for (name, dir) in profile_dirs(env, provider)? {
@@ -1484,9 +1480,6 @@ pub fn list(env: &Env, provider: Provider) -> Result<Snapshot, String> {
         profiles,
         live,
         live_saved,
-        api_active_account_id: api_active.as_ref().and_then(|api| api.account_id.clone()),
-        api_active_label: api_active.as_ref().and_then(|api| api.label.clone()),
-        api_active: api_active.map(|api| api.name),
     })
 }
 

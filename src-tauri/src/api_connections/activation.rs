@@ -605,9 +605,7 @@ mod tests {
         oauth(&env, Provider::Claude, "oauth-a");
         register(&env, &secrets, Provider::Claude, "work");
         activate_locked(&env, &secrets, Provider::Claude, "work").unwrap();
-        let snapshot = crate::accounts::list(&env, Provider::Claude).unwrap();
-        assert_eq!(snapshot.api_active.as_deref(), Some("work"));
-        assert!(snapshot.profiles.iter().all(|p| !p.active));
+        assert_eq!(selected_name(&env, Provider::Claude).unwrap().as_deref(), Some("work"));
         crate::accounts::switch(&env, Provider::Claude, "b").unwrap();
         assert!(selected_name(&env, Provider::Claude).unwrap().is_none());
         assert_eq!(

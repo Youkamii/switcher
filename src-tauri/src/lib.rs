@@ -1,5 +1,9 @@
 mod accounts;
 mod codex_session;
+// API 키 기능은 뺐다 (#191, 사용자 지시 2026-11-24). 화면·명령은 없고, 남겨 둔 것은 이전 버전이
+// 켜 둔 API 선택을 구독으로 되돌리는 길(`release_selection`, 계정 전환 때의 해제)뿐이다. 그 길이
+// 기대는 저장·적용 코드와 검사는 그대로 두었다 — 되돌리기가 망가지면 사용자의 CLI가 유료 키에 갇힌다.
+#[allow(dead_code, unused_imports)]
 mod api_connections;
 #[cfg(not(windows))]
 mod clamshell;
@@ -88,22 +92,8 @@ struct AccountSwitchGuard;
 
 impl Drop for AccountSwitchGuard {
     fn drop(&mut self) {
-        *ACCOUNT_CHANGE_DONE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(std::time::Instant::now());
         ACCOUNT_SWITCHING.store(false, Ordering::SeqCst);
     }
-}
-
-/// 마지막 계정 전환·API 적용이 끝난 시각 — 어느 경로(더블클릭·버튼·트레이)든
-/// AccountSwitchGuard가 풀릴 때 기록한다. 더블클릭 API 판정(api_click_allowed)이
-/// "바뀐 화면을 보고 시작한 누름인가"를 재는 기준이다 (#186).
-static ACCOUNT_CHANGE_DONE: Mutex<Option<std::time::Instant>> = Mutex::new(None);
-
-fn account_change_done() -> Option<std::time::Instant> {
-    *ACCOUNT_CHANGE_DONE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
 }
 
 fn begin_account_switch() -> Result<AccountSwitchGuard, String> {
@@ -121,38 +111,6 @@ struct HitRegion {
     /// Some((provider, name))이면 더블클릭으로 이 프로필로 전환하는 카드.
     /// None이면 마우스를 실제로 받아야 하는 UI(버튼·핸들).
     action: Option<(String, String)>,
-    /// 참이면 action은 (provider, API 키 이름) — 더블클릭이 계정 전환이 아니라, 사용 중인
-    /// 계정의 저장된 API 키를 CLI에 적용한다 (#186). 프론트는 구독으로 쓰는 중인 계정
-    /// 카드에만 붙인다 ("한 번 = 계정, 한 번 더 = 그 계정의 API 키").
-    #[serde(default)]
-    api: bool,
-}
-
-/// 더블클릭으로 API 키를 적용하는 조건 (#186). API는 구독과 따로 과금되므로 "새로 시작한
-/// 둘째 결정"이어야 한다 — 연달아 누른 더블클릭 두 번이 "계정 전환 → 곧바로 API"가 되면
-/// 안 된다 (우발 유료 전환 금지). 그 더블클릭의 **첫 누름**이
-/// - 직전 전환·적용을 일으킨 더블클릭에서 `API_SAME_GESTURE` 이상 떨어져 있고 (그보다
-///   붙어 있으면 같은 동작의 꼬리다),
-/// - 직전 변경이 끝나 화면에 반영된 뒤 `API_SETTLE` 이상 지나서 시작됐어야 한다
-///   (바뀐 화면을 보고 누른 것 — 전환이 오래 걸려도 안전하다).
-/// 프론트(apiToggle.ts)의 엣지 클릭 규칙과 같은 기준이다. 벽시계 휴지가 아니라 누름의
-/// 시작 시각으로 재므로, 일정한 박자로 번갈아 누르면 매번 넘어간다.
-const API_SAME_GESTURE: std::time::Duration = std::time::Duration::from_millis(600);
-const API_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
-
-fn api_click_allowed(
-    prev_start: Option<std::time::Instant>,
-    prev_done: Option<std::time::Instant>,
-    gesture_start: std::time::Instant,
-) -> bool {
-    let waited = |since: Option<std::time::Instant>, wait: std::time::Duration| {
-        since.is_none_or(|at| {
-            gesture_start
-                .checked_duration_since(at)
-                .is_some_and(|gap| gap >= wait)
-        })
-    };
-    waited(prev_start, API_SAME_GESTURE) && waited(prev_done, API_SETTLE)
 }
 
 /// Type4(벽 붙임)의 호버 존. 프론트가 보고한다 — 숨김 상태에서는 물방울 손잡이
@@ -597,12 +555,10 @@ mod hit_region_tests {
             HitRegion {
                 rect: [0.0, 0.0, 120.0, 48.0],
                 action: Some(("claude".into(), "profile".into())),
-                api: false,
             },
             HitRegion {
                 rect: [90.0, 0.0, 30.0, 30.0],
                 action: None,
-                api: false,
             },
         ];
 
@@ -612,61 +568,10 @@ mod hit_region_tests {
         );
     }
 
-    /// 프론트가 보내는 히트 영역 JSON — api 표시는 사용 중인 계정 카드에만 붙고,
-    /// 옛 형태(표시 없음)는 계정 전환 영역으로 읽힌다 (#186).
+    /// 가드가 풀리면 다음 전환을 바로 시작할 수 있다
     #[test]
-    fn hit_region_api_flag_defaults_to_account_switch() {
-        let regions: Vec<HitRegion> = serde_json::from_str(
-            r#"[
-                {"rect":[0,0,120,48],"action":["claude","work"]},
-                {"rect":[0,50,120,48],"action":["claude","project"],"api":true},
-                {"rect":[0,100,24,24],"action":null}
-            ]"#,
-        )
-        .unwrap();
-        assert!(!regions[0].api);
-        assert!(regions[1].api);
-        assert_eq!(regions[1].action, Some(("claude".into(), "project".into())));
-        assert!(!regions[2].api && regions[2].action.is_none());
-    }
-
-    /// 유료 API 적용은 "새로 시작한 둘째 결정"이어야 한다 (#186) — 그 더블클릭의 첫
-    /// 누름이 직전 동작에서 충분히 떨어져 있고, 직전 변경이 끝난 뒤에 시작됐을 때만 받는다.
-    #[test]
-    fn api_double_click_must_begin_after_the_previous_change_settled() {
-        let ms = std::time::Duration::from_millis;
-        let t0 = std::time::Instant::now();
-        // 직전 동작이 없으면(앱을 켠 뒤 첫 더블클릭) 바로 받는다
-        assert!(api_click_allowed(None, None, t0));
-        // 연달아 누른 더블클릭 두 번: 둘째의 첫 누름이 첫째에 붙어 있다 → 같은 동작의 꼬리
-        let done = t0 + ms(150);
-        assert!(!api_click_allowed(Some(t0), Some(done), t0 + ms(200)));
-        assert!(!api_click_allowed(Some(t0), Some(done), t0 + API_SAME_GESTURE - ms(1)));
-        assert!(api_click_allowed(Some(t0), Some(done), t0 + API_SAME_GESTURE));
-        // 전환이 오래 걸렸으면(2초) 끝나서 화면이 바뀐 뒤에 시작한 더블클릭만 받는다
-        let slow = t0 + ms(2000);
-        assert!(!api_click_allowed(Some(t0), Some(slow), t0 + ms(1900)));
-        assert!(!api_click_allowed(Some(t0), Some(slow), slow));
-        assert!(!api_click_allowed(Some(t0), Some(slow), slow + API_SETTLE - ms(1)));
-        assert!(api_click_allowed(Some(t0), Some(slow), slow + API_SETTLE));
-        // 다른 경로(버튼·트레이)로 바뀐 직후에도 같다 — 끝난 시각만 기록돼 있다
-        assert!(!api_click_allowed(None, Some(done), done + ms(100)));
-        assert!(api_click_allowed(None, Some(done), done + API_SETTLE));
-        // 일정한 박자(0.8초)로 번갈아 누르는 건 막지 않는다 — 누를 때마다 넘어가야 한다
-        assert!(api_click_allowed(Some(t0), Some(t0 + ms(300)), t0 + ms(800)));
-        // 동작 구분 시간은 보통의 더블클릭(0.5초)보다 길고, 사람의 다음 누름보다는 짧게
-        assert!(API_SAME_GESTURE >= ms(500) && API_SAME_GESTURE <= ms(700));
-        assert!(API_SETTLE <= ms(300));
-    }
-
-    /// 전환이 끝난 시각은 어느 경로든 가드가 풀릴 때 남는다 — 더블클릭 API 판정의 기준
-    #[test]
-    fn account_switch_guard_records_when_the_change_finished() {
-        let before = std::time::Instant::now();
+    fn account_switch_guard_releases_on_drop() {
         drop(begin_account_switch().expect("no switch in flight"));
-        let done = account_change_done().expect("recorded on drop");
-        assert!(done >= before && done <= std::time::Instant::now());
-        // 가드가 풀렸으니 다음 전환을 바로 시작할 수 있다
         drop(begin_account_switch().expect("guard released"));
     }
 }
@@ -967,136 +872,6 @@ fn transfer_reveal(path: String, app: tauri::AppHandle) -> Result<(), String> {
     app.opener()
         .reveal_item_in_dir(&path)
         .map_err(|_| "폴더를 열지 못했습니다".into())
-}
-
-#[tauri::command]
-async fn api_list(provider: String) -> Result<Vec<api_connections::Connection>, String> {
-    tauri::async_runtime::spawn_blocking(move || api_connections::list(&Env::real()?, &provider))
-        .await
-        .map_err(|_| "API 작업 실패")?
-}
-#[tauri::command]
-async fn api_save(
-    provider: String,
-    account_id: String,
-    name: String,
-    key: String,
-    replace: Option<bool>,
-) -> Result<api_connections::Connection, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        api_connections::save(
-            &Env::real()?,
-            &provider,
-            &account_id,
-            &name,
-            &key,
-            replace.unwrap_or(false),
-        )
-    })
-    .await
-    .map_err(|_| "API 저장 작업 실패")?
-}
-/// 계정을 고르지 않은 API 키 등록 (#187) — 주인 계정을 찾아 그 계정 밑에 저장한다.
-/// 못 찾으면 저장하지 않고 `needs_account`를 돌려주며, 화면이 계정을 받아 `account_id`와 함께 다시 부른다.
-#[tauri::command]
-async fn api_save_auto(
-    provider: String,
-    account_id: Option<String>,
-    name: String,
-    key: String,
-) -> Result<api_connections::AutoSave, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        tauri::async_runtime::block_on(api_connections::save_detecting(
-            &Env::real()?,
-            &provider,
-            account_id.as_deref(),
-            &name,
-            &key,
-        ))
-    })
-    .await
-    .map_err(|_| "API 저장 작업 실패")?
-}
-#[tauri::command]
-async fn api_attach(provider: String, name: String, account_id: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        api_connections::attach(&Env::real()?, &provider, &name, &account_id)
-    })
-    .await
-    .map_err(|_| "API 계정 연결 실패")?
-}
-#[tauri::command]
-async fn api_delete(provider: String, name: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        api_connections::delete(&Env::real()?, &provider, &name)
-    })
-    .await
-    .map_err(|_| "API 삭제 작업 실패")?
-}
-#[tauri::command]
-async fn api_launch_command(provider: String, name: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        api_connections::launch_command(&Env::real()?, &provider, &name)
-    })
-    .await
-    .map_err(|_| "API 실행 명령 생성 실패")?
-}
-#[tauri::command]
-async fn api_activate(app: tauri::AppHandle, provider: String, name: String) -> Result<api_connections::Connection, String> {
-    let _busy = begin_account_switch()?;
-    let connection = tauri::async_runtime::spawn_blocking(move || api_connections::activate(&Env::real()?, &provider, &name))
-        .await.map_err(|_| "API 전환 작업 실패")??;
-    let handle = app.clone();
-    let _ = app.run_on_main_thread(move || disengage_tfsd(&handle));
-    Ok(connection)
-}
-#[tauri::command]
-async fn api_deactivate(provider: String) -> Result<(), String> {
-    let _busy = begin_account_switch()?;
-    tauri::async_runtime::spawn_blocking(move || api_connections::deactivate(&Env::real()?, &provider))
-        .await.map_err(|_| "API 사용 해제 실패")?
-}
-#[tauri::command]
-async fn api_check(provider: String, name: String) -> Result<api_connections::Connection, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        tauri::async_runtime::block_on(api_connections::check(&Env::real()?, &provider, &name))
-    })
-    .await
-    .map_err(|_| "API 연결 확인 작업 실패")?
-}
-
-#[tauri::command]
-async fn api_balance(provider: String, name: String, force: bool) -> Result<api_connections::balance::Balance, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        tauri::async_runtime::block_on(api_connections::balance::read(&Env::real()?, &provider, &name, force))
-    }).await.map_err(|_| "API 잔액 조회 실패")?
-}
-#[tauri::command]
-async fn api_import_console_credit(name: String, reading: api_connections::balance::ConsoleReading) -> Result<api_connections::balance::Balance, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        tauri::async_runtime::block_on(api_connections::balance::import(&Env::real()?, &name, reading))
-    }).await.map_err(|_| "Console 잔액을 가져오지 못했습니다")?
-}
-#[tauri::command]
-fn api_open_billing(app: tauri::AppHandle, provider: String, dashboard: Option<bool>) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
-    let url = match Provider::parse(&provider)? {
-        Provider::Claude if dashboard == Some(true) => "https://platform.claude.com/dashboard",
-        Provider::Claude => "https://platform.claude.com/settings/billing",
-        Provider::Codex => "https://platform.openai.com/settings/organization/billing/overview",
-    };
-    app.opener().open_url(url, None::<&str>).map_err(|_| "결제 페이지를 열지 못했습니다".into())
-}
-#[tauri::command]
-fn api_open_console(app: tauri::AppHandle, provider: String) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
-    let url = match Provider::parse(&provider)? {
-        Provider::Claude => "https://platform.claude.com/settings/keys",
-        Provider::Codex => "https://platform.openai.com/api-keys",
-    };
-    app.opener()
-        .open_url(url, None::<&str>)
-        .map_err(|_| "키 발급 페이지를 열지 못했습니다".into())
 }
 
 /// force_retry는 사용자가 새로고침 버튼을 직접 눌렀을 때만 true — 자동 조회 백오프를
@@ -3910,6 +3685,11 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             use tauri::Manager;
+            // API 키 기능을 뺐다 (#191). 이전 버전에서 API 키로 켜 둔 채 올라왔으면 화면을 그리기
+            // 전에 구독으로 되돌린다 — 이제 화면에 끌 곳이 없다.
+            if let Ok(env) = Env::real() {
+                let _ = api_connections::release_selection(&env);
+            }
             #[cfg(target_os = "macos")]
             {
                 // 위젯은 Dock·Cmd+Tab에 나오지 않는다 — 트레이(메뉴바)로만 상주
@@ -4152,8 +3932,6 @@ pub fn run() {
                     // Type1 호버 폴링(맥)의 마지막 카드 — 바뀔 때만 알린다
                     let mut poll_hover_idx: i64 = -1;
                     let mut last_click: Option<(std::time::Instant, usize)> = None;
-                    // 마지막으로 더블클릭 전환·API 적용을 시작한 시각 (#186, api_click_allowed)
-                    let mut last_account_action: Option<std::time::Instant> = None;
                     let mut edge_hover = EdgeHover::new();
                     // 엣지 손잡이를 끄는 중 버튼이 떨어져 있던 폴링 횟수 (#188)
                     let mut edge_drag_up_ticks: u32 = 0;
@@ -4399,65 +4177,23 @@ pub fn run() {
                         };
                         let now = std::time::Instant::now();
                         let dclk = double_click_window();
-                        // 이 더블클릭의 첫 누름 시각 — API 판정이 "언제 시작한 동작인가"를 본다
-                        let first_click = match last_click {
-                            Some((t, prev)) if prev == idx && now.duration_since(t) <= dclk => {
-                                Some(t)
-                            }
-                            _ => None,
-                        };
-                        let Some(gesture_start) = first_click else {
+                        let second = matches!(last_click, Some((t, prev)) if prev == idx && now.duration_since(t) <= dclk);
+                        if !second {
                             last_click = Some((now, idx));
                             continue;
-                        };
+                        }
                         last_click = None;
                         let Some((provider, name)) = regions[idx].action.clone() else {
                             continue;
                         };
-                        // 사용 중인 계정을 한 번 더 더블클릭 = 그 계정의 API 키 (#186).
-                        // 유료 전환이라, 직전 변경을 보고 새로 시작한 더블클릭만 받는다.
-                        // (구독으로 돌아가는 더블클릭은 일반 전환이라 이 조건이 없다)
-                        let api = regions[idx].api;
-                        if api
-                            && !api_click_allowed(
-                                last_account_action,
-                                account_change_done(),
-                                gesture_start,
-                            )
-                        {
-                            continue;
-                        }
                         // 전환은 프로필 갱신·CLI 작업을 기다릴 수 있으므로 모두 별도
                         // 스레드에서 실행한다. 폴링 스레드는 클릭 투과를 계속 갱신한다.
                         let Ok(busy) = begin_account_switch() else {
                             continue;
                         };
-                        last_account_action = Some(now);
                         let emit_handle = handle.clone();
                         std::thread::spawn(move || {
                             let _busy = busy;
-                            if api {
-                                // 일반 모드의 "사용"(api_activate)과 같은 경로 — 저장된 키를
-                                // 보안 저장소에서 읽어 CLI 설정에 적용한다. 키 원문은 이벤트에 싣지 않는다.
-                                let result: Result<(), String> = (|| {
-                                    let env = Env::real()?;
-                                    api_connections::activate(&env, &provider, &name).map(|_| ())
-                                })();
-                                // API를 명시적으로 고른 것도 운전대 잡기 — TFSD 해제 (메인 스레드에서)
-                                if result.is_ok() {
-                                    let disengage_handle = emit_handle.clone();
-                                    let _ = emit_handle.run_on_main_thread(move || {
-                                        disengage_tfsd(&disengage_handle);
-                                    });
-                                }
-                                // 실패해도 어느 카드의 일인지 알려 프론트가 그 카드에 사유를 남긴다
-                                let payload = match result {
-                                    Ok(()) => serde_json::json!({ "ok": true, "provider": provider, "name": name, "api": true }),
-                                    Err(e) => serde_json::json!({ "ok": false, "error": e, "provider": provider, "name": name, "api": true }),
-                                };
-                                let _ = emit_handle.emit("account-switched", payload);
-                                return;
-                            }
                             if provider == "github" {
                                 let payload = match github::switch(&name) {
                                     Ok(()) => serde_json::json!({ "ok": true, "provider": provider, "name": name }),
@@ -4584,19 +4320,6 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
-            api_list,
-            api_save,
-            api_save_auto,
-            api_attach,
-            api_delete,
-            api_launch_command,
-            api_activate,
-            api_deactivate,
-            api_balance,
-            api_import_console_credit,
-            api_open_billing,
-            api_check,
-            api_open_console,
             list_profiles,
             codex_session_status,
             retry_codex_session_refresh,

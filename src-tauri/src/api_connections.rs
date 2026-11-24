@@ -678,6 +678,24 @@ pub fn deactivate(env: &Env, provider: &str) -> Result<(), String> {
     deactivate_for_oauth_locked(env, Provider::parse(provider)?)
 }
 
+/// API 키 기능을 뺀 뒤의 정리 (#191): 이전 버전에서 API 키로 켜 둔 채 올라왔으면 구독으로 되돌린다.
+/// 화면에 API가 없으므로 그대로 두면 사용자가 끌 길이 없다 — CLI가 계속 유료 키로 돈다.
+/// 저장해 둔 키와 기록은 지우지 않는다. 켜져 있지 않으면 아무것도 건드리지 않는다.
+/// 되돌린 공급자 이름을 돌려준다.
+pub fn release_selection(env: &Env) -> Vec<&'static str> {
+    let mut released = Vec::new();
+    for provider in [Provider::Claude, Provider::Codex] {
+        if !matches!(activation::selected_name(env, provider), Ok(Some(_))) {
+            continue;
+        }
+        match deactivate(env, provider.dir_name()) {
+            Ok(()) => released.push(provider.dir_name()),
+            Err(error) => eprintln!("[api] {} 구독 복귀 실패: {error}", provider.dir_name()),
+        }
+    }
+    released
+}
+
 /// Called while MUTATION_LOCK is held; never acquire it under the API lock.
 pub(crate) fn deactivate_for_oauth_locked(env: &Env, provider: Provider) -> Result<(), String> {
     let _guard = LOCK.lock().map_err(|_| "API 연결 잠금 실패")?;
@@ -1239,6 +1257,27 @@ pub(crate) mod tests {
         }
     }
 
+    /// #191 — API 키 기능을 뺀 판으로 올라온 PC: 켜 둔 API 선택은 시작할 때 구독으로 돌아오고,
+    /// 저장해 둔 키는 그대로 남는다. 켜져 있지 않으면 아무것도 하지 않는다.
+    #[test]
+    fn a_selection_left_by_an_older_version_is_released_and_the_keys_stay() {
+        let env = crate::accounts::test_support::test_env("api-release-legacy");
+        let vault = Memory::default();
+        add_account(&env, Provider::Claude, "alpha", "acct-alpha");
+        fs::create_dir_all(env.home.join(".claude")).unwrap();
+        fs::write(env.home.join(".claude/settings.json"), br#"{"theme":"dark"}"#).unwrap();
+        assert!(release_selection(&env).is_empty());
+        save_fixture(&env, &vault, "claude", "acct-alpha", "work", "sk-fake-release-legacy-0001");
+        use_fixture(&env, &vault, Provider::Claude, "work");
+        let settings = || fs::read_to_string(env.home.join(".claude/settings.json")).unwrap();
+        assert!(settings().contains("apiKeyHelper"));
+        assert_eq!(release_selection(&env), ["claude"]);
+        assert!(!settings().contains("apiKeyHelper") && settings().contains("dark"));
+        assert!(active_connection(&env, Provider::Claude).is_none());
+        assert_eq!(list(&env, "claude").unwrap().len(), 1);
+        assert!(release_selection(&env).is_empty());
+    }
+
     /// 다른 모듈의 검사용 — 저장해 둔 키를 사용 중으로 만든다
     pub(crate) fn use_fixture(env: &Env, secrets: &Memory, provider: Provider, name: &str) {
         activation::activate_locked(env, secrets, provider, name).unwrap();
@@ -1508,11 +1547,10 @@ pub(crate) mod tests {
         assert_eq!(rotated.account_id.as_deref(), Some("beta"));
         assert!(active_connection(&env, Provider::Claude).is_none());
         activation::activate_locked(&env, &vault, Provider::Claude, &rotated.name).unwrap();
-        let snapshot = crate::accounts::list(&env, Provider::Claude).unwrap();
-        assert_eq!(snapshot.api_active.as_deref(), Some(rotated.name.as_str()));
-        assert_eq!(snapshot.api_active_label.as_deref(), Some("work"));
-        assert_eq!(snapshot.api_active_account_id.as_deref(), Some("beta"));
-        assert!(snapshot.profiles.iter().all(|profile| !profile.active));
+        let active = active_connection(&env, Provider::Claude).unwrap();
+        assert_eq!(active.name, rotated.name);
+        assert_eq!(active.label.as_deref(), Some("work"));
+        assert_eq!(active.account_id.as_deref(), Some("beta"));
     }
 
     #[test]

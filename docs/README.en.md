@@ -104,11 +104,9 @@ Cycle with the mode button at the top right (the Full mode also has tabs at the 
 
 | Mode | What it is | Switch accounts |
 | --- | --- | --- |
-| **1 Full** | Full panel with account add/remove, API keys and every tool. Drag section titles to reorder | Button on the card |
+| **1 Full** | Full panel with account add/remove and every tool. Drag section titles to reorder | Button on the card |
 | **2 Minimal** | 120 px widget with labels and usage bars only | Double-click a card |
 | **3 Edge** | A liquid handle on the screen edge that swells into an 80 px panel on hover | Click a card |
-
-**Subscription ↔ API key.** In Minimal and Edge, the account in use shows `API ›` when it has a stored API key. Press that card once more (double-click in Minimal) to use that account's key, and press it again to return to the subscription. While the API is in use the account is framed in the API color, and the collapsed Edge handle shows `API` instead of usage bars. API usage is billed separately from the subscription.
 
 <img align="right" width="300" src="transparency.gif" alt="Adjusting the widget's transparency over a code editor" />
 
@@ -128,7 +126,7 @@ New in **v2.0**. The widget rests as a handle on whichever screen edge is closer
 
 - **Handle** — even collapsed, it shows the current Claude and Codex accounts' usage windows (e.g. 5h·W·F) and SYSTEM (CPU·MEM·DSK·NET) as thin bars.
 - **Panel** — every account as vertical segmented bars with %, followed by SYSTEM, DISPLAY (a vertical brightness slider per monitor) and the tool dock. The active account has an accent-colored border and a dot before its name.
-- **Switch** — a short click on another account card switches right away. Click the account in use once more to use its API key, and again to return to the subscription.
+- **Switch** — a short click on another account card switches right away.
 - **Time to reset** — press and hold the panel to replace the % with the time left: `4d` in blue, `2h` in green, `52m` in red.
 - **Collapse** — about half a second after the mouse leaves, it returns to the handle. Drag ☰ past the middle of the screen to dock on the other edge.
 - **Moving the handle** — grab ☰ on the open panel and move it: when the panel collapses, the handle sits **where you let go, next to ☰**. Carry the panel to the top of the screen and the handle is at the top; drop it at the very bottom and the handle is at the bottom. You can also press the collapsed handle and drag it up or down. The spot and the edge are remembered across restarts.
@@ -199,7 +197,6 @@ New in **v2.0**. The widget rests as a handle on whichever screen edge is closer
 | --- | --- |
 | Change the view mode | The mode button at the top right cycles 1 Full → 2 Minimal → 3 Edge. In Full use the tabs at the top; in Edge use the **3 Edge** button on the expanded panel |
 | Switch accounts | Full: button on the card · Minimal: **double-click** a card · Edge: **click** a card |
-| Subscription ↔ API key | In Minimal and Edge, press the account in use (marked `API ›`) **once more** for that account's API key, and **again** for the subscription (double-click in Minimal) |
 | See time to reset | **Press and hold** the Edge panel |
 | Move Edge to the other side | Drag ☰ past the middle of the screen |
 | Move the Edge handle up or down | Grab ☰ and drop it at the height you want (or press the collapsed handle and drag) |
@@ -227,7 +224,7 @@ Conversation history, memory and project settings are separate from credentials 
 
 ### Move to another PC
 
-**Move to another PC**, at the bottom of normal mode, moves your subscription logins and API keys (with the remaining credit you checked) to another PC. It also works between macOS and Windows. Settings and notes are not moved.
+**Move to another PC**, at the bottom of normal mode, moves your subscription logins to another PC. It also works between macOS and Windows. Settings and notes are not moved.
 
 1. On the source PC, choose **Export**, set a password (8+ characters) and press **Create**.
 2. Press **Copy** and send the text through a messenger or a note, or press **Save as file** and move `switcher-transfer-date-time.swx` from Downloads. Both carry the same contents.
@@ -235,14 +232,14 @@ Conversation history, memory and project settings are separate from credentials 
 
 **It can be imported only within 10 minutes of being created.** After that, create it again on the source PC.
 
-The receiving PC is **overwritten with what you bring**: an account that already exists gets the new login (including the account currently logged in), and an API key with the same account and name is replaced even while in use. Accounts and keys that are not in it are kept.
+The receiving PC is **overwritten with what you bring**: an account that already exists gets the new login (including the account currently logged in). Accounts that are not in it are kept.
 
 Everything is locked: the key is derived from the password with Argon2id and the contents are sealed with XChaCha20-Poly1305. A wrong password or a single changed character imports nothing. A forgotten password cannot be recovered; create it again.
 
 > [!NOTE]
 > - The 10-minute limit is checked by the widget against the receiving PC's clock. The creation time is bound to the locked contents and cannot be edited. Because no server is involved, it cannot stop someone who also knows the password from turning their own clock back. Without the password it cannot be opened at any time.
 > - The copied text is several thousand characters, depending on the number of accounts. Some messengers cut long text; the widget tells you when a pasted text was cut. Move the file instead in that case.
-> - A subscription login is invalidated each time it is refreshed. If two PCs share the same login, the one that refreshes first keeps it and the other may have to sign in again. API keys are not affected.
+> - A subscription login is invalidated each time it is refreshed. If two PCs share the same login, the one that refreshes first keeps it and the other may have to sign in again.
 > - If you saved a file, delete it after moving it.
 
 <details>

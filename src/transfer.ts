@@ -1,4 +1,4 @@
-// 다른 PC로 옮기기 (#189) — 구독 계정 로그인과 API 키를 비밀번호로 잠가 다른 PC에 넣는다.
+// 다른 PC로 옮기기 (#189) — 구독 계정 로그인을 비밀번호로 잠가 다른 PC에 넣는다.
 // 나르는 방법은 둘 다 있다: 복사해서 붙여넣는 글, 그 글을 담은 파일. 만든 지 10분이 지나면 못 쓴다.
 // 잠그기·풀기·10분 검사·저장은 전부 러스트(transfer.rs)가 한다. 화면은 비밀번호와 글만 건넨다.
 // 받는 쪽은 전부 덮어쓴다(사용자 결정). 설정·화면 설정·메모는 옮기지 않는다 — 다시 넣지 말 것.
@@ -6,41 +6,39 @@
 // 비밀번호를 변수에 오래 들고 있지 말 것 — 입력칸은 창이 닫힐 때 dialog()가 비운다.
 import { invoke } from "@tauri-apps/api/core";
 import { currentLang } from "./i18n";
-import { apiIsBusy, dialog, type Hooks } from "./apiConnections";
+import { dialog, dialogIsOpen, type Hooks } from "./dialog";
 
 const messages = {
   ko: {
     open: "다른 PC로 옮기기", title: "다른 PC로 옮기기", exportTab: "내보내기", importTab: "가져오기",
-    exportHelp: "구독 계정 로그인과 API 키를 비밀번호로 잠급니다. 복사해서 붙여넣거나 파일로 옮기면 되고, 만든 지 10분 안에만 가져올 수 있습니다. 설정과 메모는 담지 않습니다.",
+    exportHelp: "구독 계정 로그인을 비밀번호로 잠급니다. 복사해서 붙여넣거나 파일로 옮기면 되고, 만든 지 10분 안에만 가져올 수 있습니다. 설정과 메모는 담지 않습니다.",
     password: "비밀번호 (8자 이상)", again: "비밀번호 한 번 더", mismatch: "두 비밀번호가 다릅니다", make: "만들기", making: "잠그는 중…",
-    made: "만들었습니다", counts: "계정 {a}개 · API 키 {k}개 · 글 {c}자", until: "{t}까지, 10분 동안만 가져올 수 있습니다.",
+    made: "만들었습니다", counts: "계정 {a}개 · 글 {c}자", until: "{t}까지, 10분 동안만 가져올 수 있습니다.",
     copy: "복사", copied: "복사했습니다. 받는 PC의 가져오기에 붙여넣으세요.", copyFailed: "복사하지 못했습니다. 아래 글을 눌러 전체를 직접 복사하세요.",
     saveFile: "파일로 저장", saved: "다운로드 폴더에 저장했습니다", reveal: "폴더에서 보기", textLabel: "복사해 옮기는 글",
     forget: "비밀번호를 모르면 열 수 없습니다. 파일로 저장했으면 옮긴 뒤 지우세요.",
-    importHelp: "보내는 PC에서 만든 글이나 파일, 그리고 그때 정한 비밀번호를 넣으세요. 같은 계정의 로그인과 같은 이름의 API 키는 받은 것으로 덮어씁니다(사용 중인 키 포함). 받은 것에 없는 계정과 키는 그대로 둡니다.",
+    importHelp: "보내는 PC에서 만든 글이나 파일, 그리고 그때 정한 비밀번호를 넣으세요. 같은 계정의 로그인은 받은 것으로 덮어씁니다. 받은 것에 없는 계정은 그대로 둡니다.",
     shared: "같은 구독 로그인을 두 PC에서 함께 쓰면 한쪽이 다시 로그인해야 할 수 있습니다.",
     paste: "복사한 글 붙여넣기", pasteHint: "보내는 PC에서 복사한 글을 여기에 붙여넣으세요",
     file: "또는 받은 파일", pick: "또는 파일 고르기", notOurs: "옮기기 파일이 아닙니다",
     filePassword: "비밀번호", bring: "가져오기", bringing: "푸는 중…", noSource: "복사한 글을 붙여넣거나 파일을 고르세요",
     done: "가져왔습니다", added: "계정 {a}개 추가 · {r}개 덮어씀", live: "지금 로그인된 계정 {n}개는 로그인도 바꿨습니다.",
-    keys: "API 키 {a}개 추가 · {r}개 덮어씀", same: " · {n}개는 이미 같음",
     rejected: "형식이 맞지 않아 넣지 않은 항목 {n}개", close: "닫기",
   },
   en: {
     open: "Move to another PC", title: "Move to another PC", exportTab: "Export", importTab: "Import",
-    exportHelp: "Locks your subscription logins and API keys with a password. Copy and paste the result or move it as a file; it can be imported only within 10 minutes of being created. Settings and notes are not included.",
+    exportHelp: "Locks your subscription logins with a password. Copy and paste the result or move it as a file; it can be imported only within 10 minutes of being created. Settings and notes are not included.",
     password: "Password (8+ characters)", again: "Password again", mismatch: "The passwords do not match", make: "Create", making: "Locking…",
-    made: "Created", counts: "{a} accounts · {k} API keys · {c} characters", until: "Can be imported for 10 minutes, until {t}.",
+    made: "Created", counts: "{a} accounts · {c} characters", until: "Can be imported for 10 minutes, until {t}.",
     copy: "Copy", copied: "Copied. Paste it into Import on the other PC.", copyFailed: "Could not copy. Click the text below and copy all of it yourself.",
     saveFile: "Save as file", saved: "Saved to your Downloads folder", reveal: "Show in folder", textLabel: "Text to copy to the other PC",
     forget: "It cannot be opened without the password. If you saved a file, delete it after moving it.",
-    importHelp: "Enter the text or file made on the other PC, and the password set there. Logins of the same account and API keys with the same name are overwritten with what you bring (including a key in use). Accounts and keys that are not in it are kept.",
+    importHelp: "Enter the text or file made on the other PC, and the password set there. Logins of the same account are overwritten with what you bring. Accounts that are not in it are kept.",
     shared: "Using the same subscription login on two PCs may require signing in again on one of them.",
     paste: "Paste the copied text", pasteHint: "Paste the text copied on the other PC here",
     file: "Or a file found here", pick: "Or choose a file", notOurs: "Not a transfer file",
     filePassword: "Password", bring: "Import", bringing: "Unlocking…", noSource: "Paste the copied text or choose a file",
     done: "Imported", added: "{a} accounts added · {r} overwritten", live: "{n} of them are logged in here now; that login was replaced too.",
-    keys: "{a} API keys added · {r} overwritten", same: " · {n} already the same",
     rejected: "{n} malformed items were not imported", close: "Close",
   },
 };
@@ -48,11 +46,10 @@ const text = () => (currentLang() === "ko" ? messages.ko : messages.en);
 const fill = (template: string, values: Record<string, string | number>) =>
   template.replace(/\{(\w+)\}/g, (_, key: string) => String(values[key] ?? ""));
 
-type ExportResult = { text: string; chars: number; accounts: number; api_keys: number; expires_at: number };
+type ExportResult = { text: string; chars: number; accounts: number; expires_at: number };
 type SavedFile = { path: string; name: string };
 type ImportResult = {
   accounts_added: number; accounts_replaced: number; live_replaced: number;
-  api_keys_added: number; api_keys_replaced: number; api_keys_unchanged: number;
   rejected: number; problems: string[];
 };
 type Candidate = { path: string; name: string; modified: number };
@@ -88,7 +85,7 @@ function clock(seconds: number): string {
 }
 
 export function openTransfer(hooks: Hooks) {
-  if (apiIsBusy()) return;
+  if (dialogIsOpen()) return;
   const t = text();
   let working = false;
   const host = dialog(hooks, t.title, () => !working);
@@ -139,7 +136,7 @@ export function openTransfer(hooks: Hooks) {
     const actions = document.createElement("div"); actions.className = "transfer-actions"; actions.append(copy, save);
     exportResult.replaceChildren(
       line(t.made, "transfer-done"),
-      line(fill(t.counts, { a: done.accounts, k: done.api_keys, c: done.chars.toLocaleString() })),
+      line(fill(t.counts, { a: done.accounts, c: done.chars.toLocaleString() })),
       line(fill(t.until, { t: clock(done.expires_at) }), "transfer-until"),
       actions, box, note,
     );
@@ -200,7 +197,6 @@ export function openTransfer(hooks: Hooks) {
         line(fill(t.added, { a: done.accounts_added, r: done.accounts_replaced })),
       );
       if (done.live_replaced) importResult.append(line(fill(t.live, { n: done.live_replaced })));
-      importResult.append(line(fill(t.keys, { a: done.api_keys_added, r: done.api_keys_replaced }) + (done.api_keys_unchanged ? fill(t.same, { n: done.api_keys_unchanged }) : "")));
       for (const problem of done.problems) importResult.append(line(problem, "transfer-warn"));
       if (done.rejected) importResult.append(line(fill(t.rejected, { n: done.rejected }), "transfer-warn"));
     } catch (error) { importError.textContent = String(error); }

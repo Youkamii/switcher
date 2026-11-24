@@ -22,12 +22,10 @@
 //! 날아간다. 처음 판에 내가 묻지 않고 넣었다가 뺐다. 다시 넣지 말 것), 사용량 캐시, 런처,
 //! `.bak`·손상 사본.
 //!
-//! **API 키에 딸린 남은 금액(Console에서 확인해 둔 조직 크레딧)은 키와 함께 옮긴다.** 메모를 빼라는
-//! 지적을 받고 범위를 줄이다가 이것까지 "PC마다 다시 만들어진다"고 넘겨짚어 뺐고, 받는 PC에서
-//! 금액이 안 나왔다("남은 api 사용량 왜 안나와"). 뺄 때는 그것이 정말 저절로 다시 생기는지 코드에서
-//! 확인할 것 — 이 값은 사용자가 대시보드를 붙여넣어 만든 것이다 (api_connections.rs, console_reading.rs).
+//! **API 키는 옮기지 않는다** — API 키 기능을 뺐다 (#191, 사용자 지시 2026-11-24 "api 걍 빼버려").
+//! v2.2.x가 만든 묶음에 들어 있는 키는 읽지 않고 버린다.
 //!
-//! 로그인 토큰과 API 키 원문이 들어가므로 통째로 잠근다:
+//! 로그인 토큰이 들어가므로 통째로 잠근다:
 //! - 열쇠는 사용자의 비밀번호에서 만든다 (Argon2id — 일부러 느리고 메모리를 많이 써서
 //!   비밀번호를 하나씩 대입해 보는 공격을 비싸게 한다). 소금은 만들 때마다 새로 뽑는다.
 //! - 묶음은 줄인(deflate) 뒤 XChaCha20-Poly1305로 잠근다. 머리말(형식·열쇠 만들기 값·만든 시각·
@@ -39,7 +37,7 @@
 //! 금기: 비밀번호·열쇠·묶음 내용을 로그나 오류 문구에 넣지 말 것.
 
 use crate::accounts::{self, atomic_write, validate_name, Env, LiveIdentity, Provider};
-use crate::api_connections::{self, KeyImport, TransferKey};
+use crate::api_connections;
 use base64::Engine;
 use chacha20poly1305::{aead::Aead, aead::Payload, KeyInit, XChaCha20Poly1305, XNonce};
 use serde::{Deserialize, Serialize};
@@ -98,7 +96,10 @@ struct Bundle {
     version: u64,
     source_os: String,
     profiles: Vec<ProfileEntry>,
-    api_keys: Vec<TransferKey>,
+    /// v2.2.x가 넣던 API 키 자리 — 이제 늘 비워 보내고, 받은 것은 쓰지 않는다 (#191).
+    /// 자리를 남겨 두는 것은 v2.2.x와 서로 주고받을 수 있게 하려는 것이다.
+    #[serde(default)]
+    api_keys: Vec<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -115,7 +116,6 @@ pub struct ExportResult {
     pub text: String,
     pub chars: usize,
     pub accounts: usize,
-    pub api_keys: usize,
     /// 이 시각(유닉스 초)까지만 가져올 수 있다
     pub expires_at: u64,
 }
@@ -132,9 +132,6 @@ pub struct ImportResult {
     pub accounts_replaced: usize,
     /// 덮어쓴 계정 가운데 지금 CLI에 로그인된 계정이라 그 로그인까지 바꾼 수
     pub live_replaced: usize,
-    pub api_keys_added: usize,
-    pub api_keys_replaced: usize,
-    pub api_keys_unchanged: usize,
     /// 형식이 맞지 않아 넣지 않은 항목 수
     pub rejected: usize,
     /// 넣지 못했거나 마무리하지 못한 것 — 사용자에게 그대로 보여 준다 (토큰·키는 들어가지 않는다)
@@ -347,7 +344,7 @@ fn live_login(env: &Env, provider: Provider) -> Option<(String, Vec<u8>, Option<
     Some((ident.id, cred, block))
 }
 
-fn collect(env: &Env, api_keys: Vec<TransferKey>) -> Result<Bundle, String> {
+fn collect(env: &Env) -> Result<Bundle, String> {
     let mut profiles = Vec::new();
     for provider in [Provider::Claude, Provider::Codex] {
         // 지금 로그인된 계정은 활성 저장소의 것이 가장 새 로그인이다. 프로필 사본은 마지막 전환 때의
@@ -388,7 +385,7 @@ fn collect(env: &Env, api_keys: Vec<TransferKey>) -> Result<Bundle, String> {
         version: BUNDLE_VERSION,
         source_os: std::env::consts::OS.into(),
         profiles,
-        api_keys,
+        api_keys: Vec::new(),
     })
 }
 
@@ -429,7 +426,6 @@ fn make_text(password: &str, bundle: &Bundle, now: u64) -> Result<ExportResult, 
         chars: text.chars().count(),
         text,
         accounts: bundle.profiles.len(),
-        api_keys: bundle.api_keys.len(),
         expires_at: now + VALID_SECS,
     })
 }
@@ -438,7 +434,7 @@ fn make_text(password: &str, bundle: &Bundle, now: u64) -> Result<ExportResult, 
 pub fn export(env: &Env, password: &str) -> Result<ExportResult, String> {
     check_password(password)?;
     let _mutation = accounts::MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
-    let bundle = collect(env, api_connections::export_keys(env)?)?;
+    let bundle = collect(env)?;
     make_text(password, &bundle, accounts::now())
 }
 
@@ -550,8 +546,8 @@ fn import_profile(env: &Env, incoming: &IncomingProfile, wanted: &str) -> Result
     if updates_live {
         accounts::write_live_cred(env, provider, &incoming.credential)?;
     }
-    // API 키를 쓰는 동안에는 그 계정의 구독 로그인이 활성 자리가 아니라 복원 지점에 보관돼 있다(Codex).
-    // 그것도 바꾼다 — 아니면 API 사용을 해제할 때 옛 로그인이 돌아와 방금 받은 로그인을 덮는다.
+    // 이전 버전에서 Codex를 API 키로 켜 둔 채라면 그 계정의 구독 로그인은 활성 자리가 아니라 복원
+    // 지점에 보관돼 있다. 그것도 바꾼다 — 아니면 해제될 때 옛 로그인이 돌아와 받은 로그인을 덮는다.
     let updates_held = !updates_live
         && api_connections::replace_protected_oauth(env, provider, &incoming.ident.id, &incoming.credential)?;
     accounts::write_profile_parts(
@@ -574,11 +570,7 @@ fn import_profile(env: &Env, incoming: &IncomingProfile, wanted: &str) -> Result
     Ok((replaced, updates_live || updates_held))
 }
 
-fn apply(
-    env: &Env,
-    bundle: Bundle,
-    import_keys: impl FnOnce(&Env, &[TransferKey]) -> Result<KeyImport, String>,
-) -> Result<ImportResult, String> {
+fn apply(env: &Env, bundle: Bundle) -> Result<ImportResult, String> {
     let _mutation = accounts::MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     let mut result = ImportResult { source_os: bundle.source_os.clone(), ..Default::default() };
     for entry in &bundle.profiles {
@@ -600,20 +592,6 @@ fn apply(
             }
             Err(error) => result.problems.push(format!("계정 '{}': {error}", entry.name)),
         }
-    }
-    match import_keys(env, &bundle.api_keys) {
-        Ok(keys) => {
-            result.api_keys_added = keys.added;
-            result.api_keys_replaced = keys.replaced;
-            result.api_keys_unchanged = keys.unchanged;
-            result.rejected += keys.rejected;
-            for name in keys.reapply_failed {
-                result
-                    .problems
-                    .push(format!("API 키 '{name}': 덮어썼지만 사용 중 상태를 새 키로 맞추지 못했습니다 — 사용을 다시 눌러 주세요"));
-            }
-        }
-        Err(error) => result.problems.push(format!("API 키: {error}")),
     }
     Ok(result)
 }
@@ -648,16 +626,15 @@ fn import_at(
     text: Option<&str>,
     path: Option<&str>,
     now: u64,
-    import_keys: impl FnOnce(&Env, &[TransferKey]) -> Result<KeyImport, String>,
 ) -> Result<ImportResult, String> {
     let sealed = read_source(env, text, path)?;
     // 다 풀고 검사한 뒤에야 쓴다 — 만료·틀린 비밀번호·변조는 여기서 끝난다
     let bundle = parse(password, &sealed, now)?;
-    apply(env, bundle, import_keys)
+    apply(env, bundle)
 }
 
 pub fn import(env: &Env, password: &str, text: Option<&str>, path: Option<&str>) -> Result<ImportResult, String> {
-    import_at(env, password, text, path, accounts::now(), api_connections::import_keys)
+    import_at(env, password, text, path, accounts::now())
 }
 
 /// 흔히 받아 두는 곳에서 지금 가져올 수 있는 옮기기 파일을 찾는다 — 최근 것부터.
@@ -710,7 +687,7 @@ pub fn candidates(env: &Env) -> Vec<Candidate> {
 mod tests {
     use super::*;
     use crate::accounts::test_support::test_env;
-    use crate::api_connections::tests::{add_account, save_fixture, use_fixture, write_reading, Memory};
+    use crate::api_connections::tests::{add_account, save_fixture, use_fixture, Memory};
 
     /// 검사에서 "만든 시각"으로 쓰는 값
     const T0: u64 = 1_795_400_000;
@@ -756,40 +733,28 @@ mod tests {
         String::from_utf8(accounts::read_live_cred(env, provider).unwrap()).unwrap()
     }
 
-    /// 계정 둘과 키 하나가 있는 보내는 PC. 설정·메모도 있지만 옮기는 대상이 아니다.
-    fn source(tag: &str) -> (Env, Memory) {
+    /// 계정 둘이 있는 보내는 PC. 설정·메모도 있지만 옮기는 대상이 아니다.
+    fn source(tag: &str) -> Env {
         let env = test_env(tag);
-        let secrets = Memory::default();
         account(&env, Provider::Claude, "alpha", "acct-alpha", "a-alpha");
         account(&env, Provider::Codex, "delta", "acct-delta", "a-delta");
         let alpha = env.profiles_dir(Provider::Claude).join("alpha");
         fs::write(alpha.join("credentials.json.bak"), b"old-generation").unwrap();
         fs::write(alpha.join("plan.json"), br#"{"tier":20}"#).unwrap();
-        save_fixture(&env, &secrets, "claude", "acct-alpha", "work", "sk-fake-transfer-key-000001");
-        // 이 키의 남은 금액을 Console에서 확인해 둔 상태
-        write_reading(&env, "work", READING_ORG, &key_revision(&env, "work"), 4_321, 1_795_000_000);
         fs::write(env.store.join("settings.json"), br#"{"accent_theme":"violet","tfsd":true}"#).unwrap();
         fs::write(env.store.join("memo.json"), br#"{"active":0,"tabs":["memo-from-a"]}"#).unwrap();
-        (env, secrets)
+        env
     }
 
-    const READING_ORG: &str = "11111111-2222-4333-8444-555555555555";
-    fn connection_file(env: &Env, storage: &str, file: &str) -> Value {
-        serde_json::from_slice(&fs::read(env.store.join("api-connections/claude").join(storage).join(file)).unwrap()).unwrap()
+    fn bundle_of(env: &Env) -> Bundle {
+        collect(env).unwrap()
     }
-    fn key_revision(env: &Env, storage: &str) -> String {
-        connection_file(env, storage, "connection.json")["revision"].as_str().unwrap().to_owned()
-    }
-
-    fn bundle_of(env: &Env, secrets: &Memory) -> Bundle {
-        collect(env, api_connections::export_keys_with(env, secrets).unwrap()).unwrap()
-    }
-    fn bring(to: &Env, to_secrets: &Memory, bundle: Bundle) -> ImportResult {
-        apply(to, bundle, |env, keys| api_connections::import_keys_with(env, to_secrets, keys)).unwrap()
+    fn bring(to: &Env, bundle: Bundle) -> ImportResult {
+        apply(to, bundle).unwrap()
     }
     /// 보내는 PC에서 만든 글 (가벼운 열쇠 만들기 값, 만든 시각 T0)
-    fn text_of(env: &Env, secrets: &Memory, password: &str) -> String {
-        armor(&seal_fast(password, &serde_json::to_vec(&bundle_of(env, secrets)).unwrap()))
+    fn text_of(env: &Env, password: &str) -> String {
+        armor(&seal_fast(password, &serde_json::to_vec(&bundle_of(env)).unwrap()))
     }
 
     #[test]
@@ -882,66 +847,49 @@ mod tests {
     }
 
     #[test]
-    fn logins_and_keys_arrive_on_an_empty_pc_and_nothing_else_does() {
-        let (from, from_secrets) = source("transfer-from");
-        // 묶음에는 로그인과 키만 있다 — 설정·메모는 들어가지 않는다
-        let plain = String::from_utf8(serde_json::to_vec(&bundle_of(&from, &from_secrets)).unwrap()).unwrap();
+    fn logins_arrive_on_an_empty_pc_and_nothing_else_does() {
+        let from = source("transfer-from");
+        // 묶음에는 로그인만 있다 — 설정·메모는 들어가지 않는다
+        let plain = String::from_utf8(serde_json::to_vec(&bundle_of(&from)).unwrap()).unwrap();
         assert!(!plain.contains("memo-from-a") && !plain.contains("violet") && !plain.contains("old-generation"));
-        let text = text_of(&from, &from_secrets, "password-1");
-        for secret in ["sk-fake", "fake-access", "fake-refresh", "acct-alpha"] {
+        let text = text_of(&from, "password-1");
+        for secret in ["fake-access", "fake-refresh", "acct-alpha"] {
             assert!(!text.contains(secret));
         }
         let to = test_env("transfer-to");
-        let to_secrets = Memory::default();
-        let keys = |env: &Env, keys: &[TransferKey]| api_connections::import_keys_with(env, &to_secrets, keys);
         // 틀린 비밀번호·만료된 글은 아무것도 쓰지 않는다
-        assert_eq!(import_at(&to, "password-2", Some(&text), None, T0, keys).unwrap_err(), BAD_PASSWORD);
-        assert!(import_at(&to, "password-1", Some(&text), None, T0 + VALID_SECS + 1, keys).unwrap_err().contains("10분"));
+        assert_eq!(import_at(&to, "password-2", Some(&text), None, T0).unwrap_err(), BAD_PASSWORD);
+        assert!(import_at(&to, "password-1", Some(&text), None, T0 + VALID_SECS + 1).unwrap_err().contains("10분"));
         assert!(accounts::profile_dirs(&to, Provider::Claude).unwrap().is_empty() && !to.store.join("api-connections").exists());
-        let result = import_at(&to, "password-1", Some(&format!("  {text}\n")), None, T0 + 60, keys).unwrap();
+        let result = import_at(&to, "password-1", Some(&format!("  {text}\n")), None, T0 + 60).unwrap();
         assert_eq!((result.accounts_added, result.accounts_replaced, result.live_replaced), (2, 0, 0));
-        assert_eq!((result.api_keys_added, result.api_keys_replaced, result.rejected), (1, 0, 0));
-        assert!(result.problems.is_empty());
+        assert!(result.problems.is_empty() && result.rejected == 0);
         // 계정: 같은 이름·같은 ID·같은 로그인. .bak은 오지 않는다.
         let alpha = to.profiles_dir(Provider::Claude).join("alpha");
         assert_eq!(accounts::read_meta(&alpha).unwrap().id, "acct-alpha");
         assert_eq!(profile_cred(&to, Provider::Claude, "alpha"), profile_cred(&from, Provider::Claude, "alpha"));
         assert!(alpha.join("plan.json").is_file() && !alpha.join("credentials.json.bak").exists());
         assert!(profile_cred(&to, Provider::Codex, "delta").contains("fake-refresh-a-delta"));
-        // 키: 받는 PC의 보안 저장소에 들어가고, 같은 계정에 붙어 있고, 사용 중으로 켜지지 않는다
-        let listed = api_connections::list(&to, "claude").unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].account_id.as_deref(), Some("acct-alpha"));
-        assert!(!listed[0].active);
-        assert_eq!(api_connections::export_keys_with(&to, &to_secrets).unwrap().len(), 1);
-        // 그 키의 남은 금액(Console에서 확인해 둔 값)도 함께 와서, 받는 쪽 키에 묶인다
-        let reading = connection_file(&to, "work", "console-credit.json");
-        assert_eq!(reading["credit"]["amount_minor"], 4_321);
-        assert_eq!(reading["credit"]["checked_at"], 1_795_000_000_u64);
-        assert_eq!(reading["organization_id"], READING_ORG);
-        assert_eq!(reading["revision"].as_str().unwrap(), key_revision(&to, "work"));
         // 설정·메모는 생기지 않는다. 받는 PC에 로그인된 CLI가 없으면 로그인 자리도 그대로 비어 있다.
         assert!(!to.store.join("settings.json").exists() && !to.store.join("memo.json").exists());
+        // API 키 자리는 늘 비어 있고, 받는 PC에 키 보관소도 생기지 않는다 (#191)
+        assert!(bundle_of(&from).api_keys.is_empty() && !to.store.join("api-connections").exists());
         assert!(!to.home.join(".claude/.credentials.json").exists() && !to.codex_home.join("auth.json").exists());
     }
 
-    /// 사용자 결정: "그냥 완전히 덮어쓰게 해줘. 구독로그인도 api도."
+    /// 사용자 결정: "그냥 완전히 덮어쓰게 해줘."
     #[test]
     fn an_existing_pc_is_overwritten_but_loses_nothing_that_was_not_sent() {
-        let (from, from_secrets) = source("transfer-over-from");
+        let from = source("transfer-over-from");
         let to = test_env("transfer-over-to");
-        let to_secrets = Memory::default();
         // 받는 PC: 같은 계정이 다른 이름(mine)으로 있고, alpha라는 이름은 다른 계정이 쓰고, 받지 않은 beta도 있다
         account(&to, Provider::Claude, "mine", "acct-alpha", "b-old");
         account(&to, Provider::Claude, "alpha", "someone-else", "b-other");
         account(&to, Provider::Claude, "beta", "acct-beta", "b-beta");
-        save_fixture(&to, &to_secrets, "claude", "acct-alpha", "work", "sk-fake-b-old-work-key-0001");
-        save_fixture(&to, &to_secrets, "claude", "acct-beta", "work", "sk-fake-b-beta-work-key-001");
         fs::write(to.store.join("settings.json"), br#"{"language":"en","accent_theme":"blue"}"#).unwrap();
         fs::write(to.store.join("memo.json"), br#"{"tabs":["memo-on-b"]}"#).unwrap();
-        let result = bring(&to, &to_secrets, bundle_of(&from, &from_secrets));
+        let result = bring(&to, bundle_of(&from));
         assert_eq!((result.accounts_added, result.accounts_replaced, result.live_replaced), (1, 1, 0));
-        assert_eq!((result.api_keys_added, result.api_keys_replaced), (0, 1));
         assert!(result.problems.is_empty() && result.rejected == 0);
         // 같은 계정: 받는 PC의 이름 그대로, 로그인만 받은 것으로. 옛 것은 한 세대 남는다.
         assert!(profile_cred(&to, Provider::Claude, "mine").contains("fake-refresh-a-alpha"));
@@ -950,31 +898,25 @@ mod tests {
         assert_eq!(accounts::read_meta(&to.profiles_dir(Provider::Claude).join("alpha")).unwrap().id, "someone-else");
         assert!(profile_cred(&to, Provider::Claude, "alpha").contains("fake-refresh-b-other"));
         assert!(profile_cred(&to, Provider::Claude, "beta").contains("fake-refresh-b-beta"));
-        // 키: 같은 계정의 같은 이름만 덮어쓴다. 다른 계정의 같은 이름 키는 그대로다.
-        let keys = api_connections::export_keys_with(&to, &to_secrets).unwrap();
-        let plain = String::from_utf8(serde_json::to_vec(&keys).unwrap()).unwrap();
-        assert!(plain.contains("sk-fake-transfer-key-000001") && plain.contains("sk-fake-b-beta-work-key-001") && !plain.contains("sk-fake-b-old-work-key-0001"));
-        assert_eq!(keys.len(), 2);
         // 설정과 메모는 한 글자도 바뀌지 않는다
         assert_eq!(fs::read(to.store.join("settings.json")).unwrap(), br#"{"language":"en","accent_theme":"blue"}"#);
         assert_eq!(fs::read(to.store.join("memo.json")).unwrap(), br#"{"tabs":["memo-on-b"]}"#);
-        // 같은 것을 한 번 더 넣어도 계정도 키도 늘지 않는다
-        let again = bring(&to, &to_secrets, bundle_of(&from, &from_secrets));
-        assert_eq!((again.accounts_added, again.accounts_replaced, again.api_keys_added, again.api_keys_unchanged), (0, 2, 0, 1));
+        // 같은 것을 한 번 더 넣어도 계정이 늘지 않는다
+        let again = bring(&to, bundle_of(&from));
+        assert_eq!((again.accounts_added, again.accounts_replaced), (0, 2));
         assert_eq!(accounts::profile_dirs(&to, Provider::Claude).unwrap().len(), 3);
     }
 
     /// 받는 PC에서 지금 CLI에 로그인된 계정을 받으면 그 로그인도 바꾼다 — 만료된 로그인이 살아난다
     #[test]
     fn the_account_logged_in_on_the_receiving_pc_gets_the_new_login_too() {
-        let (from, from_secrets) = source("transfer-live-from");
+        let from = source("transfer-live-from");
         let to = test_env("transfer-live-to");
-        let to_secrets = Memory::default();
         account(&to, Provider::Claude, "alpha", "acct-alpha", "b-expired");
         log_in(&to, Provider::Claude, "acct-alpha", "b-expired");
         // Codex에는 받지 않은 다른 계정이 로그인돼 있다 — 건드리지 않는다
         log_in(&to, Provider::Codex, "acct-other", "b-other");
-        let result = bring(&to, &to_secrets, bundle_of(&from, &from_secrets));
+        let result = bring(&to, bundle_of(&from));
         assert_eq!((result.accounts_added, result.accounts_replaced, result.live_replaced), (1, 1, 1));
         assert!(result.problems.is_empty());
         assert!(live_cred(&to, Provider::Claude).contains("fake-refresh-a-alpha"));
@@ -987,10 +929,10 @@ mod tests {
         assert!(profile_cred(&to, Provider::Codex, "delta").contains("fake-refresh-a-delta"));
     }
 
-    /// 받는 PC가 Codex를 API 키로 쓰는 중이면 그 계정의 구독 로그인은 따로 보관돼 있다 — 그것도 바꾼다
+    /// 이전 버전에서 Codex를 API 키로 켜 둔 PC면 그 계정의 구독 로그인은 따로 보관돼 있다 — 그것도 바꾼다
     #[test]
     fn a_login_held_aside_while_an_api_key_is_in_use_is_replaced_too() {
-        let (from, from_secrets) = source("transfer-held-from");
+        let from = source("transfer-held-from");
         let to = test_env("transfer-held-to");
         let to_secrets = Memory::default();
         account(&to, Provider::Codex, "delta", "acct-delta", "b-old");
@@ -998,7 +940,7 @@ mod tests {
         save_fixture(&to, &to_secrets, "codex", "acct-delta", "work", "sk-fake-b-codex-work-key-01");
         use_fixture(&to, &to_secrets, Provider::Codex, "work");
         assert!(live_cred(&to, Provider::Codex).contains("sk-fake-b-codex-work-key-01"));
-        let result = bring(&to, &to_secrets, bundle_of(&from, &from_secrets));
+        let result = bring(&to, bundle_of(&from));
         assert_eq!((result.accounts_added, result.accounts_replaced, result.live_replaced), (1, 1, 1));
         assert!(result.problems.is_empty());
         // API는 계속 사용 중이고 활성 자리의 키는 그대로다. 프로필은 받은 로그인이다.
@@ -1015,11 +957,10 @@ mod tests {
     /// 사본은 마지막 전환 때의 것이라 그 뒤 갱신됐으면 이미 못 쓰는 값이다
     #[test]
     fn the_account_logged_in_on_the_sending_pc_is_sent_with_its_current_login() {
-        let (from, from_secrets) = source("transfer-fresh-from");
+        let from = source("transfer-fresh-from");
         log_in(&from, Provider::Claude, "acct-alpha", "a-refreshed");
         let to = test_env("transfer-fresh-to");
-        let to_secrets = Memory::default();
-        bring(&to, &to_secrets, bundle_of(&from, &from_secrets));
+        bring(&to, bundle_of(&from));
         let cred = profile_cred(&to, Provider::Claude, "alpha");
         assert!(cred.contains("fake-refresh-a-refreshed") && !cred.contains("fake-refresh-a-alpha"));
         // 보내는 PC는 읽기만 한다
@@ -1046,22 +987,22 @@ mod tests {
                 entry("notlogin", &[("credentials.json", "{}"), ("meta.json", meta)]),
                 entry("extra", &[("credentials.json", &cred), ("meta.json", meta), ("../../evil.sh", &cred), ("run.sh", &cred), ("auth.json", &cred)]),
             ],
+            // v2.2.x가 보낸 키는 무엇이 들어 있든 읽지 않는다
             api_keys: serde_json::from_value(serde_json::json!([
                 {"provider": "claude", "name": "../up", "key": "sk-fake-transfer-key-000001"},
-                {"provider": "claude", "name": "ok", "key": "not-a-key"}
+                {"provider": "claude", "account_id": "x", "name": "work", "key": "sk-fake-transfer-key-000001"}
             ]))
             .unwrap(),
         };
-        let secrets = Memory::default();
-        let result = bring(&to, &secrets, bundle);
-        assert_eq!((result.accounts_added, result.rejected), (1, 6));
+        let result = bring(&to, bundle);
+        assert_eq!((result.accounts_added, result.rejected), (1, 4));
         let extra = to.profiles_dir(Provider::Claude).join("extra");
         let mut names: Vec<_> = fs::read_dir(&extra).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         names.sort();
         assert_eq!(names, ["credentials.json", "meta.json"]);
         assert!(!to.store.join("evil.sh").exists() && !to.home.join("evil.sh").exists());
         assert_eq!(accounts::profile_dirs(&to, Provider::Claude).unwrap().len(), 1);
-        assert!(api_connections::list(&to, "claude").unwrap().is_empty());
+        assert!(!to.store.join("api-connections").exists());
         // 처음 판의 묶음은 받지 않는다 — 무엇을 하면 되는지 말해 준다
         let old = seal_fast("password-1", br#"{"version":2,"created_at":0,"source_os":"macos","profiles":[],"api_keys":[]}"#);
         assert_eq!(parse("password-1", &old, T0).err().unwrap(), OLD_FORMAT);
@@ -1070,11 +1011,11 @@ mod tests {
     /// 사용자 지시: 복사와 파일, 둘 다 된다. 파일의 내용은 복사하는 글과 같다.
     #[test]
     fn the_same_text_also_travels_as_a_file() {
-        let (from, from_secrets) = source("transfer-file");
+        let from = source("transfer-file");
         fs::create_dir_all(from.home.join("Downloads")).unwrap();
         assert!(check_password("short").is_err());
-        let made = make_text("password-1", &bundle_of(&from, &from_secrets), T0).unwrap();
-        assert_eq!((made.accounts, made.api_keys, made.expires_at), (2, 1, T0 + VALID_SECS));
+        let made = make_text("password-1", &bundle_of(&from), T0).unwrap();
+        assert_eq!((made.accounts, made.expires_at), (2, T0 + VALID_SECS));
         assert_eq!(made.chars, made.text.len());
         let saved = write_file(&from, &dearmor(&made.text).unwrap(), "20261123-101500").unwrap();
         assert_eq!(saved.name, "switcher-transfer-20261123-101500.swx");
@@ -1089,23 +1030,21 @@ mod tests {
         assert!(is_transfer_location(&from, Path::new(&saved.path)));
         // 받는 PC: 그 파일을 다운로드 폴더에 두고 경로로 가져온다
         let to = test_env("transfer-file-to");
-        let to_secrets = Memory::default();
         fs::create_dir_all(to.home.join("Downloads")).unwrap();
         let moved = to.home.join("Downloads").join(&saved.name);
         fs::copy(&saved.path, &moved).unwrap();
         let moved = moved.to_string_lossy().into_owned();
-        let keys = |env: &Env, keys: &[TransferKey]| api_connections::import_keys_with(env, &to_secrets, keys);
         // 기본 열쇠 만들기 값으로 잠근 것을 실제 길(파일 → 풀기 → 넣기)로 끝까지 가 본다
-        let result = import_at(&to, "password-1", None, Some(&moved), T0 + 120, keys).unwrap();
-        assert_eq!((result.accounts_added, result.api_keys_added), (2, 1));
-        assert!(import_at(&to, "password-1", None, Some(&moved), T0 + VALID_SECS + 1, keys).unwrap_err().contains("10분"));
+        let result = import_at(&to, "password-1", None, Some(&moved), T0 + 120).unwrap();
+        assert_eq!(result.accounts_added, 2);
+        assert!(import_at(&to, "password-1", None, Some(&moved), T0 + VALID_SECS + 1).unwrap_err().contains("10분"));
         // 우리가 다루는 자리 밖의 경로는 읽지 않는다
         let outside = to.store.join("elsewhere.swx");
         fs::write(&outside, &made.text).unwrap();
         assert_eq!(
-            import_at(&to, "password-1", None, Some(&outside.to_string_lossy()), T0, keys).unwrap_err(),
+            import_at(&to, "password-1", None, Some(&outside.to_string_lossy()), T0).unwrap_err(),
             "파일을 찾을 수 없습니다"
         );
-        assert!(import_at(&to, "password-1", None, None, T0, keys).unwrap_err().contains("붙여넣거나"));
+        assert!(import_at(&to, "password-1", None, None, T0).unwrap_err().contains("붙여넣거나"));
     }
 }

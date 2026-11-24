@@ -187,7 +187,7 @@ test("keeps memo visible and clickable in every view mode once the dock is open"
   const nativeControls = [...mainSource.matchAll(
     /querySelectorAll<HTMLElement>\(\s*"([^"]+)"[,]?\s*\)\s*\.forEach\(\(el\) => pushVisible\(el, null\)\)/g,
   )].flatMap(([, selectors]) => selectors.split(",").map(selector => selector.trim()));
-  for (const selector of [".tb-actions > *", "#dock-toggle", "#drag-handle", ".display-row", ".collapsible", ".compact-api-active .api-billing-link"]) {
+  for (const selector of [".tb-actions > *", "#dock-toggle", "#drag-handle", ".display-row", ".collapsible"]) {
     assert.ok(nativeControls.includes(selector), `${selector} must receive native clicks in widget mode`);
   }
 });
