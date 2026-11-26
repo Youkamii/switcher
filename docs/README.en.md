@@ -23,6 +23,7 @@
   <a href="#edge--the-liquid-edge-widget">Edge</a> ·
   <a href="#tfsd-autopilot">TFSD</a> ·
   <a href="#cheat-sheet">Cheat sheet</a> ·
+  <a href="#move-to-another-pc--a-lock-only-the-receiving-pc-opens">Move</a> ·
   <a href="#data--security">Security</a> ·
   <a href="#troubleshooting">Troubleshooting</a>
 </p>
@@ -211,6 +212,85 @@ switcher lives as a **W** icon in the Windows notification area or the macOS men
 
 <br />
 
+## Move to another PC — a lock only the receiving PC opens
+
+<img align="right" width="300" src="https://raw.githubusercontent.com/Youkamii/switcher/main/docs/design/transfer-receive.png" alt="The Import screen: pressing Get ready to receive shows this PC's receive code, with the pasted text and password below" />
+
+Put your subscription logins on another PC **in one go**, without signing in to each account again. It also works between macOS and Windows. No server is involved.
+
+The lock is built so that login data can safely pass through a messenger.
+
+- 🔐 **Only the receiving PC opens it.** Half of the key exists only in that PC's memory.
+- ⏱️ **After 10 minutes the key is gone.** Turning a clock back does not bring it back.
+- 1️⃣ **It opens once.** Text left in a chat cannot be used again.
+- 🙈 **Someone who only intercepts the text cannot even try passwords.**
+
+<br clear="right" />
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as 🖥️ Receiving PC
+    participant A as 💻 Source PC
+    Note over B: Get ready to receive<br/>makes a key, kept in memory only
+    B->>A: Receive code SWR1.… (may be seen)
+    Note over A: Locks the logins with<br/>the code + a password
+    A->>B: Locked text SWX3.… or a .swx file
+    A-->>B: Password (by another route)
+    Note over B: Unlocks, imports,<br/>erases the key 🔥
+```
+
+### Steps
+
+Use **Move to another PC** at the bottom of normal mode.
+
+1. **Receiving PC** — under **Import**, press **Get ready to receive**. A receive code (`SWR1.…`) appears; **Copy** it and send it to the source PC. The code may be seen by others.
+2. **Source PC** — under **Export**, enter that code, set a password (8+ characters) and press **Create**.
+3. **Source PC** — press **Copy** and send the text through a messenger or a note, or press **Save as file** and move `switcher-transfer-date-time.swx` from Downloads. Both carry the same contents.
+4. **Receiving PC** — under **Import**, paste the text or pick the file (the widget finds it in Downloads or on the Desktop), and enter the same password.
+
+**It opens only on the PC that made the receive code, within 10 minutes of making that code, and only once.** After that, start again from **Get ready to receive**. Quitting the widget also discards the code.
+
+### What happens if…
+
+| Situation | Result |
+| --- | --- |
+| Someone takes the locked text from a messenger | 🚫 It cannot be opened, and there is no way to try passwords against it |
+| Someone takes both the text and the password | 🚫 It opens only on the PC that made the receive code |
+| A text older than 10 minutes is imported with the clock turned back | 🚫 The key has already been erased |
+| A text that was imported once is imported again | 🚫 The key has already been erased |
+| A single character changed on the way | 🚫 Nothing is written |
+| A messenger cut the long text | ⚠️ The widget says it was cut (N of M characters). Move the file instead |
+| Someone swapped the receive code for their own | 🔑 The password is the last lock — send the text and the password by different routes |
+| The receiving PC runs malicious software | ❌ Not protected |
+
+### What happens on the receiving PC
+
+It is **overwritten with what you bring**: an account that already exists gets the new login (including the account currently logged in). Accounts that are not in it are kept. Settings and notes are not moved.
+
+<details>
+<summary><strong>How the lock is built</strong></summary>
+<br />
+
+| Step | What is used |
+| --- | --- |
+| Receiving PC's key | X25519. Kept in memory, never written to disk. Erased after 10 minutes (elapsed time and the clock are both checked) or after one import |
+| Sender's key | Fresh for every text and discarded after locking. Even the source PC cannot open it again |
+| Password | Stretched with Argon2id (64 MiB · 3 passes) |
+| Lock key | The two above (X25519 shared secret, password value) mixed with HKDF-SHA256. Neither alone is enough |
+| Contents | Compressed, then sealed with XChaCha20-Poly1305. The header, including the receive code, is authenticated |
+| Text format | One line, `SWX3.<length>.<base64>` — no characters a messenger treats as formatting |
+
+</details>
+
+> [!NOTE]
+> - Text and files made by v2.2.3 or earlier are not accepted. Update both PCs.
+> - The copied text is several thousand characters, depending on the number of accounts.
+> - A subscription login is invalidated each time it is refreshed. If two PCs share the same login, the one that refreshes first keeps it and the other may have to sign in again.
+> - If you saved a file, delete it after moving it.
+
+<br />
+
 ## Data & security
 
 There is no switcher server. The app reads and writes the local CLI credential stores; usage queries and token refreshes go straight to Anthropic or OpenAI. GitHub credentials are managed by `gh`, and updates come from GitHub Releases.
@@ -222,28 +302,7 @@ The switch order is fixed on purpose: **① back up the active credentials into 
 
 Conversation history, memory and project settings are separate from credentials and survive a switch. A Claude Code or Codex session that is already running may keep the credentials it loaded at start, so open a new terminal after switching to be sure.
 
-### Move to another PC
-
-**Move to another PC**, at the bottom of normal mode, moves your subscription logins to another PC. It also works between macOS and Windows. Settings and notes are not moved.
-
-1. On the receiving PC, choose **Import** and press **Get ready to receive**. A receive code (`SWR1.…`) appears. **Copy** it and send it to the source PC. The code may be seen by others.
-2. On the source PC, choose **Export**, enter that code, set a password (8+ characters) and press **Create**.
-3. Press **Copy** and send the text through a messenger or a note, or press **Save as file** and move `switcher-transfer-date-time.swx` from Downloads. Both carry the same contents.
-4. On the receiving PC, under **Import**, paste the copied text or pick the file (the widget finds it in Downloads or on the Desktop), and enter the same password.
-
-**It opens only on the PC that made the receive code, within 10 minutes of making that code, and only once.** After that, start again from **Get ready to receive**. Quitting the widget also discards the code.
-
-The receiving PC is **overwritten with what you bring**: an account that already exists gets the new login (including the account currently logged in). Accounts that are not in it are kept.
-
-Everything is locked. Half of the key exists only in the receiving PC's memory (X25519, never written to disk) and is erased after 10 minutes or after one import. The other half is derived from the password with Argon2id. The contents are sealed with XChaCha20-Poly1305. Someone who only has the text or file therefore cannot even try passwords, and turning a clock back does not bring an erased key back. A wrong password or a single changed character imports nothing.
-
-> [!NOTE]
-> - Send the text and the password by different routes. The password is the last lock in case the receive code was swapped for someone else's on its way.
-> - It cannot protect a receiving PC that already runs malicious software.
-> - Text and files made by v2.2.3 or earlier are not accepted. Update both PCs.
-> - The copied text is several thousand characters, depending on the number of accounts. Some messengers cut long text; the widget tells you when a pasted text was cut. Move the file instead in that case.
-> - A subscription login is invalidated each time it is refreshed. If two PCs share the same login, the one that refreshes first keeps it and the other may have to sign in again.
-> - If you saved a file, delete it after moving it.
+How to move your logins to another PC, and how that is locked, is under [Move to another PC](#move-to-another-pc--a-lock-only-the-receiving-pc-opens).
 
 <details>
 <summary><strong>File locations</strong></summary>
