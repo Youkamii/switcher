@@ -226,18 +226,21 @@ Conversation history, memory and project settings are separate from credentials 
 
 **Move to another PC**, at the bottom of normal mode, moves your subscription logins to another PC. It also works between macOS and Windows. Settings and notes are not moved.
 
-1. On the source PC, choose **Export**, set a password (8+ characters) and press **Create**.
-2. Press **Copy** and send the text through a messenger or a note, or press **Save as file** and move `switcher-transfer-date-time.swx` from Downloads. Both carry the same contents.
-3. On the other PC, choose **Import**, paste the copied text or pick the file (the widget finds it in Downloads or on the Desktop), and enter the same password.
+1. On the receiving PC, choose **Import** and press **Get ready to receive**. A receive code (`SWR1.…`) appears. **Copy** it and send it to the source PC. The code may be seen by others.
+2. On the source PC, choose **Export**, enter that code, set a password (8+ characters) and press **Create**.
+3. Press **Copy** and send the text through a messenger or a note, or press **Save as file** and move `switcher-transfer-date-time.swx` from Downloads. Both carry the same contents.
+4. On the receiving PC, under **Import**, paste the copied text or pick the file (the widget finds it in Downloads or on the Desktop), and enter the same password.
 
-**It can be imported only within 10 minutes of being created.** After that, create it again on the source PC.
+**It opens only on the PC that made the receive code, within 10 minutes of making that code, and only once.** After that, start again from **Get ready to receive**. Quitting the widget also discards the code.
 
 The receiving PC is **overwritten with what you bring**: an account that already exists gets the new login (including the account currently logged in). Accounts that are not in it are kept.
 
-Everything is locked: the key is derived from the password with Argon2id and the contents are sealed with XChaCha20-Poly1305. A wrong password or a single changed character imports nothing. A forgotten password cannot be recovered; create it again.
+Everything is locked. Half of the key exists only in the receiving PC's memory (X25519, never written to disk) and is erased after 10 minutes or after one import. The other half is derived from the password with Argon2id. The contents are sealed with XChaCha20-Poly1305. Someone who only has the text or file therefore cannot even try passwords, and turning a clock back does not bring an erased key back. A wrong password or a single changed character imports nothing.
 
 > [!NOTE]
-> - The 10-minute limit is checked by the widget against the receiving PC's clock. The creation time is bound to the locked contents and cannot be edited. Because no server is involved, it cannot stop someone who also knows the password from turning their own clock back. Without the password it cannot be opened at any time.
+> - Send the text and the password by different routes. The password is the last lock in case the receive code was swapped for someone else's on its way.
+> - It cannot protect a receiving PC that already runs malicious software.
+> - Text and files made by v2.2.3 or earlier are not accepted. Update both PCs.
 > - The copied text is several thousand characters, depending on the number of accounts. Some messengers cut long text; the widget tells you when a pasted text was cut. Move the file instead in that case.
 > - A subscription login is invalidated each time it is refreshed. If two PCs share the same login, the one that refreshes first keeps it and the other may have to sign in again.
 > - If you saved a file, delete it after moving it.

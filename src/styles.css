@@ -2383,6 +2383,15 @@ button:focus-visible, summary:focus-visible, input:focus-visible, textarea:focus
 .transfer-result .transfer-until { color: rgb(var(--text-rgb)); }
 .transfer-result .transfer-file { font-family: ui-monospace, monospace; user-select: text; }
 .transfer-dialog .transfer-warn { color: var(--warn); }
+.transfer-receive:empty { display: none; }
+.transfer-receive { display: flex; flex-direction: column; gap: 6px; }
+.transfer-code-row { display: flex; gap: 8px; align-items: stretch; margin-top: 6px; }
+.transfer-dialog .transfer-code-row > textarea { flex: 1; margin-top: 0; color: rgb(var(--text-rgb)); font-size: 11px; }
+.transfer-code-row > button { flex: none; width: auto; min-height: 0; padding: 0 14px; }
+.api-form input.transfer-code { font-family: ui-monospace, monospace; font-size: 10px; }
+.api-form input.transfer-code::placeholder { font-family: inherit; }
+.transfer-ready:not(.primary) { min-height: 30px; border: 1px solid rgb(var(--border-rgb)); border-radius: 7px; background: transparent; color: rgb(var(--muted-rgb)); font-size: 11px; }
+.transfer-until { color: rgb(var(--text-rgb)); }
 .transfer-actions { display: flex; gap: 8px; }
 .transfer-actions > button { flex: 1; width: auto; min-height: 34px; }
 .transfer-save, .transfer-reveal { border: 1px solid rgb(var(--border-rgb)); border-radius: 7px; background: transparent; color: rgb(var(--text-rgb)); font-size: 12px; }

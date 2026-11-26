@@ -817,19 +817,31 @@ async fn clamshell_cycle(app: tauri::AppHandle) -> Result<i8, String> {
     .map_err(|e| format!("클램셸 전환 실패: {e}"))?
 }
 
-/// 다른 PC로 옮기기 (#189) — 구독 계정 로그인과 API 키를 비밀번호로 잠근 글로 만든다.
-/// 복사해 붙여넣거나 파일로 옮기고, 만든 지 10분 안에만 가져올 수 있다 (transfer.rs).
-/// 열쇠 만들기가 일부러 느리므로 블로킹 스레드에서 돈다.
+/// 다른 PC로 옮기기 (#189·#192) — 구독 계정 로그인을 받는 PC의 받는 코드와 비밀번호로 잠근 글로 만든다.
+/// 복사해 붙여넣거나 파일로 옮긴다. 받는 코드를 만든 PC만, 그 코드가 살아 있는 10분 안에 열 수 있다
+/// (transfer.rs). 열쇠 만들기가 일부러 느리므로 블로킹 스레드에서 돈다.
 #[tauri::command]
-async fn transfer_export(password: String) -> Result<transfer::ExportResult, String> {
+async fn transfer_export(password: String, code: String) -> Result<transfer::ExportResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let mut password = password;
-        let result = transfer::export(&Env::real()?, &password);
+        let result = transfer::export(&Env::real()?, &password, &code);
         zeroize::Zeroize::zeroize(&mut password);
         result
     })
     .await
     .map_err(|_| "내보내기 작업 실패")?
+}
+
+/// 받을 준비 (#192) — 이 PC만 가진 열쇠를 새로 만들고 받는 코드를 돌려준다. 앞의 코드는 죽는다.
+#[tauri::command]
+fn transfer_receive_start() -> Result<transfer::ReceiveCode, String> {
+    transfer::receive_start()
+}
+
+/// 지금 기다리는 받는 코드 — 없거나 10분이 지났으면 없다
+#[tauri::command]
+fn transfer_receive_state() -> Option<transfer::ReceiveCode> {
+    transfer::receive_state()
 }
 
 /// 만들어 둔 글을 다운로드 폴더에 파일로도 남긴다 — 내용은 같은 글이다
@@ -4346,6 +4358,8 @@ pub fn run() {
             arm_grip_drop,
             take_grip_drop,
             transfer_export,
+            transfer_receive_start,
+            transfer_receive_state,
             transfer_save,
             transfer_import,
             transfer_candidates,

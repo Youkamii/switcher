@@ -31,7 +31,9 @@ function fixture(mode = "normal", preview = false) {
   let clockSkew = 0; let backendLatency = 0; let usageGate = null; let openUsage = null;
   // Key-only registration (#187): the account the fixture "finds" for a key when several are saved (null = unknown).
   let autoOwner = null;
-  const transferText = 'SWX2.1200.' + 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0'.repeat(34).slice(0,1200);
+  const receiveCode = 'SWR1.' + 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0MTIzNDU2Nzg5MEFC'.slice(0,47);
+  let receiving = null;
+  const transferText = 'SWX3.1200.' + 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo0'.repeat(34).slice(0,1200);
   let transferFiles = [{path:'/Users/fixture/Downloads/switcher-transfer-20261123-101500.swx', name:'switcher-transfer-20261123-101500.swx', modified:1795400000}];
   // Handle drag (#188): a window that really moves. The window is the viewport (80x1100) on a wall that is
   // 2100 tall (work area 40..2140), so there is room to travel. buttonHeld/cursorAt answer the native probes.
@@ -71,11 +73,13 @@ function fixture(mode = "normal", preview = false) {
       if(cmd === 'get_github_star_prompt_choice') return 'dismissed';
       if(cmd === 'initial_view_mode') return mode;
       if(cmd === 'get_visibility') return visibility;
-      if(cmd === 'transfer_export') return {text:transferText, chars:transferText.length, accounts:3, expires_at:Math.floor(Date.now()/1000)+600};
+      if(cmd === 'transfer_export') { if(!String(args.code).includes(receiveCode)) throw '받는 코드가 맞지 않습니다 — 받는 PC에 보이는 코드 전체를 복사해 넣으세요'; return {text:transferText, chars:transferText.length, accounts:3}; }
+      if(cmd === 'transfer_receive_start') { receiving = {code:receiveCode, expires_at:Math.floor(Date.now()/1000)+600, seconds_left:600}; return receiving; }
+      if(cmd === 'transfer_receive_state') return receiving;
       if(cmd === 'transfer_save') return {path:'/Users/fixture/Downloads/switcher-transfer-20261123-101500.swx', name:'switcher-transfer-20261123-101500.swx'};
       if(cmd === 'transfer_candidates') return transferFiles;
       if(cmd === 'transfer_reveal') return null;
-      if(cmd === 'transfer_import') { if(args.password !== 'right-password') throw '비밀번호가 다르거나 내용이 손상됐습니다'; return {accounts_added:2, accounts_replaced:1, live_replaced:1, rejected:0, problems:["계정 'work': 이름을 쓸 수 없습니다"], source_os:'windows'}; }
+      if(cmd === 'transfer_import') { if(!receiving) throw '받을 준비가 되어 있지 않습니다 — 「받을 준비」를 눌러 나온 코드를 보내는 PC에 넣고 다시 만드세요'; if(args.password !== 'right-password') throw '비밀번호가 다르거나 내용이 손상됐습니다'; receiving = null; return {accounts_added:2, accounts_replaced:1, live_replaced:1, rejected:0, problems:["계정 'work': 이름을 쓸 수 없습니다"], source_os:'windows'}; }
       if(cmd === 'get_section_order') return ['claude','codex','github','display','system'];
       if(dragScene) {
         if(cmd === 'pointer_button_down') return buttonHeld;
@@ -449,7 +453,7 @@ function fixture(mode = "normal", preview = false) {
       record('native-switch-moves-the-active-mark', activeCard()?.dataset.name==='work');
     }
   }
-  // Move to another PC (#189): locked text that is copied and pasted, or the same text as a file. Valid for 10 minutes.
+  // Move to another PC (#189, #192): the receiving PC makes a receive code first; the sending PC locks to that code and a password.
   async function checkTransfer() {
     await ready('.profile-card');
     for(let i=0;i<4;i++) await delay();
@@ -462,22 +466,29 @@ function fixture(mode = "normal", preview = false) {
     const dialog = await ready('.api-dialog.transfer-dialog');
     const exportForm = dialog.querySelector('.transfer-export'), importForm = dialog.querySelector('.transfer-import');
     const [first, second] = exportForm.querySelectorAll('input[type="password"]');
-    record('opens-on-export-with-two-password-fields', !exportForm.hidden && importForm.hidden && first && second && first.minLength===8 && inWindow(dialog) && inWindow(exportForm.querySelector('button.primary')));
-    record('export-says-what-is-included-and-the-ten-minute-limit', exportForm.textContent.includes('구독 계정 로그인을 비밀번호로') && !exportForm.textContent.includes('API') && exportForm.textContent.includes('10분 안에만') && exportForm.textContent.includes('설정과 메모는 담지 않습니다'));
+    const codeInput = exportForm.querySelector('input.transfer-code');
+    record('opens-on-export-with-the-code-and-two-password-fields', !exportForm.hidden && importForm.hidden && codeInput && document.activeElement===codeInput && codeInput.required && first && second && first.minLength===8 && codeInput.getBoundingClientRect().top<first.getBoundingClientRect().top && inWindow(dialog) && inWindow(exportForm.querySelector('button.primary')));
+    record('export-says-what-is-included-and-where-the-code-comes-from', exportForm.textContent.includes('받는 PC만 열 수 있게') && !exportForm.textContent.includes('API') && exportForm.textContent.includes('「받을 준비」') && exportForm.textContent.includes('설정과 메모는 담지 않습니다'));
     const sent = cmd => calls.filter(c=>c.cmd===cmd);
-    first.value='password-one'; second.value='password-two';
+    codeInput.value=receiveCode; first.value='password-one'; second.value='password-two';
     exportForm.requestSubmit();
     for(let i=0;i<4;i++) await delay();
     record('mismatched-passwords-make-nothing', sent('transfer_export').length===0 && exportForm.querySelector('.api-error').textContent==='두 비밀번호가 다릅니다');
     second.value='password-one';
+    // A code that is not this receiver's: refused, nothing is made.
+    codeInput.value='SWR1.wrong';
+    exportForm.requestSubmit();
+    await settle(()=>exportForm.querySelector('.api-error').textContent.includes('받는 코드'));
+    record('a-wrong-receive-code-makes-nothing', !exportForm.querySelector('.transfer-done') && first.value==='password-one' && inWindow(exportForm.querySelector('.api-error')));
+    codeInput.value='  '+receiveCode+'\n';
     exportForm.requestSubmit();
     await ready('.transfer-export .transfer-done');
-    const exported = sent('transfer_export')[0];
-    record('export-sends-only-the-password', sent('transfer_export').length===1 && exported.args.passwordLength===12 && Object.keys(exported.args).sort().join()==='password,passwordLength');
+    const exported = sent('transfer_export')[1];
+    record('export-sends-the-code-and-the-password', sent('transfer_export').length===2 && exported.args.passwordLength===12 && exported.args.code.trim()===receiveCode && Object.keys(exported.args).sort().join()==='code,password,passwordLength');
     const result = exportForm.querySelector('.transfer-result');
     const box = result.querySelector('textarea.transfer-text');
     const copy = result.querySelector('.transfer-copy'), save = result.querySelector('.transfer-save');
-    record('result-shows-what-it-holds-its-length-and-when-it-expires', result.textContent.includes('계정 3개 · 글 1,210자') && /\d{1,2}:\d{2}까지, 10분 동안만 가져올 수 있습니다/.test(result.querySelector('.transfer-until').textContent) && first.value==='' && second.value==='');
+    record('result-shows-what-it-holds-its-length-and-when-it-expires', result.textContent.includes('계정 3개 · 글 1,210자') && result.querySelector('.transfer-until').textContent.includes('받는 코드를 만든 PC에서만') && result.querySelector('.transfer-until').textContent.includes('한 번만') && first.value==='' && second.value==='' && codeInput.value==='');
     record('both-ways-out-are-offered-side-by-side', copy.textContent==='복사' && save.textContent==='파일로 저장' && inWindow(copy) && inWindow(save) && Math.abs(copy.getBoundingClientRect().top-save.getBoundingClientRect().top)<=1 && copy.getBoundingClientRect().right<=save.getBoundingClientRect().left);
     record('the-text-is-shown-read-only-inside-its-box', box.readOnly && box.value===transferText && inWindow(box) && box.scrollWidth<=box.clientWidth+1 && getComputedStyle(box).userSelect!=='none');
     // Copy: the clipboard gets the whole text.
@@ -521,10 +532,32 @@ function fixture(mode = "normal", preview = false) {
     const filePassword = importForm.querySelector('input[type="password"]');
     record('import-offers-paste-first-and-a-file-as-well', exportForm.hidden && !importForm.hidden && paste && document.activeElement===paste && paste.placeholder.includes('붙여넣으세요') && picker.accept==='.swx' && foundLabel.hidden && paste.getBoundingClientRect().top<picker.getBoundingClientRect().top && inWindow(importForm.querySelector('button.primary')));
     record('import-says-up-front-that-it-overwrites', importForm.textContent.includes('받은 것으로 덮어씁니다') && importForm.textContent.includes('받은 것에 없는 계정은 그대로') && !importForm.textContent.includes('API') && importForm.textContent.includes('다시 로그인해야 할 수 있습니다'));
+    // Receiving starts with the receive code: none yet, so importing says what to do first.
+    const readyButton = importForm.querySelector('.transfer-ready'), receiveBox = importForm.querySelector('.transfer-receive');
+    record('import-starts-with-getting-ready', readyButton.textContent==='받을 준비' && readyButton.classList.contains('primary') && receiveBox.childElementCount===0 && readyButton.getBoundingClientRect().top<paste.getBoundingClientRect().top && inWindow(readyButton) && importForm.textContent.includes('코드는 남이 봐도 됩니다'));
+    paste.value=transferText; filePassword.value='right-password';
+    importForm.requestSubmit();
+    await settle(()=>importForm.querySelector('.api-error').textContent.includes('받을 준비'));
+    record('importing-before-getting-ready-says-what-to-do', !importForm.querySelector('.transfer-done') && sent('transfer_import').length===1);
+    paste.value='';
+    readyButton.click();
+    await ready('.transfer-import .transfer-mine');
+    const mine = importForm.querySelector('.transfer-mine'), codeCopy = importForm.querySelector('.transfer-code-copy');
+    record('getting-ready-shows-this-pcs-code-and-its-limit', mine.readOnly && mine.value===receiveCode && readyButton.textContent==='새 코드 만들기' && /\d{1,2}:\d{2}까지 받을 수 있습니다/.test(receiveBox.textContent) && receiveBox.textContent.includes('한 번 가져오면') && importForm.querySelector('.api-error').textContent==='' && inWindow(mine) && inWindow(codeCopy) && mine.getBoundingClientRect().right<=codeCopy.getBoundingClientRect().left && Math.abs(mine.getBoundingClientRect().height-codeCopy.getBoundingClientRect().height)<=1 && mine.scrollWidth<=mine.clientWidth+1);
+    let codeCopied=null; const clipboardBefore=Object.getOwnPropertyDescriptor(Navigator.prototype,'clipboard');
+    Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async value=>{ codeCopied=value; }}});
+    codeCopy.click();
+    await settle(()=>receiveBox.querySelector('.transfer-note').textContent!=='');
+    record('the-code-is-copied-for-the-sending-pc', codeCopied===receiveCode && receiveBox.querySelector('.transfer-note').textContent.includes('보내는 PC의 내보내기에'));
+    if(clipboardBefore) delete navigator.clipboard;
+    // Coming back to the tab shows the same code: it is kept by the app, not by this dialog.
+    tabsButtons[0].click(); tabsButtons[1].click();
+    await settle(()=>importForm.querySelector('.transfer-mine')?.value===receiveCode);
+    record('the-code-is-still-there-after-leaving-the-tab', importForm.querySelector('.transfer-mine')?.value===receiveCode && sent('transfer_receive_start').length===1);
     filePassword.value='right-password';
     importForm.requestSubmit();
     for(let i=0;i<4;i++) await delay();
-    record('nothing-to-import-is-refused', sent('transfer_import').length===0 && importForm.querySelector('.api-error').textContent==='복사한 글을 붙여넣거나 파일을 고르세요');
+    record('nothing-to-import-is-refused', sent('transfer_import').length===1 && importForm.querySelector('.api-error').textContent==='복사한 글을 붙여넣거나 파일을 고르세요');
     // A pasted text with a wrong password: reported, nothing arrives.
     paste.value='  '+transferText+'\n';
     filePassword.value='wrong-password';
@@ -534,19 +567,22 @@ function fixture(mode = "normal", preview = false) {
     filePassword.value='right-password';
     importForm.requestSubmit();
     await ready('.transfer-import .transfer-done');
-    const pastedCall = sent('transfer_import')[1];
+    const pastedCall = sent('transfer_import')[2];
     const imported = importForm.querySelector('.transfer-result').textContent;
     record('the-pasted-text-is-what-gets-imported', pastedCall.args.text===transferText && pastedCall.args.path===null && filePassword.value==='' && paste.value==='');
+    record('the-code-is-gone-once-something-was-imported', !importForm.querySelector('.transfer-mine') && readyButton.textContent==='받을 준비' && receiving===null);
     record('import-result-says-what-arrived-and-what-was-overwritten', imported.includes('계정 2개 추가 · 1개 덮어씀') && imported.includes('지금 로그인된 계정 1개는 로그인도 바꿨습니다') && !imported.includes('API') && imported.includes("계정 'work'"));
     // A file found in Downloads is used when nothing is pasted.
     transferFiles = realFiles;
     tabsButtons[0].click(); tabsButtons[1].click();
     await settle(()=>importForm.querySelector('select').options.length===1 && !foundLabel.hidden);
+    readyButton.click();
+    await ready('.transfer-import .transfer-mine');
     filePassword.value='right-password';
     importForm.requestSubmit();
-    await settle(()=>sent('transfer_import').length===3);
+    await settle(()=>sent('transfer_import').length===4);
     await ready('.transfer-import .transfer-done');
-    const fileCall = sent('transfer_import')[2];
+    const fileCall = sent('transfer_import')[3];
     record('a-found-file-is-imported-when-nothing-is-pasted', fileCall.args.text===null && fileCall.args.path==='/Users/fixture/Downloads/switcher-transfer-20261123-101500.swx' && inWindow(foundLabel));
     record('settings-on-this-pc-are-not-touched', stored()===storedBefore);
     record('import-fits-the-window', inWindow(dialog) && document.documentElement.scrollWidth<=innerWidth && dialog.scrollWidth<=dialog.clientWidth+1);
@@ -561,11 +597,22 @@ function fixture(mode = "normal", preview = false) {
         record('no-browser-errors-empty-'+mode,errors.length===0);
         return;
       }
-      if(preview === 'transfer' || preview === 'transfer-shot') {
-        if(preview === 'transfer-shot') {
+      if(preview === 'transfer' || preview === 'transfer-shot' || preview === 'transfer-receive-shot') {
+        const shotImport = preview === 'transfer-receive-shot';
+        if(preview === 'transfer-shot' || shotImport) {
           await ready('.profile-card');
           document.querySelector('.transfer-row .transfer-open').click();
           const form = (await ready('.api-dialog.transfer-dialog')).querySelector('.transfer-export');
+          if(shotImport) {
+            document.querySelectorAll('.transfer-tabs button')[1].click();
+            for(let i=0;i<4;i++) await delay();
+            document.querySelector('.transfer-ready').click();
+            await ready('.transfer-import .transfer-mine');
+            for(let i=0;i<4;i++) await delay();
+            record('transfer-dialog-shows-the-receive-code', errors.length===0);
+            return;
+          }
+          form.querySelector('input.transfer-code').value=receiveCode;
           form.querySelectorAll('input[type="password"]').forEach(input=>{ input.value='password-one'; });
           form.requestSubmit();
           await ready('.transfer-export .transfer-done');
@@ -795,6 +842,7 @@ try {
   for(const mode of ['minimal','edge']) reports.push(await run(mode,'switch',null));
   reports.push(await run('normal','transfer',null));
   if(allDir && !useWebKit) reports.push(await run('normal','transfer-shot',path.join(allDir,'transfer.png')));
+  if(allDir && !useWebKit) reports.push(await run('normal','transfer-receive-shot',path.join(allDir,'transfer-receive.png')));
   reports.push(await run('edge','edge-drag',null));
   reports.push(await run('edge','edge-restore',null));
   const result={reports,passed:reports.reduce((n,r)=>n+r.checks.filter(c=>c.passed).length,0),failed:reports.reduce((n,r)=>n+r.checks.filter(c=>!c.passed).length,0)};

@@ -1,15 +1,24 @@
 //! 다른 PC로 옮기기 (#189, 사용자 지시·결정 2026-11-23).
 //!
-//! A PC의 구독 계정 로그인과 API 키를 잠가서 B PC에 넣는다. "옮기는 게 귀찮아서" 쓰는 기능이다.
+//! A PC의 구독 계정 로그인을 잠가서 B PC에 넣는다. "옮기는 게 귀찮아서" 쓰는 기능이다.
+//!
+//! **받는 PC만 열 수 있다** (#192, 사용자 결정 2026-11-26: "암호를 해독하기 힘든 방법을 고민해봐" →
+//! 받는 코드 + 비밀번호). 받는 PC가 먼저 **받을 준비**를 눌러 받는 코드(X25519 공개 값)를 만들고,
+//! 보내는 PC는 그 코드와 비밀번호로 잠근다. 여는 열쇠는 받는 PC의 메모리에만 있고(디스크에 쓰지 않는다)
+//! 10분 뒤나 한 번 가져온 뒤에 지운다. 그래서
+//! - 글만 가로챈 사람은 비밀번호를 찍어 볼 수조차 없다(열쇠의 절반이 받는 PC 안에만 있다).
+//! - 10분 제한은 시계가 아니라 "열쇠가 없어졌다"로 지켜진다 — 시계를 되돌려도 열리지 않는다.
+//! - 한 번 가져온 글은 다시 열리지 않는다.
+//! 비밀번호를 함께 두는 것은 받는 코드가 가는 길에 바뀌치기당한 경우를 위해서다 — 그때는 비밀번호가
+//! 마지막 잠금이다. 비밀번호만으로 잠그던 형식(`SWX2`)은 받지 않는다. 그 방식으로 되돌리지 말 것.
 //!
 //! **나르는 방법은 둘 다 있다** (사용자 지시: "둘 다 있으면 되는 거 아냐?"): 복사해서 붙여넣는 한 줄
-//! 글과, 그 글을 그대로 담은 파일(`.swx`). 형식은 하나다 — `SWX2.<글자 수>.<base64>`.
+//! 글과, 그 글을 그대로 담은 파일(`.swx`). 형식은 하나다 — `SWX3.<글자 수>.<base64>`.
 //! 새 방법을 넣는다고 있던 방법을 없애지 말 것.
 //!
-//! **만든 지 10분이 지나면 쓸 수 없다** (사용자 지시). 만든 시각은 머리말에 있고 머리말은 잠금의 인증
-//! 대상이라, 시각을 고치면 풀리지 않는다. 검사는 받는 PC의 시계로 한다. 서버가 없으므로 비밀번호까지
-//! 아는 사람이 자기 PC의 시계를 되돌리거나 직접 푸는 프로그램을 쓰는 것은 막지 못한다 — 이 한계는
-//! 화면과 문서에 적혀 있다. 비밀번호를 모르는 사람은 10분 전이든 후든 열지 못한다.
+//! **10분이 지나면 쓸 수 없다** (사용자 지시). 받는 코드를 만든 지 10분이 지나면 받는 PC가 열쇠를
+//! 지운다(`Receiver::alive` — 흐른 시간과 벽시계 둘 다 본다). 머리말의 만든 시각은 찾아 주는 파일
+//! 목록에서 옛 파일을 빼는 데만 쓴다. 남는 한계: 받는 PC 자체가 뚫려 있으면(악성 프로그램) 막지 못한다.
 //!
 //! **받는 쪽은 전부 덮어쓴다** (사용자 결정):
 //! - 같은 계정(계정 ID)이 있으면 그 프로필의 로그인을 받은 것으로 바꾼다. 그 계정이 지금 CLI에
@@ -26,10 +35,10 @@
 //! v2.2.x가 만든 묶음에 들어 있는 키는 읽지 않고 버린다.
 //!
 //! 로그인 토큰이 들어가므로 통째로 잠근다:
-//! - 열쇠는 사용자의 비밀번호에서 만든다 (Argon2id — 일부러 느리고 메모리를 많이 써서
-//!   비밀번호를 하나씩 대입해 보는 공격을 비싸게 한다). 소금은 만들 때마다 새로 뽑는다.
+//! - 열쇠는 둘을 섞어 만든다(HKDF-SHA256): 받는 코드와 보내는 쪽 일회용 열쇠의 X25519 공유 값,
+//!   그리고 비밀번호에서 만든 값(Argon2id — 일부러 느리고 메모리를 많이 쓴다). 소금은 매번 새로 뽑는다.
 //! - 묶음은 줄인(deflate) 뒤 XChaCha20-Poly1305로 잠근다. 머리말(형식·열쇠 만들기 값·만든 시각·
-//!   소금·논스)까지 인증에 넣어 한 바이트라도 바뀌면 풀리지 않는다.
+//!   소금·논스·받는 코드·보내는 쪽 공개 값)까지 인증에 넣어 한 바이트라도 바뀌면 풀리지 않는다.
 //! - 받는 쪽은 다 풀고 검사한 뒤에야 쓴다. 이름은 경로가 되므로 저장할 때와 같은 규칙으로 거른다.
 //!
 //! 알아 둘 것: 구독 로그인은 갱신될 때마다 이전 것이 무효가 된다(usage.rs의 회전 주석). 같은 로그인을
@@ -44,18 +53,26 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fs;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::Zeroize;
 
-const MAGIC: &[u8; 8] = b"SWXFER2\n";
+const MAGIC: &[u8; 8] = b"SWXFER3\n";
 /// 처음 판의 파일(잠근 바이트 그대로)이 시작하는 글자 — 받지 않고, 다시 만들라고 말한다
 const OLD_MAGIC: &str = "SWXFER1";
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 24;
+const KEY_LEN: usize = 32;
 /// 머리말: 형식 표시 + 열쇠 만들기 값(메모리 KiB·반복·병렬, 각 u32 LE) + 만든 시각(u64 LE, 초) + 소금 + 논스
+/// + 받는 코드(받는 PC의 공개 값) + 보내는 쪽 일회용 공개 값
 const CREATED_AT: usize = MAGIC.len() + 12;
 const SALT_AT: usize = CREATED_AT + 8;
-const HEADER_LEN: usize = SALT_AT + SALT_LEN + NONCE_LEN;
+const RECIPIENT_AT: usize = SALT_AT + SALT_LEN + NONCE_LEN;
+const SENDER_AT: usize = RECIPIENT_AT + KEY_LEN;
+const HEADER_LEN: usize = SENDER_AT + KEY_LEN;
 /// 열쇠 만들기 기본값 — 64MiB·3회. 2026년의 보통 PC에서 0.2~0.5초.
 const KDF_MEMORY_KIB: u32 = 64 * 1024;
 const KDF_ITERATIONS: u32 = 3;
@@ -65,7 +82,7 @@ const KDF_MEMORY_MAX_KIB: u32 = 1024 * 1024;
 const KDF_ITERATIONS_MAX: u32 = 16;
 const KDF_LANES_MAX: u32 = 8;
 pub const PASSWORD_MIN: usize = 8;
-/// 만든 뒤 이 시간(초) 안에만 가져올 수 있다 (사용자 지시: 10분)
+/// 받는 코드를 만든 뒤 이 시간(초) 안에만 가져올 수 있다 (사용자 지시: 10분)
 pub const VALID_SECS: u64 = 10 * 60;
 /// 두 PC의 시계가 달라 "아직 만들어지지 않은" 것이 올 수 있다 — 이만큼까지는 받는다
 const CLOCK_SKEW_SECS: u64 = 2 * 60;
@@ -75,12 +92,21 @@ const PLAIN_MAX: usize = 32 * 1024 * 1024;
 const PROFILE_FILE_MAX: usize = 1024 * 1024;
 pub const FILE_EXT: &str = "swx";
 /// 복사해 옮기는 글의 머리 — 뒤에 본문 글자 수와 본문(base64)이 온다
-const TEXT_MARK: &str = "SWX2.";
+const TEXT_MARK: &str = "SWX3.";
+/// 비밀번호만으로 잠그던 형식(v2.2.0~2.2.3)의 머리 — 받지 않는다 (#192)
+const OLD_TEXT_MARK: &str = "SWX2.";
+/// 받는 코드의 머리 — 뒤에 공개 값과 확인용 3바이트를 담은 base64 47자가 온다
+const CODE_MARK: &str = "SWR1.";
+const CODE_CHECK_LEN: usize = 3;
+const CODE_CHARS: usize = 47;
 /// 묶음 형식. 1·2는 배포되지 않은 처음 판들이다(설정·메모까지 담았거나 파일 내용을 base64로 담았다).
 const BUNDLE_VERSION: u64 = 3;
 const BAD_TEXT: &str = "옮기기용 글이나 파일이 아닙니다 — 보내는 PC에서 만든 것 전체를 넣으세요";
 const BAD_PASSWORD: &str = "비밀번호가 다르거나 내용이 손상됐습니다";
-const OLD_FORMAT: &str = "이전 판의 위젯에서 만든 것입니다 — 보내는 PC의 위젯을 업데이트하고 다시 만드세요";
+const OLD_FORMAT: &str = "이전 버전의 위젯에서 만든 것입니다 — 두 PC의 위젯을 업데이트하고, 받는 PC의 「받을 준비」부터 다시 하세요";
+const BAD_CODE: &str = "받는 코드가 맞지 않습니다 — 받는 PC에 보이는 코드 전체를 복사해 넣으세요";
+const NOT_READY: &str = "받을 준비가 되어 있지 않습니다 — 「받을 준비」를 눌러 나온 코드를 보내는 PC에 넣고 다시 만드세요";
+const NOT_FOR_THIS: &str = "지금의 받는 코드로 잠근 것이 아닙니다 — 지금 보이는 코드를 보내는 PC에 넣고 다시 만드세요";
 
 /// 프로필 폴더에서 옮기는 파일 — 이 목록에 없는 이름은 내보내지도, 받아 쓰지도 않는다
 fn profile_files(provider: Provider) -> &'static [&'static str] {
@@ -116,8 +142,15 @@ pub struct ExportResult {
     pub text: String,
     pub chars: usize,
     pub accounts: usize,
-    /// 이 시각(유닉스 초)까지만 가져올 수 있다
+}
+
+/// 받는 PC가 보내는 PC에 알려 주는 코드. 공개 값이라 남이 봐도 된다.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub struct ReceiveCode {
+    pub code: String,
+    /// 이 시각(유닉스 초, 이 PC의 시계)까지만 받을 수 있다
     pub expires_at: u64,
+    pub seconds_left: u64,
 }
 
 #[derive(Serialize, Debug, PartialEq, Eq)]
@@ -157,18 +190,126 @@ fn derive_key(password: &[u8], salt: &[u8], memory_kib: u32, iterations: u32, la
     Ok(key)
 }
 
-fn seal_with(password: &str, plain: &[u8], created_at: u64, memory_kib: u32, iterations: u32) -> Result<Vec<u8>, String> {
+/// 받는 PC의 열쇠. 메모리에만 있다 — 디스크에 쓰지 말 것, Debug를 달지 말 것.
+/// 위젯을 끄면 사라지고, 그러면 받는 코드를 다시 만들어야 한다.
+pub struct Receiver {
+    secret: StaticSecret,
+    public: [u8; KEY_LEN],
+    started: Instant,
+    started_wall: u64,
+}
+
+impl Receiver {
+    fn new(now: u64) -> Result<Self, String> {
+        let mut bytes = [0u8; KEY_LEN];
+        getrandom::getrandom(&mut bytes).map_err(|_| "난수를 만들지 못했습니다")?;
+        let secret = StaticSecret::from(bytes);
+        bytes.zeroize();
+        let public = PublicKey::from(&secret).to_bytes();
+        Ok(Self { secret, public, started: Instant::now(), started_wall: now })
+    }
+
+    /// 흐른 시간과 벽시계 가운데 하나라도 10분을 넘겼으면 끝이다. 시계를 되돌려도 흐른 시간이 남고,
+    /// PC가 잠들어 흐른 시간이 멈춰도 벽시계가 남는다.
+    fn alive(&self, now: u64) -> bool {
+        self.started.elapsed() <= Duration::from_secs(VALID_SECS) && now.saturating_sub(self.started_wall) <= VALID_SECS
+    }
+
+    fn seconds_left(&self, now: u64) -> u64 {
+        let by_run = VALID_SECS.saturating_sub(self.started.elapsed().as_secs());
+        by_run.min(VALID_SECS.saturating_sub(now.saturating_sub(self.started_wall)))
+    }
+
+    fn code(&self, now: u64) -> ReceiveCode {
+        let left = self.seconds_left(now);
+        ReceiveCode { code: code_text(&self.public), expires_at: now + left, seconds_left: left }
+    }
+}
+
+/// 이 PC가 지금 기다리는 받기. 하나뿐이다 — 새로 만들면 앞의 코드는 죽는다.
+static RECEIVER: Mutex<Option<Receiver>> = Mutex::new(None);
+
+fn code_check(public: &[u8; KEY_LEN]) -> [u8; CODE_CHECK_LEN] {
+    let digest = Sha256::new().chain_update(b"switcher-receive-code").chain_update(public).finalize();
+    let mut check = [0u8; CODE_CHECK_LEN];
+    check.copy_from_slice(&digest[..CODE_CHECK_LEN]);
+    check
+}
+
+fn code_text(public: &[u8; KEY_LEN]) -> String {
+    let mut bytes = public.to_vec();
+    bytes.extend_from_slice(&code_check(public));
+    format!("{CODE_MARK}{}", text_codec().encode(bytes))
+}
+
+/// 받는 코드에서 공개 값을 꺼낸다. 확인용 바이트가 맞지 않으면(잘렸거나 잘못 옮겼으면) 받지 않는다.
+fn parse_code(text: &str) -> Result<[u8; KEY_LEN], String> {
+    if text.len() > 4096 {
+        return Err(BAD_CODE.into());
+    }
+    let cleaned = clean(text);
+    let start = cleaned.find(CODE_MARK).ok_or(BAD_CODE)?;
+    let body: String = cleaned[start + CODE_MARK.len()..].chars().take(CODE_CHARS).collect();
+    let bytes = text_codec().decode(body).map_err(|_| BAD_CODE)?;
+    if bytes.len() != KEY_LEN + CODE_CHECK_LEN {
+        return Err(BAD_CODE.into());
+    }
+    let mut public = [0u8; KEY_LEN];
+    public.copy_from_slice(&bytes[..KEY_LEN]);
+    if bytes[KEY_LEN..] != code_check(&public) {
+        return Err(BAD_CODE.into());
+    }
+    Ok(public)
+}
+
+/// 잠금 열쇠: X25519 공유 값과 비밀번호에서 만든 값을 섞는다. 둘 중 하나만 알아서는 만들 수 없다.
+fn mix_key(shared: &[u8; KEY_LEN], password_key: &[u8; KEY_LEN], salt: &[u8], keys: &[u8]) -> [u8; KEY_LEN] {
+    let mut material = [0u8; KEY_LEN * 2];
+    material[..KEY_LEN].copy_from_slice(shared);
+    material[KEY_LEN..].copy_from_slice(password_key);
+    let mut info = b"switcher-transfer-v3".to_vec();
+    info.extend_from_slice(keys);
+    let mut key = [0u8; KEY_LEN];
+    hkdf::Hkdf::<Sha256>::new(Some(salt), &material)
+        .expand(&info, &mut key)
+        .expect("32 bytes is a valid HKDF-SHA256 output length");
+    material.zeroize();
+    key
+}
+
+fn seal_with(
+    password: &str,
+    recipient: &[u8; KEY_LEN],
+    plain: &[u8],
+    created_at: u64,
+    memory_kib: u32,
+    iterations: u32,
+) -> Result<Vec<u8>, String> {
     let mut header = Vec::with_capacity(HEADER_LEN);
     header.extend_from_slice(MAGIC);
     for value in [memory_kib, iterations, KDF_LANES] {
         header.extend_from_slice(&value.to_le_bytes());
     }
     header.extend_from_slice(&created_at.to_le_bytes());
-    let mut random = [0u8; SALT_LEN + NONCE_LEN];
+    let mut random = [0u8; SALT_LEN + NONCE_LEN + KEY_LEN];
     getrandom::getrandom(&mut random).map_err(|_| "난수를 만들지 못했습니다")?;
-    header.extend_from_slice(&random);
-    let (salt, nonce) = random.split_at(SALT_LEN);
-    let mut key = derive_key(password.as_bytes(), salt, memory_kib, iterations, KDF_LANES)?;
+    // 이 글 하나에만 쓰는 열쇠 — 잠그고 나면 버린다. 보내는 PC도 다시 열 수 없다.
+    let mut seed = [0u8; KEY_LEN];
+    seed.copy_from_slice(&random[SALT_LEN + NONCE_LEN..]);
+    let sender = StaticSecret::from(seed);
+    seed.zeroize();
+    random[SALT_LEN + NONCE_LEN..].zeroize();
+    header.extend_from_slice(&random[..SALT_LEN + NONCE_LEN]);
+    header.extend_from_slice(recipient);
+    header.extend_from_slice(PublicKey::from(&sender).as_bytes());
+    let shared = sender.diffie_hellman(&PublicKey::from(*recipient));
+    if !shared.was_contributory() {
+        return Err(BAD_CODE.into());
+    }
+    let (salt, nonce) = random[..SALT_LEN + NONCE_LEN].split_at(SALT_LEN);
+    let mut password_key = derive_key(password.as_bytes(), salt, memory_kib, iterations, KDF_LANES)?;
+    let mut key = mix_key(shared.as_bytes(), &password_key, salt, &header[RECIPIENT_AT..]);
+    password_key.zeroize();
     let cipher = XChaCha20Poly1305::new((&key).into());
     key.zeroize();
     // 글이 짧아야 복사해 옮기기 쉽다 — 잠그기 전에 줄인다 (잠근 것은 줄지 않는다)
@@ -179,8 +320,8 @@ fn seal_with(password: &str, plain: &[u8], created_at: u64, memory_kib: u32, ite
     Ok(header)
 }
 
-fn seal(password: &str, plain: &[u8], created_at: u64) -> Result<Vec<u8>, String> {
-    seal_with(password, plain, created_at, KDF_MEMORY_KIB, KDF_ITERATIONS)
+fn seal(password: &str, recipient: &[u8; KEY_LEN], plain: &[u8], created_at: u64) -> Result<Vec<u8>, String> {
+    seal_with(password, recipient, plain, created_at, KDF_MEMORY_KIB, KDF_ITERATIONS)
 }
 
 /// 머리말에 적힌 만든 시각. 잠금을 풀기 전에는 참고값이고, 풀리면 인증된 값이다.
@@ -201,7 +342,8 @@ fn age_text(secs: u64) -> String {
     }
 }
 
-/// 만든 지 10분 안인가. 받는 PC의 시계로 잰다.
+/// 만든 지 10분 안인가 — 찾아 주는 파일 목록에서 옛 파일을 빼는 데 쓴다.
+/// 가져오기를 막는 것은 이 검사가 아니라 받는 PC의 열쇠다 (`Receiver::alive`).
 fn check_fresh(created_at: u64, now: u64) -> Result<(), String> {
     if created_at > now.saturating_add(CLOCK_SKEW_SECS) {
         return Err(format!(
@@ -219,18 +361,29 @@ fn check_fresh(created_at: u64, now: u64) -> Result<(), String> {
     Ok(())
 }
 
-fn open(password: &str, sealed: &[u8], now: u64) -> Result<Vec<u8>, String> {
-    // 만료는 비밀번호를 보기 전에 가른다. 만든 시각을 고쳐 여기를 지나가도 아래 잠금 풀기에서 걸린다.
-    check_fresh(created_at_of(sealed)?, now)?;
+fn open(receiver: &Receiver, password: &str, sealed: &[u8]) -> Result<Vec<u8>, String> {
+    created_at_of(sealed)?;
     let (header, body) = sealed.split_at(HEADER_LEN);
+    // 이 PC의 받는 코드로 잠근 것인가 — 비밀번호를 보기 전에 가른다
+    if header[RECIPIENT_AT..SENDER_AT] != receiver.public {
+        return Err(NOT_FOR_THIS.into());
+    }
     let number = |at: usize| u32::from_le_bytes([header[at], header[at + 1], header[at + 2], header[at + 3]]);
     let (memory_kib, iterations, lanes) = (number(8), number(12), number(16));
     if memory_kib > KDF_MEMORY_MAX_KIB || iterations > KDF_ITERATIONS_MAX || lanes > KDF_LANES_MAX {
         return Err(BAD_TEXT.into());
     }
     let salt = &header[SALT_AT..SALT_AT + SALT_LEN];
-    let nonce = &header[SALT_AT + SALT_LEN..];
-    let mut key = derive_key(password.as_bytes(), salt, memory_kib, iterations, lanes)?;
+    let nonce = &header[SALT_AT + SALT_LEN..RECIPIENT_AT];
+    let mut sender = [0u8; KEY_LEN];
+    sender.copy_from_slice(&header[SENDER_AT..]);
+    let shared = receiver.secret.diffie_hellman(&PublicKey::from(sender));
+    if !shared.was_contributory() {
+        return Err(BAD_TEXT.into());
+    }
+    let mut password_key = derive_key(password.as_bytes(), salt, memory_kib, iterations, lanes)?;
+    let mut key = mix_key(shared.as_bytes(), &password_key, salt, &header[RECIPIENT_AT..]);
+    password_key.zeroize();
     let cipher = XChaCha20Poly1305::new((&key).into());
     key.zeroize();
     let mut packed = cipher
@@ -242,7 +395,7 @@ fn open(password: &str, sealed: &[u8], now: u64) -> Result<Vec<u8>, String> {
 }
 
 // ── 복사해 옮기는 글 ───────────────────────────────────────────────
-// `SWX2.<본문 글자 수>.<본문>` 한 줄. 본문은 표준 base64(`A-Z a-z 0-9 + /`, 패딩 없음)다 —
+// `SWX3.<본문 글자 수>.<본문>` 한 줄. 본문은 표준 base64(`A-Z a-z 0-9 + /`, 패딩 없음)다 —
 // 메신저가 서식 기호로 먹는 글자(`_ * ~ -`)가 없다. 글자 수를 적어 두는 것은 긴 글이 메신저에서
 // 잘렸을 때 "비밀번호가 틀렸다"가 아니라 "잘렸다"고 말하기 위해서고, 뒤에 딸려 온 글을 버리기 위해서다.
 
@@ -265,7 +418,7 @@ fn clean(text: &str) -> String {
         .collect()
 }
 
-/// 글 머리(`SWX2.<글자 수>.`) 뒤의 본문과, 적혀 있는 본문 글자 수
+/// 글 머리(`SWX3.<글자 수>.`) 뒤의 본문과, 적혀 있는 본문 글자 수
 fn text_body(cleaned: &str) -> Result<(usize, &str), String> {
     let start = cleaned.find(TEXT_MARK).ok_or(BAD_TEXT)?;
     let rest = &cleaned[start + TEXT_MARK.len()..];
@@ -290,6 +443,9 @@ fn dearmor(text: &str) -> Result<Vec<u8>, String> {
         return Err(OLD_FORMAT.into());
     }
     let cleaned = clean(text);
+    if !cleaned.contains(TEXT_MARK) && cleaned.contains(OLD_TEXT_MARK) {
+        return Err(OLD_FORMAT.into());
+    }
     let (expected, rest) = text_body(&cleaned)?;
     if expected > TEXT_MAX {
         return Err(BAD_TEXT.into());
@@ -417,25 +573,41 @@ fn check_password(password: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn make_text(password: &str, bundle: &Bundle, now: u64) -> Result<ExportResult, String> {
+fn make_text(password: &str, recipient: &[u8; KEY_LEN], bundle: &Bundle, now: u64) -> Result<ExportResult, String> {
     let mut plain = serde_json::to_vec(bundle).map_err(|_| "묶음을 만들지 못했습니다")?;
-    let sealed = seal(password, &plain, now);
+    let sealed = seal(password, recipient, &plain, now);
     plain.zeroize();
     let text = armor(&sealed?);
-    Ok(ExportResult {
-        chars: text.chars().count(),
-        text,
-        accounts: bundle.profiles.len(),
-        expires_at: now + VALID_SECS,
-    })
+    Ok(ExportResult { chars: text.chars().count(), text, accounts: bundle.profiles.len() })
 }
 
-/// 복사해 옮길 글을 만든다. 파일로도 남기려면 이 글을 `save_file`에 넘긴다.
-pub fn export(env: &Env, password: &str) -> Result<ExportResult, String> {
+/// 복사해 옮길 글을 만든다 — `code`는 받는 PC가 보여 준 받는 코드다.
+/// 파일로도 남기려면 이 글을 `save_file`에 넘긴다.
+pub fn export(env: &Env, password: &str, code: &str) -> Result<ExportResult, String> {
+    let recipient = parse_code(code)?;
     check_password(password)?;
     let _mutation = accounts::MUTATION_LOCK.lock().map_err(|_| "내부 잠금 오류")?;
     let bundle = collect(env)?;
-    make_text(password, &bundle, accounts::now())
+    make_text(password, &recipient, &bundle, accounts::now())
+}
+
+/// 받을 준비 — 새 열쇠를 만들고 받는 코드를 돌려준다. 앞서 만든 코드는 이때 죽는다.
+pub fn receive_start() -> Result<ReceiveCode, String> {
+    let now = accounts::now();
+    let receiver = Receiver::new(now)?;
+    let code = receiver.code(now);
+    *RECEIVER.lock().map_err(|_| "내부 잠금 오류")? = Some(receiver);
+    Ok(code)
+}
+
+/// 지금 기다리는 받는 코드. 10분이 지났으면 열쇠를 지우고 없다고 답한다.
+pub fn receive_state() -> Option<ReceiveCode> {
+    let now = accounts::now();
+    let mut slot = RECEIVER.lock().ok()?;
+    if slot.as_ref().is_some_and(|receiver| !receiver.alive(now)) {
+        *slot = None;
+    }
+    slot.as_ref().map(|receiver| receiver.code(now))
 }
 
 fn write_file(env: &Env, sealed: &[u8], stamp: &str) -> Result<SavedFile, String> {
@@ -455,8 +627,8 @@ pub fn save_file(env: &Env, text: &str) -> Result<SavedFile, String> {
 
 // ── 되살리기 ───────────────────────────────────────────────────────
 
-fn parse(password: &str, sealed: &[u8], now: u64) -> Result<Bundle, String> {
-    let mut plain = open(password, sealed, now)?;
+fn parse(receiver: &Receiver, password: &str, sealed: &[u8]) -> Result<Bundle, String> {
+    let mut plain = open(receiver, password, sealed)?;
     let value: Result<Value, _> = serde_json::from_slice(&plain);
     plain.zeroize();
     let value = value.map_err(|_| BAD_TEXT)?;
@@ -620,25 +792,34 @@ fn read_source(env: &Env, text: Option<&str>, path: Option<&str>) -> Result<Vec<
     }
 }
 
+/// `slot`은 이 PC가 기다리는 받기다. 풀리면 그 열쇠를 지운다 — 같은 글은 다시 열리지 않는다.
 fn import_at(
     env: &Env,
+    slot: &mut Option<Receiver>,
     password: &str,
     text: Option<&str>,
     path: Option<&str>,
     now: u64,
 ) -> Result<ImportResult, String> {
+    if slot.as_ref().is_some_and(|receiver| !receiver.alive(now)) {
+        *slot = None;
+    }
     let sealed = read_source(env, text, path)?;
-    // 다 풀고 검사한 뒤에야 쓴다 — 만료·틀린 비밀번호·변조는 여기서 끝난다
-    let bundle = parse(password, &sealed, now)?;
+    let receiver = slot.as_ref().ok_or(NOT_READY)?;
+    // 다 풀고 검사한 뒤에야 쓴다 — 다른 코드로 잠근 것·틀린 비밀번호·변조는 여기서 끝난다
+    let bundle = parse(receiver, password, &sealed)?;
+    // 틀린 비밀번호로는 열쇠를 지우지 않는다(다시 칠 수 있게). 풀렸으면 지운다.
+    *slot = None;
     apply(env, bundle)
 }
 
 pub fn import(env: &Env, password: &str, text: Option<&str>, path: Option<&str>) -> Result<ImportResult, String> {
-    import_at(env, password, text, path, accounts::now())
+    let mut slot = RECEIVER.lock().map_err(|_| "내부 잠금 오류")?;
+    import_at(env, &mut slot, password, text, path, accounts::now())
 }
 
 /// 흔히 받아 두는 곳에서 지금 가져올 수 있는 옮기기 파일을 찾는다 — 최근 것부터.
-/// 만든 지 10분이 지난 것은 내놓지 않는다(골라도 못 쓴다).
+/// 만든 지 10분이 지난 것은 내놓지 않는다(받는 코드가 이미 죽었으니 골라도 못 쓴다).
 fn candidates_at(env: &Env, now: u64) -> Vec<Candidate> {
     let mut found = Vec::new();
     for dir in transfer_dirs(env) {
@@ -692,9 +873,19 @@ mod tests {
     /// 검사에서 "만든 시각"으로 쓰는 값
     const T0: u64 = 1_795_400_000;
 
+    /// 받는 PC의 열쇠 — `age`초 전에 만든 것처럼
+    fn receiver_aged(age: u64) -> Receiver {
+        let mut receiver = Receiver::new(T0).unwrap();
+        receiver.started = Instant::now().checked_sub(Duration::from_secs(age)).unwrap();
+        receiver
+    }
+    fn receiver() -> Receiver {
+        receiver_aged(0)
+    }
+
     // 검사는 가벼운 열쇠 만들기 값으로 돈다 — 기본값(64MiB)은 한 번만 왕복해 본다
-    fn seal_fast(password: &str, plain: &[u8]) -> Vec<u8> {
-        seal_with(password, plain, T0, 64, 1).unwrap()
+    fn seal_fast(password: &str, to: &Receiver, plain: &[u8]) -> Vec<u8> {
+        seal_with(password, &to.public, plain, T0, 64, 1).unwrap()
     }
 
     fn claude_cred(tag: &str) -> Vec<u8> {
@@ -753,67 +944,149 @@ mod tests {
         apply(to, bundle).unwrap()
     }
     /// 보내는 PC에서 만든 글 (가벼운 열쇠 만들기 값, 만든 시각 T0)
-    fn text_of(env: &Env, password: &str) -> String {
-        armor(&seal_fast(password, &serde_json::to_vec(&bundle_of(env)).unwrap()))
+    fn text_of(env: &Env, password: &str, to: &Receiver) -> String {
+        armor(&seal_fast(password, to, &serde_json::to_vec(&bundle_of(env)).unwrap()))
     }
 
     #[test]
     fn the_default_lock_round_trips_and_a_wrong_password_opens_nothing() {
-        let sealed = seal("correct horse", b"secret payload", T0).unwrap();
-        assert_eq!(open("correct horse", &sealed, T0).unwrap(), b"secret payload");
-        assert_eq!(open("correct horsf", &sealed, T0).unwrap_err(), BAD_PASSWORD);
+        let to = receiver();
+        let sealed = seal("correct horse", &to.public, b"secret payload", T0).unwrap();
+        assert_eq!(open(&to, "correct horse", &sealed).unwrap(), b"secret payload");
+        assert_eq!(open(&to, "correct horsf", &sealed).unwrap_err(), BAD_PASSWORD);
+    }
+
+    /// #192: 받는 코드를 만든 PC만 연다. 글과 비밀번호를 둘 다 가진 다른 PC는 열지 못한다.
+    #[test]
+    fn only_the_pc_that_made_the_receive_code_can_open_it() {
+        let (to, other) = (receiver(), receiver());
+        assert_ne!(to.public, other.public);
+        let sealed = seal_fast("password-1", &to, b"payload");
+        assert_eq!(open(&to, "password-1", &sealed).unwrap(), b"payload");
+        assert_eq!(open(&other, "password-1", &sealed).unwrap_err(), NOT_FOR_THIS);
+        // 머리말의 받는 코드를 제 것으로 바꿔 써도 열쇠가 달라 풀리지 않는다
+        let mut retargeted = sealed.clone();
+        retargeted[RECIPIENT_AT..SENDER_AT].copy_from_slice(&other.public);
+        assert_eq!(open(&other, "password-1", &retargeted).unwrap_err(), BAD_PASSWORD);
+        // 받는 코드를 가로채 제 것으로 바꿔치기한 사람에게 간 글: 그 사람도 비밀번호 없이는 못 연다
+        let hijacked = seal_fast("password-1", &other, b"payload");
+        assert_eq!(open(&other, "guess-123", &hijacked).unwrap_err(), BAD_PASSWORD);
+        // 비밀번호에서 만든 값만으로는(받는 PC의 열쇠 없이) 잠금 열쇠가 나오지 않는다
+        let salt = &sealed[SALT_AT..SALT_AT + SALT_LEN];
+        let password_key = derive_key(b"password-1", salt, 64, 1, KDF_LANES).unwrap();
+        let cipher = XChaCha20Poly1305::new((&password_key).into());
+        let nonce = &sealed[SALT_AT + SALT_LEN..RECIPIENT_AT];
+        assert!(cipher
+            .decrypt(XNonce::from_slice(nonce), Payload { msg: &sealed[HEADER_LEN..], aad: &sealed[..HEADER_LEN] })
+            .is_err());
+        // 보내는 쪽 열쇠는 글마다 새로 뽑는다
+        assert_ne!(sealed[SENDER_AT..HEADER_LEN], seal_fast("password-1", &to, b"payload")[SENDER_AT..HEADER_LEN]);
+    }
+
+    #[test]
+    fn the_receive_code_survives_copying_and_refuses_what_is_not_one() {
+        let to = receiver();
+        let code = to.code(T0);
+        assert_eq!((code.seconds_left, code.expires_at), (VALID_SECS, T0 + VALID_SECS));
+        assert!(code.code.starts_with("SWR1.") && code.code.len() == CODE_MARK.len() + CODE_CHARS && code.code.is_ascii());
+        assert_eq!(parse_code(&code.code).unwrap(), to.public);
+        // 열쇠 자체는 코드에 없다
+        assert!(!code.code.contains(&text_codec().encode(to.secret.to_bytes())));
+        // 앞뒤에 딸려 온 글·줄바꿈·보이지 않는 글자를 걷어낸다
+        let (head, tail) = code.code.split_at(20);
+        assert_eq!(parse_code(&format!("받는 코드: {head}\n\u{200B}{tail} 입니다")).unwrap(), to.public);
+        // 한 글자가 바뀌었거나 잘렸으면 받지 않는다 — 엉뚱한 열쇠로 잠그지 않는다
+        let at = CODE_MARK.len() + 7;
+        let wrong = if &code.code[at..at + 1] == "A" { "B" } else { "A" };
+        let typo = format!("{}{wrong}{}", &code.code[..at], &code.code[at + 1..]);
+        assert_eq!(parse_code(&typo).unwrap_err(), BAD_CODE);
+        assert_eq!(parse_code(&code.code[..code.code.len() - 4]).unwrap_err(), BAD_CODE);
+        assert_eq!(parse_code("").unwrap_err(), BAD_CODE);
+        assert_eq!(parse_code("SWX3.12.AAAA").unwrap_err(), BAD_CODE);
+        // 내보내기는 코드가 틀리면 비밀번호를 보기도 전에 끝난다
+        let from = source("transfer-code");
+        assert_eq!(export(&from, "password-1", "아무 글").unwrap_err(), BAD_CODE);
+        assert!(export(&from, "short", &code.code).unwrap_err().contains("8자"));
     }
 
     #[test]
     fn the_locked_bytes_show_nothing_and_any_changed_byte_refuses_to_open() {
+        let to = receiver();
         let plain = br#"{"key":"sk-fake-transfer-key-000001","more":"sk-fake-transfer-key-000001 sk-fake-transfer-key-000001"}"#;
-        let sealed = seal_fast("password-1", plain);
-        // 같은 내용을 두 번 잠가도 같은 것이 나오지 않는다 (소금·논스가 매번 새로 뽑힌다)
-        assert_ne!(sealed, seal_fast("password-1", plain));
+        let sealed = seal_fast("password-1", &to, plain);
+        // 같은 내용을 두 번 잠가도 같은 것이 나오지 않는다 (소금·논스·보내는 쪽 열쇠가 매번 새로 뽑힌다)
+        assert_ne!(sealed, seal_fast("password-1", &to, plain));
         assert!(!sealed.windows(7).any(|window| window == b"sk-fake"));
         // 잠그기 전에 줄인다 — 복사할 글이 짧아진다
         assert!(sealed.len() < plain.len() + HEADER_LEN);
-        for at in [8, 12, 16, CREATED_AT, SALT_AT, SALT_AT + SALT_LEN, HEADER_LEN - 1, HEADER_LEN, sealed.len() - 1] {
+        for at in [8, 12, 16, CREATED_AT, SALT_AT, SALT_AT + SALT_LEN, RECIPIENT_AT, SENDER_AT, HEADER_LEN - 1, HEADER_LEN, sealed.len() - 1] {
             let mut changed = sealed.clone();
             changed[at] ^= 1;
-            assert!(open("password-1", &changed, T0).is_err(), "byte {at} must be authenticated");
+            assert!(open(&to, "password-1", &changed).is_err(), "byte {at} must be authenticated");
         }
         // 잘린 것, 다른 것, 터무니없는 열쇠 만들기 값
-        assert_eq!(open("password-1", &sealed[..HEADER_LEN], T0).unwrap_err(), BAD_TEXT);
-        assert_eq!(open("password-1", &[7u8; 200], T0).unwrap_err(), BAD_TEXT);
+        assert_eq!(open(&to, "password-1", &sealed[..HEADER_LEN]).unwrap_err(), BAD_TEXT);
+        assert_eq!(open(&to, "password-1", &[7u8; 200]).unwrap_err(), BAD_TEXT);
         let mut greedy = sealed.clone();
         greedy[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert_eq!(open("password-1", &greedy, T0).unwrap_err(), BAD_TEXT);
+        assert_eq!(open(&to, "password-1", &greedy).unwrap_err(), BAD_TEXT);
     }
 
-    /// 사용자 지시: 만든 지 10분이 지나면 쓸 수 없다
+    /// 사용자 지시: 10분이 지나면 쓸 수 없다. #192: 시계가 아니라 열쇠가 없어져서 못 쓴다.
     #[test]
-    fn it_cannot_be_used_more_than_ten_minutes_after_it_was_made() {
-        let sealed = seal_fast("password-1", b"payload");
-        assert!(open("password-1", &sealed, T0 + VALID_SECS).is_ok());
-        let late = open("password-1", &sealed, T0 + VALID_SECS + 1).unwrap_err();
-        assert!(late.contains("만든 지 10분이 지나"), "{late}");
-        assert!(open("password-1", &sealed, T0 + 3 * 86_400).unwrap_err().contains("만든 지 3일이 지나"));
-        // 만료는 비밀번호와 상관없이 먼저 말한다
-        assert!(open("wrong-password", &sealed, T0 + VALID_SECS + 1).unwrap_err().contains("10분"));
-        // 받는 PC의 시계가 조금 느린 것은 받아 주고, 많이 다르면 시계를 말한다
-        assert!(open("password-1", &sealed, T0 - CLOCK_SKEW_SECS).is_ok());
-        assert!(open("password-1", &sealed, T0 - CLOCK_SKEW_SECS - 1).unwrap_err().contains("시계"));
-        // 만든 시각을 고쳐서 새것처럼 보이게 해도 풀리지 않는다 — 머리말은 잠금에 묶여 있다
-        let much_later = T0 + 7 * 86_400;
-        let mut forged = sealed.clone();
-        forged[CREATED_AT..CREATED_AT + 8].copy_from_slice(&much_later.to_le_bytes());
-        assert_eq!(created_at_of(&forged).unwrap(), much_later);
-        assert_eq!(open("password-1", &forged, much_later).unwrap_err(), BAD_PASSWORD);
+    fn after_ten_minutes_the_key_is_gone_and_turning_the_clock_back_does_not_bring_it_back() {
+        let from = source("transfer-expiry");
+        let to = test_env("transfer-expiry-to");
+        // 받을 준비를 하지 않은 PC는 아무것도 열지 못한다
+        let stranger = receiver();
+        let text = text_of(&from, "password-1", &stranger);
+        let mut none = None;
+        assert_eq!(import_at(&to, &mut none, "password-1", Some(&text), None, T0).unwrap_err(), NOT_READY);
+        // 벽시계로 10분이 지났다
+        let mut slot = Some(receiver());
+        let text = text_of(&from, "password-1", slot.as_ref().unwrap());
+        assert!(slot.as_ref().unwrap().alive(T0 + VALID_SECS));
+        assert_eq!(import_at(&to, &mut slot, "password-1", Some(&text), None, T0 + VALID_SECS + 1).unwrap_err(), NOT_READY);
+        assert!(slot.is_none(), "the key must be dropped once it has expired");
+        // 열쇠가 지워졌으니 시계를 되돌려도 열리지 않는다
+        assert_eq!(import_at(&to, &mut slot, "password-1", Some(&text), None, T0).unwrap_err(), NOT_READY);
+        // 시계를 되돌려 둔 PC: 벽시계는 이르지만 흐른 시간이 10분을 넘겼다
+        let mut slot = Some(receiver_aged(VALID_SECS + 1));
+        let text = text_of(&from, "password-1", slot.as_ref().unwrap());
+        assert_eq!(slot.as_ref().unwrap().seconds_left(T0 - 3600), 0);
+        assert_eq!(import_at(&to, &mut slot, "password-1", Some(&text), None, T0 - 3600).unwrap_err(), NOT_READY);
+        assert!(slot.is_none() && accounts::profile_dirs(&to, Provider::Claude).unwrap().is_empty());
+        // 남은 시간은 둘 중 먼저 끝나는 쪽이다
+        assert_eq!(receiver_aged(60).seconds_left(T0 + 200), VALID_SECS - 200);
+        assert!(receiver_aged(200).seconds_left(T0 + 60) <= VALID_SECS - 200);
+    }
+
+    /// #192: 한 번 가져온 글은 다시 열리지 않는다. 틀린 비밀번호는 열쇠를 지우지 않는다.
+    #[test]
+    fn a_text_opens_once_and_a_wrong_password_can_be_retried() {
+        let from = source("transfer-once");
+        let to = test_env("transfer-once-to");
+        let mut slot = Some(receiver());
+        let text = text_of(&from, "password-1", slot.as_ref().unwrap());
+        assert_eq!(import_at(&to, &mut slot, "password-2", Some(&text), None, T0).unwrap_err(), BAD_PASSWORD);
+        assert!(slot.is_some() && accounts::profile_dirs(&to, Provider::Claude).unwrap().is_empty());
+        // 다른 받는 코드로 잠근 글도 열쇠를 지우지 않는다
+        let elsewhere = text_of(&from, "password-1", &receiver());
+        assert_eq!(import_at(&to, &mut slot, "password-1", Some(&elsewhere), None, T0).unwrap_err(), NOT_FOR_THIS);
+        assert!(slot.is_some());
+        assert_eq!(import_at(&to, &mut slot, "password-1", Some(&text), None, T0 + 60).unwrap().accounts_added, 2);
+        assert!(slot.is_none());
+        assert_eq!(import_at(&to, &mut slot, "password-1", Some(&text), None, T0 + 61).unwrap_err(), NOT_READY);
     }
 
     #[test]
     fn the_copied_text_survives_what_messengers_do_to_it() {
+        let to = receiver();
         // 줄지 않는 내용이어야 글이 길다 (같은 글자만 있으면 몇십 자로 줄어든다)
         let noise: Vec<u8> = (0..900u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8).collect();
-        let sealed = seal_fast("password-1", &noise);
+        let sealed = seal_fast("password-1", &to, &noise);
         let text = armor(&sealed);
-        assert!(text.starts_with("SWX2.") && text.is_ascii() && !text.contains(['_', '-', '*', '~', '=', ' ', '\n']));
+        assert!(text.starts_with("SWX3.") && text.is_ascii() && !text.contains(['_', '-', '*', '~', '=', ' ', '\n']));
         assert_eq!(dearmor(&text).unwrap(), sealed);
         // 줄바꿈·공백·보이지 않는 글자가 끼고, 앞뒤에 다른 글이 붙어도 같은 것이 나온다
         let mut wrapped = String::from("홍길동 [오후 3:15]\n");
@@ -834,16 +1107,20 @@ mod tests {
         let body_len = text_codec().encode(&sealed).len();
         let cut = dearmor(&text[..text.len() - 300]).unwrap_err();
         assert!(cut.contains(&format!("{body_len}자 중 {}자만", body_len - 300)), "{cut}");
-        assert!(dearmor("SWX2.1200").unwrap_err().contains("1200자 중 0자만"));
-        // 글자가 바뀐 글, 우리 글이 아닌 것, 처음 판의 파일
+        assert!(dearmor("SWX3.1200").unwrap_err().contains("1200자 중 0자만"));
+        // 글자가 바뀐 글, 우리 글이 아닌 것, 이전 형식
         let swapped = text.replacen('A', "?", 1).replacen('B', "?", 1).replacen('C', "?", 1);
         assert!(dearmor(&swapped).unwrap_err().contains("바뀌었습니다"));
         assert_eq!(dearmor("안녕하세요 그냥 메모입니다").unwrap_err(), BAD_TEXT);
         assert_eq!(dearmor("").unwrap_err(), BAD_TEXT);
-        assert_eq!(dearmor("SWX2.abc.def").unwrap_err(), BAD_TEXT);
+        assert_eq!(dearmor("SWX3.abc.def").unwrap_err(), BAD_TEXT);
         assert_eq!(dearmor("SWXFER1\n\u{1}\u{2}binary").unwrap_err(), OLD_FORMAT);
-        assert_eq!(peek_created_at(&text[..200]), Some(T0));
-        assert_eq!(peek_created_at("SWX2.12.AAAA"), None);
+        // 비밀번호만으로 잠그던 형식(v2.2.0~2.2.3)은 받지 않는다 — 무엇을 하면 되는지 말한다
+        assert_eq!(dearmor("SWX2.1200.AAAABBBBCCCC").unwrap_err(), OLD_FORMAT);
+        // 받는 코드를 글 자리에 넣었다
+        assert_eq!(dearmor(&to.code(T0).code).unwrap_err(), BAD_TEXT);
+        assert_eq!(peek_created_at(&text[..240]), Some(T0));
+        assert_eq!(peek_created_at("SWX3.12.AAAA"), None);
     }
 
     #[test]
@@ -852,16 +1129,16 @@ mod tests {
         // 묶음에는 로그인만 있다 — 설정·메모는 들어가지 않는다
         let plain = String::from_utf8(serde_json::to_vec(&bundle_of(&from)).unwrap()).unwrap();
         assert!(!plain.contains("memo-from-a") && !plain.contains("violet") && !plain.contains("old-generation"));
-        let text = text_of(&from, "password-1");
+        let mut slot = Some(receiver());
+        let text = text_of(&from, "password-1", slot.as_ref().unwrap());
         for secret in ["fake-access", "fake-refresh", "acct-alpha"] {
             assert!(!text.contains(secret));
         }
         let to = test_env("transfer-to");
-        // 틀린 비밀번호·만료된 글은 아무것도 쓰지 않는다
-        assert_eq!(import_at(&to, "password-2", Some(&text), None, T0).unwrap_err(), BAD_PASSWORD);
-        assert!(import_at(&to, "password-1", Some(&text), None, T0 + VALID_SECS + 1).unwrap_err().contains("10분"));
+        // 틀린 비밀번호는 아무것도 쓰지 않는다
+        assert_eq!(import_at(&to, &mut slot, "password-2", Some(&text), None, T0).unwrap_err(), BAD_PASSWORD);
         assert!(accounts::profile_dirs(&to, Provider::Claude).unwrap().is_empty() && !to.store.join("api-connections").exists());
-        let result = import_at(&to, "password-1", Some(&format!("  {text}\n")), None, T0 + 60).unwrap();
+        let result = import_at(&to, &mut slot, "password-1", Some(&format!("  {text}\n")), None, T0 + 60).unwrap();
         assert_eq!((result.accounts_added, result.accounts_replaced, result.live_replaced), (2, 0, 0));
         assert!(result.problems.is_empty() && result.rejected == 0);
         // 계정: 같은 이름·같은 ID·같은 로그인. .bak은 오지 않는다.
@@ -1004,8 +1281,9 @@ mod tests {
         assert_eq!(accounts::profile_dirs(&to, Provider::Claude).unwrap().len(), 1);
         assert!(!to.store.join("api-connections").exists());
         // 처음 판의 묶음은 받지 않는다 — 무엇을 하면 되는지 말해 준다
-        let old = seal_fast("password-1", br#"{"version":2,"created_at":0,"source_os":"macos","profiles":[],"api_keys":[]}"#);
-        assert_eq!(parse("password-1", &old, T0).err().unwrap(), OLD_FORMAT);
+        let receiver = receiver();
+        let old = seal_fast("password-1", &receiver, br#"{"version":2,"created_at":0,"source_os":"macos","profiles":[],"api_keys":[]}"#);
+        assert_eq!(parse(&receiver, "password-1", &old).err().unwrap(), OLD_FORMAT);
     }
 
     /// 사용자 지시: 복사와 파일, 둘 다 된다. 파일의 내용은 복사하는 글과 같다.
@@ -1014,8 +1292,10 @@ mod tests {
         let from = source("transfer-file");
         fs::create_dir_all(from.home.join("Downloads")).unwrap();
         assert!(check_password("short").is_err());
-        let made = make_text("password-1", &bundle_of(&from), T0).unwrap();
-        assert_eq!((made.accounts, made.expires_at), (2, T0 + VALID_SECS));
+        let mut slot = Some(receiver());
+        let recipient = slot.as_ref().unwrap().public;
+        let made = make_text("password-1", &recipient, &bundle_of(&from), T0).unwrap();
+        assert_eq!(made.accounts, 2);
         assert_eq!(made.chars, made.text.len());
         let saved = write_file(&from, &dearmor(&made.text).unwrap(), "20261123-101500").unwrap();
         assert_eq!(saved.name, "switcher-transfer-20261123-101500.swx");
@@ -1035,16 +1315,18 @@ mod tests {
         fs::copy(&saved.path, &moved).unwrap();
         let moved = moved.to_string_lossy().into_owned();
         // 기본 열쇠 만들기 값으로 잠근 것을 실제 길(파일 → 풀기 → 넣기)로 끝까지 가 본다
-        let result = import_at(&to, "password-1", None, Some(&moved), T0 + 120).unwrap();
+        let result = import_at(&to, &mut slot, "password-1", None, Some(&moved), T0 + 120).unwrap();
         assert_eq!(result.accounts_added, 2);
-        assert!(import_at(&to, "password-1", None, Some(&moved), T0 + VALID_SECS + 1).unwrap_err().contains("10분"));
+        // 한 번 가져온 파일은 남아 있어도 다시 열리지 않는다
+        assert_eq!(import_at(&to, &mut slot, "password-1", None, Some(&moved), T0 + 130).unwrap_err(), NOT_READY);
+        let mut slot = Some(receiver());
         // 우리가 다루는 자리 밖의 경로는 읽지 않는다
         let outside = to.store.join("elsewhere.swx");
         fs::write(&outside, &made.text).unwrap();
         assert_eq!(
-            import_at(&to, "password-1", None, Some(&outside.to_string_lossy()), T0).unwrap_err(),
+            import_at(&to, &mut slot, "password-1", None, Some(&outside.to_string_lossy()), T0).unwrap_err(),
             "파일을 찾을 수 없습니다"
         );
-        assert!(import_at(&to, "password-1", None, None, T0).unwrap_err().contains("붙여넣거나"));
+        assert!(import_at(&to, &mut slot, "password-1", None, None, T0).unwrap_err().contains("붙여넣거나"));
     }
 }
